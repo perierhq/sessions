@@ -1,0 +1,368 @@
+/**
+ * Editing a credential from Settings: a partial update that keeps what it
+ * doesn't name, a rotated secret that is never returned, an optional expiry
+ * date the broker enforces, and a status-only test call.
+ */
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const STORE = join(mkdtempSync(join(tmpdir(), "kc-edit-")), "kc.json");
+process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
+
+const kc = await import("./keychain");
+const { brokerCall, testCredential } = await import("./keychain-broker");
+const { handleKeychainRoutes } = await import("./routes/keychain");
+const { fetchBackedNet } = await import("./testing/pinned-fetch-double");
+
+const SECRET = "sk-edit-secret-1234";
+const ROTATED = "sk-rotated-secret-5678";
+
+function reset(): void {
+  if (existsSync(STORE)) rmSync(STORE);
+  const g = globalThis as any;
+  g.__keychainCredentials?.clear();
+  g.__keychainGrants?.clear();
+  g.__keychainAsks?.clear();
+}
+
+type Seen = { url: string; init: RequestInit };
+let seen: Seen[] = [];
+let reply: () => Response = () =>
+  Response.json({ items: [SECRET] }, { status: 200 });
+const net = fetchBackedNet(async (url, init) => {
+  seen.push({ url: String(url), init });
+  return reply();
+});
+
+beforeEach(() => {
+  process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
+  reset();
+  seen = [];
+  reply = () => Response.json({ items: [SECRET] }, { status: 200 });
+});
+afterEach(reset);
+
+const add = (over: Partial<Parameters<typeof kc.addCredential>[0]> = {}) =>
+  kc.addCredential({
+    owner: "Alex",
+    service: "acme-api",
+    host: "api.example.test",
+    secret: SECRET,
+    ...over,
+  });
+
+const alex = { login: "alex-gh", name: "Alex Example" };
+
+function route(
+  method: "PATCH" | "POST",
+  path: string,
+  authUser: { login: string; name: string; automation?: boolean } | null,
+  body: unknown,
+) {
+  const url = new URL(path, "https://os.example.test");
+  return handleKeychainRoutes({
+    path: url.pathname,
+    url,
+    publicPrefix: "",
+    authUser,
+    req: new Request(url, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  }) as Promise<Response>;
+}
+
+describe("PATCH /api/keychain/credentials/:id", () => {
+  test("changes only the fields it names and never returns the secret", async () => {
+    const meta = add({
+      description: "Orders API",
+      allowedMethods: ["GET"],
+      scope: "workspace",
+    });
+    const res = await route(
+      "PATCH",
+      `/api/keychain/credentials/${meta.id}`,
+      alex,
+      { allowedPathPrefixes: ["/v1/orders"] },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+    expect(body.credential).toMatchObject({
+      description: "Orders API",
+      allowedMethods: ["GET"],
+      allowedPathPrefixes: ["/v1/orders"],
+      scope: "workspace",
+    });
+  });
+
+  test("a field set to null or empty is cleared", async () => {
+    const meta = add({ description: "Orders API", allowedMethods: ["GET"] });
+    const res = await route(
+      "PATCH",
+      `/api/keychain/credentials/${meta.id}`,
+      alex,
+      { description: "", allowedMethods: [] },
+    );
+    const body = await res.json();
+    expect(body.credential.description).toBeUndefined();
+    expect(body.credential.allowedMethods).toBeUndefined();
+  });
+
+  test("rotates the secret: the next call sends the new one", async () => {
+    const meta = add();
+    kc.__mintGrantForTest({
+      credentialId: meta.id,
+      sessionId: "s-1",
+      requestedBy: "Sam",
+      mode: "standing",
+    });
+    const res = await route(
+      "PATCH",
+      `/api/keychain/credentials/${meta.id}`,
+      alex,
+      { secret: ROTATED },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.secretRotated).toBe(true);
+    expect(JSON.stringify(body)).not.toContain(ROTATED);
+    await brokerCall({
+      sessionId: "s-1",
+      credential: "acme-api",
+      method: "GET",
+      path: "/v1/items",
+      net,
+    });
+    expect(new Headers(seen[0]!.init.headers).get("authorization")).toBe(
+      `Bearer ${ROTATED}`,
+    );
+  });
+
+  test("an empty secret keeps the current one", async () => {
+    const meta = add();
+    const res = await route(
+      "PATCH",
+      `/api/keychain/credentials/${meta.id}`,
+      alex,
+      { secret: "", description: "Orders" },
+    );
+    expect((await res.json()).secretRotated).toBe(false);
+  });
+
+  test("needs the owner's verified sign-in", async () => {
+    const meta = add();
+    const path = `/api/keychain/credentials/${meta.id}`;
+    expect(
+      (await route("PATCH", path, null, { description: "x" })).status,
+    ).toBe(401);
+    expect(
+      (
+        await route(
+          "PATCH",
+          path,
+          { ...alex, automation: true },
+          { description: "x" },
+        )
+      ).status,
+    ).toBe(401);
+    const bea = await route(
+      "PATCH",
+      path,
+      { login: "bea-gh", name: "Bea Example" },
+      { description: "x" },
+    );
+    expect(bea.status).toBe(403);
+    expect((await bea.json()).error).toMatch(/owner/);
+  });
+
+  test("a stale revision is refused", async () => {
+    const meta = add();
+    const res = await route(
+      "PATCH",
+      `/api/keychain/credentials/${meta.id}`,
+      alex,
+      { description: "x", expectedUpdatedAt: "2020-01-01T00:00:00.000Z" },
+    );
+    expect(res.status).toBe(409);
+  });
+});
+
+describe("expiry", () => {
+  test("adding through the route keeps the expiry and test path", async () => {
+    const res = await route("POST", "/api/keychain/credentials", alex, {
+      service: "acme-api",
+      host: "api.example.test",
+      secret: SECRET,
+      expiresOn: "2099-03-01",
+      testPath: "/v1/me",
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).credential).toMatchObject({
+      expiresOn: "2099-03-01",
+      testPath: "/v1/me",
+    });
+  });
+
+  test("is a day, kept on the credential", () => {
+    const meta = add({ expiresOn: "2099-03-01" });
+    expect(meta.expiresOn).toBe("2099-03-01");
+    expect(() => add({ service: "bad", expiresOn: "March 1" })).toThrow(
+      /expiry/,
+    );
+    expect(() => add({ service: "bad2", expiresOn: "2099-02-31" })).toThrow(
+      /expiry/,
+    );
+  });
+
+  test("an expired credential is refused before a grant is spent", async () => {
+    const meta = add({ expiresOn: "2020-01-01" });
+    const grant = kc.__mintGrantForTest({
+      credentialId: meta.id,
+      sessionId: "s-1",
+      requestedBy: "Sam",
+      mode: "once",
+    });
+    const r = await brokerCall({
+      sessionId: "s-1",
+      credential: "acme-api",
+      method: "GET",
+      path: "/v1/items",
+      net,
+    });
+    expect(r).toMatchObject({ error: expect.stringMatching(/expired/) });
+    expect(seen).toHaveLength(0);
+    expect(kc.listGrants().find((g) => g.id === grant.id)?.status).toBe(
+      "active",
+    );
+  });
+
+  test("clearing the date makes it usable again", async () => {
+    const meta = add({ expiresOn: "2020-01-01" });
+    kc.__mintGrantForTest({
+      credentialId: meta.id,
+      sessionId: "s-1",
+      requestedBy: "Sam",
+      mode: "standing",
+    });
+    await kc.patchCredentialAsync(meta.id, "Alex", { expiresOn: null });
+    const r = await brokerCall({
+      sessionId: "s-1",
+      credential: "acme-api",
+      method: "GET",
+      path: "/v1/items",
+      net,
+    });
+    expect(r).toMatchObject({ status: 200 });
+  });
+});
+
+describe("test call", () => {
+  test("a draft: one GET with the injected secret, status only", async () => {
+    reply = () => new Response("nope", { status: 401 });
+    const r = await testCredential({
+      by: "Alex",
+      spec: { service: "acme-api", host: "api.example.test" },
+      secret: SECRET,
+      path: "/v1/me",
+      net,
+    });
+    expect(r).toEqual({ status: 401, reason: "Unauthorized" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe("https://api.example.test/v1/me");
+    expect(seen[0]!.init.method).toBe("GET");
+    expect(new Headers(seen[0]!.init.headers).get("authorization")).toBe(
+      `Bearer ${SECRET}`,
+    );
+    // Nothing is saved by a test.
+    expect(kc.listCredentials()).toHaveLength(0);
+  });
+
+  test("a saved credential uses its stored secret and test path", async () => {
+    const meta = add({ testPath: "/v1/me" });
+    const r = await testCredential({ by: "Alex", credentialId: meta.id, net });
+    expect(r).toEqual({ status: 200, reason: "OK" });
+    expect(seen[0]!.url).toBe("https://api.example.test/v1/me");
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
+  test("a saved credential with unsaved edits tests the edits", async () => {
+    const meta = add();
+    await testCredential({
+      by: "Alex",
+      credentialId: meta.id,
+      spec: { host: "api2.example.test", injection: { header: "X-Api-Key" } },
+      secret: ROTATED,
+      net,
+    });
+    expect(seen[0]!.url).toBe("https://api2.example.test/");
+    const headers = new Headers(seen[0]!.init.headers);
+    expect(headers.get("x-api-key")).toBe(ROTATED);
+    expect(kc.findCredential(meta.id)?.host).toBe("api.example.test");
+  });
+
+  test("only the owner can test a saved credential", async () => {
+    const meta = add();
+    const r = await testCredential({ by: "Bea", credentialId: meta.id, net });
+    expect(r).toMatchObject({ error: expect.stringMatching(/owner/) });
+    expect(seen).toHaveLength(0);
+  });
+
+  test("stays inside the credential's limits", async () => {
+    const meta = add({
+      allowedPathPrefixes: ["/v1/orders"],
+      allowedMethods: ["GET"],
+    });
+    const outside = await testCredential({
+      by: "Alex",
+      credentialId: meta.id,
+      path: "/v1/admin",
+      net,
+    });
+    expect(outside).toMatchObject({ error: expect.stringMatching(/prefixes/) });
+    const postOnly = await testCredential({
+      by: "Alex",
+      spec: {
+        service: "acme-post",
+        host: "api.example.test",
+        allowedMethods: ["POST"],
+      },
+      secret: SECRET,
+      net,
+    });
+    expect(postOnly).toMatchObject({ error: expect.stringMatching(/GET/) });
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a login can't be tested", async () => {
+    const r = await testCredential({
+      by: "Alex",
+      spec: {
+        service: "acme-staging",
+        kind: "login",
+        loginUrl: "https://app.example.test/login",
+        username: "qa@example.test",
+      },
+      secret: "pw",
+      net,
+    });
+    expect(r).toMatchObject({ error: expect.stringMatching(/login/) });
+  });
+
+  test("the test path must sit inside the path limits", () => {
+    expect(() =>
+      add({ allowedPathPrefixes: ["/v1/orders"], testPath: "/v2/me" }),
+    ).toThrow(/test path/);
+  });
+
+  test("the route needs a verified sign-in", async () => {
+    const res = await route("POST", "/api/keychain/test", null, {
+      spec: { service: "acme-api", host: "api.example.test" },
+      secret: SECRET,
+    });
+    expect(res.status).toBe(401);
+  });
+});

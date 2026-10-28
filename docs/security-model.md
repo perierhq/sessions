@@ -203,6 +203,18 @@ and body verbatim and in common encodings (URL, JSON, base64), which is best
 effort. A credential registered as status-only returns only the HTTP status,
 for APIs that might echo the secret in a form scrubbing cannot catch.
 
+An owner edits a credential in Settings → Account (`PATCH
+/api/keychain/credentials/:id`, verified GitHub sign-in, owner only): the
+fields the request names change, a non-empty secret rotates it, and the
+response never carries the secret. The dialog can test what is on screen,
+saved or not, with one status-only GET (`POST /api/keychain/test`, owner only
+for a saved credential): it goes to the credential's host under the same
+address policy and method and path ceiling as any call, returns only the
+status (the body is never read), saves nothing, uses no grant and is audited
+as `keychain_test` without the secret. A credential may carry an expiry day;
+after it, every call, scripted run, login release, incident lend and new ask
+is refused until its owner changes the date.
+
 An owner replaces a credential's secret or metadata, or removes it, from a
 session they drive with `update_credential` or `delete_credential`. The agent
 names the credential and any metadata change; the session shows the owner a

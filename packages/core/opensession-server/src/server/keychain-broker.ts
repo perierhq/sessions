@@ -25,7 +25,8 @@
  * workspace grant, and it never falls back to an interactive grant.
  */
 
-import { audit } from "./audit";
+import { STATUS_CODES } from "node:http";
+import { audit, auditAsync } from "./audit";
 import { isBlockedAddress } from "./shared/network-address";
 import {
   BlockedAddressError,
@@ -47,7 +48,9 @@ import {
   headerProblem,
   findCredential,
   isWorkspaceCredential,
+  prepareCredentialTest,
   scrubSecret,
+  testRefusal,
   workspaceGrantFor,
 } from "./keychain";
 
@@ -273,6 +276,73 @@ export async function brokerCall(
     body,
     ...(truncated ? { truncated: true as const } : {}),
   };
+}
+
+const TEST_TIMEOUT_MS = 15_000;
+
+export type CredentialTestResult =
+  | { status: number; reason: string }
+  | { error: string };
+
+/**
+ * The owner's status-only test: one GET with the credential as they are
+ * editing it (saved, saved with unsaved changes, or a draft), to its test
+ * path or the one given, within its limits and through the same address
+ * policy as every call. Only the status comes back: the body is never read.
+ * Nothing is saved, no grant is involved, and the attempt is audited as
+ * keychain_test without the secret.
+ */
+export async function testCredential(input: {
+  /** The verified person testing; must own a saved credential. */
+  by: string;
+  credentialId?: string;
+  spec?: Parameters<typeof prepareCredentialTest>[0]["spec"];
+  secret?: string;
+  path?: string;
+  net?: Partial<PinnedFetchDeps>;
+}): Promise<CredentialTestResult> {
+  await ensureKeychainLoaded();
+  let prepared: ReturnType<typeof prepareCredentialTest>;
+  try {
+    prepared = prepareCredentialTest(input);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  const { credential, path } = prepared;
+  const target = new URL(`https://${credential.host}${path}`);
+  const result: CredentialTestResult = await (async () => {
+    if (target.hostname !== credential.host || target.port || target.username)
+      return { error: `the test path must stay on https://${credential.host}` };
+    const refusal = testRefusal(credential, target.pathname);
+    if (refusal) return { error: refusal };
+    try {
+      const res = await credentialRequest(
+        target,
+        {
+          method: "GET",
+          headers: brokerHeaders(credential),
+          signal: AbortSignal.timeout(TEST_TIMEOUT_MS),
+          maxBodyBytes: 1,
+        },
+        input.net,
+      );
+      return { status: res.status, reason: STATUS_CODES[res.status] ?? "" };
+    } catch (e) {
+      return { error: credentialRequestError(credential.host, e) };
+    }
+  })();
+  auditAsync({
+    kind: "keychain_test",
+    ...(input.credentialId ? { credential_id: input.credentialId } : {}),
+    service: credential.service,
+    host: credential.host,
+    path: target.pathname,
+    by: input.by,
+    ...("status" in result
+      ? { status: result.status }
+      : { error: result.error }),
+  });
+  return result;
 }
 
 const defaultNet: PinnedFetchDeps = {

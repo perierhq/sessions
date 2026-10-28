@@ -934,6 +934,10 @@ export type ProtocolServerMessage =
         /** Every session in the workspace may use it without asking.
          *  Absent: personal. */
         scope?: "workspace";
+        /** The last day (YYYY-MM-DD) it may be used. */
+        expiresOn?: string;
+        /** The path the owner's status-only test calls. */
+        testPath?: string;
         owner: string;
         requestedAt: number;
         expiresAt: number;
@@ -952,6 +956,8 @@ export type ProtocolServerMessage =
           | "allowedPathPrefixes"
           | "statusOnly"
           | "scope"
+          | "expiresOn"
+          | "testPath"
         )[];
         previous?: {
           host?: string;
@@ -963,6 +969,8 @@ export type ProtocolServerMessage =
           allowedPathPrefixes?: string[];
           statusOnly?: boolean;
           scope?: "workspace";
+          expiresOn?: string;
+          testPath?: string;
         };
         /** An update must come with a new secret; otherwise one is optional. */
         requireSecret?: boolean;

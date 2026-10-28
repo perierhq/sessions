@@ -16,9 +16,12 @@ import {
   ensureKeychainLoaded,
   keychainAsksInSession,
   keychainViewFor,
+  patchCredentialAsync,
   revokeGrant,
   setCredentialScopeAsync,
+  STALE_CREDENTIAL_ERROR,
 } from "../keychain";
+import { testCredential } from "../keychain-broker";
 import { readRequestTextWithinLimit } from "../shared/bounded-body";
 import {
   CredentialRegistrationError,
@@ -178,6 +181,12 @@ export async function handleKeychainRoutes(
             ? body.allowedPathPrefixes
             : undefined,
           statusOnly: body.statusOnly === true,
+          ...(typeof body.expiresOn === "string"
+            ? { expiresOn: body.expiresOn }
+            : {}),
+          ...(typeof body.testPath === "string"
+            ? { testPath: body.testPath }
+            : {}),
           // Anything but "personal" or "workspace" is refused by the spec
           // check, and so is a workspace login.
           ...(typeof body.scope === "string" ? { scope: body.scope } : {}),
@@ -220,7 +229,74 @@ export async function handleKeychainRoutes(
     }
   }
 
+  // The owner's status-only test of a credential being added or edited:
+  // one GET, only the status back. The body may carry a secret, so nothing
+  // here logs or echoes it.
+  if (path === "/api/keychain/test" && req.method === "POST") {
+    const by = verifiedPerson(ctx);
+    if (!by)
+      return Response.json(
+        { error: "Sign in with GitHub to test a credential" },
+        { status: 401 },
+      );
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object")
+      return Response.json(
+        { error: "expected { credentialId?, spec?, secret?, path? }" },
+        { status: 400 },
+      );
+    const result = await testCredential({
+      by,
+      ...(typeof body.credentialId === "string"
+        ? { credentialId: body.credentialId }
+        : {}),
+      ...(body.spec && typeof body.spec === "object"
+        ? { spec: body.spec }
+        : {}),
+      ...(typeof body.secret === "string" ? { secret: body.secret } : {}),
+      ...(typeof body.path === "string" ? { path: body.path } : {}),
+    });
+    return Response.json(result, {
+      status: "error" in result ? 400 : 200,
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+
   const credMatch = path.match(/^\/api\/keychain\/credentials\/([^/]+)$/);
+  // The owner edits a credential from Settings: the fields the body names
+  // change, a non-empty secret rotates it. Verified sign-in only, like
+  // scope changes.
+  if (credMatch && req.method === "PATCH") {
+    const by = verifiedPerson(ctx);
+    if (!by)
+      return Response.json(
+        { error: "Sign in with GitHub to edit a credential" },
+        { status: 401 },
+      );
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return Response.json(
+        { error: "expected the fields to change" },
+        { status: 400 },
+      );
+    try {
+      return Response.json(
+        await patchCredentialAsync(decodeURIComponent(credMatch[1]!), by, body),
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      const status = /no longer exists/.test(message)
+        ? 404
+        : /owner can/.test(message)
+          ? 403
+          : message === STALE_CREDENTIAL_ERROR
+            ? 409
+            : 400;
+      return Response.json({ error: message }, { status });
+    }
+  }
+
   if (credMatch && req.method === "DELETE") {
     const by = verifiedPerson(ctx);
     if (!by)

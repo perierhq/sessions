@@ -40,6 +40,8 @@ const FIELD_LABELS: Record<Changeable, string> = {
   allowedPathPrefixes: "Paths",
   statusOnly: "Responses",
   scope: "Who can use it",
+  expiresOn: "Expires",
+  testPath: "Test path",
 };
 
 type FieldValues = NonNullable<CredentialRequest["previous"]>;

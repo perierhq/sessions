@@ -191,6 +191,10 @@ export interface KeychainCredential {
    *  ask; absent: personal, every use needs the owner's approval. Never
    *  set on a login. */
   scope?: "workspace";
+  /** The last day (YYYY-MM-DD, UTC) it may be used. Absent: no expiry. */
+  expiresOn?: string;
+  /** The path (and query) the owner's status-only test calls with GET. */
+  testPath?: string;
   secret: string;
   createdAt: string;
   updatedAt: string;
@@ -457,6 +461,10 @@ export interface AddCredentialInput {
   allowedPathPrefixes?: string[];
   statusOnly?: boolean;
   scope?: CredentialScope;
+  /** YYYY-MM-DD; null or absent: no expiry. */
+  expiresOn?: string | null;
+  /** Null or absent: the test calls the first path prefix, or /. */
+  testPath?: string | null;
 }
 
 export type CredentialSpec = Omit<AddCredentialInput, "owner" | "secret">;
@@ -473,6 +481,8 @@ export interface NormalizedCredentialSpec {
   allowedPathPrefixes?: string[];
   statusOnly?: boolean;
   scope?: "workspace";
+  expiresOn?: string;
+  testPath?: string;
 }
 
 const HTTP_METHODS = new Set([
@@ -553,9 +563,12 @@ export function normalizeCredentialSpec(
   input: CredentialSpec,
   /** The credential being updated: its own slug is not "taken". */
   replacing?: string,
+  /** A draft that is only tested, never saved: its slug may be taken. */
+  opts: { draft?: boolean } = {},
 ): NormalizedCredentialSpec {
   load();
   const taken = (service: string) =>
+    !opts.draft &&
     [...credentials.values()].some(
       (c) => c.service === service && c.id !== replacing,
     );
@@ -603,6 +616,8 @@ export function normalizeCredentialSpec(
     .map((p) => p.trim())
     .filter(Boolean)
     .map(normalizePathPrefix);
+  const expiresOn = normalizeExpiry(input.expiresOn);
+  const testPath = normalizeTestPath(input.testPath, prefixes);
   let injection: NormalizedCredentialSpec["injection"];
   if (input.injection) {
     const { header, scheme } = input.injection;
@@ -625,7 +640,74 @@ export function normalizeCredentialSpec(
     ...(prefixes.length ? { allowedPathPrefixes: prefixes } : {}),
     ...(input.statusOnly === true ? { statusOnly: true } : {}),
     ...(input.scope === "workspace" ? { scope: "workspace" as const } : {}),
+    ...(expiresOn ? { expiresOn } : {}),
+    ...(testPath ? { testPath } : {}),
   };
+}
+
+/** An expiry day as stored: YYYY-MM-DD, a real date. Absent, null or empty
+ *  means none. */
+function normalizeExpiry(raw: string | null | undefined): string | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const day = typeof raw === "string" ? raw.trim() : "";
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(day)
+    ? new Date(`${day}T00:00:00.000Z`)
+    : null;
+  if (!parsed || Number.isNaN(parsed.getTime()) || isoDay(parsed) !== day)
+    throw new Error("expiry must be a date, as YYYY-MM-DD");
+  return day;
+}
+
+function isoDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/** Whether a credential is past its last day (UTC). */
+export function credentialExpired(
+  cred: Pick<KeychainCredentialMeta, "expiresOn">,
+  now = Date.now(),
+): boolean {
+  return !!cred.expiresOn && isoDay(new Date(now)) > cred.expiresOn;
+}
+
+/** Why an expired credential can't be used, or null. */
+function expiredProblem(cred: KeychainCredential): string | null {
+  return credentialExpired(cred)
+    ? `${cred.service} expired on ${cred.expiresOn}. Its owner can rotate it and change the date in Settings → Account`
+    : null;
+}
+
+const MAX_TEST_PATH_CHARS = 300;
+
+/** The test path as stored: a path, optionally with a query, inside the
+ *  credential's path prefixes when it has any. */
+function normalizeTestPath(
+  raw: string | null | undefined,
+  prefixes: string[],
+): string | undefined {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) return undefined;
+  const pathname = testPathname(text);
+  if (!pathname || text.length > MAX_TEST_PATH_CHARS)
+    throw new Error(
+      "test path must be a path on the host, like /v1/me, without # or \\",
+    );
+  if (prefixes.length && !prefixes.some((p) => pathWithinPrefix(pathname, p)))
+    throw new Error(
+      `test path must sit inside the allowed path prefixes (${prefixes.join(", ")})`,
+    );
+  return text;
+}
+
+/** The normalized pathname of a test path, or null when it isn't one. */
+function testPathname(path: string): string | null {
+  if (!path.startsWith("/") || path.startsWith("//") || /[#\\\s]/.test(path))
+    return null;
+  try {
+    return new URL(`https://host.invalid${path}`).pathname;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeLoginSpec(
@@ -637,7 +719,8 @@ function normalizeLoginSpec(
     input.injection ||
     input.allowedMethods?.length ||
     input.allowedPathPrefixes?.length ||
-    input.statusOnly
+    input.statusOnly ||
+    input.testPath
   )
     throw new Error(
       "a login has no header, method, path or status-only settings: it is typed into its sign-in page",
@@ -660,6 +743,7 @@ function normalizeLoginSpec(
   if (taken)
     throw new Error(`a credential for service "${service}" already exists`);
   const description = displaySafe(input.description);
+  const expiresOn = normalizeExpiry(input.expiresOn);
   return {
     service,
     host: url.hostname,
@@ -667,6 +751,7 @@ function normalizeLoginSpec(
     loginUrl: url.toString(),
     username,
     ...(description ? { description } : {}),
+    ...(expiresOn ? { expiresOn } : {}),
   };
 }
 
@@ -864,6 +949,8 @@ export const UPDATABLE_CREDENTIAL_FIELDS = [
   "allowedPathPrefixes",
   "statusOnly",
   "scope",
+  "expiresOn",
+  "testPath",
 ] as const;
 
 export type UpdatableCredentialField =
@@ -1053,6 +1140,123 @@ export async function setCredentialScopeAsync(
     spec: { ...credentialSpecOf(meta(cred)), scope },
     expectedUpdatedAt: cred.updatedAt,
   });
+}
+
+/** A Settings edit: the updatable fields it names (null or empty clears
+ *  one), and a new secret when it is non-empty. */
+export type CredentialPatch = {
+  [F in UpdatableCredentialField]?: unknown;
+} & {
+  secret?: unknown;
+  /** The credential's updatedAt when the dialog opened. */
+  expectedUpdatedAt?: unknown;
+};
+
+export const STALE_CREDENTIAL_ERROR =
+  "This credential changed since you opened it. Close the dialog and edit it again";
+
+/**
+ * Edit a credential as its owner from Settings: every field the patch
+ * names replaces the current one, the rest stay. A non-empty `secret`
+ * rotates it. Validated, persisted and audited like any update.
+ */
+export async function patchCredentialAsync(
+  id: string,
+  by: string,
+  patch: CredentialPatch,
+): Promise<UpdateCredentialResult> {
+  await ensureKeychainLoaded();
+  const cred = credentials.get(id);
+  if (!cred) throw new Error("that credential no longer exists");
+  const spec: Record<string, unknown> = { ...credentialSpecOf(meta(cred)) };
+  for (const field of UPDATABLE_CREDENTIAL_FIELDS) {
+    if (!(field in patch)) continue;
+    const value = patch[field];
+    if (value === null) delete spec[field];
+    else spec[field] = value;
+  }
+  const secret =
+    typeof patch.secret === "string" && patch.secret.length
+      ? patch.secret
+      : undefined;
+  const expected =
+    typeof patch.expectedUpdatedAt === "string"
+      ? patch.expectedUpdatedAt
+      : undefined;
+  try {
+    return await updateCredentialAsync(id, by, {
+      spec: spec as CredentialSpec,
+      ...(secret !== undefined ? { secret } : {}),
+      ...(expected !== undefined ? { expectedUpdatedAt: expected } : {}),
+    });
+  } catch (error) {
+    if (expected !== undefined && /changed since/.test(String(error)))
+      throw new Error(STALE_CREDENTIAL_ERROR);
+    throw error;
+  }
+}
+
+/**
+ * What a status-only test call sends: the credential as the owner is
+ * editing it (a saved one with unsaved changes, or a draft), and the path.
+ * Nothing is saved. Throws with a message safe to show the caller.
+ */
+export function prepareCredentialTest(input: {
+  by: string;
+  /** A saved credential the caller owns; its stored secret is used when
+   *  `secret` is empty. */
+  credentialId?: string;
+  /** Unsaved values, over the saved credential's when there is one. */
+  spec?: Partial<CredentialSpec>;
+  secret?: string;
+  path?: string;
+}): { credential: KeychainCredential; path: string } {
+  load();
+  const saved = input.credentialId
+    ? ownedCredential(input.credentialId, input.by, "test")
+    : undefined;
+  const merged: CredentialSpec = {
+    ...(saved ? credentialSpecOf(meta(saved)) : {}),
+    ...(input.spec ?? {}),
+    service: saved?.service ?? (input.spec?.service?.trim() || "draft"),
+    ...(saved?.kind ? { kind: saved.kind } : {}),
+  } as CredentialSpec;
+  if (merged.kind === "login")
+    throw new Error(
+      "a login can't be tested: it is typed into its sign-in page",
+    );
+  const spec = normalizeCredentialSpec(merged, saved?.id, { draft: !saved });
+  if (spec.allowedMethods?.length && !spec.allowedMethods.includes("GET"))
+    throw new Error(
+      "the test sends one GET, and this credential doesn't allow GET",
+    );
+  const typed = input.secret?.trim() ? input.secret : undefined;
+  if (!typed && !saved) throw new Error("paste the secret to test it");
+  if (typed) assertSecretChars(typed.trim());
+  const now = new Date().toISOString();
+  const credential: KeychainCredential = {
+    id: saved?.id ?? "draft",
+    owner: ownerName(input.by),
+    ...spec,
+    secret: typed ? apiSecret(typed, spec.injection) : saved!.secret,
+    createdAt: saved?.createdAt ?? now,
+    updatedAt: saved?.updatedAt ?? now,
+  };
+  const path =
+    input.path?.trim() || spec.testPath || spec.allowedPathPrefixes?.[0] || "/";
+  if (!testPathname(path))
+    throw new Error("test path must be a path on the host, like /v1/me");
+  const unsendable = injectedHeaderProblem(credential);
+  if (unsendable) throw new Error(unsendable);
+  return { credential, path };
+}
+
+/** Why the credential's limits refuse a GET of `pathname`, or null. */
+export function testRefusal(
+  credential: KeychainCredential,
+  pathname: string,
+): string | null {
+  return ceilingRefusal(credential, "GET", pathname);
 }
 
 export function listCredentials(): KeychainCredentialMeta[] {
@@ -1364,6 +1568,8 @@ export function consumeGrantForBroker(
       error: "this credential is a login; use it with use_login",
       status: 403,
     };
+  const expired = expiredProblem(cred);
+  if (expired) return { error: expired, status: 403 };
   const refusal = ceilingRefusal(cred, method, path);
   if (refusal) return { error: refusal, status: 403 };
   const unsendable = injectedHeaderProblem(cred);
@@ -1655,6 +1861,8 @@ export function incidentGrantHeaders(input: {
     return {
       error: `${cred.service} returns only statuses and cannot carry a request`,
     };
+  const expired = expiredProblem(cred);
+  if (expired) return { error: expired };
   const refusal = ceilingRefusal(cred, input.method, input.path);
   if (refusal) return { error: refusal };
   const unsendable = injectedHeaderProblem(cred);
@@ -1933,6 +2141,8 @@ export function useRunGrant(
     return { error: "credential no longer exists", status: 403 };
   if (gr.implicit && !isWorkspaceCredential(cred))
     return { error: "the run's grant is revoked", status: 403 };
+  const expired = expiredProblem(cred);
+  if (expired) return { error: expired, status: 403 };
   const refusal = ceilingRefusal(cred, method, path);
   if (refusal) return { error: refusal, status: 403 };
   const unsendable = injectedHeaderProblem(cred);
@@ -1979,6 +2189,8 @@ export async function claimLoginRelease(input: {
       error: `this session holds no approved release for ${credMeta.service}. Ask its owner with request_credential({ credential: "${credMeta.service}", purpose }) first`,
     };
   const cred = credentials.get(gr.credentialId)!;
+  const expired = expiredProblem(cred);
+  if (expired) return { error: expired };
   gr.status = "used";
   gr.usedAt = new Date().toISOString();
   grants.set(gr.id, gr);
@@ -2296,6 +2508,9 @@ export function requestCredential(
     return {
       error: "a purpose is required — the owner approves that, not the tool",
     };
+  const stored = credentials.get(credMeta.id);
+  const expired = stored && expiredProblem(stored);
+  if (expired) return { error: expired };
   const isLogin = credMeta.kind === "login";
   if (isWorkspaceCredential(credMeta))
     return workspaceAnswer(credMeta, { ...input, purpose });

@@ -60,6 +60,7 @@ import {
 import { BROKER_METHODS, brokerCall } from "../../server/keychain-broker";
 import {
   cancelCredentialAsk,
+  credentialExpired,
   ensureKeychainLoaded,
   listCredentials,
   listGrants,
@@ -422,13 +423,15 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
             c.statusOnly
               ? "status only: calls return only the HTTP status"
               : null,
+            expiryText(c),
           ]
             .filter(Boolean)
             .join("; ");
           if (c.kind === "login")
             return (
               `- **${c.service}** (login: ${c.username} on ${c.loginUrl}) — owner ${c.owner}` +
-              (c.description ? `: ${c.description}` : "")
+              (c.description ? `: ${c.description}` : "") +
+              (c.expiresOn ? ` [${expiryText(c)}]` : "")
             );
           return (
             `- **${c.service}** (${c.host}) — ` +
@@ -1085,4 +1088,12 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
       ? tools.filter((t) => AUTOMATION_TURN_TOOLS.has(t.name))
       : tools,
   });
+}
+
+/** A credential's expiry as an agent reads it, or null without one. */
+function expiryText(c: { expiresOn?: string }): string | null {
+  if (!c.expiresOn) return null;
+  return credentialExpired(c)
+    ? `expired on ${c.expiresOn}: unusable until its owner changes the date`
+    : `usable through ${c.expiresOn}`;
 }
