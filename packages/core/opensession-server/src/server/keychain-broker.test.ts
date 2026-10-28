@@ -427,3 +427,67 @@ describe("the injected header", () => {
     expect((await sent()).get("authorization")).toBe("Bearer sk-rotated-9999");
   });
 });
+
+describe("control characters", () => {
+  const grantStatus = () => kc.listGrants({ sessionId: "s-1" })[0]!.status;
+
+  test("a forwarded header with a line break is refused before a once grant is spent", async () => {
+    setup({}, "once");
+    for (const value of ["json\r\nx-other: 1", "json\nx", "a\u0000b"]) {
+      const r = await call({ headers: { accept: value } });
+      expect(r).toHaveProperty("error");
+      expect((r as { error: string }).error).toContain("accept");
+    }
+    expect(seen).toHaveLength(0);
+    expect(grantStatus()).toBe("active");
+    expect(
+      await call({ headers: { accept: "application/json" } }),
+    ).toMatchObject({ status: 200 });
+    expect(grantStatus()).toBe("used");
+  });
+
+  test("a stored secret that can't be a header value never spends the grant", async () => {
+    const { meta } = setup({}, "once");
+    const g = globalThis as any;
+    g.__keychainCredentials.get(meta.id).secret = "sk-line\nbreak";
+    expect(await call()).toHaveProperty("error");
+    expect(seen).toHaveLength(0);
+    expect(grantStatus()).toBe("active");
+  });
+
+  test("a secret with a control character is refused at add and at rotate", async () => {
+    for (const secret of ["sk-one\nsk-two", "sk-one\r\nsk-two", "sk\u0007bell"])
+      expect(() =>
+        kc.addCredential({
+          owner: "Alex",
+          service: "acme",
+          host: "api.example.test",
+          secret,
+        }),
+      ).toThrow(/control character/);
+    const { meta } = setup();
+    await expect(
+      kc.updateCredentialAsync(meta.id, "Alex", {
+        spec: { service: "acme", host: "api.example.test" },
+        secret: "sk-new\nline",
+      }),
+    ).rejects.toThrow(/control character/);
+    expect(kc.findCredential("acme")).toBeDefined();
+  });
+
+  test("an injection header or scheme with a line break is refused", () => {
+    for (const injection of [
+      { header: "X-Key\r\nX-Other" },
+      { header: "Authorization", scheme: "Bearer\n" },
+    ])
+      expect(() =>
+        kc.addCredential({
+          owner: "Alex",
+          service: "acme",
+          host: "api.example.test",
+          secret: SECRET,
+          injection,
+        }),
+      ).toThrow(/injection/);
+  });
+});

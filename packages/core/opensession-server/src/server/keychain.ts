@@ -653,6 +653,7 @@ function normalizeLoginSpec(
 function insertCredential(input: AddCredentialInput): KeychainCredential {
   const spec = normalizeCredentialSpec(input);
   if (!input.secret.trim()) throw new Error("secret is empty");
+  assertSecretChars(spec.kind === "login" ? input.secret : input.secret.trim());
   const now = new Date().toISOString();
   const cred: KeychainCredential = {
     id: `kc-${crypto.randomUUID()}`,
@@ -940,6 +941,7 @@ export async function updateCredentialAsync(
           : apiSecret(input.secret, spec.injection);
     if (secret !== undefined && !secret.trim())
       throw new Error("secret is empty");
+    if (secret !== undefined) assertSecretChars(secret);
     if (!changed.length && secret === undefined)
       throw new Error("nothing to change");
     // A new object, never an edit of the old one: a broker call or scripted
@@ -1342,6 +1344,8 @@ export function consumeGrantForBroker(
     };
   const refusal = ceilingRefusal(cred, method, path);
   if (refusal) return { error: refusal, status: 403 };
+  const unsendable = injectedHeaderProblem(cred);
+  if (unsendable) return { error: unsendable, status: 409 };
   if (gr.mode === "once") {
     gr.status = "used";
     gr.usedAt = new Date().toISOString();
@@ -1631,6 +1635,8 @@ export function incidentGrantHeaders(input: {
     };
   const refusal = ceilingRefusal(cred, input.method, input.path);
   if (refusal) return { error: refusal };
+  const unsendable = injectedHeaderProblem(cred);
+  if (unsendable) return { error: unsendable };
   if (gr.mode === "once") {
     gr.status = "used";
     gr.usedAt = new Date().toISOString();
@@ -1906,7 +1912,9 @@ export function useRunGrant(
   if (gr.implicit && !isWorkspaceCredential(cred))
     return { error: "the run's grant is revoked", status: 403 };
   const refusal = ceilingRefusal(cred, method, path);
-  return refusal ? { error: refusal, status: 403 } : { credential: cred };
+  if (refusal) return { error: refusal, status: 403 };
+  const unsendable = injectedHeaderProblem(cred);
+  return unsendable ? { error: unsendable, status: 409 } : { credential: cred };
 }
 
 export interface LoginRelease {
@@ -2082,6 +2090,39 @@ export function brokerHeaders(
 ): Record<string, string> {
   const { header, scheme } = credentialInjection(cred.injection);
   return { [header]: scheme ? `${scheme} ${cred.secret}` : cred.secret };
+}
+
+/** What no header value may carry: CR, LF, NUL and the other controls. A
+ *  tab is allowed, as HTTP allows it. */
+const UNSAFE_HEADER_VALUE = /[\x00-\x08\x0a-\x1f\x7f]/;
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/** Why these request headers can't be sent, or null. Checked before a grant
+ *  is spent, so a header that would make the request throw costs nothing. */
+export function headerProblem(headers: Record<string, string>): string | null {
+  for (const [name, value] of Object.entries(headers)) {
+    if (!HEADER_NAME.test(name))
+      return `${JSON.stringify(name)} is not a header name`;
+    if (UNSAFE_HEADER_VALUE.test(value))
+      return `header ${name} contains a line break or another control character`;
+  }
+  return null;
+}
+
+/** The injected header's problem, said without naming the secret. */
+function injectedHeaderProblem(cred: KeychainCredential): string | null {
+  return headerProblem(brokerHeaders(cred))
+    ? `${cred.service}'s secret can't be sent in a header (it contains a control character); its owner needs to replace it`
+    : null;
+}
+
+/** A secret with a line break or another control character, refused at add
+ *  and rotate: it can never be sent in a header, or typed as a password. */
+function assertSecretChars(secret: string): void {
+  if (/[\x00-\x1f\x7f]/.test(secret))
+    throw new Error(
+      "secret contains a line break or another control character; paste it as one line",
+    );
 }
 
 /** An API secret as stored: trimmed, and without the scheme the broker adds

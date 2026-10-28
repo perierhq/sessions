@@ -43,6 +43,7 @@ import {
   brokerHeaders,
   consumeGrantForBroker,
   ensureKeychainLoaded,
+  headerProblem,
   findCredential,
   isWorkspaceCredential,
   scrubSecret,
@@ -156,6 +157,13 @@ export async function brokerCall(
     return {
       error: `this session holds no live grant for ${meta.service}. Ask its owner with request_credential first.`,
     };
+  // Checked before the grant is spent: a header that can't be sent would
+  // fail the request after a once grant was already used.
+  const forwarded: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input.headers || {}))
+    if (FORWARDED_HEADERS.has(k.toLowerCase())) forwarded[k.toLowerCase()] = v;
+  const unsendable = headerProblem(forwarded);
+  if (unsendable) return { error: unsendable };
   const use = consumeGrantForBroker(
     grant.id,
     input.sessionId,
@@ -177,9 +185,7 @@ export async function brokerCall(
   }
   const { credential } = use;
 
-  const headers = new Headers();
-  for (const [k, v] of Object.entries(input.headers || {}))
-    if (FORWARDED_HEADERS.has(k.toLowerCase())) headers.set(k, v);
+  const headers = new Headers(forwarded);
   for (const [k, v] of Object.entries(brokerHeaders(credential)))
     headers.set(k, v);
 
