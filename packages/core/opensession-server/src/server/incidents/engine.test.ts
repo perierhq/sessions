@@ -30,7 +30,8 @@ const S = (id: string, over: Partial<Signal> = {}): Signal => ({
   project: "acme",
   enabled: true,
   severity: "major",
-  source: { kind: "http", url: "https://acme.example.test" },
+  // A host of its own: signals that poll one host are related.
+  source: { kind: "http", url: `https://${id}.acme.example.test` },
   rule: { kind: "consecutive", failures: 3 },
   createdBy: "Ada",
   createdAt: iso(86_400_000),
@@ -281,6 +282,54 @@ describe("decide", () => {
         ),
       )[0],
     ).toMatchObject({ op: "attach", incidentId: "inc-2" });
+  });
+
+  test("signals that poll the same host are related: one blip opens one incident, whatever the window", () => {
+    // Two lanes of one status page, as two signals.
+    const status = S("sig-s", {
+      source: {
+        kind: "http",
+        url: "https://status.acme.example.test/api/v1/status",
+      },
+    });
+    const part = S("sig-p", {
+      source: {
+        kind: "http",
+        url: "https://status.acme.example.test/api/v1/status?part=db",
+      },
+    });
+    const other = S("sig-o", {
+      source: { kind: "http", url: "https://www.acme.example.test/health" },
+    });
+    const elsewhere = S("sig-x", {
+      project: "acme-api",
+      source: {
+        kind: "http",
+        url: "https://status.acme.example.test/api/v1/status",
+      },
+    });
+    // The open incident's last report was 58 minutes ago: outside the window.
+    const waiting = I("inc-1", "needs-you", {
+      signalIds: ["sig-p"],
+      primarySignalId: "sig-p",
+      lastProblemAt: iso(3_480_000),
+    });
+    const all = [status, part, other, elsewhere];
+    expect(
+      decide(status, "ok", E("sig-s", "failing"), snap(all, [], [waiting]))[0],
+    ).toMatchObject({ op: "attach", incidentId: "inc-1", signalId: "sig-s" });
+    // Another host, or the same host in another project, is not related.
+    expect(
+      decide(other, "ok", E("sig-o", "failing"), snap(all, [], [waiting]))[0],
+    ).toMatchObject({ op: "open" });
+    expect(
+      decide(
+        elsewhere,
+        "ok",
+        E("sig-x", "failing"),
+        snap(all, [], [waiting]),
+      )[0],
+    ).toMatchObject({ op: "open" });
   });
 
   test("an attached signal still bad keeps the merge window open past its last report", () => {
