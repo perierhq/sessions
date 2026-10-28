@@ -28,7 +28,10 @@ import {
   sandboxProviderUsability,
 } from "./sandbox/config";
 import { withSessionLifecycleLane } from "./sandbox/lifecycle-lane";
-import { ensureSandboxWaitingForCapacity } from "./sandbox/reliability";
+import {
+  ensureSandboxWaitingForCapacity,
+  sandboxWaitNote,
+} from "./sandbox/reliability";
 import {
   findSessionAsync,
   touchNativeSession,
@@ -395,7 +398,7 @@ async function provisionPortalSandbox(
             portalSandbox: {
               provider,
               lifecycle: "preparing",
-              lifecycleNote: `Waiting for room: ${error instanceof Error ? error.message : String(error)}`,
+              lifecycleNote: sandboxWaitNote(error),
             },
           });
         },

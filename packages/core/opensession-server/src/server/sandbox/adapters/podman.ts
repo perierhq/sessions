@@ -67,6 +67,7 @@ import {
 import {
   isIpv4,
   PODMAN_NAME_PREFIX,
+  PODMAN_PROVIDER_LABEL,
   PODMAN_SANDBOX_LABEL,
   PODMAN_WORKLOAD_HOME,
   PODMAN_WORKLOAD_USER,
@@ -108,6 +109,7 @@ import {
   type PodmanDiskReport,
 } from "./podman-disk";
 import { ensurePodmanImage, podmanImageTag } from "./podman-image";
+import { podmanImageRollout } from "./podman-image-rollout";
 import { podmanSettings, type PodmanSettings } from "./podman-settings";
 import {
   hostControlCheck,
@@ -117,7 +119,7 @@ import {
   type IsolationResult,
 } from "./podman-selftest";
 
-export const PODMAN_PROVIDER_LABEL = "This machine (container)";
+export { PODMAN_PROVIDER_LABEL };
 const LOG = "[sandbox:podman]";
 const DEFAULT_IDLE_STOP_MINUTES = 30;
 const DEFAULT_EXEC_TIMEOUT_MS = 300_000;
@@ -442,6 +444,9 @@ export interface PodmanProviderDeps {
   /** Where exec env files go (default `$XDG_RUNTIME_DIR`). */
   runtimeDir?: string;
   imageTag?: () => string;
+  /** What to throw when the image is missing: the build to wait for, or a
+   *  refusal (podman-image-rollout.ts). */
+  missingImage?: (tag: string) => Error;
   workspacePlan?: (
     spec: SandboxSessionSpec,
     previous: RemoteSandboxState | null,
@@ -742,6 +747,9 @@ export class PodmanProvider implements SandboxProvider {
         }),
       runtimeDir: deps.runtimeDir,
       imageTag: deps.imageTag ?? (() => podmanImageTag()),
+      missingImage:
+        deps.missingImage ??
+        ((tag) => podmanImageRollout().missingImageError(tag)),
       workspacePlan: deps.workspacePlan ?? defaultWorkspacePlan,
       prepare: deps.prepare ?? defaultPrepare,
       resumeHook:
@@ -801,7 +809,7 @@ export class PodmanProvider implements SandboxProvider {
     else if (
       (await this.run(["container", "exists", names.workload])).exitCode !== 0
     )
-      await this.createWorkload(names);
+      await this.createWorkload(names, await this.requireImage());
     mark(fresh ? "pod created" : "pod found");
     writeRemoteState({
       sandboxId: names.pod,
@@ -849,15 +857,21 @@ export class PodmanProvider implements SandboxProvider {
     return Object.assign(this.handle(names, state), { wokeFromSleep });
   }
 
+  /** This release's image tag. A missing image (a release changed it) is
+   *  built once in the background and this start waits for it; only a
+   *  failed build or an unqualified connection refuses. */
+  private async requireImage(): Promise<string> {
+    const image = this.d.imageTag();
+    if ((await this.run(["image", "exists", image])).exitCode !== 0)
+      throw this.d.missingImage(image);
+    return image;
+  }
+
   private async create(
     spec: SandboxSessionSpec,
     names: PodmanNames,
   ): Promise<void> {
-    const image = this.d.imageTag();
-    if ((await this.run(["image", "exists", image])).exitCode !== 0)
-      throw new RunSetupRefusedError(
-        `the sandbox image ${image} is missing. Requalify ${PODMAN_PROVIDER_LABEL} in Workspace → Sandboxes.`,
-      );
+    const image = await this.requireImage();
     const { dns } = this.d.settings();
     if ((await this.run(["volume", "exists", names.volume])).exitCode !== 0)
       await must(
@@ -1565,8 +1579,9 @@ async function removeLeftoverTestSandboxes(
 
 /**
  * Prove this host can run "This machine (container)" sandboxes: Linux with
- * rootless Podman and its prerequisites, the sandbox image (built here, never
- * during a user's session), then a disposable sandbox that must pass the
+ * rootless Podman and its prerequisites, the sandbox image (built here; after
+ * an update that changes it, podman-image-rollout.ts builds the new one and
+ * starts wait for it), then a disposable sandbox that must pass the
  * full isolation self-test and sit in the user's systemd cgroup. The
  * disposable sandbox is removed whatever happens. Any failure refuses.
  */

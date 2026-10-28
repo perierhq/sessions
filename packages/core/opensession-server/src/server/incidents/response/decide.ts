@@ -46,6 +46,7 @@ import {
   plainReportProblem,
   reportFindingsInput,
 } from "./reports";
+import { isSandboxImageBuildingError } from "../../sandbox/reliability";
 import {
   AGENT_MAX_MS,
   FINAL_TEXT_GRACE_MS,
@@ -935,6 +936,24 @@ function reports(view: ResponseView): ResponseStep | undefined {
   return undefined;
 }
 
+/** Attempts an agent gets while its Sandbox image is still being built. */
+const SANDBOX_IMAGE_ATTEMPTS = 3;
+
+/**
+ * The run stopped only because its Sandbox image was still being built
+ * after an update (a transient setup state: the start waited for the build
+ * and ran out of time). A new attempt joins that build instead of asking
+ * anyone, a bounded number of times. A build that failed is the provider's
+ * refusal and still reaches the owner.
+ */
+function waitingOnSandboxImage(view: ResponseView, run: AgentRun): boolean {
+  if (statusOf(view, run) !== "error") return false;
+  if (run.attempt >= SANDBOX_IMAGE_ATTEMPTS) return false;
+  return isSandboxImageBuildingError(
+    view.agents.get(run.sessionId)?.error ?? run.error ?? "",
+  );
+}
+
 /** Whether a run should be started again as a new attempt. */
 function restart(
   view: ResponseView,
@@ -948,6 +967,7 @@ function restart(
     (run.cancelledFor === "paused" || run.cancelledFor === "provider")
   )
     return true;
+  if (waitingOnSandboxImage(view, run)) return true;
   return (
     retry &&
     (status === "error" ||

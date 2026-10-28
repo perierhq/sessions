@@ -3174,3 +3174,69 @@ test("the needs-you card names the incident's open pull requests", () => {
     reason: "No fix found: the logs are out of reach. Open pull request: #12.",
   });
 });
+
+test("an agent stopped while the sandbox image was still being built starts again, a few times", () => {
+  const building =
+    "Sandbox unavailable: Building the sandbox image after an update";
+  const base = {
+    phase: "verifying" as const,
+    candidate: candidate({ pr: prSnapshot() }),
+    proof: proofResult({ round: 1, baseline: "fails", candidate: "passes" }),
+  };
+  const verifierFailed = (attempt: number, error: string) =>
+    view({
+      incident: incident(
+        "fix-ready",
+        response({
+          ...base,
+          agents: [
+            run("investigator", { status: "done" }),
+            run("verifier", { attempt }),
+          ],
+        }),
+      ),
+      agents: new Map([
+        ["child-1", { status: "done", costUsd: 0, tokens: 0 }],
+        ["child-2", { status: "error", costUsd: 0, tokens: 0, error }],
+      ]),
+    });
+  // Transient setup: no person needed, a new attempt joins the build.
+  expect(decideNextStep(verifierFailed(1, building))).toEqual({
+    step: "start-agent",
+    role: "verifier",
+    round: 1,
+    attempt: 2,
+  });
+  // Bounded: a build that never finishes reaches the owner.
+  expect(decideNextStep(verifierFailed(3, building))).toEqual({
+    step: "needs-you",
+    kind: "agent-error",
+    reason: `The verifier stopped: ${building}`,
+  });
+  // A failed build is the existing refusal: the owner decides.
+  const refused =
+    "Sandbox unavailable: the sandbox image localhost/opensession-sandbox:0123456789abcdef is missing. Requalify This machine (container) in Workspace → Sandboxes.";
+  expect(decideNextStep(verifierFailed(1, refused))).toEqual({
+    step: "needs-you",
+    kind: "agent-error",
+    reason: `The verifier stopped: ${refused}`,
+  });
+  // The investigator is the same.
+  expect(
+    decideNextStep(
+      view({
+        incident: incident(
+          "investigating",
+          response({
+            agents: [run("investigator", { status: "error", error: building })],
+          }),
+        ),
+      }),
+    ),
+  ).toEqual({
+    step: "start-agent",
+    role: "investigator",
+    round: 1,
+    attempt: 2,
+  });
+});

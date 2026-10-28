@@ -4,8 +4,12 @@ import {
   ensureSandboxWaitingForCapacity,
   ensureSandboxWithTransientRetry,
   isSandboxCapacityError,
+  isSandboxImageBuildingError,
   isTransientSandboxStartError,
+  SANDBOX_IMAGE_BUILDING_MESSAGE,
   SandboxCapacityError,
+  SandboxImageBuildingError,
+  sandboxWaitNote,
 } from "./reliability";
 import type { Sandbox, SandboxProvider } from "./provider";
 
@@ -171,5 +175,105 @@ describe("waiting for capacity", () => {
     expect(isSandboxCapacityError(new Error("full"))).toBe(false);
     expect(capacityRetryDelayMs(0)).toBe(15_000);
     expect(capacityRetryDelayMs(5)).toBe(60_000);
+  });
+});
+
+describe("waiting for a sandbox image build", () => {
+  const sandbox = { id: "pod-1" } as unknown as Sandbox;
+
+  test("a start waits for the build it joined, then starts at once", async () => {
+    let finish!: () => void;
+    const built = new Promise<void>((resolve) => (finish = resolve));
+    let calls = 0;
+    const provider = {
+      id: "podman",
+      async ensure() {
+        calls += 1;
+        if (calls === 1) throw new SandboxImageBuildingError(built);
+        return sandbox;
+      },
+    } as unknown as SandboxProvider;
+    const notes: string[] = [];
+    const sleeps: number[] = [];
+    const started = ensureSandboxWaitingForCapacity(
+      provider,
+      { sessionId: "s" },
+      {
+        // The deadline only: the build's own end wakes the start.
+        sleep: (ms) => {
+          sleeps.push(ms);
+          return new Promise(() => {});
+        },
+        onWaiting: (error) => notes.push(sandboxWaitNote(error)),
+      },
+    );
+    await Bun.sleep(5);
+    expect(calls).toBe(1);
+    finish();
+    expect(await started).toBe(sandbox);
+    expect(calls).toBe(2);
+    expect(notes).toEqual([SANDBOX_IMAGE_BUILDING_MESSAGE]);
+    expect(sleeps).toHaveLength(1);
+  });
+
+  test("a failed build is not waited on again: the next start's answer stands", async () => {
+    let calls = 0;
+    const failed = Promise.reject(new Error("build failed"));
+    failed.catch(() => {});
+    const provider = {
+      id: "podman",
+      async ensure() {
+        calls += 1;
+        if (calls === 1) throw new SandboxImageBuildingError(failed);
+        throw new Error("the sandbox image is missing");
+      },
+    } as unknown as SandboxProvider;
+    await expect(
+      ensureSandboxWaitingForCapacity(
+        provider,
+        { sessionId: "s" },
+        { sleep: () => new Promise(() => {}) },
+      ),
+    ).rejects.toThrow("the sandbox image is missing");
+    expect(calls).toBe(2);
+  });
+
+  test("gives up at the deadline with the building error", async () => {
+    const provider = {
+      id: "podman",
+      async ensure() {
+        throw new SandboxImageBuildingError(new Promise(() => {}));
+      },
+    } as unknown as SandboxProvider;
+    await expect(
+      ensureSandboxWaitingForCapacity(
+        provider,
+        { sessionId: "s" },
+        { capacityWaitMs: 0, sleep: async () => {} },
+      ),
+    ).rejects.toThrow(SANDBOX_IMAGE_BUILDING_MESSAGE);
+  });
+
+  test("recognizes the building error by class, code or message, and notes it plainly", () => {
+    const building = new SandboxImageBuildingError(Promise.resolve());
+    expect(isSandboxImageBuildingError(building)).toBe(true);
+    expect(
+      isSandboxImageBuildingError(
+        Object.assign(new Error("x"), { code: "SANDBOX_IMAGE_BUILDING" }),
+      ),
+    ).toBe(true);
+    expect(
+      isSandboxImageBuildingError(
+        `Sandbox unavailable: ${SANDBOX_IMAGE_BUILDING_MESSAGE}`,
+      ),
+    ).toBe(true);
+    expect(isSandboxImageBuildingError(new Error("full"))).toBe(false);
+    expect(isSandboxImageBuildingError(undefined)).toBe(false);
+    expect(isSandboxCapacityError(building)).toBe(false);
+    expect(isTransientSandboxStartError(building)).toBe(false);
+    expect(sandboxWaitNote(building)).toBe(SANDBOX_IMAGE_BUILDING_MESSAGE);
+    expect(
+      sandboxWaitNote(new SandboxCapacityError("Every Mac host is full")),
+    ).toBe("Waiting for room: Every Mac host is full");
   });
 });

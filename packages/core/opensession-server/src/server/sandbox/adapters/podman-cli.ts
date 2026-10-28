@@ -53,6 +53,9 @@ const KILL_GRACE_MS = 1_000;
 /** Image builds and first pulls. */
 export const PODMAN_LONG_TIMEOUT_MS = 600_000;
 
+/** What people call this provider. */
+export const PODMAN_PROVIDER_LABEL = "This machine (container)";
+
 /** Prefix of every resource this provider creates. Cleanup only ever touches
  *  names with this prefix AND the sandbox label. */
 export const PODMAN_NAME_PREFIX = "opensession-sbx-";

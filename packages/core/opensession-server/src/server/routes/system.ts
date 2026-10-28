@@ -321,6 +321,12 @@ export async function handleSystemRoutes(
       // Background cleanup jobs: last run, last error and whether one has
       // failed several runs in a row (housekeeping-health.ts).
       housekeeping: housekeepingHealth(),
+      // This machine (container)'s image for this release: being built
+      // after an update, current, or a failed build (podman-image-rollout).
+      // Process-local, no podman call.
+      sandboxImage: (
+        await import("../sandbox/adapters/podman-image-rollout")
+      ).podmanImageHealth(),
     });
   }
 

@@ -18,7 +18,8 @@
  *
  * The tag hashes the image signature (the base runtime's plus the bun and
  * just pins), the base digest and this Containerfile, so a change to any of them means a new image. Building
- * happens at qualification, never on a user's ensure.
+ * happens at qualification, and again on its own when a release names a new
+ * image (podman-image-rollout.ts); a user's ensure only waits for it.
  */
 
 import { createHash } from "node:crypto";
@@ -232,16 +233,38 @@ function tail(text: string): string {
   return trimmed.length > 800 ? `…${trimmed.slice(-800)}` : trimmed;
 }
 
+/** Builds in flight by tag: a qualification and an automatic rebuild after
+ *  an update share one `podman build`. */
+const imageBuilds = new Map<string, Promise<string>>();
+
 /**
  * Make sure the current image exists, building it when it does not.
  * Returns its tag. The build context is an empty temporary directory, so
- * nothing from this host is sent to the build.
+ * nothing from this host is sent to the build. Callers that ask while a
+ * build of the same tag runs wait for that build.
  */
-export async function ensurePodmanImage(
+export function ensurePodmanImage(
   runPodman: PodmanRunner,
   log: (line: string) => void = () => {},
 ): Promise<string> {
   const tag = podmanImageTag();
+  const running = imageBuilds.get(tag);
+  if (running) {
+    log(`waiting for the build of ${tag} already running…`);
+    return running;
+  }
+  const build = buildPodmanImage(runPodman, tag, log).finally(() => {
+    if (imageBuilds.get(tag) === build) imageBuilds.delete(tag);
+  });
+  imageBuilds.set(tag, build);
+  return build;
+}
+
+async function buildPodmanImage(
+  runPodman: PodmanRunner,
+  tag: string,
+  log: (line: string) => void,
+): Promise<string> {
   if ((await runPodman(["image", "exists", tag])).exitCode === 0) return tag;
   log(`building ${tag} (this pulls ${PODMAN_BASE_IMAGE.split("@")[0]})…`);
   const context = await mkdtemp(join(tmpdir(), "opensession-podman-build-"));
