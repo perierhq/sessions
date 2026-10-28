@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fetchBackedNet } from "./testing/pinned-fetch-double";
 
 const STORE = join(mkdtempSync(join(tmpdir(), "kc-workspace-")), "kc.json");
 process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
@@ -73,7 +74,7 @@ const call = (over: Partial<Parameters<typeof brokerCall>[0]> = {}) =>
     path: "/v1/usage",
     requestedBy: "Sam",
     purpose: "check this month's usage",
-    fetchImpl,
+    net: fetchBackedNet(fetchImpl),
     ...over,
   });
 

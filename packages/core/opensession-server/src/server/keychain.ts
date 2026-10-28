@@ -74,8 +74,10 @@
 import { stateDir } from "./paths";
 import { existsSync, readFileSync, chmodSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
 import { audit, auditAsync } from "./audit";
+import { isPrivateHostName } from "./shared/network-address";
 import {
   resolveTeammate,
   teammateByGithubLogin,
@@ -557,6 +559,15 @@ export function normalizeCredentialSpec(
   if (!host || !/^[a-z0-9][a-z0-9.-]*$/.test(host) || host.includes(":")) {
     throw new Error("host must be a bare host name (no scheme, port, or path)");
   }
+  // The broker resolves the name and refuses private addresses on every
+  // call (shared/pinned-fetch.ts); a name that can only be private, or an
+  // address in place of a name, is refused here so it is never saved.
+  if (isIP(host))
+    throw new Error("host must be a host name, not an IP address");
+  if (isPrivateHostName(host))
+    throw new Error(
+      `host must be a public host name: ${host} only names something on a private network`,
+    );
   if (taken(service)) {
     throw new Error(`a credential for service "${service}" already exists`);
   }

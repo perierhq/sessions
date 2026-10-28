@@ -19,6 +19,7 @@ import {
   type BrokerMethod,
   brokerCall,
 } from "../../keychain-broker";
+import type { PinnedFetchDeps } from "../../shared/pinned-fetch";
 import { getIncident } from "../incident-store";
 import { getSignal } from "../signal-store";
 import {
@@ -97,7 +98,7 @@ export async function freshGrantedCredential(
 export async function incidentCredentialCall(
   ctx: IncidentToolContext,
   input: CredentialCallInput,
-  deps: { fetchImpl?: typeof fetch } = {},
+  deps: { net?: Partial<PinnedFetchDeps> } = {},
 ): Promise<BrokerCallResult> {
   const lent = findGranted(ctx.access, input.credential);
   if ("error" in lent) return lent;
@@ -146,7 +147,7 @@ export async function incidentCredentialCall(
       incidentId: ctx.binding.incidentId,
       role: ctx.binding.role,
     },
-    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    ...(deps.net ? { net: deps.net } : {}),
   });
   toolAudit(ctx, "incident_credential_call", {
     ...fields,

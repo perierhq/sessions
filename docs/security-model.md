@@ -184,7 +184,13 @@ server and takes its session from the run-rpc token that routed the call,
 never from the agent's arguments, so a grant works only in the session it was
 issued to; a grant id copied from a transcript authorizes nothing elsewhere.
 There is no HTTP broker route. The call goes only to the credential's host
-over HTTPS; the method and the parsed, normalized path are checked against the
+over HTTPS, under the same address policy as `web_fetch` and incident egress
+(`shared/pinned-fetch.ts`): the host is resolved once, refused if any address
+is private, loopback or link-local, and the connection dials only the checked
+addresses. A scripted run's proxy sends its calls the same way. A host that is
+an IP address, or a name that only means something private (`localhost`,
+`*.internal`, a single label), is refused when the credential is added or
+changed. The method and the parsed, normalized path are checked against the
 credential's ceiling; redirects are not followed; agent-supplied headers are
 limited to a short allowlist. The secret is scrubbed from the returned headers
 and body verbatim and in common encodings (URL, JSON, base64), which is best

@@ -12,6 +12,7 @@ import { brotliCompressSync, gzipSync } from "zlib";
 import { isBlockedAddress } from "./network-address";
 import {
   BlockedAddressError,
+  decodeBody,
   PINNED_FETCH_USER_AGENT,
   type PinnedFetchDeps,
   pinnedFetch,
@@ -322,5 +323,13 @@ describe("pinnedFetch", () => {
     controller.abort(new Error("gave up"));
     await expect(fetching).rejects.toThrow("gave up");
     expect(seen).toEqual([]);
+  });
+});
+
+describe("decodeBody", () => {
+  test("an empty body that names an encoding stays empty", () => {
+    const url = new URL("https://api.example.test/");
+    for (const encoding of ["gzip", "deflate", "br"])
+      expect(decodeBody(url, encoding, Buffer.alloc(0), 10)).toHaveLength(0);
   });
 });

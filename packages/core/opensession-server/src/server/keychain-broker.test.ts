@@ -13,6 +13,7 @@ process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
 
 const kc = await import("./keychain");
 const { brokerCall } = await import("./keychain-broker");
+const { fetchBackedNet } = await import("./testing/pinned-fetch-double");
 
 const SECRET = "sk-broker-secret-1234";
 
@@ -31,15 +32,22 @@ let reply: () => Response = () =>
     { ok: true },
     { headers: { "content-type": "application/json" } },
   );
-const fetchImpl = (async (url: URL, init: RequestInit) => {
+const fetchImpl = async (url: URL, init: RequestInit) => {
   seen.push({ url: String(url), init });
   return reply();
-}) as unknown as typeof fetch;
+};
+/** What the broker's host resolves to; public unless a test says otherwise. */
+let addresses = ["203.0.113.10"];
+const net = {
+  ...fetchBackedNet(fetchImpl),
+  resolve: async () => [...addresses],
+};
 
 beforeEach(() => {
   process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
   reset();
   seen = [];
+  addresses = ["203.0.113.10"];
   reply = () =>
     Response.json(
       { ok: true },
@@ -76,7 +84,7 @@ const call = (
     credential: "acme",
     method: "GET",
     path: "/v1/items?limit=2",
-    fetchImpl,
+    net,
     ...over,
   });
 
@@ -97,7 +105,6 @@ describe("call_credential broker", () => {
     expect(headers.get("authorization")).toBe(`Bearer ${SECRET}`);
     expect(headers.get("accept")).toBe("application/json");
     expect(headers.get("cookie")).toBeNull();
-    expect(seen[0]!.init.redirect).toBe("manual");
   });
 
   test("a grant works only in the session it was issued to", async () => {
@@ -192,5 +199,99 @@ describe("call_credential broker", () => {
     });
     expect(await call()).toHaveProperty("error");
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe("where the broker may connect", () => {
+  test("a host that resolves to a private address is refused before any request", async () => {
+    setup();
+    for (const address of ["10.0.0.5", "127.0.0.1", "169.254.169.254", "::1"]) {
+      addresses = [address];
+      const r = await call();
+      expect(r).toHaveProperty("error");
+      expect((r as { error: string }).error).toContain("private address");
+    }
+    // One private answer among public ones is enough to refuse.
+    addresses = ["203.0.113.10", "192.168.1.20"];
+    expect(await call()).toHaveProperty("error");
+    expect(seen).toHaveLength(0);
+  });
+
+  test("the request is pinned to the checked addresses", async () => {
+    setup();
+    const pinned: string[][] = [];
+    const r = await call({
+      net: {
+        ...net,
+        send: async (target, init, isBlocked) => {
+          pinned.push(target.addresses);
+          return net.send!(target, init, isBlocked);
+        },
+      },
+    });
+    expect(r).toMatchObject({ status: 200 });
+    expect(pinned).toEqual([["203.0.113.10"]]);
+  });
+
+  test("a redirect comes back unread and is never followed", async () => {
+    setup();
+    reply = () =>
+      new Response("moved", {
+        status: 302,
+        headers: { location: "https://elsewhere.example.test/v1/items" },
+      });
+    const r = await call();
+    expect(r).toMatchObject({
+      status: 302,
+      headers: { location: "https://elsewhere.example.test/v1/items" },
+    });
+    expect(seen.map((s) => s.url)).toEqual([
+      "https://api.example.test/v1/items?limit=2",
+    ]);
+  });
+});
+
+describe("a credential's host", () => {
+  const add = (host: string) => () =>
+    kc.addCredential({
+      owner: "Alex",
+      service: "acme",
+      host,
+      secret: SECRET,
+    });
+
+  test("is never an IP literal or a private name", () => {
+    for (const host of [
+      "127.0.0.1",
+      "10.0.0.5",
+      "169.254.169.254",
+      "8.8.8.8",
+      "localhost",
+      "metadata.internal",
+      "printer.local",
+      "intranet",
+      "build.lan",
+    ])
+      expect(add(host)).toThrow(/host/);
+    expect(kc.listCredentials()).toHaveLength(0);
+    expect(add("api.example.test")()).toMatchObject({
+      host: "api.example.test",
+    });
+  });
+
+  test("can't be changed to one either", async () => {
+    const meta = kc.addCredential({
+      owner: "Alex",
+      service: "acme",
+      host: "api.example.test",
+      secret: SECRET,
+    });
+    for (const host of ["127.0.0.1", "localhost", "db.internal"])
+      await expect(
+        kc.updateCredentialAsync(meta.id, "Alex", {
+          spec: { service: "acme", host },
+        }),
+      ).rejects.toThrow(/host/);
+    expect(kc.findCredential("acme")?.host).toBe("api.example.test");
   });
 });

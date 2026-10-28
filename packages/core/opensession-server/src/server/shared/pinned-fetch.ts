@@ -175,6 +175,8 @@ export function decodeBody(
   body: Buffer,
   limit: number,
 ): Buffer {
+  // A HEAD, 204 or 304 answer can name an encoding and carry no body.
+  if (!body.length) return body;
   const options = { maxOutputLength: limit };
   try {
     switch (encoding.trim().toLowerCase()) {
@@ -510,7 +512,7 @@ export const PINNED_FETCH_TIMEOUT_MS = 15_000;
 export const PINNED_FETCH_USER_AGENT =
   "Mozilla/5.0 (compatible; OpenSession/1.0; +https://github.com/perierhq/sessions)";
 
-function withDefaultHeaders(
+export function withDefaultHeaders(
   headers: Record<string, string> | undefined,
 ): Record<string, string> {
   const out: Record<string, string> = { ...headers };
