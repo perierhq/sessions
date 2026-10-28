@@ -18,9 +18,10 @@ import { Prose } from "./TextBlocks";
 
 /** Bring the Findings section into view, where the cause's evidence is. */
 function seeFindings() {
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   document
     .getElementById(FINDINGS_SECTION_ID)
-    ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    ?.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" });
 }
 
 /**
