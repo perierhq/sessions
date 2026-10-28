@@ -8,6 +8,7 @@ import {
 } from "../../../../shared/findings";
 import type { Incident } from "../../../../shared/incidents";
 import type { FindingItem } from "../../../lib/incidents/findings";
+import { clockTime } from "../../../lib/time";
 import {
   FINDINGS_LOG_MARK,
   FINDINGS_SOURCE_QUIET,
@@ -313,4 +314,29 @@ test("a claims block with no rows yet says so", () => {
     />,
   );
   expect(html).toContain("No claims yet");
+});
+
+test("times from data read local: prose ISO times and UTC log stamps", () => {
+  const at = "2026-10-27T11:13:00Z";
+  const q: FindingBlock = {
+    id: "ci",
+    kind: "question",
+    size: "full",
+    text: `Did the ${at} check run on acme?`,
+    wouldAnswer: "",
+  };
+  const html = renderToStaticMarkup(<QuestionBlock item={item(q)} />);
+  expect(html).toContain(`Did the ${clockTime(at)} check run on acme?`);
+  expect(html).not.toContain(at);
+
+  const stamped = renderToStaticMarkup(
+    <LogBlock
+      item={item(
+        log(["2026-10-28T11:06:16.930348960Z info <-- GET /api"], [], 0),
+      )}
+    />,
+  );
+  expect(stamped).toContain("from the agent&#x27;s shell · times in UTC");
+  // The quoted line itself stays verbatim.
+  expect(stamped).toContain("2026-10-28T11:06:16.930348960Z info");
 });

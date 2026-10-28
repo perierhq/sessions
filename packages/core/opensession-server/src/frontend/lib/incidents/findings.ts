@@ -331,6 +331,35 @@ export function timelineRows(
   return [...anchors, ...events].sort((a, b) => timeOf(a.at) - timeOf(b.at));
 }
 
+/** An ISO 8601 date and time with a zone, as an agent may write one. */
+const ISO_WITH_ZONE =
+  /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})(?![\w:])/g;
+
+/** Agent prose with each ISO time that carries a zone written as the
+ *  reader's clock time, the way every time from data on the page reads.
+ *  Code spans stay as written; a time without a zone can't be placed. */
+export function localizeTimes(text: string): string {
+  return text
+    .split(/(`[^`]*`)/)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        : part.replace(ISO_WITH_ZONE, (iso) => clockTime(iso) || iso),
+    )
+    .join("");
+}
+
+/** Log lines stamped in UTC (an ISO time ending in Z, or "UTC"): quoted
+ *  verbatim, so the block says which zone they are in. */
+export function logTimesInUtc(lines: readonly string[]): boolean {
+  return lines.some((line) =>
+    /\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z\b|\bUTC\b/.test(line),
+  );
+}
+
+/** Said after a log's source when its lines are stamped in UTC. */
+export const LOG_UTC_COPY = "times in UTC";
+
 /** How findings prose renders (`renderMarkdown`): it sits under its
  *  block's own heading, so no headings and no embeds of its own. */
 export const FINDINGS_MARKDOWN = Object.freeze({ plain: true });

@@ -13,6 +13,9 @@ import {
   CONFIDENCE_COPY,
   type FindingItem,
   FINDINGS_MARKDOWN,
+  LOG_UTC_COPY,
+  localizeTimes,
+  logTimesInUtc,
   timelineRows,
 } from "../../../lib/incidents/findings";
 import {
@@ -50,7 +53,7 @@ export function Prose({
 }) {
   return (
     <MarkdownBody
-      html={renderMarkdown(text, FINDINGS_MARKDOWN)}
+      html={renderMarkdown(localizeTimes(text), FINDINGS_MARKDOWN)}
       enhance={false}
       className={quiet ? FINDINGS_PROSE_QUIET : FINDINGS_PROSE}
     />
@@ -68,7 +71,7 @@ export function InlineProse({
 }) {
   return (
     <MarkdownBody
-      html={renderMarkdown(text, FINDINGS_MARKDOWN)}
+      html={renderMarkdown(localizeTimes(text), FINDINGS_MARKDOWN)}
       enhance={false}
       className={cn(FINDINGS_INLINE_PROSE, className)}
     />
@@ -163,11 +166,7 @@ export function TimelineBlock({
           {row.anchor ? (
             <span className="min-w-0 [overflow-wrap:anywhere]">{row.text}</span>
           ) : (
-            <MarkdownBody
-              html={renderMarkdown(row.text, FINDINGS_MARKDOWN)}
-              enhance={false}
-              className={FINDINGS_INLINE_PROSE}
-            />
+            <InlineProse text={row.text} className="" />
           )}
         </li>
       ))}
@@ -227,7 +226,9 @@ export function LogLines({ excerpt }: { excerpt: LogExcerpt }) {
         </pre>
       ) : null}
       <p className={source.quiet ? FINDINGS_SOURCE_QUIET : FINDINGS_SOURCE}>
-        {source.text}
+        {logTimesInUtc(excerpt.lines)
+          ? `${source.text} · ${LOG_UTC_COPY}`
+          : source.text}
       </p>
       {excerpt.dropped > 0 ? (
         <p className={FINDINGS_SOURCE}>{droppedLinesCopy(excerpt.dropped)}</p>

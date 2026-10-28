@@ -32,6 +32,7 @@ import { ApiError } from "../../../lib/api/request";
 import {
   type FindingItem,
   FINDINGS_MARKDOWN,
+  localizeTimes,
 } from "../../../lib/incidents/findings";
 import {
   changeMoreCopy,
@@ -293,7 +294,7 @@ export function ChangeView({
       )}
       {why.trim() ? (
         <MarkdownBody
-          html={renderMarkdown(why, FINDINGS_MARKDOWN)}
+          html={renderMarkdown(localizeTimes(why), FINDINGS_MARKDOWN)}
           enhance={false}
           className={FINDINGS_PROSE_QUIET}
         />

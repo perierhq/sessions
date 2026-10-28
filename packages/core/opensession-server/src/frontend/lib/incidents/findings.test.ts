@@ -22,6 +22,8 @@ import {
   findingSpans,
   findingsPage,
   itemSource,
+  localizeTimes,
+  logTimesInUtc,
   nextFindings,
   sourceTarget,
   timelineRows,
@@ -794,4 +796,25 @@ test("the Next card's likely cause is the page's first hypothesis", () => {
       ),
     )?.cause,
   ).toBeNull();
+});
+
+test("ISO times in agent prose read in the reader's zone", () => {
+  const at = "2026-10-27T11:13:00Z";
+  expect(
+    localizeTimes(`the ${at} check (until 2026-10-27T11:15:30.5+01:00)`),
+  ).toBe(
+    `the ${clockTime(at)} check (until ${clockTime("2026-10-27T11:15:30.5+01:00")})`,
+  );
+  // Code spans and times without a zone stay as written.
+  expect(localizeTimes("`2026-10-27T11:13:00Z` at 2026-10-27T11:13")).toBe(
+    "`2026-10-27T11:13:00Z` at 2026-10-27T11:13",
+  );
+});
+
+test("log lines stamped in UTC say so", () => {
+  expect(
+    logTimesInUtc(["2026-10-28T11:06:16.930348960Z info <-- GET /api"]),
+  ).toBe(true);
+  expect(logTimesInUtc(["12:01:02 UTC cron ran"])).toBe(true);
+  expect(logTimesInUtc(["ERROR db: pool exhausted"])).toBe(false);
 });
