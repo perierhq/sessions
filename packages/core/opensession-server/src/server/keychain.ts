@@ -1456,6 +1456,8 @@ export async function resumeGrantAsync(
   if (!sameOwner(gr.owner, by))
     throw new Error("only the credential's owner can allow it again");
   settleExpiry(gr);
+  if (gr.mode === "run" && gr.runId && gr.status === "used")
+    throw new Error("that grant's run has ended, so there is nothing to allow");
   if (gr.status !== "suspended")
     throw new Error(`that grant is ${gr.status}, not paused`);
   const before = { ...gr };
@@ -2372,7 +2374,9 @@ export async function settleRunGrants(
     const gr = grants.get(grantId);
     if (!gr || gr.runId !== runId) continue;
     gr.runCalls = made;
-    if (gr.status === "active") {
+    // A grant paused mid-run (its credential widened) ends with its run too,
+    // so it can't be allowed again for a run that is over.
+    if (gr.status === "active" || gr.status === "suspended") {
       gr.status = "used";
       gr.usedAt = new Date().toISOString();
       if (opts.interrupted) gr.interrupted = true;
@@ -2394,7 +2398,12 @@ export async function settleOrphanRunGrants(
   await ensureKeychainLoaded();
   let settled = 0;
   for (const gr of grants.values()) {
-    if (gr.mode !== "run" || !gr.runId || gr.status !== "active") continue;
+    if (
+      gr.mode !== "run" ||
+      !gr.runId ||
+      (gr.status !== "active" && gr.status !== "suspended")
+    )
+      continue;
     if (isLive(gr.runId)) continue;
     gr.status = "used";
     gr.usedAt ??= new Date().toISOString();

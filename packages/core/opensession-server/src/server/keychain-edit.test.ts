@@ -453,6 +453,69 @@ describe("widening the limits", () => {
     expect(await callAcme("/v1", "DELETE")).toMatchObject({ status: 200 });
   });
 
+  /** A run grant claimed by live run `runId`. */
+  const claimedRun = async (credentialId: string, runId: string) => {
+    kc.__mintGrantForTest({
+      credentialId,
+      sessionId: "s-1",
+      requestedBy: "Sam",
+      mode: "run",
+      run: { command: "bun sync.ts", maxCalls: 500 },
+    });
+    const claim = await kc.claimRunGrants({
+      sessionId: "s-1",
+      credentials: ["acme-api"],
+      command: "bun sync.ts",
+      runId,
+      deadline: Date.now() + 3_600_000,
+    });
+    if ("error" in claim) throw new Error(claim.error);
+    return claim.claims[0]!.grant;
+  };
+
+  test("a run paused mid-run is refused, and its grant closes when the run ends", async () => {
+    const meta = add({ allowedMethods: ["GET"] });
+    const grant = await claimedRun(meta.id, "kr-live");
+    await kc.patchCredentialAsync(meta.id, "Alex", {
+      allowedMethods: ["GET", "POST"],
+    });
+    expect(status(grant.id)).toBe("suspended");
+    expect(kc.useRunGrant(grant.id, "kr-live", "GET", "/v1")).toEqual({
+      error: expect.stringMatching(/suspended/),
+      status: 403,
+    });
+    await kc.settleRunGrants("kr-live", [{ grantId: grant.id, calls: 12 }]);
+    expect(status(grant.id)).toBe("used");
+    await expect(kc.resumeGrantAsync(grant.id, "Alex")).rejects.toThrow(
+      /run has ended/,
+    );
+    expect(status(grant.id)).toBe("used");
+  });
+
+  test("boot closes a paused run grant whose run is gone", async () => {
+    const meta = add({ allowedMethods: ["GET"] });
+    const grant = await claimedRun(meta.id, "kr-gone");
+    await kc.patchCredentialAsync(meta.id, "Alex", { allowedMethods: [] });
+    expect(status(grant.id)).toBe("suspended");
+    expect(await kc.settleOrphanRunGrants(() => false)).toBe(1);
+    const after = kc.listGrants().find((g) => g.id === grant.id)!;
+    expect(after).toMatchObject({ status: "used", interrupted: true });
+    await expect(kc.resumeGrantAsync(grant.id, "Alex")).rejects.toThrow(
+      /run has ended/,
+    );
+  });
+
+  test("a paused run grant whose run is still going can be allowed again", async () => {
+    const meta = add({ allowedMethods: ["GET"] });
+    const grant = await claimedRun(meta.id, "kr-live");
+    await kc.patchCredentialAsync(meta.id, "Alex", { allowedMethods: [] });
+    expect(await kc.settleOrphanRunGrants(() => true)).toBe(0);
+    await kc.resumeGrantAsync(grant.id, "Alex");
+    expect(kc.useRunGrant(grant.id, "kr-live", "DELETE", "/v1")).toHaveProperty(
+      "credential",
+    );
+  });
+
   test("a paused grant can be revoked, and expires like any other", async () => {
     const meta = add({ allowedMethods: ["GET"] });
     const a = standing(meta.id);
