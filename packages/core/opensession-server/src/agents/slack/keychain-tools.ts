@@ -989,11 +989,13 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
               secretRotated: u.secretRotated,
               scope: u.credential.scope ?? "personal",
             },
-            grants: u.grantsRevoked
-              ? u.changed.includes("host") || u.changed.includes("loginUrl")
-                ? `${u.grantsRevoked} active grant(s) were revoked because the host changed; ask again with request_credential.`
-                : `${u.grantsRevoked} grant(s) sessions got without asking were revoked; from now on they ask the owner with request_credential.`
-              : `Active grants keep working${u.grantsKept ? ` (${u.grantsKept})` : ""}.`,
+            grants: u.grantsSuspended
+              ? `The limits are wider now (${u.widened.join("; ")}), so ${u.grantsSuspended} grant(s) approved under the old ones are paused until the owner allows them again in Settings → Account.`
+              : u.grantsRevoked
+                ? u.changed.includes("host") || u.changed.includes("loginUrl")
+                  ? `${u.grantsRevoked} active grant(s) were revoked because the host changed; ask again with request_credential.`
+                  : `${u.grantsRevoked} grant(s) sessions got without asking were revoked; from now on they ask the owner with request_credential.`
+                : `Active grants keep working${u.grantsKept ? ` (${u.grantsKept})` : ""}.`,
           }),
         );
       },

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   credentialForm,
   credentialSpec,
+  editEffect,
   expiryNote,
   formChanged,
   testOutcome,
@@ -98,5 +99,43 @@ test("a test result says what came back, never more", () => {
   expect(testOutcome({ error: "the request timed out" }, "/")).toEqual({
     text: "The request timed out",
     tone: "danger",
+  });
+});
+
+test("an edit that widens the limits names how, and counts approved grants", () => {
+  const before = credentialForm({
+    id: "kc-1",
+    owner: "Alex",
+    service: "acme-api",
+    host: "api.example.test",
+    allowedMethods: ["GET"],
+    allowedPathPrefixes: ["/v1"],
+    createdAt: "",
+    updatedAt: "",
+  });
+  expect(editEffect(before, before, [])).toBeNull();
+  const wider = { ...before, methods: [], prefixes: "/v1/, /v2" };
+  const grants = [
+    { status: "active", mode: "standing" },
+    { status: "active", mode: "workspace", implicit: true },
+    { status: "active", mode: "standing", incident: { incidentId: "i" } },
+    { status: "used", mode: "once" },
+    { status: "active", mode: "once" },
+  ] as const;
+  expect(editEffect(before, wider, grants)).toEqual({
+    kind: "widened",
+    text: "Saving widens the limits: any method is allowed; paths now include /v2. 2 grants approved under the old limits pause until you allow them again",
+  });
+  // Narrower: nothing to say.
+  expect(
+    editEffect(before, { ...before, prefixes: "/v1/orders" }, grants),
+  ).toBeNull();
+  // Wider with nobody holding a grant: nothing pauses.
+  expect(editEffect(before, wider, [])).toBeNull();
+  expect(
+    editEffect(before, { ...before, host: "api2.example.test" }, grants),
+  ).toEqual({
+    kind: "moved",
+    text: "Saving moves it to a new host, so its 4 active grants end",
   });
 });

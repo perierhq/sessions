@@ -3,6 +3,7 @@ import {
   answerKeychainAsk,
   deleteKeychainCredential,
   fetchKeychain,
+  resumeKeychainGrant,
   revokeKeychainGrant,
   setKeychainCredentialScope,
   testKeychainCredential,
@@ -118,6 +119,11 @@ export function KeychainSection() {
 
   const byId = new Map(data.credentials.map((c) => [c.id, c]));
   const activeGrants = data.grants.filter((g) => g.status === "active");
+  // Paused by a widening edit: listed with the live ones, so the owner can
+  // allow each again or end it.
+  const listedGrants = data.grants.filter(
+    (g) => g.status === "active" || g.status === "suspended",
+  );
   const pending = data.asks.filter((a) => a.status === "pending");
   const serviceOf = (id: string) => byId.get(id)?.service ?? id;
   // One owner's credentials in a multi-credential run are one answer.
@@ -219,6 +225,9 @@ export function KeychainSection() {
         ) : (
           <CredentialDialog
             credential={dialog.credential}
+            grants={data.grants.filter(
+              (g) => g.credentialId === dialog.credential?.id,
+            )}
             onClose={() => setDialog(null)}
             onSaved={() => {
               setDialog(null);
@@ -453,31 +462,60 @@ export function KeychainSection() {
       {/* Only when there is one. As a page this group carried an empty
 			    state; as a section it would be a second empty block under a
 			    list most people never populate. */}
-      {activeGrants.length > 0 && (
+      {listedGrants.length > 0 && (
         <>
           <SettingsGroupLabel>Active grants</SettingsGroupLabel>
           <SettingCard>
-            {activeGrants.map((g) => (
-              <SettingRow
-                key={g.id}
-                title={`${byId.get(g.credentialId)?.service ?? g.credentialId} → ${g.requestedBy}`}
-                desc={`${g.mode} · expires ${new Date(g.expiresAt).toLocaleString()} · ${g.purpose}`}
-                control={
-                  <Button
-                    size="sm"
-                    className="phone:min-h-11"
-                    variant="ghost"
-                    onClick={() =>
-                      revokeKeychainGrant(g.id)
-                        .then(reload)
-                        .catch((e) => setError(e.message))
-                    }
-                  >
-                    Revoke
-                  </Button>
-                }
-              />
-            ))}
+            {listedGrants.map((g) => {
+              const paused = g.status === "suspended";
+              return (
+                <SettingRow
+                  key={g.id}
+                  title={
+                    <span className="inline-flex flex-wrap items-center gap-2">
+                      {`${byId.get(g.credentialId)?.service ?? g.credentialId} → ${g.requestedBy}`}
+                      {paused && <Badge tone="warning">Paused</Badge>}
+                    </span>
+                  }
+                  desc={
+                    paused
+                      ? `Approved under narrower limits. Paused until you allow it again · ${g.purpose}`
+                      : `${g.mode} · expires ${new Date(g.expiresAt).toLocaleString()} · ${g.purpose}`
+                  }
+                  controlClassName="flex flex-wrap justify-end gap-1"
+                  control={
+                    <>
+                      <Button
+                        size="sm"
+                        className="phone:min-h-11"
+                        variant="ghost"
+                        onClick={() =>
+                          revokeKeychainGrant(g.id)
+                            .then(reload)
+                            .catch((e) => setError(e.message))
+                        }
+                      >
+                        Revoke
+                      </Button>
+                      {paused && byId.get(g.credentialId)?.mine && (
+                        <Button
+                          size="sm"
+                          className="phone:min-h-11"
+                          variant="primary"
+                          onClick={() =>
+                            resumeKeychainGrant(g.id)
+                              .then(reload)
+                              .catch((e) => setError(e.message))
+                          }
+                        >
+                          Allow again
+                        </Button>
+                      )}
+                    </>
+                  }
+                />
+              );
+            })}
           </SettingCard>
         </>
       )}

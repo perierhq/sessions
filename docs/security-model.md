@@ -223,9 +223,15 @@ nothing happens until they paste the new secret or confirm. The card is
 answerable only with the owner's verified GitHub sign-in, and the tools refuse,
 before any card, a credential someone else owns and automation runs. The
 service slug and kind never change. Active grants keep working after a new
-secret or new limits, because the owner approved access to that credential and
-is the one changing it; a new host or sign-in page revokes them, since they
-were approved for calls to the old one. Deleting revokes them too. Each change
+secret or narrower limits, because the owner approved access to that
+credential and is the one changing it. Wider limits (a method or path the old
+ones refused, no limit where there was one, or status-only turned off) pause
+every grant an owner approved under the old ones (`suspended`) until the owner
+allows it again in Settings → Account; the Edit dialog and the update card say
+so before saving. Implicit workspace grants were never approved and stay;
+incident grants are revoked and re-lent from the project's access settings on
+the agent's next call. A new host or sign-in page revokes every grant, since
+they were approved for calls to the old one. Deleting revokes them too. Each change
 is audited with the fields it changed and whether the secret was rotated
 (`keychain_credential_updated`, `keychain_credential_deleted`), never the
 secret itself.

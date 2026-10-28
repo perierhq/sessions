@@ -50,6 +50,8 @@ import {
   isWorkspaceCredential,
   prepareCredentialTest,
   scrubSecret,
+  suspendedGrantFor,
+  SUSPENDED_GRANT_ERROR,
   testRefusal,
   workspaceGrantFor,
 } from "./keychain";
@@ -164,6 +166,8 @@ export async function brokerCall(
     if ("error" in minted) return minted;
     grant = minted;
   }
+  if (!grant && suspendedGrantFor(input.sessionId, meta.id))
+    return { error: `${meta.service}: ${SUSPENDED_GRANT_ERROR}` };
   if (!grant)
     return {
       error: `this session holds no live grant for ${meta.service}. Ask its owner with request_credential first.`,

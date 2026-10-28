@@ -371,3 +371,23 @@ test("unsharing a workspace credential or changing its injection revokes inciden
   });
   expect(kc.listIncidentGrants({ incidentId: "inc-1" })).toEqual([]);
 });
+
+test("widening a credential's limits revokes incident grants; narrowing keeps them", async () => {
+  const cred = await seed({ allowedMethods: ["GET"] });
+  const mint = () =>
+    kc.incidentGrantFor({
+      credentialId: cred.id,
+      sessionId: "s-1",
+      mode: "standing",
+      incident: marker,
+      purpose: "x",
+    });
+  await mint();
+  await kc.patchCredentialAsync(cred.id, "Ada", {
+    allowedPathPrefixes: ["/v1"],
+  });
+  expect(kc.listIncidentGrants({ incidentId: "inc-1" })).toHaveLength(1);
+  await kc.patchCredentialAsync(cred.id, "Ada", { allowedMethods: [] });
+  // The agent's next call re-resolves from the project's lending row.
+  expect(kc.listIncidentGrants({ incidentId: "inc-1" })).toEqual([]);
+});

@@ -32,6 +32,7 @@ export function SettingsDialog({
   saveLabel = "Save",
   onSave,
   leading,
+  notice,
   wide = false,
   children,
 }: {
@@ -44,6 +45,9 @@ export function SettingsDialog({
   saveLabel?: string;
   onSave?: () => void;
   leading?: React.ReactNode;
+  /** What saving will do that the person should know first, above the
+   *  buttons with the error. */
+  notice?: React.ReactNode;
   wide?: boolean;
   children: React.ReactNode;
 }) {
@@ -80,6 +84,7 @@ export function SettingsDialog({
           </header>
           <div className={SETTINGS_DIALOG_BODY}>{children}</div>
           <footer className={SETTINGS_DIALOG_FOOTER}>
+            {notice}
             {error && <InlineAlert>{error}</InlineAlert>}
             <div className={SETTINGS_DIALOG_BUTTONS}>
               {leading && <div className="mr-auto">{leading}</div>}

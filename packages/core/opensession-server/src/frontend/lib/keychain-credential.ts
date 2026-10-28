@@ -4,6 +4,7 @@
  * words for its expiry and its test result. Pure, so the dialog stays a
  * component file and these rules are tested on their own.
  */
+import { ceilingWidening } from "../../shared/keychain-ceiling";
 import {
   KEYCHAIN_METHODS,
   type KeychainCredentialDto,
@@ -127,4 +128,63 @@ export function testOutcome(result: TestResult, path: string): TestOutcome {
       tone: "warning",
     };
   return { text: line, tone: "warning" };
+}
+
+/** What a grant needs for editEffect to count it. */
+export interface GrantForEffect {
+  status: string;
+  mode: string;
+  implicit?: true;
+  incident?: object;
+}
+
+export interface EditEffect {
+  kind: "widened" | "moved";
+  text: string;
+}
+
+/**
+ * What saving an edit does to the grants live now, said before the save:
+ * a new host ends them all, and wider limits pause the ones an owner
+ * approved under the old limits (grants nobody approved, and incident
+ * grants, which are re-lent from the project, don't pause). Null when no
+ * grant is affected.
+ */
+export function editEffect(
+  before: CredentialFormState,
+  after: CredentialFormState,
+  grants: readonly GrantForEffect[],
+): EditEffect | null {
+  const live = grants.filter((g) => g.status === "active");
+  if (before.host.trim() !== after.host.trim()) {
+    return live.length
+      ? {
+          kind: "moved",
+          text: `Saving moves it to a new host, so its ${plural(live.length, "active grant")} ${live.length === 1 ? "ends" : "end"}`,
+        }
+      : null;
+  }
+  const widened = ceilingWidening(ceilingOf(before), ceilingOf(after));
+  const approved = live.filter(
+    (g) => !g.implicit && !g.incident && g.mode !== "release",
+  ).length;
+  if (!widened.length || !approved) return null;
+  return {
+    kind: "widened",
+    text: `Saving widens the limits: ${widened.join("; ")}. ${plural(approved, "grant")} approved under the old limits ${approved === 1 ? "pauses until you allow it" : "pause until you allow them"} again`,
+  };
+}
+
+function ceilingOf(form: CredentialFormState) {
+  return {
+    allowedMethods: form.methods,
+    allowedPathPrefixes: list(form.prefixes).map(
+      (p) => p.replace(/\/+$/, "") || "/",
+    ),
+    statusOnly: form.statusOnly,
+  };
+}
+
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }

@@ -5,6 +5,7 @@ import {
   testKeychainCredential,
   updateKeychainCredential,
   type KeychainCredentialDto,
+  type KeychainGrantDto,
   type KeychainMethod,
 } from "../../lib/api";
 import {
@@ -15,6 +16,7 @@ import {
 import {
   credentialForm,
   credentialSpec,
+  editEffect,
   expiryNote,
   formChanged,
   list,
@@ -32,6 +34,7 @@ import { Checkbox } from "../../ui/checkbox";
 import { cn } from "../../ui/cn";
 import { Field, Input } from "../../ui/input";
 import { PlainButton } from "../../ui/plain-button";
+import { InlineAlert } from "../../ui/state";
 import { TextLink } from "../../ui/text-link";
 import { SettingsDialog } from "./incidents/SettingsDialog";
 
@@ -52,11 +55,14 @@ const TEST_TONE = {
  */
 export function CredentialDialog({
   credential,
+  grants = [],
   onClose,
   onSaved,
 }: {
   /** Edit this credential; absent: add a new one. */
   credential?: KeychainCredentialDto;
+  /** The credential's grants in view, to say what saving does to them. */
+  grants?: readonly KeychainGrantDto[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -109,6 +115,8 @@ export function CredentialDialog({
   const testPath = form.testPath.trim() || list(form.prefixes)[0] || "/";
   const canTest = Boolean(form.host.trim() && (editing || secret));
   const expiry = expiryNote(form.expiresOn || undefined);
+  // Said before the save, where the Save button is.
+  const effect = editing ? editEffect(initial, form, grants) : null;
 
   const save = () => {
     setBusy(true);
@@ -165,6 +173,7 @@ export function CredentialDialog({
       canSave={canSave}
       saveLabel={busy ? "Saving…" : credential ? "Save" : "Add credential"}
       onSave={save}
+      notice={effect && <InlineAlert variant="warn">{effect.text}</InlineAlert>}
     >
       <p className={FIELD_HINT}>
         A session can borrow it with your approval. The secret is injected

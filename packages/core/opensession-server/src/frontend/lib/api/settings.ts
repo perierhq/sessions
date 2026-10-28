@@ -233,10 +233,17 @@ export interface KeychainGrantDto {
   requestedBy: string;
   purpose: string;
   mode: "once" | "standing" | "run" | "release" | "workspace";
-  status: "active" | "used" | "revoked" | "expired";
+  /** "suspended": paused because its credential's limits were widened
+   *  after it was approved, until the owner allows it again. */
+  status: "active" | "used" | "revoked" | "expired" | "suspended";
   run?: KeychainScriptedRunDto;
   createdAt: string;
   expiresAt: string;
+  suspendedAt?: string;
+  /** Minted without an approval, for a workspace credential. */
+  implicit?: true;
+  /** Lent to an incident agent through a project's access settings. */
+  incident?: { incidentId: string; role: string; project: string };
 }
 
 export interface KeychainAskDto {
@@ -288,6 +295,9 @@ export interface KeychainUpdateDto {
   secretRotated: boolean;
   grantsKept: number;
   grantsRevoked: number;
+  /** Grants paused because the edit widened their limits. */
+  grantsSuspended: number;
+  widened: string[];
 }
 
 /** Edit a credential you own: the fields named change (null or empty
@@ -347,6 +357,14 @@ export async function answerKeychainAsk(
   return request(`/keychain/asks/${encodeURIComponent(id)}/answer`, {
     method: "POST",
     body: { decision },
+  });
+}
+
+/** Allow a grant paused by a widening edit again. */
+export async function resumeKeychainGrant(id: string): Promise<{ ok: true }> {
+  return request(`/keychain/grants/${encodeURIComponent(id)}/resume`, {
+    method: "POST",
+    label: "Couldn't allow it again",
   });
 }
 

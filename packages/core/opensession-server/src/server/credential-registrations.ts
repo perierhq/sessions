@@ -158,6 +158,7 @@ function settle(
           secret_rotated: result.update.secretRotated,
           grants_kept: result.update.grantsKept,
           grants_revoked: result.update.grantsRevoked,
+          grants_suspended: result.update.grantsSuspended,
         }
       : {}),
   });

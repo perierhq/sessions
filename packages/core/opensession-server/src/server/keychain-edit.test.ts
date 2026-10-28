@@ -366,3 +366,104 @@ describe("test call", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("widening the limits", () => {
+  const standing = (credentialId: string, sessionId = "s-1") =>
+    kc.__mintGrantForTest({
+      credentialId,
+      sessionId,
+      requestedBy: "Sam",
+      mode: "standing",
+    });
+  const status = (id: string) =>
+    kc.listGrants().find((g) => g.id === id)?.status;
+  const callAcme = (path = "/v1/orders", method: "GET" | "DELETE" = "GET") =>
+    brokerCall({ sessionId: "s-1", credential: "acme-api", method, path, net });
+
+  test("pauses grants approved under the narrower limits", async () => {
+    const meta = add({ allowedMethods: ["GET"], allowedPathPrefixes: ["/v1"] });
+    const grant = standing(meta.id);
+    const result = await kc.patchCredentialAsync(meta.id, "Alex", {
+      allowedMethods: ["GET", "DELETE"],
+    });
+    expect(result.grantsSuspended).toBe(1);
+    expect(result.widened).toEqual(["methods now include DELETE"]);
+    expect(status(grant.id)).toBe("suspended");
+    const r = await callAcme("/v1/orders", "DELETE");
+    expect(r).toMatchObject({ error: expect.stringMatching(/paused/) });
+    expect(seen).toHaveLength(0);
+  });
+
+  test("turning status-only off pauses them too", async () => {
+    const meta = add({ statusOnly: true });
+    const grant = standing(meta.id);
+    await kc.patchCredentialAsync(meta.id, "Alex", { statusOnly: false });
+    expect(status(grant.id)).toBe("suspended");
+  });
+
+  test("narrowing keeps them working", async () => {
+    const meta = add({ allowedPathPrefixes: ["/v1"] });
+    const grant = standing(meta.id);
+    const result = await kc.patchCredentialAsync(meta.id, "Alex", {
+      allowedPathPrefixes: ["/v1/orders"],
+      allowedMethods: ["GET"],
+    });
+    expect(result.grantsSuspended).toBe(0);
+    expect(status(grant.id)).toBe("active");
+    expect(await callAcme()).toMatchObject({ status: 200 });
+  });
+
+  test("a workspace credential's implicit grants were never approved, so stay", async () => {
+    add({ allowedMethods: ["GET"], scope: "workspace" });
+    await brokerCall({
+      sessionId: "s-1",
+      credential: "acme-api",
+      method: "GET",
+      path: "/v1",
+      purpose: "check",
+      net,
+    });
+    const implicit = kc.listGrants()[0]!;
+    await kc.patchCredentialAsync(implicit.credentialId, "Alex", {
+      allowedMethods: [],
+    });
+    expect(status(implicit.id)).toBe("active");
+  });
+
+  test("the owner allows a paused grant again, and only the owner", async () => {
+    const meta = add({ allowedMethods: ["GET"] });
+    const grant = standing(meta.id);
+    await kc.patchCredentialAsync(meta.id, "Alex", { allowedMethods: [] });
+    const path = `/api/keychain/grants/${grant.id}/resume`;
+    expect((await route("POST", path, null, {})).status).toBe(401);
+    const bea = await route(
+      "POST",
+      path,
+      { login: "bea-gh", name: "Bea Example" },
+      {},
+    );
+    expect(bea.status).toBe(403);
+    const ok = await route("POST", path, alex, {});
+    expect(ok.status).toBe(200);
+    expect(status(grant.id)).toBe("active");
+    expect(await callAcme("/v1", "DELETE")).toMatchObject({ status: 200 });
+  });
+
+  test("a paused grant can be revoked, and expires like any other", async () => {
+    const meta = add({ allowedMethods: ["GET"] });
+    const a = standing(meta.id);
+    const b = kc.__mintGrantForTest({
+      credentialId: meta.id,
+      sessionId: "s-2",
+      requestedBy: "Sam",
+      mode: "standing",
+      expiresAt: new Date(Date.now() + 50).toISOString(),
+    });
+    await kc.patchCredentialAsync(meta.id, "Alex", { allowedMethods: [] });
+    expect(kc.revokeGrant(a.id, "Alex")).toEqual({ ok: true });
+    expect(status(a.id)).toBe("revoked");
+    await Bun.sleep(60);
+    expect(status(b.id)).toBe("expired");
+    expect(kc.resumeGrantAsync(b.id, "Alex")).rejects.toThrow(/expired/);
+  });
+});

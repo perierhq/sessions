@@ -32,6 +32,7 @@ let testReply: { status: number; reason: string } | Error = {
   reason: "OK",
 };
 const deleted: string[] = [];
+const resumed: string[] = [];
 const NOW = Date.now();
 const credentialFixture = (
   id: string,
@@ -78,6 +79,7 @@ const keychain = {
     grantFixture("g-2", "kc-1"),
     grantFixture("g-3", "kc-1", "used"),
     grantFixture("g-4", "kc-1", "active", -60_000),
+    { ...grantFixture("g-5", "kc-2"), status: "suspended" as const },
   ],
   asks: [],
 };
@@ -100,6 +102,10 @@ mock.module("../../lib/api", () => ({
     return testReply;
   },
   fetchKeychain: async () => keychain,
+  resumeKeychainGrant: async (id: string) => {
+    resumed.push(id);
+    return { ok: true };
+  },
   deleteKeychainCredential: async (id: string) => {
     deleted.push(id);
     return { ok: true };
@@ -117,6 +123,7 @@ const { PlainButton } = await import("../../ui/plain-button");
 const { SettingRow } = await import("./shared");
 const { SettingsDialog } = await import("./incidents/SettingsDialog");
 const { Badge } = await import("../../ui/badge");
+const { InlineAlert } = await import("../../ui/state");
 
 beforeEach(() => {
   added.length = 0;
@@ -460,4 +467,41 @@ test("delete asks first, naming how many live grants lose access", async () => {
 test("deleting a credential nobody holds says so", async () => {
   const { request } = await deleteAsks("acme-unused");
   expect(String(request?.description)).toContain("No session holds a grant");
+});
+
+test("an edit that widens the limits says, before saving, which grants pause", async () => {
+  const tree = harness.mount(CredentialDialog, {
+    credential: saved,
+    grants: [grantFixture("g-7", "kc-9"), grantFixture("g-8", "kc-9")],
+    onClose: () => {},
+    onSaved: () => {},
+  });
+  await settle();
+  expect(dialog(tree).notice).toBeFalsy();
+  await toggle(tree, "DELETE");
+  const notice = find(dialog(tree).notice, InlineAlert);
+  expect(notice?.props.variant).toBe("warn");
+  expect(text(tree)).toContain(
+    "Saving widens the limits: methods now include DELETE. 2 grants approved under the old limits pause until you allow them again",
+  );
+  // Back to the old limits: nothing to warn about.
+  await toggle(tree, "DELETE");
+  expect(dialog(tree).notice).toBeFalsy();
+});
+
+test("a paused grant can be allowed again by the owner", async () => {
+  const tree = await section();
+  const paused = find(tree.output(), SettingRow, (p) =>
+    JSON.stringify(p.title).includes("Paused"),
+  );
+  expect(paused).toBeDefined();
+  const allow = find(
+    paused!.props.control,
+    Button,
+    (p) => p.children === "Allow again",
+  );
+  // SAFETY: the Allow again handler ignores the click event.
+  allow!.props.onClick!(undefined as never);
+  await settle();
+  expect(resumed).toEqual(["g-5"]);
 });

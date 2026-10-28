@@ -78,6 +78,7 @@ import { isIP } from "node:net";
 import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
 import { audit, auditAsync } from "./audit";
 import { isPrivateHostName } from "./shared/network-address";
+import { ceilingWidening, pathWithinPrefix } from "../shared/keychain-ceiling";
 import {
   resolveTeammate,
   teammateByGithubLogin,
@@ -214,11 +215,14 @@ export interface KeychainGrant {
   requestedBy: string;
   purpose: string;
   mode: GrantMode;
-  status: "active" | "used" | "revoked" | "expired";
+  /** "suspended": its credential's limits were widened after it was
+   *  approved; unusable until the owner allows it again. */
+  status: "active" | "used" | "revoked" | "expired" | "suspended";
   createdAt: string;
   expiresAt: string;
   usedAt?: string;
   revokedAt?: string;
+  suspendedAt?: string;
   askId?: string;
   /** Set for mode "run": the script the owner approved. */
   run?: KeychainScriptedRun;
@@ -402,7 +406,10 @@ function meta(c: KeychainCredential): KeychainCredentialMeta {
 
 /** Lazy expiry — checked on every read/use, no sweeper to keep alive. */
 function settleExpiry(gr: KeychainGrant): KeychainGrant {
-  if (gr.status === "active" && Date.now() > new Date(gr.expiresAt).getTime()) {
+  if (
+    (gr.status === "active" || gr.status === "suspended") &&
+    Date.now() > new Date(gr.expiresAt).getTime()
+  ) {
     gr.status = "expired";
     grants.set(gr.id, gr);
     persist();
@@ -828,27 +835,37 @@ interface RevokedGrant {
   id: string;
   /** The grant as it was before. */
   before: KeychainGrant;
-  /** The object revoked in place, to tell whether anything touched it since. */
+  /** The object changed in place, to tell whether anything touched it since. */
   revoked: KeychainGrant;
+  /** What it was changed to, and when. */
+  status: "revoked" | "suspended";
   revokedAt: string;
 }
 
 function revokeGrantsOf(
   id: string,
   which: (gr: KeychainGrant) => boolean = () => true,
+  to: "revoked" | "suspended" = "revoked",
 ): RevokedGrant[] {
   const revoked: RevokedGrant[] = [];
   const now = new Date().toISOString();
   for (const gr of grants.values()) {
-    if (gr.credentialId === id && gr.status === "active" && which(gr)) {
+    if (
+      gr.credentialId === id &&
+      (gr.status === "active" ||
+        (to === "revoked" && gr.status === "suspended")) &&
+      which(gr)
+    ) {
       revoked.push({
         id: gr.id,
         before: { ...gr },
         revoked: gr,
+        status: to,
         revokedAt: now,
       });
-      gr.status = "revoked";
-      gr.revokedAt = now;
+      gr.status = to;
+      if (to === "revoked") gr.revokedAt = now;
+      else gr.suspendedAt = now;
     }
   }
   return revoked;
@@ -861,8 +878,8 @@ function restoreGrants(previous: RevokedGrant[]): void {
     const now = grants.get(r.id);
     if (
       now === r.revoked &&
-      now.status === "revoked" &&
-      now.revokedAt === r.revokedAt
+      now.status === r.status &&
+      (r.status === "revoked" ? now.revokedAt : now.suspendedAt) === r.revokedAt
     )
       grants.set(r.id, r.before);
   }
@@ -993,6 +1010,11 @@ export interface UpdateCredentialResult {
    *  host or sign-in page than the one they were approved for, or because
    *  it is personal again and they were never approved. */
   grantsRevoked: number;
+  /** Grants paused because the update widened the limits they were
+   *  approved under; each works again once the owner allows it. */
+  grantsSuspended: number;
+  /** How the update widened the limits (ceilingWidening), if it did. */
+  widened: string[];
 }
 
 /**
@@ -1071,10 +1093,15 @@ export async function updateCredentialAsync(
     credentials.set(id, next);
     const moved = changed.includes("host") || changed.includes("loginUrl");
     const unshared = changed.includes("scope") && next.scope !== "workspace";
+    // Wider limits than a grant was approved under: the owner approved
+    // what the credential allowed then, not what it allows now.
+    const widened = moved ? [] : ceilingWidening(before, spec);
     // An incident grant was minted for the credential as the project's
-    // access settings saw it: unsharing it or changing how its secret rides
-    // the request ends it, and the agent's next call re-resolves its access.
-    const incidentStale = unshared || changed.includes("injection");
+    // access settings saw it: unsharing it, widening it or changing how its
+    // secret rides the request ends it, and the agent's next call
+    // re-resolves its access from the project's lending row.
+    const incidentStale =
+      unshared || changed.includes("injection") || widened.length > 0;
     const revoked = moved
       ? revokeGrantsOf(id)
       : unshared || incidentStale
@@ -1084,12 +1111,21 @@ export async function updateCredentialAsync(
               (unshared && !!gr.implicit) || (incidentStale && !!gr.incident),
           )
         : [];
+    // Approved grants pause until the owner allows them again. Implicit
+    // grants were never approved, and incident grants were revoked above.
+    const suspended = widened.length
+      ? revokeGrantsOf(
+          id,
+          (gr) => !gr.implicit && !gr.incident && gr.mode !== "release",
+          "suspended",
+        )
+      : [];
     try {
       await persistAsync();
     } catch (error) {
       // Only if nothing synchronous replaced or deleted it meanwhile.
       if (credentials.get(id) === next) credentials.set(id, cred);
-      restoreGrants(revoked);
+      restoreGrants([...revoked, ...suspended]);
       await persistAsync().catch(() => {});
       console.error("[keychain] failed to update credential:", error);
       throw new Error("couldn't write the keychain store");
@@ -1112,6 +1148,8 @@ export async function updateCredentialAsync(
       secret_rotated: secret !== undefined,
       grants_kept: grantsKept,
       grants_revoked: revoked.length,
+      ...(suspended.length ? { grants_suspended: suspended.length } : {}),
+      ...(widened.length ? { widened } : {}),
     });
     return {
       credential: meta(next),
@@ -1119,6 +1157,8 @@ export async function updateCredentialAsync(
       secretRotated: secret !== undefined,
       grantsKept,
       grantsRevoked: revoked.length,
+      grantsSuspended: suspended.length,
+      widened,
     };
   });
 }
@@ -1319,7 +1359,8 @@ export function revokeGrant(
   const gr = grants.get(id);
   if (!gr) return { error: "no such grant" };
   settleExpiry(gr);
-  if (gr.status !== "active") return { error: `grant is already ${gr.status}` };
+  if (gr.status !== "active" && gr.status !== "suspended")
+    return { error: `grant is already ${gr.status}` };
   // The owner lent it, the requester borrowed it — either may end it.
   if (!sameOwner(gr.owner, by) && norm(gr.requestedBy) !== norm(by)) {
     return { error: "only the grant's owner or requester can revoke it" };
@@ -1336,6 +1377,61 @@ export function revokeGrant(
   });
   notifyRevoked(id);
   return { ok: true };
+}
+
+/** What a session is told when its grant is paused. */
+export const SUSPENDED_GRANT_ERROR =
+  "this grant is paused: its owner widened the credential's limits after approving it. They can allow it again in Settings → Account, or ask again with request_credential";
+
+/** This session's paused grant for a credential, if it has one. */
+export function suspendedGrantFor(
+  sessionId: string,
+  credentialId: string,
+): KeychainGrant | undefined {
+  load();
+  return [...grants.values()].find(
+    (gr) =>
+      gr.sessionId === sessionId &&
+      gr.credentialId === credentialId &&
+      settleExpiry(gr).status === "suspended",
+  );
+}
+
+/**
+ * The owner allows a paused grant again (Settings → Account): it works under
+ * the credential's current limits until its original expiry. `by` must be a
+ * verified identity. Throws with a message safe to show the caller.
+ */
+export async function resumeGrantAsync(
+  id: string,
+  by: string,
+): Promise<KeychainGrant> {
+  await ensureKeychainLoaded();
+  const gr = grants.get(id);
+  if (!gr) throw new Error("that grant no longer exists");
+  if (!sameOwner(gr.owner, by))
+    throw new Error("only the credential's owner can allow it again");
+  settleExpiry(gr);
+  if (gr.status !== "suspended")
+    throw new Error(`that grant is ${gr.status}, not paused`);
+  const before = { ...gr };
+  gr.status = "active";
+  delete gr.suspendedAt;
+  try {
+    await persistAsync();
+  } catch (error) {
+    if (grants.get(id) === gr && gr.status === "active") grants.set(id, before);
+    console.error("[keychain] failed to resume a grant:", error);
+    throw new Error("couldn't write the keychain store");
+  }
+  auditAsync({
+    kind: "keychain_grant_resumed",
+    grant_id: id,
+    credential_id: gr.credentialId,
+    session_id: gr.sessionId,
+    by,
+  });
+  return gr;
 }
 
 function mintGrant(ask: KeychainAskRecord, mode: GrantMode): KeychainGrant {
@@ -1543,6 +1639,8 @@ export function consumeGrantForBroker(
   if (!gr.incident && incidentId !== undefined)
     return { error: "unknown grant", status: 404 };
   settleExpiry(gr);
+  if (gr.status === "suspended")
+    return { error: SUSPENDED_GRANT_ERROR, status: 403 };
   if (gr.status !== "active")
     return { error: `grant is ${gr.status}`, status: 403 };
   // A run grant is used only through its run's proxy (useRunGrant).
@@ -1602,12 +1700,7 @@ function normalizePathPrefix(raw: string): string {
  *  routes the request somewhere a prefix check never saw. */
 const ENCODED_SEPARATOR = /%(?:25)*(?:2f|5c|2e)/i;
 
-/** Whether a normalized path is the prefix or sits under it, on a segment
- *  boundary: `/v1/items` covers `/v1/items/1`, never `/v1/items-admin`. */
-export function pathWithinPrefix(path: string, prefix: string): boolean {
-  const base = prefix.endsWith("/") ? prefix : `${prefix}/`;
-  return path === prefix || path.startsWith(base);
-}
+export { pathWithinPrefix };
 
 /** Why the credential's method/path ceiling refuses a call, or null. `path`
  *  is the parsed, normalized path without its query; a query never affects

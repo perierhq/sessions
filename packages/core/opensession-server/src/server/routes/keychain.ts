@@ -17,6 +17,7 @@ import {
   keychainAsksInSession,
   keychainViewFor,
   patchCredentialAsync,
+  resumeGrantAsync,
   revokeGrant,
   setCredentialScopeAsync,
   STALE_CREDENTIAL_ERROR,
@@ -314,6 +315,30 @@ export async function handleKeychainRoutes(
         : Response.json({ error: "no such credential" }, { status: 404 });
     } catch (e: any) {
       return Response.json({ error: e?.message || String(e) }, { status: 403 });
+    }
+  }
+
+  // The owner allows a grant paused by a widening edit again.
+  const resumeMatch = path.match(/^\/api\/keychain\/grants\/([^/]+)\/resume$/);
+  if (resumeMatch && req.method === "POST") {
+    const by = verifiedPerson(ctx);
+    if (!by)
+      return Response.json(
+        { error: "Sign in with GitHub to allow a grant again" },
+        { status: 401 },
+      );
+    try {
+      const grant = await resumeGrantAsync(
+        decodeURIComponent(resumeMatch[1]!),
+        by,
+      );
+      return Response.json({ ok: true, status: grant.status });
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      return Response.json(
+        { error: message },
+        { status: /owner can/.test(message) ? 403 : 409 },
+      );
     }
   }
 
