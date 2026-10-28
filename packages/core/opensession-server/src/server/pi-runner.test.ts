@@ -2714,7 +2714,7 @@ test("without a GitHub App, host runs keep the host's gh login", () => {
       isolated: true,
       hostGithubLogin: true,
     }).GH_CONFIG_DIR,
-  ).toBe("/scratch/session/automation-home-run_unsafe/.config/gh");
+  ).toBe("/scratch/session/gh-config-run_unsafe");
 });
 
 test("automation descendants receive an isolated CLI home", () => {
@@ -2731,8 +2731,27 @@ test("automation descendants receive an isolated CLI home", () => {
     AWS_CONFIG_FILE: "/scratch/session/automation-home-run_unsafe/.aws/config",
     AWS_SHARED_CREDENTIALS_FILE:
       "/scratch/session/automation-home-run_unsafe/.aws/credentials",
-    GH_CONFIG_DIR: "/scratch/session/automation-home-run_unsafe/.config/gh",
+    GH_CONFIG_DIR: "/scratch/session/gh-config-run_unsafe",
   });
+});
+
+test("an automation's CLI home stays the same across the turns of one session", () => {
+  const turn = (runKey: string) =>
+    piBashHomeEnv({
+      runKey,
+      homeKey: "sess/1",
+      scratchDir: "/scratch/session",
+      isolated: true,
+    });
+  expect(turn("turn-1").HOME).toBe("/scratch/session/automation-home-sess_1");
+  expect(turn("turn-2").HOME).toBe(turn("turn-1").HOME);
+  // gh's login stays per turn.
+  expect(turn("turn-1").GH_CONFIG_DIR).toBe(
+    "/scratch/session/gh-config-turn-1",
+  );
+  expect(turn("turn-2").GH_CONFIG_DIR).toBe(
+    "/scratch/session/gh-config-turn-2",
+  );
 });
 
 describe("makePiBashTool exit-gated completion", () => {

@@ -109,6 +109,10 @@ function summarizeBashAuditCommand(
 
 export function piBashHomeEnv(input: {
   runKey: string;
+  /** Names the isolated home: the session's id, so a home (and the tools
+   *  an agent installed in it) stays from one turn to the next. Defaults to
+   *  the run key. gh's config stays per run either way. */
+  homeKey?: string;
   scratchDir?: string;
   isolated: boolean;
   hostHome?: string;
@@ -128,13 +132,18 @@ export function piBashHomeEnv(input: {
       // operator — the same fail-closed posture server-owned gh calls have.
       GH_CONFIG_DIR: `${input.scratchDir || "/tmp"}/gh-config-${key}`,
     };
-  const home = `${input.scratchDir || "/tmp"}/automation-home-${key}`;
+  const homeKey = (input.homeKey || input.runKey).replace(
+    /[^A-Za-z0-9_-]/g,
+    "_",
+  );
+  const home = `${input.scratchDir || "/tmp"}/automation-home-${homeKey}`;
   return {
     HOME: home,
     XDG_CONFIG_HOME: `${home}/.config`,
     AWS_CONFIG_FILE: `${home}/.aws/config`,
     AWS_SHARED_CREDENTIALS_FILE: `${home}/.aws/credentials`,
-    GH_CONFIG_DIR: `${home}/.config/gh`,
+    // A turn never inherits another turn's gh login.
+    GH_CONFIG_DIR: `${input.scratchDir || "/tmp"}/gh-config-${key}`,
   };
 }
 

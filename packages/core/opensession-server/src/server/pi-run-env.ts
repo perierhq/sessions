@@ -115,6 +115,9 @@ export async function buildPiBashEnv(input: {
     runAsHome ??
     piBashHomeEnv({
       runKey,
+      ...(opts.journal?.osSessionId
+        ? { homeKey: opts.journal.osSessionId }
+        : {}),
       scratchDir: opts.scratchDir,
       isolated: Boolean(opts.publicationPolicy),
       hostHome: process.env.HOME,

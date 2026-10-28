@@ -4,7 +4,8 @@
  *
  * The workload never has root, so everything `bootstrapRemoteSandbox` would
  * install as root is baked at build time instead: the workspace packages
- * plus ffmpeg and ImageMagick, the pinned Node, just and gh in /usr/local/bin, and the pinned bun in
+ * plus ffmpeg and ImageMagick, the pinned Node (with corepack's pnpm shim),
+ * just and gh in /usr/local/bin, and the pinned bun in
  * /home/ubuntu/.bun owned by the image's uid 1000. Every download is a
  * release archive checked by SHA-256 (Node, gh and bun against their
  * published sums, just and bun against sums pinned here); no install
@@ -134,6 +135,11 @@ export function podmanContainerfile(
       "cd /",
       'rm -rf "$tmp"',
       `test "$(/usr/local/bin/node -p 'process.versions.node')" = "${REMOTE_NODE_VERSION}"`,
+      // pnpm through Node's own corepack: the shim goes in now, since the
+      // root is read-only at run time. It fetches the repository's
+      // packageManager version (signature-checked) on first use.
+      "corepack enable --install-directory /usr/local/bin pnpm",
+      "test -x /usr/local/bin/pnpm",
     ]),
     run([
       ARCH_GH,
@@ -195,6 +201,12 @@ export function podmanContainerfile(
       'test -z "$(find / -xdev -type f -perm /6000 -print -quit)"',
     ]),
     `ENV PATH=${path}`,
+    // corepack caches what it fetches in the persistent home, whatever
+    // HOME a command runs with, never pins a version into a repository's
+    // package.json, and never waits on a prompt.
+    `ENV COREPACK_HOME=${home}/.cache/node/corepack`,
+    "ENV COREPACK_ENABLE_AUTO_PIN=0",
+    "ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0",
     `USER ${PODMAN_WORKLOAD_USER}`,
     `WORKDIR ${home}`,
     "",

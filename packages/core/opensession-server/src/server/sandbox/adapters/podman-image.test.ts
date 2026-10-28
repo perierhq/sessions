@@ -109,6 +109,26 @@ describe("podman image", () => {
     expect(file.match(/sha256sum -c/g)?.length).toBeGreaterThanOrEqual(5);
   });
 
+  test("provides pnpm through Node's corepack, ready on a read-only root", () => {
+    const enable = lines.findIndex((l) =>
+      l.includes("corepack enable --install-directory /usr/local/bin pnpm"),
+    );
+    expect(enable).toBeGreaterThan(
+      lines.findIndex((l) => l.includes("nodejs.org/download/release")),
+    );
+    expect(file).toContain("test -x /usr/local/bin/pnpm");
+    // Its downloads are cached in the persistent home, never pinned into a
+    // repository's package.json, and never wait on a prompt.
+    expect(lines).toContain(
+      "ENV COREPACK_HOME=/home/ubuntu/.cache/node/corepack",
+    );
+    expect(lines).toContain("ENV COREPACK_ENABLE_AUTO_PIN=0");
+    expect(lines).toContain("ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0");
+    expect(lines.indexOf("ENV COREPACK_ENABLE_AUTO_PIN=0")).toBeLessThan(
+      lines.indexOf("USER 1000:1000"),
+    );
+  });
+
   test("the image signature carries the bun and just pins", () => {
     const signature = podmanImageSignature();
     expect(signature).toStartWith(baseRuntimeSignature());

@@ -162,7 +162,13 @@ export function buildPiToolset(input: {
     ? makeRemoteToolOps(remote, shippedSkillRoots())
     : makeGuardedToolOps(cwd, opts.scratchDir ? [opts.scratchDir] : []);
   const commandEnv = remote
-    ? remoteCommandEnv(bashEnv, remote, runKey, Boolean(opts.publicationPolicy))
+    ? remoteCommandEnv(
+        bashEnv,
+        remote,
+        runKey,
+        Boolean(opts.publicationPolicy),
+        journal?.osSessionId || runKey,
+      )
     : bashEnv;
   const baseCustomTools: ToolDefinition<any, any, any>[] = [
     ...mcpBridge.discoveryTools,
