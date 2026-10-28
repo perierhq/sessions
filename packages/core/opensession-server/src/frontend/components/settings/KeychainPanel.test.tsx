@@ -20,6 +20,47 @@ mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 type AddInput = Parameters<typeof addKeychainCredential>[0];
 const added: AddInput[] = [];
 let addError: Error | undefined;
+const deleted: string[] = [];
+const NOW = Date.now();
+const credentialFixture = (id: string, service: string) => ({
+  id,
+  owner: "Alex",
+  service,
+  host: "api.example.test",
+  createdAt: "2026-10-28T10:00:00.000Z",
+  updatedAt: "2026-10-28T10:00:00.000Z",
+  mine: true,
+});
+const grantFixture = (
+  id: string,
+  credentialId: string,
+  status: "active" | "used" = "active",
+  expiresInMs = 3_600_000,
+) => ({
+  id,
+  credentialId,
+  owner: "Alex",
+  sessionId: `s-${id}`,
+  requestedBy: "Bea",
+  purpose: "read orders",
+  mode: "standing" as const,
+  status,
+  createdAt: "2026-10-28T10:00:00.000Z",
+  expiresAt: new Date(NOW + expiresInMs).toISOString(),
+});
+const keychain = {
+  credentials: [
+    credentialFixture("kc-1", "acme-api"),
+    credentialFixture("kc-2", "acme-unused"),
+  ],
+  grants: [
+    grantFixture("g-1", "kc-1"),
+    grantFixture("g-2", "kc-1"),
+    grantFixture("g-3", "kc-1", "used"),
+    grantFixture("g-4", "kc-1", "active", -60_000),
+  ],
+  asks: [],
+};
 const realApi = await import("../../lib/api");
 mock.module("../../lib/api", () => ({
   ...realApi,
@@ -28,17 +69,27 @@ mock.module("../../lib/api", () => ({
     added.push(input);
     return { credential: { id: "kc-1", ...input } };
   },
+  fetchKeychain: async () => keychain,
+  deleteKeychainCredential: async (id: string) => {
+    deleted.push(id);
+    return { ok: true };
+  },
 }));
 
-const { AddCredentialForm, AddLoginForm } = await import("./KeychainPanel");
+const { AddCredentialForm, AddLoginForm, KeychainSection } =
+  await import("./KeychainPanel");
+const { Button } = await import("../../ui/button");
+const { ConfirmDialog } = await import("../../ui/confirm");
 const { Input } = await import("../../ui/input");
 const { InlineAlert } = await import("../../ui/state");
 const { Field } = await import("../../ui/input");
 const { PlainButton } = await import("../../ui/plain-button");
+const { SettingRow } = await import("./shared");
 const { Modal } = await import("../../ui/modal");
 
 beforeEach(() => {
   added.length = 0;
+  deleted.length = 0;
   addError = undefined;
 });
 afterEach(() => harness.unmountAll());
@@ -216,4 +267,39 @@ test("no chip selected sends no method limit", async () => {
   await type(tree, "Never shown again", "sk-acme");
   await submit(tree);
   expect(added[0]!.allowedMethods).toBeUndefined();
+});
+
+async function deleteAsks(service: string) {
+  const tree = harness.mount(KeychainSection, {});
+  await settle();
+  const row = find(tree.output(), SettingRow, (p) =>
+    JSON.stringify(p.title).includes(service),
+  );
+  const remove = find(
+    row!.props.control,
+    Button,
+    (p) => p.children === "Delete",
+  );
+  // SAFETY: the Delete handler ignores the click event.
+  remove!.props.onClick!(undefined as never);
+  await settle();
+  return { tree, request: find(tree.output(), ConfirmDialog)?.props.request };
+}
+
+test("delete asks first, naming how many live grants lose access", async () => {
+  const { request } = await deleteAsks("acme-api");
+  expect(deleted).toEqual([]);
+  expect(request?.title).toBe("Delete acme-api?");
+  expect(request?.destructive).toBe(true);
+  expect(String(request?.description)).toContain(
+    "2 active grants lose access now",
+  );
+  request!.onConfirm();
+  await settle();
+  expect(deleted).toEqual(["kc-1"]);
+});
+
+test("deleting a credential nobody holds says so", async () => {
+  const { request } = await deleteAsks("acme-unused");
+  expect(String(request?.description)).toContain("No session holds a grant");
 });

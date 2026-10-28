@@ -163,6 +163,28 @@ export function KeychainSection() {
     });
   };
 
+  // Deleting revokes every live grant and stops any scripted run using the
+  // credential, so it is confirmed, with the count from the grants in view.
+  const remove = (c: KeychainCredentialDto) => {
+    const now = Date.now();
+    const live = activeGrants.filter(
+      (g) => g.credentialId === c.id && new Date(g.expiresAt).getTime() > now,
+    ).length;
+    confirm({
+      title: `Delete ${c.service}?`,
+      description:
+        live === 0
+          ? "No session holds a grant for it. This can't be undone."
+          : `${live} active ${live === 1 ? "grant loses" : "grants lose"} access now. This can't be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: () =>
+        void deleteKeychainCredential(c.id)
+          .then(reload)
+          .catch((e) => setError(e.message)),
+    });
+  };
+
   return (
     <>
       {error && (
@@ -250,15 +272,7 @@ export function KeychainSection() {
                         {c.scope === "workspace" ? "Make personal" : "Share"}
                       </Button>
                     )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() =>
-                        deleteKeychainCredential(c.id)
-                          .then(reload)
-                          .catch((e) => setError(e.message))
-                      }
-                    >
+                    <Button size="sm" variant="ghost" onClick={() => remove(c)}>
                       Delete
                     </Button>
                   </div>
