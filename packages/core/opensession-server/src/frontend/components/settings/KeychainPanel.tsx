@@ -24,7 +24,7 @@ import { Button } from "../../ui/button";
 import { Checkbox } from "../../ui/checkbox";
 import { useConfirm } from "../../ui/confirm";
 import { Field, Input } from "../../ui/input";
-import { FIELD_HINT } from "../../lib/incident-settings-classes";
+import { DIALOG_INPUT, FIELD_HINT } from "../../lib/incident-settings-classes";
 import {
   ROLE_CHIP_OFF,
   ROLE_CHIP_ON,
@@ -78,6 +78,7 @@ export function KeychainSection() {
         <>
           <Button
             size="sm"
+            className="phone:min-h-11"
             variant="ghost"
             disabled={!data}
             onClick={() => setAdding("login")}
@@ -86,6 +87,7 @@ export function KeychainSection() {
           </Button>
           <Button
             size="sm"
+            className="phone:min-h-11"
             variant="ghost"
             disabled={!data}
             onClick={() => setAdding("api")}
@@ -266,13 +268,19 @@ export function KeychainSection() {
                     {c.kind !== "login" && (
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => setScope(c)}
                       >
                         {c.scope === "workspace" ? "Make personal" : "Share"}
                       </Button>
                     )}
-                    <Button size="sm" variant="ghost" onClick={() => remove(c)}>
+                    <Button
+                      size="sm"
+                      className="phone:min-h-11"
+                      variant="ghost"
+                      onClick={() => remove(c)}
+                    >
                       Delete
                     </Button>
                   </div>
@@ -323,6 +331,7 @@ export function KeychainSection() {
                     <>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => answer(a.id, "decline")}
                       >
@@ -330,6 +339,7 @@ export function KeychainSection() {
                       </Button>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="primary"
                         onClick={() => answer(a.id, "release")}
                       >
@@ -340,6 +350,7 @@ export function KeychainSection() {
                     <>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => answer(a.id, "decline")}
                       >
@@ -347,6 +358,7 @@ export function KeychainSection() {
                       </Button>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="primary"
                         onClick={() => answer(a.id, "run")}
                       >
@@ -357,6 +369,7 @@ export function KeychainSection() {
                     <>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => answer(a.id, "decline")}
                       >
@@ -364,6 +377,7 @@ export function KeychainSection() {
                       </Button>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => answer(a.id, "standing")}
                       >
@@ -371,6 +385,7 @@ export function KeychainSection() {
                       </Button>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="primary"
                         onClick={() => answer(a.id, "once")}
                       >
@@ -423,6 +438,7 @@ export function KeychainSection() {
                 control={
                   <Button
                     size="sm"
+                    className="phone:min-h-11"
                     variant="ghost"
                     onClick={() =>
                       revokeKeychainGrant(g.id)
@@ -522,6 +538,7 @@ export function AddCredentialForm({
         <div className="flex flex-col gap-3">
           <Field label="Service">
             <Input
+              className={DIALOG_INPUT}
               ref={serviceRef}
               value={service}
               onChange={(e) => setService(e.target.value)}
@@ -532,6 +549,7 @@ export function AddCredentialForm({
           </Field>
           <Field label="API host">
             <Input
+              className={DIALOG_INPUT}
               value={host}
               onChange={(e) => setHost(e.target.value)}
               placeholder="api.vercel.com"
@@ -541,6 +559,7 @@ export function AddCredentialForm({
           </Field>
           <Field label="Secret">
             <Input
+              className={DIALOG_INPUT}
               type="password"
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
@@ -551,6 +570,7 @@ export function AddCredentialForm({
           <div className="flex flex-col gap-1.5">
             <Field label="Description">
               <Input
+                className={DIALOG_INPUT}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="What it is for"
@@ -566,6 +586,7 @@ export function AddCredentialForm({
           <div className="flex flex-col gap-1.5">
             <Field label="Injection header">
               <Input
+                className={DIALOG_INPUT}
                 value={header}
                 onChange={(e) => setHeader(e.target.value)}
                 placeholder="Authorization"
@@ -592,14 +613,17 @@ export function AddCredentialForm({
             >
               Allowed methods
             </span>
-            <div className="flex flex-wrap gap-x-1.5">
+            {/* Narrower than the role chips so all six fit one dialog row;
+                each still has a 44px target through the chip's ::before. */}
+            <div className="flex flex-wrap gap-x-1">
               {KEYCHAIN_METHODS.map((method) => (
                 <PlainButton
                   key={method}
                   aria-pressed={methods.includes(method)}
-                  className={
-                    methods.includes(method) ? ROLE_CHIP_ON : ROLE_CHIP_OFF
-                  }
+                  className={cn(
+                    methods.includes(method) ? ROLE_CHIP_ON : ROLE_CHIP_OFF,
+                    "px-2",
+                  )}
                   onClick={() => toggleMethod(method)}
                 >
                   {method}
@@ -613,6 +637,7 @@ export function AddCredentialForm({
           <div className="flex flex-col gap-1.5">
             <Field label="Allowed path prefixes">
               <Input
+                className={DIALOG_INPUT}
                 value={prefixes}
                 onChange={(e) => setPrefixes(e.target.value)}
                 placeholder="/v1/orders"
@@ -658,12 +683,21 @@ export function AddCredentialForm({
         <Modal.Footer>
           <Modal.Close
             render={
-              <Button variant="ghost" disabled={busy}>
+              <Button
+                variant="ghost"
+                disabled={busy}
+                className="phone:min-h-11"
+              >
                 Cancel
               </Button>
             }
           />
-          <Button variant="primary" type="submit" disabled={busy || !ready}>
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={busy || !ready}
+            className="phone:min-h-11"
+          >
             {busy ? "Saving…" : "Add credential"}
           </Button>
         </Modal.Footer>
@@ -728,6 +762,7 @@ export function AddLoginForm({
         <div className="flex flex-col gap-3">
           <Field label="Service">
             <Input
+              className={DIALOG_INPUT}
               ref={serviceRef}
               value={service}
               onChange={(e) => setService(e.target.value)}
@@ -738,6 +773,7 @@ export function AddLoginForm({
           </Field>
           <Field label="Sign-in page">
             <Input
+              className={DIALOG_INPUT}
               value={loginUrl}
               onChange={(e) => setLoginUrl(e.target.value)}
               placeholder="https://app.example.test/login"
@@ -747,6 +783,7 @@ export function AddLoginForm({
           </Field>
           <Field label="Username">
             <Input
+              className={DIALOG_INPUT}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="qa@example.test"
@@ -757,6 +794,7 @@ export function AddLoginForm({
           </Field>
           <Field label="Password">
             <Input
+              className={DIALOG_INPUT}
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -767,6 +805,7 @@ export function AddLoginForm({
           <div className="flex flex-col gap-1.5">
             <Field label="Description">
               <Input
+                className={DIALOG_INPUT}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="What it is for"
@@ -782,12 +821,21 @@ export function AddLoginForm({
         <Modal.Footer>
           <Modal.Close
             render={
-              <Button variant="ghost" disabled={busy}>
+              <Button
+                variant="ghost"
+                disabled={busy}
+                className="phone:min-h-11"
+              >
                 Cancel
               </Button>
             }
           />
-          <Button variant="primary" type="submit" disabled={busy || !ready}>
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={busy || !ready}
+            className="phone:min-h-11"
+          >
             {busy ? "Saving…" : "Add login"}
           </Button>
         </Modal.Footer>
