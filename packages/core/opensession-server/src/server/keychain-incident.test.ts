@@ -8,6 +8,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddCredentialInput } from "./keychain";
+import { fetchBackedNet } from "./testing/pinned-fetch-double";
 
 const STORE = join(mkdtempSync(join(tmpdir(), "kc-incident-")), "kc.json");
 process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
@@ -88,7 +89,7 @@ test("mint once, reuse while live, refuse after it is spent", async () => {
     path: "/v1/pool",
     purpose: "check",
     incident: { incidentId: "inc-1", role: "investigator" },
-    fetchImpl,
+    net: fetchBackedNet(fetchImpl),
   });
   expect(out).toMatchObject({ status: 200 });
   expect(
@@ -111,7 +112,7 @@ test("an incident call never mints a workspace grant", async () => {
       path: "/",
       purpose: "x",
       incident: { incidentId: "inc-1", role: "investigator" },
-      fetchImpl,
+      net: fetchBackedNet(fetchImpl),
     }),
   ).toEqual({ error: "This agent holds no grant for proxy-api" });
   expect(seen).toEqual([]);
@@ -134,7 +135,7 @@ test("incident grants are invisible to the interactive path and to other inciden
       credential: cred.id,
       method: "GET",
       path: "/",
-      fetchImpl,
+      net: fetchBackedNet(fetchImpl),
     }),
   ).toMatchObject({ error: expect.stringContaining("no live grant") });
   expect(
@@ -145,7 +146,7 @@ test("incident grants are invisible to the interactive path and to other inciden
       path: "/",
       purpose: "x",
       incident: { incidentId: "inc-2", role: "investigator" },
-      fetchImpl,
+      net: fetchBackedNet(fetchImpl),
     }),
   ).toEqual({ error: "This agent holds no grant for proxy-api" });
   expect(kc.consumeGrantForBroker(g.id, "s-1", "GET", "/")).toEqual({

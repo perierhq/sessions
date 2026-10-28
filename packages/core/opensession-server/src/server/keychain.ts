@@ -74,8 +74,10 @@
 import { stateDir } from "./paths";
 import { existsSync, readFileSync, chmodSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
 import { audit, auditAsync } from "./audit";
+import { isPrivateHostName } from "./shared/network-address";
 import {
   resolveTeammate,
   teammateByGithubLogin,
@@ -518,6 +520,28 @@ export function credentialSpecHost(spec: CredentialSpec): string {
 // bidi-override characters that could make it say something else.
 const UNSAFE_DISPLAY_CHARS = /[\x00-\x1f\x7f‪-‮⁦-⁩]/;
 
+/** The longest purpose or description kept. */
+export const MAX_DISPLAY_TEXT_CHARS = 500;
+
+/** Model-authored or pasted text shown to a person: control and
+ *  bidi-override characters become spaces, so it can't make a card or a
+ *  message say something else, and it stops at `max` characters. */
+export function displaySafe(
+  text: string | undefined,
+  max = MAX_DISPLAY_TEXT_CHARS,
+): string | undefined {
+  return text
+    ?.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, " ")
+    .trim()
+    .slice(0, max)
+    .trim();
+}
+
+/** A purpose as kept: display-safe, at most 500 characters, "" if none. */
+function safePurpose(raw: string | undefined): string {
+  return displaySafe(raw) ?? "";
+}
+
 /**
  * Validate and normalize everything about a credential except its owner and
  * secret. Throws with a message safe to show the caller. Shared by the HTTP
@@ -557,6 +581,15 @@ export function normalizeCredentialSpec(
   if (!host || !/^[a-z0-9][a-z0-9.-]*$/.test(host) || host.includes(":")) {
     throw new Error("host must be a bare host name (no scheme, port, or path)");
   }
+  // The broker resolves the name and refuses private addresses on every
+  // call (shared/pinned-fetch.ts); a name that can only be private, or an
+  // address in place of a name, is refused here so it is never saved.
+  if (isIP(host))
+    throw new Error("host must be a host name, not an IP address");
+  if (isPrivateHostName(host))
+    throw new Error(
+      `host must be a public host name: ${host} only names something on a private network`,
+    );
   if (taken(service)) {
     throw new Error(`a credential for service "${service}" already exists`);
   }
@@ -568,11 +601,8 @@ export function normalizeCredentialSpec(
   }
   const prefixes = (input.allowedPathPrefixes || [])
     .map((p) => p.trim())
-    .filter(Boolean);
-  for (const p of prefixes) {
-    if (!p.startsWith("/"))
-      throw new Error(`path prefix must start with /: ${p}`);
-  }
+    .filter(Boolean)
+    .map(normalizePathPrefix);
   let injection: NormalizedCredentialSpec["injection"];
   if (input.injection) {
     const { header, scheme } = input.injection;
@@ -585,7 +615,7 @@ export function normalizeCredentialSpec(
       ...(scheme !== undefined ? { scheme } : {}),
     };
   }
-  const description = input.description?.trim();
+  const description = displaySafe(input.description);
   return {
     service,
     host,
@@ -629,7 +659,7 @@ function normalizeLoginSpec(
     throw new Error("a login needs a username of at most 200 characters");
   if (taken)
     throw new Error(`a credential for service "${service}" already exists`);
-  const description = input.description?.trim();
+  const description = displaySafe(input.description);
   return {
     service,
     host: url.hostname,
@@ -645,13 +675,17 @@ function normalizeLoginSpec(
 function insertCredential(input: AddCredentialInput): KeychainCredential {
   const spec = normalizeCredentialSpec(input);
   if (!input.secret.trim()) throw new Error("secret is empty");
+  assertSecretChars(spec.kind === "login" ? input.secret : input.secret.trim());
   const now = new Date().toISOString();
   const cred: KeychainCredential = {
     id: `kc-${crypto.randomUUID()}`,
     owner: ownerName(input.owner),
     ...spec,
     // A password may begin or end with a space; an API token never does.
-    secret: spec.kind === "login" ? input.secret : input.secret.trim(),
+    secret:
+      spec.kind === "login"
+        ? input.secret
+        : apiSecret(input.secret, spec.injection),
     createdAt: now,
     updatedAt: now,
   };
@@ -926,9 +960,10 @@ export async function updateCredentialAsync(
         ? undefined
         : cred.kind === "login"
           ? input.secret
-          : input.secret.trim();
+          : apiSecret(input.secret, spec.injection);
     if (secret !== undefined && !secret.trim())
       throw new Error("secret is empty");
+    if (secret !== undefined) assertSecretChars(secret);
     if (!changed.length && secret === undefined)
       throw new Error("nothing to change");
     // A new object, never an edit of the old one: a broker call or scripted
@@ -1178,7 +1213,7 @@ function insertImplicitGrant(input: {
       owner: input.cred.owner,
       sessionId: input.sessionId,
       requestedBy: input.requestedBy,
-      purpose: input.purpose,
+      purpose: safePurpose(input.purpose),
       requestedMode: input.mode,
       ...(input.run ? { run: input.run } : {}),
       status: "approved",
@@ -1331,6 +1366,8 @@ export function consumeGrantForBroker(
     };
   const refusal = ceilingRefusal(cred, method, path);
   if (refusal) return { error: refusal, status: 403 };
+  const unsendable = injectedHeaderProblem(cred);
+  if (unsendable) return { error: unsendable, status: 409 };
   if (gr.mode === "once") {
     gr.status = "used";
     gr.usedAt = new Date().toISOString();
@@ -1340,8 +1377,35 @@ export function consumeGrantForBroker(
   return { credential: cred, grant: gr };
 }
 
+/** A path prefix as stored: whole segments, without a trailing slash (`/`
+ *  alone means any path). Throws for one that can't name a segment. */
+function normalizePathPrefix(raw: string): string {
+  if (!raw.startsWith("/"))
+    throw new Error(`path prefix must start with /: ${raw}`);
+  if (/[%?#\\]/.test(raw))
+    throw new Error(
+      `path prefix must be a plain path, without %, ?, # or \\: ${raw}`,
+    );
+  if (raw.split("/").some((segment) => segment === "." || segment === ".."))
+    throw new Error(`path prefix can't contain . or .. segments: ${raw}`);
+  return raw.replace(/\/+$/, "") || "/";
+}
+
+/** A separator or dot left percent-encoded (once or more) in a normalized
+ *  path. URL parsing keeps them encoded, and an upstream that decodes them
+ *  routes the request somewhere a prefix check never saw. */
+const ENCODED_SEPARATOR = /%(?:25)*(?:2f|5c|2e)/i;
+
+/** Whether a normalized path is the prefix or sits under it, on a segment
+ *  boundary: `/v1/items` covers `/v1/items/1`, never `/v1/items-admin`. */
+export function pathWithinPrefix(path: string, prefix: string): boolean {
+  const base = prefix.endsWith("/") ? prefix : `${prefix}/`;
+  return path === prefix || path.startsWith(base);
+}
+
 /** Why the credential's method/path ceiling refuses a call, or null. `path`
- *  must already be parsed and normalized. */
+ *  is the parsed, normalized path without its query; a query never affects
+ *  the match. */
 function ceilingRefusal(
   cred: KeychainCredential,
   method: string,
@@ -1350,11 +1414,14 @@ function ceilingRefusal(
   const m = method.toUpperCase();
   if (cred.allowedMethods?.length && !cred.allowedMethods.includes(m))
     return `method ${m} is not allowed for this credential (allowed: ${cred.allowedMethods.join(", ")})`;
-  if (
-    cred.allowedPathPrefixes?.length &&
-    !cred.allowedPathPrefixes.some((p) => path.startsWith(p))
-  )
-    return `path is outside this credential's allowed prefixes (${cred.allowedPathPrefixes.join(", ")})`;
+  const prefixes = cred.allowedPathPrefixes;
+  if (!prefixes?.length) return null;
+  if (ENCODED_SEPARATOR.test(path))
+    return "path can't contain an encoded /, \\ or . (%2F, %5C, %2E) when this credential limits its paths";
+  if (path.split("/").some((segment) => segment === "." || segment === ".."))
+    return "path can't contain . or .. segments when this credential limits its paths";
+  if (!prefixes.some((p) => pathWithinPrefix(path, p)))
+    return `path is outside this credential's allowed prefixes (${prefixes.join(", ")})`;
   return null;
 }
 
@@ -1424,7 +1491,7 @@ export async function incidentGrantFor(input: {
     owner: cred.owner,
     sessionId: input.sessionId,
     requestedBy: `incident ${input.incident.incidentId} ${input.incident.role}`,
-    purpose: input.purpose.trim().slice(0, MAX_INCIDENT_PURPOSE_CHARS),
+    purpose: safePurpose(input.purpose).slice(0, MAX_INCIDENT_PURPOSE_CHARS),
     mode: input.mode,
     status: "active",
     createdAt: new Date(now).toISOString(),
@@ -1590,6 +1657,8 @@ export function incidentGrantHeaders(input: {
     };
   const refusal = ceilingRefusal(cred, input.method, input.path);
   if (refusal) return { error: refusal };
+  const unsendable = injectedHeaderProblem(cred);
+  if (unsendable) return { error: unsendable };
   if (gr.mode === "once") {
     gr.status = "used";
     gr.usedAt = new Date().toISOString();
@@ -1743,7 +1812,7 @@ function workspaceRunGrants(
   },
   metas: KeychainCredentialMeta[],
 ): { grants: KeychainGrant[] } | { error: string } {
-  const purpose = input.purpose?.trim();
+  const purpose = safePurpose(input.purpose);
   if (!purpose)
     return {
       error:
@@ -1865,7 +1934,9 @@ export function useRunGrant(
   if (gr.implicit && !isWorkspaceCredential(cred))
     return { error: "the run's grant is revoked", status: 403 };
   const refusal = ceilingRefusal(cred, method, path);
-  return refusal ? { error: refusal, status: 403 } : { credential: cred };
+  if (refusal) return { error: refusal, status: 403 };
+  const unsendable = injectedHeaderProblem(cred);
+  return unsendable ? { error: unsendable, status: 409 } : { credential: cred };
 }
 
 export interface LoginRelease {
@@ -2023,13 +2094,72 @@ export function activeGrantFor(
   );
 }
 
+/** The header a credential rides in and the scheme before its secret:
+ *  `Authorization: Bearer` unless the credential says otherwise. Header
+ *  names are case-insensitive, so `authorization` gets Bearer too. */
+export function credentialInjection(
+  injection: KeychainCredential["injection"],
+): { header: string; scheme: string } {
+  const header = injection?.header || "Authorization";
+  const scheme =
+    injection?.scheme ??
+    (header.toLowerCase() === "authorization" ? "Bearer" : "");
+  return { header, scheme };
+}
+
 export function brokerHeaders(
   cred: KeychainCredential,
 ): Record<string, string> {
-  const header = cred.injection?.header || "Authorization";
-  const scheme =
-    cred.injection?.scheme ?? (header === "Authorization" ? "Bearer" : "");
+  const { header, scheme } = credentialInjection(cred.injection);
   return { [header]: scheme ? `${scheme} ${cred.secret}` : cred.secret };
+}
+
+/** What no header value may carry: CR, LF, NUL and the other controls. A
+ *  tab is allowed, as HTTP allows it. */
+const UNSAFE_HEADER_VALUE = /[\x00-\x08\x0a-\x1f\x7f]/;
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/** Why these request headers can't be sent, or null. Checked before a grant
+ *  is spent, so a header that would make the request throw costs nothing. */
+export function headerProblem(headers: Record<string, string>): string | null {
+  for (const [name, value] of Object.entries(headers)) {
+    if (!HEADER_NAME.test(name))
+      return `${JSON.stringify(name)} is not a header name`;
+    if (UNSAFE_HEADER_VALUE.test(value))
+      return `header ${name} contains a line break or another control character`;
+  }
+  return null;
+}
+
+/** The injected header's problem, said without naming the secret. */
+function injectedHeaderProblem(cred: KeychainCredential): string | null {
+  return headerProblem(brokerHeaders(cred))
+    ? `${cred.service}'s secret can't be sent in a header (it contains a control character); its owner needs to replace it`
+    : null;
+}
+
+/** A secret with a line break or another control character, refused at add
+ *  and rotate: it can never be sent in a header, or typed as a password. */
+function assertSecretChars(secret: string): void {
+  if (/[\x00-\x1f\x7f]/.test(secret))
+    throw new Error(
+      "secret contains a line break or another control character; paste it as one line",
+    );
+}
+
+/** An API secret as stored: trimmed, and without the scheme the broker adds
+ *  itself, so a pasted `Bearer sk-…` is not sent as `Bearer Bearer sk-…`. */
+function apiSecret(
+  raw: string,
+  injection: KeychainCredential["injection"],
+): string {
+  const secret = raw.trim();
+  const { scheme } = credentialInjection(injection);
+  if (!scheme) return secret;
+  const pasted = secret.match(/^(\S+)\s+(\S.*)$/s);
+  return pasted && pasted[1]!.toLowerCase() === scheme.toLowerCase()
+    ? pasted[2]!
+    : secret;
 }
 
 /** Scrub the secret from a text body the remote echoed back: verbatim, and
@@ -2161,7 +2291,7 @@ export function requestCredential(
       error: `no credential matches "${input.credential}"${known ? ` (known: ${known})` : ""}`,
     };
   }
-  const purpose = input.purpose.trim();
+  const purpose = safePurpose(input.purpose);
   if (!purpose)
     return {
       error: "a purpose is required — the owner approves that, not the tool",
@@ -2500,7 +2630,7 @@ export function requestCredentialRun(
     return {
       error: `two of these credentials would share the variable ${clash}; run them separately`,
     };
-  const purpose = input.purpose.trim();
+  const purpose = safePurpose(input.purpose);
   if (!purpose)
     return {
       error: "a purpose is required — the owner approves that, not the tool",

@@ -31,6 +31,7 @@ const STORE = join(dir, "kc.json");
 process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
 
 import type { StartRunInput } from "./keychain-runs";
+import { fetchBackedNet } from "./testing/pinned-fetch-double";
 
 const kc = await import("./keychain");
 const runs = await import("./keychain-runs");
@@ -81,7 +82,10 @@ const fetchImpl = (async (url: URL, init: RequestInit) => {
     { headers: { "x-request-id": `req-${seen.length}` } },
   );
 }) as unknown as typeof fetch;
-const deps = { fetchImpl, audit: (e: Record<string, any>) => events.push(e) };
+const deps = {
+  net: fetchBackedNet(fetchImpl),
+  audit: (e: Record<string, any>) => events.push(e),
+};
 
 beforeEach(() => {
   rmSync(scriptRoot, { recursive: true, force: true });
@@ -238,6 +242,86 @@ console.log(JSON.stringify({ statuses, leaked }));
     // The grant started one run and is spent.
     expect(kc.listGrants({ sessionId: SESSION })[0]!.status).toBe("used");
     expect(await start(command)).toHaveProperty("error");
+  });
+
+  test("a host that resolves to a private address is refused, not called", async () => {
+    const cred = credential();
+    const command = script(
+      "private.ts",
+      `const res = await fetch(process.env.KEYCHAIN_PROXY_URL + "/v1/ping");
+console.log(JSON.stringify({ status: res.status, text: await res.text() }));`,
+    );
+    grantRun(cred.id, command);
+    const run = await started(command, {
+      deps: { ...deps, net: fetchBackedNet(fetchImpl, ["10.0.0.5"]) },
+    });
+    const done = await runs.waitForCredentialRun(run.id, 30_000);
+    const out = JSON.parse(
+      readFileSync(done!.logPath, "utf-8").trim().split("\n").at(-1)!,
+    );
+    expect(out.status).toBe(502);
+    expect(out.text).toContain("private address");
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a script's Accept-Encoding never reaches the API: only what the proxy can decode is asked for", async () => {
+    const cred = credential();
+    const command = script(
+      "zstd-ask.ts",
+      `const res = await fetch(process.env.KEYCHAIN_PROXY_URL + "/v1/ping", {
+  headers: { "accept-encoding": "zstd" },
+});
+console.log(JSON.stringify({ status: res.status, leaked: (await res.text()).includes(${JSON.stringify(SECRET)}) }));`,
+    );
+    grantRun(cred.id, command);
+    const run = await started(command);
+    const done = await runs.waitForCredentialRun(run.id, 30_000);
+    const out = JSON.parse(
+      readFileSync(done!.logPath, "utf-8").trim().split("\n").at(-1)!,
+    );
+    expect(out).toEqual({ status: 200, leaked: false });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.headers.get("accept-encoding")).toBe("gzip, deflate, br");
+  });
+
+  test("a body in an encoding the proxy can't decode is refused, not passed on unscrubbed", async () => {
+    const cred = credential();
+    const command = script(
+      "zstd-reply.ts",
+      `const res = await fetch(process.env.KEYCHAIN_PROXY_URL + "/v1/ping", { decompress: false });
+const text = new TextDecoder().decode(await res.arrayBuffer());
+console.log(JSON.stringify({
+  status: res.status,
+  encoding: res.headers.get("content-encoding"),
+  leaked: text.includes(${JSON.stringify(SECRET)}),
+  text,
+}));`,
+    );
+    grantRun(cred.id, command);
+    // An API that compresses unasked, in a coding the proxy can't undo.
+    const encoded = (async (url: URL, init: RequestInit) => {
+      seen.push({
+        url: String(url),
+        method: String(init.method),
+        headers: new Headers(init.headers),
+      });
+      return new Response(`{"echoed":"${SECRET}"}`, {
+        headers: {
+          "content-type": "application/json",
+          "content-encoding": "zstd",
+        },
+      });
+    }) as unknown as typeof fetch;
+    const run = await started(command, {
+      deps: { ...deps, net: fetchBackedNet(encoded) },
+    });
+    const done = await runs.waitForCredentialRun(run.id, 30_000);
+    const out = JSON.parse(
+      readFileSync(done!.logPath, "utf-8").trim().split("\n").at(-1)!,
+    );
+    expect(out).toMatchObject({ status: 502, encoding: null, leaked: false });
+    expect(out.text).toContain("zstd");
+    expect(seen).toHaveLength(1);
   });
 
   test("the URL is refused once the process exits", async () => {
@@ -428,7 +512,7 @@ describe("a scripted run with two credentials", () => {
     seen.push({ url: String(url), method: String(init.method), headers });
     return Response.json({ got: Object.fromEntries(headers) });
   }) as unknown as typeof fetch;
-  const twoDeps = { ...deps, fetchImpl: echoing };
+  const twoDeps = { ...deps, net: fetchBackedNet(echoing) };
 
   function credentials() {
     const payments = kc.addCredential({

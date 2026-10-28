@@ -10,6 +10,7 @@ import { agentAccessFixture } from "../testing/access-fixture";
 import { useIncidentTestKernel } from "../testing/kernel-fixture";
 import { AgentAccessError, __setBindingResolverForTest } from "./resolve";
 import type { IncidentToolContext } from "./tool-context";
+import { fetchBackedNet } from "../../testing/pinned-fetch-double";
 
 const STORE = join(
   mkdtempSync(join(tmpdir(), "kc-incident-calls-")),
@@ -91,7 +92,7 @@ test("a granted credential is called through a minted incident grant and audited
         path: "/v1/pool?key=zzz",
         purpose: "Check the pool",
       },
-      { fetchImpl },
+      { net: fetchBackedNet(fetchImpl) },
     ),
   ).toMatchObject({ status: 200 });
   expect(seen).toEqual(["https://api.proxy.example.test/v1/pool?key=zzz"]);
@@ -113,7 +114,7 @@ test("a granted credential is called through a minted incident grant and audited
     await incidentCredentialCall(
       c,
       { credential: "proxy-api", method: "GET", path: "/", purpose: "again" },
-      { fetchImpl },
+      { net: fetchBackedNet(fetchImpl) },
     ),
   ).toEqual({ error: "This agent already used its one call to proxy-api" });
 });
@@ -125,7 +126,10 @@ test("ungranted credentials and missing purposes are refused before the keychain
       path: "/",
       purpose: "x",
     }),
-  ).toEqual({ error: "proxy-api is not granted to this agent" });
+  ).toEqual({
+    error:
+      "proxy-api is not granted to this agent; describe_access lists the credentials it was lent",
+  });
   const c = ctx([granted("kc-x")]);
   expect(
     await incidentCredentialCall(c, {
@@ -151,7 +155,7 @@ test("the grant is minted at the mode the fresh access names, not the caller's",
   await incidentCredentialCall(
     c,
     { credential: cred.id, method: "GET", path: "/", purpose: "x" },
-    { fetchImpl },
+    { net: fetchBackedNet(fetchImpl) },
   );
   expect(
     kit.audits.find((e) => e.kind === "incident_credential_call"),
@@ -161,9 +165,11 @@ test("the grant is minted at the mode the fresh access names, not the caller's",
     await incidentCredentialCall(
       c,
       { credential: cred.id, method: "GET", path: "/", purpose: "x" },
-      { fetchImpl },
+      { net: fetchBackedNet(fetchImpl) },
     ),
-  ).toEqual({ error: `${cred.id} is not granted to this agent` });
+  ).toEqual({
+    error: `${cred.id} is not granted to this agent; describe_access lists the credentials it was lent`,
+  });
   expect(kc.listIncidentGrants({ incidentId: "inc-1" })).toEqual([]);
 });
 test("a refused resolution mints nothing", async () => {
@@ -188,7 +194,7 @@ test("a refused resolution mints nothing", async () => {
     await incidentCredentialCall(
       c,
       { credential: cred.id, method: "GET", path: "/", purpose: "x" },
-      { fetchImpl },
+      { net: fetchBackedNet(fetchImpl) },
     ),
   ).toEqual({
     error:
@@ -207,7 +213,7 @@ test("two lent credentials with the same service name are refused by name, not g
     await incidentCredentialCall(
       c,
       { credential: "proxy-api", method: "GET", path: "/", purpose: "Check" },
-      { fetchImpl },
+      { net: fetchBackedNet(fetchImpl) },
     ),
   ).toEqual(ambiguous);
   expect(await freshGrantedCredential(c, "Proxy-API")).toEqual(ambiguous);

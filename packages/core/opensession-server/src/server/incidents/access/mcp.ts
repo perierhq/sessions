@@ -21,6 +21,7 @@ import {
   createSdkMcpServer,
   tool,
 } from "../../inprocess-mcp";
+import { ensureKeychainLoaded, findCredential } from "../../keychain";
 import { BROKER_METHODS } from "../../keychain-broker";
 import { applyFindingsNow } from "../findings/apply";
 import { withSessionQueue } from "../findings/store";
@@ -148,15 +149,28 @@ function describe(
       ...(h.ssh ? { ssh: h.ssh } : {}),
       access: h.access,
     })),
-    credentials: access.credentials.map((c) => ({
-      service: c.service,
-      mode: c.mode,
-    })),
+    credentials: access.credentials.map(describeCredential),
     egress: access.egress
       ? { route: access.egress.route, hosts: access.egress.hosts }
       : null,
     narrowed: access.narrowed,
     ...(note ? { note } : {}),
+  };
+}
+
+/** A lent credential as the agent needs it to call: its host and limits
+ *  from the keychain, never its secret. The keychain is loaded by the
+ *  caller. */
+function describeCredential(c: AgentAccess["credentials"][number]) {
+  const meta = findCredential(c.credential);
+  return {
+    service: c.service,
+    mode: c.mode,
+    host: c.host,
+    ...(meta?.description ? { description: meta.description } : {}),
+    methods: meta?.allowedMethods?.length ? meta.allowedMethods : "any",
+    paths: meta?.allowedPathPrefixes?.length ? meta.allowedPathPrefixes : "any",
+    ...(meta?.statusOnly ? { statusOnly: true } : {}),
   };
 }
 
@@ -193,15 +207,16 @@ export function incidentAccessToolDefinitions(ctx: Ctx): AnyTool[] {
   const tools: AnyTool[] = [
     tool(
       "describe_access",
-      `What this incident agent may reach right now: connections (and any it can't open, with why), mode, repos, read-only hosts, borrowed credentials (by service, never a secret) and the egress route. Call it first. ${AUDITED}`,
+      `What this incident agent may reach right now: connections (and any it can't open, with why), mode, repos, read-only hosts, borrowed credentials and the egress route. Each credential lists its host, the methods and path prefixes call_credential may use ("any" when unlimited; a prefix covers the paths under it), and statusOnly when a call returns only the HTTP status; never a secret. Call it first. ${AUDITED}`,
       {},
-      guarded(async (fresh, _args, later) =>
-        describe(
+      guarded(async (fresh, _args, later) => {
+        await ensureKeychainLoaded();
+        return describe(
           fresh.access,
           later,
           await unavailableConnections(fresh.access.connections),
-        ),
-      ),
+        );
+      }),
     ),
     // The session, incident and role come from the binding, never from the
     // arguments: an agent can only cite and change its own findings. The
@@ -264,7 +279,7 @@ export function incidentAccessToolDefinitions(ctx: Ctx): AnyTool[] {
     tools.push(
       tool(
         "call_credential",
-        `Call the API of a credential this project lent you, through the keychain broker: the secret is added to the request and never shown to you. Say why in purpose. A credential lent once allows one call. ${AUDITED}`,
+        `Call the API of a credential this project lent you, through the keychain broker: the secret is added to the request and never shown to you. describe_access lists each credential's host, the methods and path prefixes it allows, and whether it returns only the status; pass the path and query on that host, not a full URL. Say why in purpose. A credential lent once allows one call. ${AUDITED}`,
         {
           credential: z.string().describe("Credential service or id"),
           method: z.enum(BROKER_METHODS),

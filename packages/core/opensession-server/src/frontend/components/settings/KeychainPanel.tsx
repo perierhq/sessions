@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type FormEvent,
@@ -10,17 +11,26 @@ import {
   answerKeychainAsk,
   deleteKeychainCredential,
   fetchKeychain,
+  KEYCHAIN_METHODS,
   revokeKeychainGrant,
   setKeychainCredentialScope,
   type KeychainAskDto,
   type KeychainCredentialDto,
   type KeychainGrantDto,
+  type KeychainMethod,
 } from "../../lib/api";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Checkbox } from "../../ui/checkbox";
 import { useConfirm } from "../../ui/confirm";
 import { Field, Input } from "../../ui/input";
+import { DIALOG_INPUT, FIELD_HINT } from "../../lib/incident-settings-classes";
+import {
+  ROLE_CHIP_OFF,
+  ROLE_CHIP_ON,
+} from "../../lib/project-settings-classes";
+import { cn } from "../../ui/cn";
+import { PlainButton } from "../../ui/plain-button";
 import { Modal } from "../../ui/modal";
 import {
   SettingCard,
@@ -68,6 +78,7 @@ export function KeychainSection() {
         <>
           <Button
             size="sm"
+            className="phone:min-h-11"
             variant="ghost"
             disabled={!data}
             onClick={() => setAdding("login")}
@@ -76,6 +87,7 @@ export function KeychainSection() {
           </Button>
           <Button
             size="sm"
+            className="phone:min-h-11"
             variant="ghost"
             disabled={!data}
             onClick={() => setAdding("api")}
@@ -153,6 +165,28 @@ export function KeychainSection() {
     });
   };
 
+  // Deleting revokes every live grant and stops any scripted run using the
+  // credential, so it is confirmed, with the count from the grants in view.
+  const remove = (c: KeychainCredentialDto) => {
+    const now = Date.now();
+    const live = activeGrants.filter(
+      (g) => g.credentialId === c.id && new Date(g.expiresAt).getTime() > now,
+    ).length;
+    confirm({
+      title: `Delete ${c.service}?`,
+      description:
+        live === 0
+          ? "No session holds a grant for it. This can't be undone."
+          : `${live} active ${live === 1 ? "grant loses" : "grants lose"} access now. This can't be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: () =>
+        void deleteKeychainCredential(c.id)
+          .then(reload)
+          .catch((e) => setError(e.message)),
+    });
+  };
+
   return (
     <>
       {error && (
@@ -181,7 +215,6 @@ export function KeychainSection() {
                 setAdding(null);
                 reload();
               }}
-              onError={setError}
             />
           ) : (
             <AddCredentialForm
@@ -190,7 +223,6 @@ export function KeychainSection() {
                 setAdding(null);
                 reload();
               }}
-              onError={setError}
             />
           )}
         </Modal.Content>
@@ -236,6 +268,7 @@ export function KeychainSection() {
                     {c.kind !== "login" && (
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => setScope(c)}
                       >
@@ -244,12 +277,9 @@ export function KeychainSection() {
                     )}
                     <Button
                       size="sm"
+                      className="phone:min-h-11"
                       variant="ghost"
-                      onClick={() =>
-                        deleteKeychainCredential(c.id)
-                          .then(reload)
-                          .catch((e) => setError(e.message))
-                      }
+                      onClick={() => remove(c)}
                     >
                       Delete
                     </Button>
@@ -301,6 +331,7 @@ export function KeychainSection() {
                     <>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => answer(a.id, "decline")}
                       >
@@ -308,6 +339,7 @@ export function KeychainSection() {
                       </Button>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="primary"
                         onClick={() => answer(a.id, "release")}
                       >
@@ -318,6 +350,7 @@ export function KeychainSection() {
                     <>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => answer(a.id, "decline")}
                       >
@@ -325,6 +358,7 @@ export function KeychainSection() {
                       </Button>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="primary"
                         onClick={() => answer(a.id, "run")}
                       >
@@ -335,6 +369,7 @@ export function KeychainSection() {
                     <>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => answer(a.id, "decline")}
                       >
@@ -342,6 +377,7 @@ export function KeychainSection() {
                       </Button>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="ghost"
                         onClick={() => answer(a.id, "standing")}
                       >
@@ -349,6 +385,7 @@ export function KeychainSection() {
                       </Button>
                       <Button
                         size="sm"
+                        className="phone:min-h-11"
                         variant="primary"
                         onClick={() => answer(a.id, "once")}
                       >
@@ -401,6 +438,7 @@ export function KeychainSection() {
                 control={
                   <Button
                     size="sm"
+                    className="phone:min-h-11"
                     variant="ghost"
                     onClick={() =>
                       revokeKeychainGrant(g.id)
@@ -429,31 +467,45 @@ export function KeychainSection() {
  *
  * Two zones: what the credential IS, then the ceiling on how it may be used.
  */
-function AddCredentialForm({
+export function AddCredentialForm({
   serviceRef,
   onAdded,
-  onError,
 }: {
   serviceRef: RefObject<HTMLInputElement | null>;
   onAdded: () => void;
-  onError: (message: string) => void;
 }) {
   const [service, setService] = useState("");
   const [host, setHost] = useState("");
   const [secret, setSecret] = useState("");
   const [description, setDescription] = useState("");
   const [header, setHeader] = useState("");
-  const [methods, setMethods] = useState("");
+  const [methods, setMethods] = useState<KeychainMethod[]>([]);
   const [prefixes, setPrefixes] = useState("");
   const [statusOnly, setStatusOnly] = useState(false);
   const [workspace, setWorkspace] = useState(false);
   const [busy, setBusy] = useState(false);
+  // A failed save is the dialog's own message: it sits above the buttons,
+  // where the person who pressed Add is looking (not on the page behind).
+  const [error, setError] = useState<string | null>(null);
+  const descriptionHintId = useId();
+  const headerHintId = useId();
+  const methodsLabelId = useId();
+  const methodsHintId = useId();
+  const prefixesHintId = useId();
+  const statusOnlyHintId = useId();
   const ready = Boolean(service.trim() && host.trim() && secret);
+  const toggleMethod = (method: KeychainMethod) =>
+    setMethods((on) =>
+      on.includes(method)
+        ? on.filter((m) => m !== method)
+        : KEYCHAIN_METHODS.filter((m) => m === method || on.includes(m)),
+    );
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!ready) return;
     setBusy(true);
+    setError(null);
     const credential: Parameters<typeof addKeychainCredential>[0] = {
       service: service.trim(),
       host: host.trim(),
@@ -461,7 +513,7 @@ function AddCredentialForm({
     };
     if (description.trim()) credential.description = description.trim();
     if (header.trim()) credential.injection = { header: header.trim() };
-    if (methods.trim()) credential.allowedMethods = list(methods);
+    if (methods.length) credential.allowedMethods = methods;
     if (prefixes.trim()) credential.allowedPathPrefixes = list(prefixes);
     if (statusOnly) credential.statusOnly = true;
     if (workspace) credential.scope = "workspace";
@@ -472,7 +524,7 @@ function AddCredentialForm({
         setSecret("");
         onAdded();
       })
-      .catch((e) => onError(e.message))
+      .catch((e) => setError(e.message))
       .finally(() => setBusy(false));
   };
 
@@ -486,6 +538,7 @@ function AddCredentialForm({
         <div className="flex flex-col gap-3">
           <Field label="Service">
             <Input
+              className={DIALOG_INPUT}
               ref={serviceRef}
               value={service}
               onChange={(e) => setService(e.target.value)}
@@ -496,6 +549,7 @@ function AddCredentialForm({
           </Field>
           <Field label="API host">
             <Input
+              className={DIALOG_INPUT}
               value={host}
               onChange={(e) => setHost(e.target.value)}
               placeholder="api.vercel.com"
@@ -505,6 +559,7 @@ function AddCredentialForm({
           </Field>
           <Field label="Secret">
             <Input
+              className={DIALOG_INPUT}
               type="password"
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
@@ -512,50 +567,104 @@ function AddCredentialForm({
               autoComplete="off"
             />
           </Field>
-          <Field label="Description" title="Optional.">
-            <Input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="What it is for"
-            />
-          </Field>
+          <div className="flex flex-col gap-1.5">
+            <Field label="Description">
+              <Input
+                className={DIALOG_INPUT}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What it is for"
+                aria-describedby={descriptionHintId}
+              />
+            </Field>
+            <p id={descriptionHintId} className={FIELD_HINT}>
+              Optional. Teammates and their sessions see it
+            </p>
+          </div>
         </div>
         <div className="flex flex-col gap-3">
-          <Field label="Injection header">
-            <Input
-              value={header}
-              onChange={(e) => setHeader(e.target.value)}
-              placeholder="Authorization: Bearer"
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-          </Field>
-          <Field label="Allowed methods" title="Comma-separated.">
-            <Input
-              value={methods}
-              onChange={(e) => setMethods(e.target.value)}
-              placeholder="Any method"
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-          </Field>
-          <Field label="Allowed path prefixes" title="Comma-separated.">
-            <Input
-              value={prefixes}
-              onChange={(e) => setPrefixes(e.target.value)}
-              placeholder="Any path"
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-          </Field>
-          <label className="flex cursor-pointer items-center gap-2 text-label">
-            <Checkbox
-              checked={statusOnly}
-              onCheckedChange={(v) => setStatusOnly(v === true)}
-            />
-            Return only the status code, never the response
-          </label>
-          <label className="flex cursor-pointer items-center gap-2 text-label">
+          <div className="flex flex-col gap-1.5">
+            <Field label="Injection header">
+              <Input
+                className={DIALOG_INPUT}
+                value={header}
+                onChange={(e) => setHeader(e.target.value)}
+                placeholder="Authorization"
+                autoCapitalize="none"
+                spellCheck={false}
+                aria-describedby={headerHintId}
+              />
+            </Field>
+            <p id={headerHintId} className={FIELD_HINT}>
+              Leave empty to send Authorization: Bearer &lt;secret&gt;. Paste
+              the token alone; a leading Bearer is dropped.
+            </p>
+          </div>
+          {/* Six fixed values: chips, not a text field to spell them in. */}
+          <div
+            className="flex flex-col gap-1.5"
+            role="group"
+            aria-labelledby={methodsLabelId}
+            aria-describedby={methodsHintId}
+          >
+            <span
+              id={methodsLabelId}
+              className="text-label font-medium text-dim"
+            >
+              Allowed methods
+            </span>
+            {/* Narrower than the role chips so all six fit one dialog row;
+                each still has a 44px target through the chip's ::before. */}
+            <div className="flex flex-wrap gap-x-1">
+              {KEYCHAIN_METHODS.map((method) => (
+                <PlainButton
+                  key={method}
+                  aria-pressed={methods.includes(method)}
+                  className={cn(
+                    methods.includes(method) ? ROLE_CHIP_ON : ROLE_CHIP_OFF,
+                    "px-2",
+                  )}
+                  onClick={() => toggleMethod(method)}
+                >
+                  {method}
+                </PlainButton>
+              ))}
+            </div>
+            <p id={methodsHintId} className={FIELD_HINT}>
+              None selected allows any method
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Field label="Allowed path prefixes">
+              <Input
+                className={DIALOG_INPUT}
+                value={prefixes}
+                onChange={(e) => setPrefixes(e.target.value)}
+                placeholder="/v1/orders"
+                autoCapitalize="none"
+                spellCheck={false}
+                aria-describedby={prefixesHintId}
+              />
+            </Field>
+            <p id={prefixesHintId} className={FIELD_HINT}>
+              Separate several with commas. Each one covers the paths under it.
+              Empty allows any path
+            </p>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <label className="flex cursor-pointer items-center gap-2 text-label phone:min-h-11">
+              <Checkbox
+                checked={statusOnly}
+                onCheckedChange={(v) => setStatusOnly(v === true)}
+                aria-describedby={statusOnlyHintId}
+              />
+              Return only the status code, never the response
+            </label>
+            <p id={statusOnlyHintId} className={cn(FIELD_HINT, "pl-6")}>
+              Use this when the API might echo the key back
+            </p>
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 text-label phone:min-h-11">
             <Checkbox
               checked={workspace}
               onCheckedChange={(v) => setWorkspace(v === true)}
@@ -570,15 +679,25 @@ function AddCredentialForm({
             approve later.
           </p>
         </div>
+        {error && <InlineAlert>{error}</InlineAlert>}
         <Modal.Footer>
           <Modal.Close
             render={
-              <Button variant="ghost" disabled={busy}>
+              <Button
+                variant="ghost"
+                disabled={busy}
+                className="phone:min-h-11"
+              >
                 Cancel
               </Button>
             }
           />
-          <Button variant="primary" type="submit" disabled={busy || !ready}>
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={busy || !ready}
+            className="phone:min-h-11"
+          >
             {busy ? "Saving…" : "Add credential"}
           </Button>
         </Modal.Footer>
@@ -592,14 +711,12 @@ function AddCredentialForm({
  * API credential, its password reaches the agent when the owner releases
  * it, so the form says so where the password is typed.
  */
-function AddLoginForm({
+export function AddLoginForm({
   serviceRef,
   onAdded,
-  onError,
 }: {
   serviceRef: RefObject<HTMLInputElement | null>;
   onAdded: () => void;
-  onError: (message: string) => void;
 }) {
   const [service, setService] = useState("");
   const [loginUrl, setLoginUrl] = useState("");
@@ -607,6 +724,8 @@ function AddLoginForm({
   const [password, setPassword] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const descriptionHintId = useId();
   const ready = Boolean(
     service.trim() && loginUrl.trim() && username.trim() && password,
   );
@@ -615,6 +734,7 @@ function AddLoginForm({
     event.preventDefault();
     if (!ready) return;
     setBusy(true);
+    setError(null);
     const login: Parameters<typeof addKeychainCredential>[0] = {
       service: service.trim(),
       kind: "login",
@@ -628,7 +748,7 @@ function AddLoginForm({
         setPassword("");
         onAdded();
       })
-      .catch((e) => onError(e.message))
+      .catch((e) => setError(e.message))
       .finally(() => setBusy(false));
   };
 
@@ -642,6 +762,7 @@ function AddLoginForm({
         <div className="flex flex-col gap-3">
           <Field label="Service">
             <Input
+              className={DIALOG_INPUT}
               ref={serviceRef}
               value={service}
               onChange={(e) => setService(e.target.value)}
@@ -652,6 +773,7 @@ function AddLoginForm({
           </Field>
           <Field label="Sign-in page">
             <Input
+              className={DIALOG_INPUT}
               value={loginUrl}
               onChange={(e) => setLoginUrl(e.target.value)}
               placeholder="https://app.example.test/login"
@@ -661,6 +783,7 @@ function AddLoginForm({
           </Field>
           <Field label="Username">
             <Input
+              className={DIALOG_INPUT}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="qa@example.test"
@@ -671,6 +794,7 @@ function AddLoginForm({
           </Field>
           <Field label="Password">
             <Input
+              className={DIALOG_INPUT}
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -678,23 +802,40 @@ function AddLoginForm({
               autoComplete="new-password"
             />
           </Field>
-          <Field label="Description" title="Optional.">
-            <Input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="What it is for"
-            />
-          </Field>
+          <div className="flex flex-col gap-1.5">
+            <Field label="Description">
+              <Input
+                className={DIALOG_INPUT}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What it is for"
+                aria-describedby={descriptionHintId}
+              />
+            </Field>
+            <p id={descriptionHintId} className={FIELD_HINT}>
+              Optional. Teammates and their sessions see it
+            </p>
+          </div>
         </div>
+        {error && <InlineAlert>{error}</InlineAlert>}
         <Modal.Footer>
           <Modal.Close
             render={
-              <Button variant="ghost" disabled={busy}>
+              <Button
+                variant="ghost"
+                disabled={busy}
+                className="phone:min-h-11"
+              >
                 Cancel
               </Button>
             }
           />
-          <Button variant="primary" type="submit" disabled={busy || !ready}>
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={busy || !ready}
+            className="phone:min-h-11"
+          >
             {busy ? "Saving…" : "Add login"}
           </Button>
         </Modal.Footer>

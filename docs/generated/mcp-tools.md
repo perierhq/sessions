@@ -539,7 +539,7 @@ Check this session's macOS Keychain request. Returns only pending/claimed/comple
 
 `mcp__opensession-keychain__list_credentials` · input: none
 
-List the credentials teammates have registered in the keychain: service, owner, target host, any method/path limits, and whether it is a workspace credential. Secrets are never included. A workspace credential can be used right away with call_credential or run_with_credential, no request needed; a personal one needs request_credential and its owner's approval. Use this to find out whether the access you need already exists before asking anyone for a token.
+List the credentials teammates have registered in the keychain: service, owner, target host, the methods and paths call_credential may use, whether a call returns only the HTTP status (status only), and whether it is a workspace credential. Secrets are never included. A workspace credential can be used right away with call_credential or run_with_credential, no request needed; a personal one needs request_credential and its owner's approval. Use this to find out whether the access you need already exists before asking anyone for a token.
 
 ### `request_credential`
 
@@ -1608,7 +1608,7 @@ Read-only host commands, egress requests and borrowed credentials for one incide
 
 `mcp__opensession-incident-access__describe_access` · input: none
 
-What this incident agent may reach right now: connections (and any it can't open, with why), mode, repos, read-only hosts, borrowed credentials (by service, never a secret) and the egress route. Call it first. Every call is audited with your incident and role.
+What this incident agent may reach right now: connections (and any it can't open, with why), mode, repos, read-only hosts, borrowed credentials and the egress route. Each credential lists its host, the methods and path prefixes call_credential may use ("any" when unlimited; a prefix covers the paths under it), and statusOnly when a call returns only the HTTP status; never a secret. Call it first. Every call is audited with your incident and role.
 
 ### `show_findings`
 
@@ -1632,4 +1632,4 @@ Send one HTTP request to a host on your egress list through your granted route (
 
 `mcp__opensession-incident-access__call_credential` · input: `credential` (string, required), `method` ("GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE", required), `path` (string, required), `headers` (object), `body` (string), `purpose` (string, required)
 
-Call the API of a credential this project lent you, through the keychain broker: the secret is added to the request and never shown to you. Say why in purpose. A credential lent once allows one call. Every call is audited with your incident and role.
+Call the API of a credential this project lent you, through the keychain broker: the secret is added to the request and never shown to you. describe_access lists each credential's host, the methods and path prefixes it allows, and whether it returns only the status; pass the path and query on that host, not a full URL. Say why in purpose. A credential lent once allows one call. Every call is audited with your incident and role.

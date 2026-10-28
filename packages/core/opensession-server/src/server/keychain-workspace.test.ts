@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fetchBackedNet } from "./testing/pinned-fetch-double";
 
 const STORE = join(mkdtempSync(join(tmpdir(), "kc-workspace-")), "kc.json");
 process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
@@ -73,7 +74,7 @@ const call = (over: Partial<Parameters<typeof brokerCall>[0]> = {}) =>
     path: "/v1/usage",
     requestedBy: "Sam",
     purpose: "check this month's usage",
-    fetchImpl,
+    net: fetchBackedNet(fetchImpl),
     ...over,
   });
 
@@ -411,5 +412,100 @@ describe("a person's turn in an automation session", () => {
     );
     expect(result.content[0].text).toContain("workspace credential");
     expect(kc.listKeychainAsks()).toHaveLength(0);
+  });
+});
+
+describe("what an agent learns before it calls", () => {
+  const tools = async () => {
+    const { createKeychainMcpServer } =
+      await import("../agents/slack/keychain-tools");
+    return (createKeychainMcpServer({ sessionId: "s-1", user: "Sam" }) as any)
+      .instance._registeredTools;
+  };
+  const textOf = (result: any): string =>
+    (result.content as Array<{ text: string }>).map((c) => c.text).join("\n");
+
+  test("list_credentials names the host, the limits and status-only", async () => {
+    kc.addCredential({
+      owner: "Alex",
+      service: "acme-status",
+      host: "status.example.test",
+      secret: "sk-status",
+      allowedMethods: ["GET", "HEAD"],
+      allowedPathPrefixes: ["/v1/health"],
+      statusOnly: true,
+    });
+    kc.addCredential({
+      owner: "Alex",
+      service: "acme-api",
+      host: "api.example.test",
+      secret: "sk-api",
+    });
+    const out = textOf(await (await tools()).list_credentials.handler({}, {}));
+    const status = out.split("\n").find((l) => l.includes("acme-status"))!;
+    expect(status).toContain("status.example.test");
+    expect(status).toContain("GET/HEAD");
+    expect(status).toContain("/v1/health");
+    expect(status).toContain("status only");
+    const api = out.split("\n").find((l) => l.includes("acme-api"))!;
+    expect(api).toContain("any method");
+    expect(api).toContain("any path");
+    expect(api).not.toContain("status only");
+  });
+
+  test("call_credential says what was wrong: credential, host, method or path", async () => {
+    kc.addCredential({
+      owner: "Alex",
+      service: "acme-api",
+      host: "api.example.test",
+      secret: "sk-api",
+      allowedMethods: ["GET"],
+      allowedPathPrefixes: ["/v1/items"],
+      scope: "workspace",
+    });
+    const call = async (args: Record<string, unknown>) =>
+      textOf(
+        await (
+          await tools()
+        ).call_credential.handler(
+          { credential: "acme-api", method: "GET", purpose: "check", ...args },
+          {},
+        ),
+      );
+    expect(await call({ credential: "acme-apl", path: "/v1/items" })).toContain(
+      "list_credentials",
+    );
+    const url = await call({ path: "https://api.example.test/v1/items" });
+    expect(url).toContain("only the path");
+    expect(url).toContain("https://api.example.test");
+    expect(await call({ path: "//other.example.test/v1/items" })).toContain(
+      "https://api.example.test",
+    );
+    const method = await call({ method: "DELETE", path: "/v1/items/1" });
+    expect(method).toContain("DELETE");
+    expect(method).toContain("GET");
+    const path = await call({ path: "/v2/items" });
+    expect(path).toContain("/v1/items");
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a personal credential without a grant says how to get one", async () => {
+    kc.addCredential({
+      owner: "Alex",
+      service: "acme-api",
+      host: "api.example.test",
+      secret: "sk-api",
+    });
+    const out = textOf(
+      await (
+        await tools()
+      ).call_credential.handler(
+        { credential: "acme-api", method: "GET", path: "/v1/items" },
+        {},
+      ),
+    );
+    expect(out).toContain("request_credential");
+    // One full stop, whether or not the reason brought its own.
+    expect(out).toMatch(/[^.]\.$/);
   });
 });

@@ -8,7 +8,7 @@
  */
 
 import type { RouteContext } from "./context";
-import { requestUser, verifiedPerson } from "./context";
+import { verifiedPerson } from "./context";
 import {
   addCredentialAsync,
   answerKeychainAsk,
@@ -145,16 +145,14 @@ export async function handleKeychainRoutes(
         { status: 400 },
       );
     }
-    const owner = requestUser(ctx, body.owner);
-    if (!owner) {
+    // A verified sign-in, like scope and answers: a claimed name (the
+    // no-auth picker) or an automation token must never own a credential.
+    const owner = verifiedPerson(ctx);
+    if (!owner)
       return Response.json(
-        {
-          error:
-            "no signed-in identity — a credential must have an owner who can approve asks",
-        },
-        { status: 400 },
+        { error: "Sign in with GitHub to add a credential" },
+        { status: 401 },
       );
-    }
     try {
       return Response.json({
         credential: await addCredentialAsync({
@@ -224,10 +222,16 @@ export async function handleKeychainRoutes(
 
   const credMatch = path.match(/^\/api\/keychain\/credentials\/([^/]+)$/);
   if (credMatch && req.method === "DELETE") {
+    const by = verifiedPerson(ctx);
+    if (!by)
+      return Response.json(
+        { error: "Sign in with GitHub to delete a credential" },
+        { status: 401 },
+      );
     try {
       const ok = await deleteCredentialAsync(
         decodeURIComponent(credMatch[1]!),
-        requestUser(ctx),
+        by,
       );
       return ok
         ? Response.json({ ok: true })
@@ -239,10 +243,13 @@ export async function handleKeychainRoutes(
 
   const grantMatch = path.match(/^\/api\/keychain\/grants\/([^/]+)$/);
   if (grantMatch && req.method === "DELETE") {
-    const result = revokeGrant(
-      decodeURIComponent(grantMatch[1]!),
-      requestUser(ctx),
-    );
+    const by = verifiedPerson(ctx);
+    if (!by)
+      return Response.json(
+        { error: "Sign in with GitHub to revoke a grant" },
+        { status: 401 },
+      );
+    const result = revokeGrant(decodeURIComponent(grantMatch[1]!), by);
     return "error" in result
       ? Response.json(result, { status: 403 })
       : Response.json({ ok: true });

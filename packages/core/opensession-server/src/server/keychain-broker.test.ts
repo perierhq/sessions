@@ -13,6 +13,7 @@ process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
 
 const kc = await import("./keychain");
 const { brokerCall } = await import("./keychain-broker");
+const { fetchBackedNet } = await import("./testing/pinned-fetch-double");
 
 const SECRET = "sk-broker-secret-1234";
 
@@ -31,15 +32,22 @@ let reply: () => Response = () =>
     { ok: true },
     { headers: { "content-type": "application/json" } },
   );
-const fetchImpl = (async (url: URL, init: RequestInit) => {
+const fetchImpl = async (url: URL, init: RequestInit) => {
   seen.push({ url: String(url), init });
   return reply();
-}) as unknown as typeof fetch;
+};
+/** What the broker's host resolves to; public unless a test says otherwise. */
+let addresses = ["203.0.113.10"];
+const net = {
+  ...fetchBackedNet(fetchImpl),
+  resolve: async () => [...addresses],
+};
 
 beforeEach(() => {
   process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
   reset();
   seen = [];
+  addresses = ["203.0.113.10"];
   reply = () =>
     Response.json(
       { ok: true },
@@ -76,7 +84,7 @@ const call = (
     credential: "acme",
     method: "GET",
     path: "/v1/items?limit=2",
-    fetchImpl,
+    net,
     ...over,
   });
 
@@ -97,7 +105,6 @@ describe("call_credential broker", () => {
     expect(headers.get("authorization")).toBe(`Bearer ${SECRET}`);
     expect(headers.get("accept")).toBe("application/json");
     expect(headers.get("cookie")).toBeNull();
-    expect(seen[0]!.init.redirect).toBe("manual");
   });
 
   test("a grant works only in the session it was issued to", async () => {
@@ -183,6 +190,29 @@ describe("call_credential broker", () => {
     expect(long.body.length).toBeLessThanOrEqual(60_000);
   });
 
+  test("asks only for encodings it can decode, whatever the caller sends", async () => {
+    setup();
+    await call({ headers: { "accept-encoding": "zstd" } });
+    expect(new Headers(seen[0]!.init.headers).get("accept-encoding")).toBe(
+      "gzip, deflate, br",
+    );
+  });
+
+  test("a body in an encoding it can't decode is omitted, never returned raw", async () => {
+    setup();
+    reply = () =>
+      new Response(`{"echoed":"${SECRET}"}`, {
+        headers: {
+          "content-type": "application/json",
+          "content-encoding": "zstd",
+        },
+      });
+    const r = (await call()) as { status: number; body: string };
+    expect(r.status).toBe(200);
+    expect(r.body).toContain("zstd content omitted");
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
   test("no grant, no call", async () => {
     kc.addCredential({
       owner: "Alex",
@@ -193,4 +223,300 @@ describe("call_credential broker", () => {
     expect(await call()).toHaveProperty("error");
     expect(seen).toHaveLength(0);
   });
+});
+
+describe("where the broker may connect", () => {
+  test("a host that resolves to a private address is refused before any request", async () => {
+    setup();
+    for (const address of ["10.0.0.5", "127.0.0.1", "169.254.169.254", "::1"]) {
+      addresses = [address];
+      const r = await call();
+      expect(r).toHaveProperty("error");
+      expect((r as { error: string }).error).toContain("private address");
+    }
+    // One private answer among public ones is enough to refuse.
+    addresses = ["203.0.113.10", "192.168.1.20"];
+    expect(await call()).toHaveProperty("error");
+    expect(seen).toHaveLength(0);
+  });
+
+  test("the request is pinned to the checked addresses", async () => {
+    setup();
+    const pinned: string[][] = [];
+    const r = await call({
+      net: {
+        ...net,
+        send: async (target, init, isBlocked) => {
+          pinned.push(target.addresses);
+          return net.send!(target, init, isBlocked);
+        },
+      },
+    });
+    expect(r).toMatchObject({ status: 200 });
+    expect(pinned).toEqual([["203.0.113.10"]]);
+  });
+
+  test("a redirect comes back unread and is never followed", async () => {
+    setup();
+    reply = () =>
+      new Response("moved", {
+        status: 302,
+        headers: { location: "https://elsewhere.example.test/v1/items" },
+      });
+    const r = await call();
+    expect(r).toMatchObject({
+      status: 302,
+      headers: { location: "https://elsewhere.example.test/v1/items" },
+    });
+    expect(seen.map((s) => s.url)).toEqual([
+      "https://api.example.test/v1/items?limit=2",
+    ]);
+  });
+});
+
+describe("a credential's host", () => {
+  const add = (host: string) => () =>
+    kc.addCredential({
+      owner: "Alex",
+      service: "acme",
+      host,
+      secret: SECRET,
+    });
+
+  test("is never an IP literal or a private name", () => {
+    for (const host of [
+      "127.0.0.1",
+      "10.0.0.5",
+      "169.254.169.254",
+      "8.8.8.8",
+      "localhost",
+      "metadata.internal",
+      "printer.local",
+      "intranet",
+      "build.lan",
+    ])
+      expect(add(host)).toThrow(/host/);
+    expect(kc.listCredentials()).toHaveLength(0);
+    expect(add("api.example.test")()).toMatchObject({
+      host: "api.example.test",
+    });
+  });
+
+  test("can't be changed to one either", async () => {
+    const meta = kc.addCredential({
+      owner: "Alex",
+      service: "acme",
+      host: "api.example.test",
+      secret: SECRET,
+    });
+    for (const host of ["127.0.0.1", "localhost", "db.internal"])
+      await expect(
+        kc.updateCredentialAsync(meta.id, "Alex", {
+          spec: { service: "acme", host },
+        }),
+      ).rejects.toThrow(/host/);
+    expect(kc.findCredential("acme")?.host).toBe("api.example.test");
+  });
+});
+
+describe("path prefixes", () => {
+  const refused = async (path: string) => {
+    const r = await call({ path });
+    return "error" in r;
+  };
+
+  test("match whole path segments, not characters", async () => {
+    setup({ allowedPathPrefixes: ["/v1/items"] });
+    for (const path of [
+      "/v1/items-admin",
+      "/v1/itemsanything",
+      "/v1/items.json",
+      "/v1/admin?next=/v1/items/1",
+    ])
+      expect(await refused(path)).toBe(true);
+    expect(seen).toHaveLength(0);
+    for (const path of [
+      "/v1/items",
+      "/v1/items/",
+      "/v1/items/1",
+      "/v1/items?next=/admin",
+      "/v1/items/1?q=..%2Fadmin",
+    ])
+      expect(await refused(path)).toBe(false);
+  });
+
+  test("refuse encoded separators and dots once a prefix is set", async () => {
+    setup({ allowedPathPrefixes: ["/v1/items"] });
+    for (const path of [
+      "/v1/items/..%2Fadmin",
+      "/v1/items/..%2fadmin",
+      "/v1/items%2F..%2F..%2Fadmin",
+      "/v1/items/..%5Cadmin",
+      "/v1/items/a%2Ejson",
+      "/v1/items/%252F..%252Fadmin",
+    ])
+      expect(await refused(path)).toBe(true);
+    expect(seen).toHaveLength(0);
+  });
+
+  test("without a prefix, an encoded slash is passed on as is", async () => {
+    setup();
+    expect(await refused("/v1/items/a%2Fb")).toBe(false);
+    expect(seen[0]!.url).toBe("https://api.example.test/v1/items/a%2Fb");
+  });
+
+  test("the same rule holds for a scripted run's and an incident's calls", () => {
+    const { grant } = setup({ allowedPathPrefixes: ["/v1/items"] });
+    expect(
+      kc.consumeGrantForBroker(grant.id, "s-1", "GET", "/v1/items-admin"),
+    ).toHaveProperty("error");
+    expect(
+      kc.consumeGrantForBroker(grant.id, "s-1", "GET", "/v1/items/..%2Fx"),
+    ).toHaveProperty("error");
+    expect(
+      kc.consumeGrantForBroker(grant.id, "s-1", "GET", "/v1/items/../x"),
+    ).toHaveProperty("error");
+    expect(
+      kc.consumeGrantForBroker(grant.id, "s-1", "GET", "/v1/items/1"),
+    ).toHaveProperty("credential");
+  });
+
+  test("are stored without a trailing slash, and refused when they can't name a segment", () => {
+    const meta = kc.addCredential({
+      owner: "Alex",
+      service: "acme",
+      host: "api.example.test",
+      secret: SECRET,
+      allowedPathPrefixes: ["/v1/items/", "/v2//", "/"],
+    });
+    expect(meta.allowedPathPrefixes).toEqual(["/v1/items", "/v2", "/"]);
+    for (const prefix of [
+      "/v1/../admin",
+      "/v1/./items",
+      "/v1/%2e%2e",
+      "/v1?x=1",
+      "/v1#top",
+      "/v1\\items",
+      "v1/items",
+    ])
+      expect(() =>
+        kc.addCredential({
+          owner: "Alex",
+          service: "acme-2",
+          host: "api.example.test",
+          secret: SECRET,
+          allowedPathPrefixes: [prefix],
+        }),
+      ).toThrow(/path prefix/);
+  });
+});
+
+describe("the injected header", () => {
+  const sent = async () => {
+    expect(await call()).toMatchObject({ status: 200 });
+    return new Headers(seen.at(-1)!.init.headers);
+  };
+
+  test("Authorization gets its Bearer scheme in any letter case", async () => {
+    setup({ injection: { header: "authorization" } });
+    expect((await sent()).get("authorization")).toBe(`Bearer ${SECRET}`);
+  });
+
+  test("a pasted secret that already starts with its scheme is stored without it", async () => {
+    setup({ secret: `Bearer ${SECRET}` });
+    expect((await sent()).get("authorization")).toBe(`Bearer ${SECRET}`);
+    reset();
+    setup({ secret: `  bearer   ${SECRET}` });
+    expect((await sent()).get("authorization")).toBe(`Bearer ${SECRET}`);
+    reset();
+    setup({
+      secret: `Token ${SECRET}`,
+      injection: { header: "Authorization", scheme: "Token" },
+    });
+    expect((await sent()).get("authorization")).toBe(`Token ${SECRET}`);
+  });
+
+  test("a header without a scheme keeps the secret as pasted", async () => {
+    setup({ secret: `Bearer ${SECRET}`, injection: { header: "X-Api-Key" } });
+    expect((await sent()).get("x-api-key")).toBe(`Bearer ${SECRET}`);
+  });
+
+  test("a new secret loses a pasted scheme too", async () => {
+    const { meta } = setup();
+    await kc.updateCredentialAsync(meta.id, "Alex", {
+      spec: { service: "acme", host: "api.example.test" },
+      secret: `Bearer sk-rotated-9999`,
+    });
+    expect((await sent()).get("authorization")).toBe("Bearer sk-rotated-9999");
+  });
+});
+
+describe("control characters", () => {
+  const grantStatus = () => kc.listGrants({ sessionId: "s-1" })[0]!.status;
+
+  test("a forwarded header with a line break is refused before a once grant is spent", async () => {
+    setup({}, "once");
+    for (const value of ["json\r\nx-other: 1", "json\nx", "a\u0000b"]) {
+      const r = await call({ headers: { accept: value } });
+      expect(r).toHaveProperty("error");
+      expect((r as { error: string }).error).toContain("accept");
+    }
+    expect(seen).toHaveLength(0);
+    expect(grantStatus()).toBe("active");
+    expect(
+      await call({ headers: { accept: "application/json" } }),
+    ).toMatchObject({ status: 200 });
+    expect(grantStatus()).toBe("used");
+  });
+
+  test("a stored secret that can't be a header value never spends the grant", async () => {
+    const { meta } = setup({}, "once");
+    const g = globalThis as any;
+    g.__keychainCredentials.get(meta.id).secret = "sk-line\nbreak";
+    expect(await call()).toHaveProperty("error");
+    expect(seen).toHaveLength(0);
+    expect(grantStatus()).toBe("active");
+  });
+
+  test("a secret with a control character is refused at add and at rotate", async () => {
+    for (const secret of ["sk-one\nsk-two", "sk-one\r\nsk-two", "sk\u0007bell"])
+      expect(() =>
+        kc.addCredential({
+          owner: "Alex",
+          service: "acme",
+          host: "api.example.test",
+          secret,
+        }),
+      ).toThrow(/control character/);
+    const { meta } = setup();
+    await expect(
+      kc.updateCredentialAsync(meta.id, "Alex", {
+        spec: { service: "acme", host: "api.example.test" },
+        secret: "sk-new\nline",
+      }),
+    ).rejects.toThrow(/control character/);
+    expect(kc.findCredential("acme")).toBeDefined();
+  });
+
+  test("an injection header or scheme with a line break is refused", () => {
+    for (const injection of [
+      { header: "X-Key\r\nX-Other" },
+      { header: "Authorization", scheme: "Bearer\n" },
+    ])
+      expect(() =>
+        kc.addCredential({
+          owner: "Alex",
+          service: "acme",
+          host: "api.example.test",
+          secret: SECRET,
+          injection,
+        }),
+      ).toThrow(/injection/);
+  });
+});
+
+test("the dialog's method chips are the methods the broker can send", async () => {
+  const { BROKER_METHODS } = await import("./keychain-broker");
+  const { KEYCHAIN_METHODS } = await import("../frontend/lib/api/settings");
+  expect([...KEYCHAIN_METHODS]).toEqual([...BROKER_METHODS]);
 });

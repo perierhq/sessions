@@ -28,9 +28,12 @@
  *   any of its grants is revoked. A request after that, or with another
  *   secret, is refused.
  * - Every call is checked against its credential's grant and method and path
- *   ceiling, counted against that credential's cap, and audited. Redirects
- *   are not followed, the injected header cannot be overridden, and the
- *   secret is scrubbed from response headers and text bodies.
+ *   ceiling, counted against that credential's cap, and audited. It goes out
+ *   through the broker's pinned connection (credentialRequest): the host is
+ *   resolved once, refused if any address is private, and only the checked
+ *   addresses are dialled. Redirects are not followed, the injected header
+ *   cannot be overridden, and the secret is scrubbed from response headers
+ *   and text bodies.
  *
  * The process is a script run (script-runs.ts): its script host lives in its
  * own scope and outlives a server restart. The host answers the script's
@@ -47,7 +50,12 @@
  */
 
 import { auditAsync } from "./audit";
-import { BROKER_METHODS, readCapped } from "./keychain-broker";
+import {
+  BROKER_METHODS,
+  credentialRequest,
+  credentialRequestError,
+} from "./keychain-broker";
+import type { PinnedFetchDeps, PinnedResponse } from "./shared/pinned-fetch";
 import {
   brokerHeaders,
   claimRunGrants,
@@ -105,6 +113,9 @@ const DROPPED_REQUEST_HEADERS = new Set([
   "x-forwarded-host",
   "x-forwarded-proto",
   "x-real-ip",
+  // The proxy asks only for codings it can decode (credentialRequest), so
+  // the body can be scrubbed before the script sees it.
+  "accept-encoding",
   // The script host's own routing header.
   RELAY_INDEX_HEADER,
 ]);
@@ -156,15 +167,14 @@ export interface CredentialRunSummary {
 }
 
 export interface RunDeps {
-  /** Upstream fetch. Test seam. */
-  fetchImpl?: typeof fetch;
+  /** The upstream connection's seams (credentialRequest). Test seam. */
+  net?: Partial<PinnedFetchDeps>;
   /** Audit sink. Test seam; the real one is a no-op under test. */
   audit?: (event: Record<string, unknown>) => void;
 }
 
 const realDeps: Required<RunDeps> = {
-  fetchImpl: ((...args: Parameters<typeof fetch>) =>
-    fetch(...args)) as typeof fetch,
+  net: {},
   // Every proxied call is audited; never block the thread on it.
   audit: auditAsync,
 };
@@ -324,7 +334,7 @@ async function claimAndStart(
     }),
   );
   const deps: Required<RunDeps> = {
-    fetchImpl: input.deps?.fetchImpl ?? defaultDeps.fetchImpl,
+    net: input.deps?.net ?? defaultDeps.net,
     audit: input.deps?.audit ?? defaultDeps.audit,
   };
   // A grant revoked while the run is being prepared found no run to end.
@@ -585,50 +595,59 @@ async function relay(
       );
   }
 
-  let res: Response;
+  let res: PinnedResponse;
   try {
-    res = await depsOf(run.id).fetchImpl(target, {
-      method,
-      headers,
-      body,
-      // A redirect's Location can point anywhere; following it would send the
-      // credential somewhere the owner never approved.
-      redirect: "manual",
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-  } catch (e: any) {
-    const reason = e?.name === "TimeoutError" ? "timed out" : "failed";
+    res = await credentialRequest(
+      target,
+      {
+        method,
+        headers: Object.fromEntries(headers),
+        ...(body ? { body: new Uint8Array(body) } : {}),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+        // One byte past the limit says it was over.
+        maxBodyBytes: credential.statusOnly ? 1 : MAX_RESPONSE_BYTES + 1,
+      },
+      depsOf(run.id).net,
+    );
+  } catch (e) {
     return upstreamError(
       run,
       leg,
       method,
       target,
       502,
-      `the request to ${leg.host} ${reason}`,
+      credentialRequestError(leg.host, e),
     );
   }
   auditCall(run, leg, method, target.pathname, res.status);
 
-  if (credential.statusOnly) {
-    await res.body?.cancel().catch(() => {});
-    return new Response(null, { status: res.status });
-  }
+  if (credential.statusOnly) return new Response(null, { status: res.status });
   const scrub = (text: string) => scrubSecret(text, credential.secret);
   const outHeaders = new Headers();
   res.headers.forEach((value, name) => {
     if (!DROPPED_RESPONSE_HEADERS.has(name.toLowerCase()))
       outHeaders.set(name, scrub(value));
   });
-  const { bytes, cut } = await readCapped(res, MAX_RESPONSE_BYTES);
-  if (cut)
+  if (res.truncated)
     return refuse(
       502,
       `the response from ${leg.host} is larger than ${MAX_RESPONSE_BYTES} bytes`,
     );
+  const empty = res.status === 204 || res.status === 304 || method === "HEAD";
+  // A coding the proxy can't undo can't be scrubbed: refuse the body rather
+  // than hand on bytes that may hold the secret. The proxy never asks for
+  // one, so only a server that encodes unasked gets here.
+  if (res.undecodable && !empty && res.body.length)
+    return refuse(
+      502,
+      `the response from ${leg.host} came in a content-encoding the proxy can't decode (${scrub(
+        res.headers.get("content-encoding") || "unknown",
+      )}), so it can't be checked for the credential`,
+    );
+  const bytes = res.body;
   const contentType = res.headers.get("content-type") || "";
   const textual =
     !contentType || /text\/|json|xml|x-www-form-urlencoded/i.test(contentType);
-  const empty = res.status === 204 || res.status === 304 || method === "HEAD";
   return new Response(
     empty
       ? null

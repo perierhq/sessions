@@ -175,6 +175,8 @@ export function decodeBody(
   body: Buffer,
   limit: number,
 ): Buffer {
+  // A HEAD, 204 or 304 answer can name an encoding and carry no body.
+  if (!body.length) return body;
   const options = { maxOutputLength: limit };
   try {
     switch (encoding.trim().toLowerCase()) {
@@ -276,8 +278,13 @@ export async function decodeBodyPrefix(
   return Buffer.alloc(0);
 }
 
+/** The Accept-Encoding for a request whose body must be read: only what
+ *  `decodeBody` undoes, so a response in another coding is one the server
+ *  chose unasked. */
+export const DECODABLE_ACCEPT_ENCODING = "gzip, deflate, br";
+
 /** Encodings `decodeBody` undoes. */
-function isDecodable(encoding: string): boolean {
+export function isDecodableEncoding(encoding: string): boolean {
   return ["", "identity", "gzip", "x-gzip", "deflate", "br"].includes(
     encoding.trim().toLowerCase(),
   );
@@ -451,7 +458,7 @@ export function pinnedHttpRequest(
           finished = true;
           const raw = Buffer.concat(chunks);
           // Undecodable but whole: the raw bytes, as over the limit.
-          if (truncate && !isDecodable(encoding))
+          if (truncate && !isDecodableEncoding(encoding))
             return resolve({ status, headers, body: raw, undecodable: true });
           try {
             const body = decodeBody(url, encoding, raw, maxBodyBytes);
@@ -485,7 +492,9 @@ export interface PinnedFetchDeps {
   ) => Promise<PinnedResponse>;
 }
 
-const defaultDeps: PinnedFetchDeps = {
+/** The production seams: DNS, the shared address policy, node:http(s).
+ *  Callers that take partial `net` overrides spread these first. */
+export const defaultPinnedFetchDeps: PinnedFetchDeps = {
   resolve: resolveWithDns,
   isBlocked: isBlockedAddress,
   send: (target, init, isBlocked) => pinnedHttpRequest(target, init, isBlocked),
@@ -510,7 +519,7 @@ export const PINNED_FETCH_TIMEOUT_MS = 15_000;
 export const PINNED_FETCH_USER_AGENT =
   "Mozilla/5.0 (compatible; OpenSession/1.0; +https://github.com/perierhq/sessions)";
 
-function withDefaultHeaders(
+export function withDefaultHeaders(
   headers: Record<string, string> | undefined,
 ): Record<string, string> {
   const out: Record<string, string> = { ...headers };
@@ -545,14 +554,15 @@ export interface PinnedFetchInit {
 export async function pinnedFetch(
   raw: string | URL,
   init: PinnedFetchInit = {},
-  deps: PinnedFetchDeps = defaultDeps,
+  deps: PinnedFetchDeps = defaultPinnedFetchDeps,
 ): Promise<Response> {
   const signal = init.signal ?? AbortSignal.timeout(PINNED_FETCH_TIMEOUT_MS);
   const target = await untilAborted(
     resolvePinnedTarget(String(raw), deps),
     signal,
   );
-  const send = deps === defaultDeps && testSend ? testSend : deps.send;
+  const send =
+    deps === defaultPinnedFetchDeps && testSend ? testSend : deps.send;
   const response = await untilAborted(
     send(
       target,

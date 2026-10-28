@@ -165,7 +165,9 @@ key's write ceiling.)
 
 A teammate registers a credential (host, header, optional method and path
 ceiling) over the signed-in HTTP route; it is stored 0600 on the server and no
-API or tool returns it. Any interactive session may ask to borrow any
+API or tool returns it. Adding, deleting and revoking over HTTP need a verified
+GitHub sign-in, like sharing and answering: a claimed name or an automation
+token is refused. Any interactive session may ask to borrow any
 credential for a stated purpose. Only the owner answers: in their Slack DM,
 where a button counts only when the clicking Slack user is the one the ask was
 sent to, or on the web, which requires the owner's verified GitHub sign-in
@@ -184,9 +186,19 @@ server and takes its session from the run-rpc token that routed the call,
 never from the agent's arguments, so a grant works only in the session it was
 issued to; a grant id copied from a transcript authorizes nothing elsewhere.
 There is no HTTP broker route. The call goes only to the credential's host
-over HTTPS; the method and the parsed, normalized path are checked against the
-credential's ceiling; redirects are not followed; agent-supplied headers are
-limited to a short allowlist. The secret is scrubbed from the returned headers
+over HTTPS, under the same address policy as `web_fetch` and incident egress
+(`shared/pinned-fetch.ts`): the host is resolved once, refused if any address
+is private, loopback or link-local, and the connection dials only the checked
+addresses. A scripted run's proxy sends its calls the same way. A host that is
+an IP address, or a name that only means something private (`localhost`,
+`*.internal`, a single label), is refused when the credential is added or
+changed. The method and the parsed, normalized path are checked against the
+credential's ceiling. A path prefix matches whole segments (`/v1/items` covers
+`/v1/items/1`, not `/v1/items-admin`) and ignores the query; once a credential
+has prefixes, a path that keeps an encoded `/`, `\` or `.` (`%2F`, `%5C`,
+`%2E`, also double-encoded) or a dot segment is refused, since an upstream
+may decode it into a route the check never saw. Redirects are not followed;
+agent-supplied headers are limited to a short allowlist. The secret is scrubbed from the returned headers
 and body verbatim and in common encodings (URL, JSON, base64), which is best
 effort. A credential registered as status-only returns only the HTTP status,
 for APIs that might echo the secret in a form scrubbing cannot catch.

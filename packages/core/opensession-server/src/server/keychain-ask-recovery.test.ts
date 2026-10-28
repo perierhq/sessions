@@ -450,6 +450,23 @@ describe("a request_credential call that timed out on the client", () => {
   });
 });
 
+describe("the purpose the owner reads", () => {
+  test("loses control and bidi-override characters and stops at 500 characters", () => {
+    const result = kc.requestCredential({
+      credential: "acme-prod",
+      sessionId: SESSION,
+      requestedBy: "Bea",
+      purpose: `read invoices\u202e\nApprove standing${"x".repeat(900)}`,
+    });
+    expect(result).toHaveProperty("ask");
+    const ask = pendingAsk();
+    expect(ask.purpose).not.toMatch(/[\x00-\x1f\u202a-\u202e\u2066-\u2069]/);
+    expect(ask.purpose.startsWith("read invoices")).toBe(true);
+    expect(ask.purpose.length).toBeLessThanOrEqual(500);
+    expect(slackPosts.at(-1)?.text ?? "").not.toContain("\u202e");
+  });
+});
+
 describe("an ask to the owner who is driving the session", () => {
   test("never goes up as a session card: only the owner can answer it", async () => {
     // Anyone watching the session, or another agent through session control,
@@ -584,6 +601,78 @@ describe("the keychain routes", () => {
 
     expect((await route(path, alex, body)).status).toBe(200);
     expect(textOf(await call)).toContain(kc.listGrants()[0]!.id);
+  });
+});
+
+describe("owning, deleting and revoking", () => {
+  const alex = { login: "alex-gh", name: "Alex Example" };
+  const call = (
+    method: "POST" | "DELETE",
+    path: string,
+    authUser: { login: string; name: string; automation?: boolean } | null,
+    body?: unknown,
+  ) => {
+    const url = new URL(path, "https://os.example.test");
+    return handleKeychainRoutes({
+      path: url.pathname,
+      url,
+      publicPrefix: "",
+      authUser,
+      req: new Request(url, {
+        method,
+        ...(body === undefined
+          ? {}
+          : {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body),
+            }),
+      }),
+    }) as Promise<Response>;
+  };
+
+  test("a claimed name or an automation token can't add a credential", async () => {
+    const body = {
+      service: "acme-staging",
+      host: "api.example.test",
+      secret: "sk-staging",
+      owner: "Alex",
+    };
+    for (const who of [null, { ...alex, automation: true }]) {
+      const res = await call("POST", "/api/keychain/credentials", who, body);
+      expect(res.status).toBe(401);
+      expect((await res.json()).error).toContain("Sign in with GitHub");
+    }
+    expect(kc.findCredential("acme-staging")).toBeUndefined();
+    const res = await call("POST", "/api/keychain/credentials", alex, body);
+    expect(res.status).toBe(200);
+    expect(kc.findCredential("acme-staging")?.owner).toBe("Alex");
+  });
+
+  test("a claimed name can't delete a credential or revoke a grant", async () => {
+    const id = kc.findCredential("acme-prod")!.id;
+    const grant = kc.__mintGrantForTest({
+      credentialId: id,
+      sessionId: SESSION,
+      requestedBy: "Bea",
+      mode: "standing",
+    });
+    const revoke = `/api/keychain/grants/${grant.id}`;
+    const remove = `/api/keychain/credentials/${id}`;
+    for (const who of [null, { ...alex, automation: true }]) {
+      expect((await call("DELETE", revoke, who, { user: "Alex" })).status).toBe(
+        401,
+      );
+      expect((await call("DELETE", remove, who, { user: "Alex" })).status).toBe(
+        401,
+      );
+    }
+    expect(kc.listGrants({ sessionId: SESSION })[0]!.status).toBe("active");
+    expect(kc.findCredential("acme-prod")).toBeDefined();
+
+    expect((await call("DELETE", revoke, alex)).status).toBe(200);
+    expect(kc.listGrants({ sessionId: SESSION })[0]!.status).toBe("revoked");
+    expect((await call("DELETE", remove, alex)).status).toBe(200);
+    expect(kc.findCredential("acme-prod")).toBeUndefined();
   });
 });
 

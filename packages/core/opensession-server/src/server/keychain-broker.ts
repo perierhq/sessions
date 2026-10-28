@@ -7,11 +7,14 @@
  * only in the session it was issued to; its id alone authorizes nothing.
  *
  * The request goes only to the credential's host over HTTPS on the default
- * port. The method and the normalized path are checked against the
- * credential's ceiling after URL parsing, so `..` segments cannot step
- * outside an allowed prefix. Redirects are not followed. The secret is
- * scrubbed from the response headers and body, and a statusOnly credential
- * returns nothing but the status.
+ * port, through the same address policy as web_fetch and incident egress
+ * (shared/pinned-fetch.ts): the host is resolved once, refused if any
+ * address is private, loopback or link-local, and the connection dials only
+ * the checked addresses. The method and the normalized path are checked
+ * against the credential's ceiling after URL parsing, so `..` segments
+ * cannot step outside an allowed prefix. Redirects are returned unread,
+ * never followed. The secret is scrubbed from the response headers and
+ * body, and a statusOnly credential returns nothing but the status.
  *
  * A workspace credential needs no grant from its owner: the session's first
  * call mints its implicit workspace grant. Each call to it must say why
@@ -24,11 +27,23 @@
 
 import { audit } from "./audit";
 import {
+  BlockedAddressError,
+  DECODABLE_ACCEPT_ENCODING,
+  defaultPinnedFetchDeps,
+  type PinnedFetchDeps,
+  type PinnedResponse,
+  resolvePinnedTarget,
+  untilAborted,
+  withDefaultHeaders,
+} from "./shared/pinned-fetch";
+import {
   activeGrantFor,
   activeIncidentGrantFor,
   brokerHeaders,
   consumeGrantForBroker,
+  displaySafe,
   ensureKeychainLoaded,
+  headerProblem,
   findCredential,
   isWorkspaceCredential,
   scrubSecret,
@@ -46,8 +61,6 @@ export const BROKER_METHODS = [
 export type BrokerMethod = (typeof BROKER_METHODS)[number];
 
 const BROKER_TIMEOUT_MS = 30_000;
-/** A call's purpose as audited. */
-const MAX_PURPOSE_CHARS = 500;
 /** What we read of a response body, and what reaches the model of it. */
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_RETURNED_CHARS = 60_000;
@@ -82,8 +95,8 @@ export interface BrokerCallInput {
   /** Set by the incident access server for an incident agent: the call may
    *  use only this incident's grant. */
   incident?: { incidentId: string; role: string };
-  /** Test seam. */
-  fetchImpl?: typeof fetch;
+  /** The pinned connection's seams. Test seam. */
+  net?: Partial<PinnedFetchDeps>;
 }
 
 export type BrokerCallResult =
@@ -101,9 +114,18 @@ export async function brokerCall(
 ): Promise<BrokerCallResult> {
   await ensureKeychainLoaded();
   const meta = findCredential(input.credential);
-  if (!meta) return { error: `no credential matches "${input.credential}"` };
+  if (!meta)
+    return {
+      error: `no credential matches "${input.credential}"; list_credentials shows the ones in the keychain`,
+    };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(input.path))
+    return {
+      error: `pass only the path and query: ${meta.service} calls https://${meta.host} itself, e.g. /v1/items?limit=5`,
+    };
   if (!input.path.startsWith("/") || input.path.startsWith("//"))
-    return { error: "path must start with a single /" };
+    return {
+      error: `path must start with a single / and stay on https://${meta.host}`,
+    };
   let target: URL;
   try {
     target = new URL(`https://${meta.host}${input.path}`);
@@ -113,7 +135,7 @@ export async function brokerCall(
   if (target.hostname !== meta.host || target.port || target.username)
     return { error: `path must stay on https://${meta.host}` };
 
-  const purpose = input.purpose?.trim().slice(0, MAX_PURPOSE_CHARS) || "";
+  const purpose = displaySafe(input.purpose) || "";
   const incident = input.incident;
   const incidentFields = incident
     ? { incident_id: incident.incidentId, incident_role: incident.role }
@@ -142,6 +164,13 @@ export async function brokerCall(
     return {
       error: `this session holds no live grant for ${meta.service}. Ask its owner with request_credential first.`,
     };
+  // Checked before the grant is spent: a header that can't be sent would
+  // fail the request after a once grant was already used.
+  const forwarded: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input.headers || {}))
+    if (FORWARDED_HEADERS.has(k.toLowerCase())) forwarded[k.toLowerCase()] = v;
+  const unsendable = headerProblem(forwarded);
+  if (unsendable) return { error: unsendable };
   const use = consumeGrantForBroker(
     grant.id,
     input.sessionId,
@@ -163,9 +192,7 @@ export async function brokerCall(
   }
   const { credential } = use;
 
-  const headers = new Headers();
-  for (const [k, v] of Object.entries(input.headers || {}))
-    if (FORWARDED_HEADERS.has(k.toLowerCase())) headers.set(k, v);
+  const headers = new Headers(forwarded);
   for (const [k, v] of Object.entries(brokerHeaders(credential)))
     headers.set(k, v);
 
@@ -188,29 +215,27 @@ export async function brokerCall(
   const signal = input.signal
     ? AbortSignal.any([input.signal, AbortSignal.timeout(BROKER_TIMEOUT_MS)])
     : AbortSignal.timeout(BROKER_TIMEOUT_MS);
-  let res: Response;
+  let res: PinnedResponse;
   try {
-    res = await (input.fetchImpl ?? fetch)(target, {
-      method: input.method,
-      headers,
-      body:
-        input.method === "GET" || input.method === "HEAD"
-          ? undefined
-          : input.body,
-      signal,
-      // A redirect's Location can point at any host; following it would send
-      // the credential somewhere the owner never approved.
-      redirect: "manual",
-    });
+    res = await credentialRequest(
+      target,
+      {
+        method: input.method,
+        headers: Object.fromEntries(headers),
+        ...(input.method === "GET" || input.method === "HEAD" || !input.body
+          ? {}
+          : { body: input.body }),
+        signal,
+        // A status-only call stops reading at the first byte.
+        maxBodyBytes: credential.statusOnly ? 1 : MAX_BODY_BYTES,
+      },
+      input.net,
+    );
   } catch (e: any) {
-    const reason = e?.name === "TimeoutError" ? "timed out" : "failed";
-    return { error: `the request to ${credential.host} ${reason}` };
+    return { error: credentialRequestError(credential.host, e) };
   }
 
-  if (credential.statusOnly) {
-    await res.body?.cancel().catch(() => {});
-    return { status: res.status, statusOnly: true };
-  }
+  if (credential.statusOnly) return { status: res.status, statusOnly: true };
 
   const scrub = (text: string) => scrubSecret(text, credential.secret);
   const outHeaders: Record<string, string> = {};
@@ -220,13 +245,20 @@ export async function brokerCall(
   }
   const contentType = res.headers.get("content-type") || "";
   const textual =
-    !contentType || /text\/|json|xml|x-www-form-urlencoded/i.test(contentType);
-  const { bytes, cut } = await readCapped(res, MAX_BODY_BYTES);
+    !res.undecodable &&
+    (!contentType ||
+      /text\/|json|xml|x-www-form-urlencoded/i.test(contentType));
+  const bytes = res.body;
+  const cut = res.truncated === true;
   if (!textual)
     return {
       status: res.status,
       headers: outHeaders,
-      body: `[${bytes.length}${cut ? "+" : ""} bytes of ${contentType} omitted]`,
+      body: `[${bytes.length}${cut ? "+" : ""} bytes of ${
+        res.undecodable
+          ? `${res.headers.get("content-encoding") || "encoded"} content`
+          : contentType
+      } omitted]`,
     };
   let body = scrub(new TextDecoder().decode(bytes));
   let truncated = cut;
@@ -240,6 +272,68 @@ export async function brokerCall(
     body,
     ...(truncated ? { truncated: true as const } : {}),
   };
+}
+
+/**
+ * One request to a credential's host, for the broker and the scripted-run
+ * proxy: resolved once, refused if any address is private, and connected
+ * only to the checked addresses. A redirect comes back unread. A body over
+ * `maxBodyBytes` is cut there and marked `truncated`.
+ *
+ * Accept-Encoding is always the proxy's, never the caller's: it names only
+ * the codings the pinned transport decodes, so the body reaches the secret
+ * scrubber as text. A server that answers in another coding anyway comes
+ * back `undecodable`, and the caller must not hand that body on raw.
+ */
+export async function credentialRequest(
+  target: URL,
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body?: string | Uint8Array;
+    signal: AbortSignal;
+    maxBodyBytes: number;
+  },
+  net?: Partial<PinnedFetchDeps>,
+): Promise<PinnedResponse> {
+  const deps: PinnedFetchDeps = { ...defaultPinnedFetchDeps, ...net };
+  const pinned = await untilAborted(
+    resolvePinnedTarget(target.href, deps),
+    init.signal,
+  );
+  return untilAborted(
+    deps.send(
+      pinned,
+      {
+        method: init.method,
+        headers: {
+          ...withDefaultHeaders(
+            Object.fromEntries(
+              Object.entries(init.headers).filter(
+                ([name]) => name.toLowerCase() !== "accept-encoding",
+              ),
+            ),
+          ),
+          "accept-encoding": DECODABLE_ACCEPT_ENCODING,
+        },
+        ...(init.body !== undefined ? { body: init.body } : {}),
+        signal: init.signal,
+        maxBodyBytes: init.maxBodyBytes,
+        overflow: "truncate",
+      },
+      deps.isBlocked,
+    ),
+    init.signal,
+  );
+}
+
+/** What a failed credentialRequest tells the caller: a refusal by address
+ *  policy says why; anything else says only that it failed. */
+export function credentialRequestError(host: string, error: unknown): string {
+  if (error instanceof BlockedAddressError)
+    return `the request to ${host} was refused: ${error.message}`;
+  const name = (error as { name?: unknown } | null)?.name;
+  return `the request to ${host} ${name === "TimeoutError" ? "timed out" : "failed"}`;
 }
 
 export async function readCapped(

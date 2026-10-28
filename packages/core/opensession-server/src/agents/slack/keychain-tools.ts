@@ -210,7 +210,7 @@ const credentialFields = {
     .max(20)
     .optional()
     .describe(
-      "Limit broker calls to paths starting with these, e.g. ['/v1/customers']. Omit for all.",
+      "Limit broker calls to these paths and everything under them, matched on whole segments: '/v1/customers' covers '/v1/customers/42', not '/v1/customers-admin'. The query string doesn't count. Omit for all.",
     ),
   header: z
     .string()
@@ -400,7 +400,7 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
     ),
     tool(
       "list_credentials",
-      "List the credentials teammates have registered in the keychain: service, owner, target host, any method/path limits, and whether it is a workspace credential. Secrets are never included. A workspace credential can be used right away with call_credential or run_with_credential, no request needed; a personal one needs request_credential and its owner's approval. Use this to find out whether the access you need already exists before asking anyone for a token.",
+      "List the credentials teammates have registered in the keychain: service, owner, target host, the methods and paths call_credential may use, whether a call returns only the HTTP status (status only), and whether it is a workspace credential. Secrets are never included. A workspace credential can be used right away with call_credential or run_with_credential, no request needed; a personal one needs request_credential and its owner's approval. Use this to find out whether the access you need already exists before asking anyone for a token.",
       {},
       async () => {
         const creds = listCredentials().filter(
@@ -415,9 +415,12 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
           const limits = [
             c.allowedMethods?.length
               ? `methods ${c.allowedMethods.join("/")}`
-              : null,
+              : "any method",
             c.allowedPathPrefixes?.length
-              ? `paths ${c.allowedPathPrefixes.join(", ")}`
+              ? `paths ${c.allowedPathPrefixes.join(", ")} and under`
+              : "any path",
+            c.statusOnly
+              ? "status only: calls return only the HTTP status"
               : null,
           ]
             .filter(Boolean)
@@ -630,7 +633,8 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
           ...(args.body !== undefined ? { body: args.body } : {}),
           ...(extra?.signal ? { signal: extra.signal } : {}),
         });
-        if ("error" in result) return text(`Couldn't call: ${result.error}.`);
+        if ("error" in result)
+          return text(`Couldn't call: ${result.error.replace(/\.*$/, ".")}`);
         return text(JSON.stringify(result));
       },
     ),

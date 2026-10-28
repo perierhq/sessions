@@ -19,6 +19,7 @@ import {
   type BrokerMethod,
   brokerCall,
 } from "../../keychain-broker";
+import type { PinnedFetchDeps } from "../../shared/pinned-fetch";
 import { getIncident } from "../incident-store";
 import { getSignal } from "../signal-store";
 import {
@@ -55,7 +56,11 @@ function findGranted(
     return {
       error: `Two credentials lent to this agent are named ${named[0].service}; name one by its id`,
     };
-  return named[0] ?? { error: `${ref} is not granted to this agent` };
+  return (
+    named[0] ?? {
+      error: `${ref} is not granted to this agent; describe_access lists the credentials it was lent`,
+    }
+  );
 }
 
 function pathOnly(path: string): string {
@@ -97,7 +102,7 @@ export async function freshGrantedCredential(
 export async function incidentCredentialCall(
   ctx: IncidentToolContext,
   input: CredentialCallInput,
-  deps: { fetchImpl?: typeof fetch } = {},
+  deps: { net?: Partial<PinnedFetchDeps> } = {},
 ): Promise<BrokerCallResult> {
   const lent = findGranted(ctx.access, input.credential);
   if ("error" in lent) return lent;
@@ -146,7 +151,7 @@ export async function incidentCredentialCall(
       incidentId: ctx.binding.incidentId,
       role: ctx.binding.role,
     },
-    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    ...(deps.net ? { net: deps.net } : {}),
   });
   toolAudit(ctx, "incident_credential_call", {
     ...fields,
