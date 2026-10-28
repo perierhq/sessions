@@ -9,9 +9,14 @@ export const CHANGE_FILES_SHOWN = 5;
 
 const HUNK = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/;
 
-/** Split one file's chunk of a unified diff into its header (before the
- *  first hunk) and its hunks. */
-function hunksOf(chunk: string): { header: string[]; hunks: string[][] } {
+/** One file's chunk of a unified diff: its header (before the first
+ *  hunk) and its hunks, each a list of lines. */
+interface FileHunks {
+  header: string[];
+  hunks: string[][];
+}
+
+function hunksOf(chunk: string): FileHunks {
   const header: string[] = [];
   const hunks: string[][] = [];
   for (const line of chunk.replace(/\n$/, "").split("\n")) {
@@ -72,10 +77,15 @@ export function citedHunk(
 }
 
 /** The files a block lists and how many more the change has. */
+export interface ShownFiles {
+  files: PrFile[];
+  more: number;
+}
+
 export function shownFiles(
   files: readonly PrFile[],
   total: number,
-): { files: PrFile[]; more: number } {
+): ShownFiles {
   const shown = files.slice(0, CHANGE_FILES_SHOWN);
   return { files: shown, more: Math.max(total, files.length) - shown.length };
 }
