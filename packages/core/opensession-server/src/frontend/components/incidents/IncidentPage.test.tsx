@@ -118,8 +118,8 @@ const actions = {
   onIntentHandled: () => {},
 };
 
-const ready = (withResponse: boolean) => {
-  const value = incident(withResponse);
+const ready = (withResponse: boolean, over: Partial<Incident> = {}) => {
+  const value = { ...incident(withResponse), ...over };
   return renderToStaticMarkup(
     <IncidentPageView
       project="acme"
@@ -229,4 +229,45 @@ test("not found and error states", () => {
     />,
   );
   expect(loading).toContain("Loading the incident");
+});
+
+test("the likely cause sits under the status line, above the strip", () => {
+  const base = incident(true);
+  const html = ready(true, {
+    response: {
+      ...base.response!,
+      findingSets: [
+        {
+          role: "investigator",
+          round: 1,
+          attempt: 1,
+          sessionId: "os-inv",
+          source: "tool",
+          updatedAt: iso(-60_000),
+          calls: 1,
+          notes: [],
+          blocks: [
+            {
+              id: "pool",
+              kind: "hypothesis",
+              size: "full",
+              statement: "The acme pool is too small.",
+              confidence: "medium",
+              evidence: [],
+              claims: [],
+            },
+          ],
+        },
+      ],
+    },
+  });
+  const order = [
+    "Search is down",
+    "Likely cause",
+    "Search · Check · every 2 min",
+    "Deploys the fix",
+    ">Findings<",
+  ].map((text) => html.indexOf(text));
+  for (const at of order) expect(at).toBeGreaterThan(-1);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
 });

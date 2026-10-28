@@ -4,7 +4,8 @@ import {
   type FindingItem,
   type FindingSource,
   type FindingsPageView,
-  itemSource,
+  blockSource,
+  type RoundMark,
   sourceTarget,
 } from "../../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../../lib/incidents/strip-layout";
@@ -61,7 +62,7 @@ function BlockBody({
     case "log":
       return <LogBlock item={item} />;
     case "change":
-      return <ChangeBlock item={item} />;
+      return <ChangeBlock item={item} incident={incident} />;
     case "claims":
       return <ClaimsBlock item={item} />;
     case "compare":
@@ -82,6 +83,7 @@ export function FindingsGrid({
   page,
   incident,
   highlighted,
+  marks,
   animate,
   meta,
   signalName,
@@ -91,6 +93,8 @@ export function FindingsGrid({
   page: FindingsPageView;
   incident: Incident;
   highlighted: ReadonlySet<string>;
+  /** New and changed blocks against the round before (`roundChanges`). */
+  marks?: ReadonlyMap<string, RoundMark>;
   animate: boolean;
   meta: Meta;
   signalName: (id: string) => string;
@@ -98,8 +102,10 @@ export function FindingsGrid({
   columns?: 1 | 2;
 }) {
   const cells = page.items.map((item) => {
-    const ref = itemSource(item);
-    const target = ref ? sourceTarget(ref, incident) : null;
+    const source = blockSource(item, page.items);
+    const target = source
+      ? sourceTarget(source.ref, incident, source.quote)
+      : null;
     const cell =
       columns === 1
         ? "min-w-0"
@@ -110,6 +116,8 @@ export function FindingsGrid({
       <BlockFrame
         item={item}
         highlight={highlighted.has(item.key)}
+        mark={marks?.get(item.key) ?? null}
+        round={page.round}
         onOpenSource={target ? () => onOpenSource(target) : null}
       >
         <BlockBody

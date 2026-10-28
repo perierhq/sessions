@@ -1,4 +1,10 @@
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from "react";
 import { mutate } from "swr";
 import type {
   OwnerDecision,
@@ -24,6 +30,7 @@ import {
   MERGE_UNDO_DELAY_MS,
   scheduleDeferredMerge,
 } from "../../lib/deferred-merge";
+import { nextFindings } from "../../lib/incidents/findings";
 import { intentPlan } from "../../lib/incidents/intent";
 import {
   type CardButton,
@@ -61,6 +68,7 @@ import { KeychainAskCard } from "../KeychainAskCard";
 import { MergeUndoControl } from "../pr/MergeUndoControl";
 import { SessionSafetyNotice } from "../SessionSafetyNotice";
 import { AgentAuditSheet } from "./AgentAuditSheet";
+import { NextFindingsView } from "./findings/NextFindings";
 import { PlainButton } from "../../ui/plain-button";
 
 const BUTTON_VARIANT: Record<
@@ -152,6 +160,7 @@ export function NextActionView({
   scheduled = null,
   onAudit,
   onDeadline,
+  context = null,
 }: {
   card: ShellCard;
   busy: string | null;
@@ -161,6 +170,8 @@ export function NextActionView({
   onAudit?: () => void;
   /** The veto's deadline passed (Stop's countdown ended). */
   onDeadline?: () => void;
+  /** What to read before deciding, above the buttons (`NextFindingsView`). */
+  context?: ReactNode;
 }) {
   const buttons = orderButtons(card.buttons);
   return (
@@ -189,6 +200,7 @@ export function NextActionView({
           {card.footnote}
         </p>
       )}
+      {context}
       {(buttons.length > 0 || onAudit) && (
         <div className={NEXT_BUTTONS}>
           {onAudit && (
@@ -295,6 +307,8 @@ export function NextAction({
   const deferPhase = useDeferredMergePhase(deferKey);
   const deferDeadline = useDeferredMergeDeadline(deferKey);
   const project = repoLabel(incident.project);
+  const findings = nextFindings(incident);
+  const context = findings ? <NextFindingsView findings={findings} /> : null;
   const incidentKey = apiSWRKey.incident(incident.id);
 
   const decide = async (
@@ -545,6 +559,7 @@ export function NextAction({
               : undefined
           }
           onDeadline={() => void mutate(incidentKey)}
+          context={context}
         />
       )}
       {card?.mode === "choice" && (
@@ -558,6 +573,7 @@ export function NextAction({
           freeText={card.freeText ?? false}
           notes={card.notes}
           groups={card.groups}
+          context={context}
           onAnswer={(answers, notes, typed) =>
             void onAnswer(answers, notes, typed)
           }

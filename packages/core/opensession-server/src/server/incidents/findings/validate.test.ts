@@ -488,6 +488,45 @@ describe("validateFindings", () => {
     ).toMatchObject({ change: { type: "commit", sha: "abc1234def" } });
   });
 
+  test("a change may cite one file and a line in it", () => {
+    expect(
+      only([
+        {
+          id: "c",
+          kind: "change",
+          pr: 4,
+          why: "x",
+          file: "src/db.ts",
+          line: 12,
+        },
+      ]),
+    ).toEqual({
+      block: {
+        id: "c",
+        kind: "change",
+        size: "full",
+        change: { type: "pr", number: 4 },
+        why: "x",
+        file: "src/db.ts",
+        line: 12,
+      },
+      notes: [],
+    });
+    expect(
+      only([{ id: "c", kind: "change", pr: 4, why: "x", file: "a\nb" }]),
+    ).toMatchObject({
+      block: { change: { type: "pr", number: 4 } },
+      notes: ["Block `c`: file must be one path in the change; left out."],
+    });
+    const lineOnly = only([
+      { id: "c", kind: "change", pr: 4, why: "x", line: 3 },
+    ]);
+    expect(lineOnly.block).not.toHaveProperty("line");
+    expect(lineOnly.notes).toEqual([
+      "Block `c`: line needs a file and a whole number from 1; left out.",
+    ]);
+  });
+
   test("compare needs two sides, each a signal or a log", () => {
     const [before, after] = FIXTURES.compare.sides as [
       Record<string, unknown>,

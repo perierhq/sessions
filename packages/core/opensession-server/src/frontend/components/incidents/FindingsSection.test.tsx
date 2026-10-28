@@ -25,16 +25,17 @@ const cause: IncidentCauseView = {
   status: "unverified",
 };
 
-const question = (
+const block = (
   id: string,
   title: string,
   size: "full" | "half" = "full",
-): FindingBlock => ({
+): FindingBlock => ({ id, kind: "timeline", title, size, events: [] });
+
+const question = (id: string, text: string): FindingBlock => ({
   id,
   kind: "question",
-  title,
-  size,
-  text: `What about ${id}?`,
+  size: "full",
+  text,
   wouldAnswer: "",
 });
 
@@ -117,8 +118,8 @@ test("findings take Cause's place", () => {
     incident(
       response({
         findingSets: [
-          set(1, [question("a", "First block"), question("b", "Second block")]),
-          set(1, [question("c", "Verifier block")], "verifier"),
+          set(1, [block("a", "First block"), block("b", "Second block")]),
+          set(1, [block("c", "Verifier block")], "verifier"),
         ],
       }),
     ),
@@ -139,7 +140,7 @@ test("the round under way is said quietly", () => {
     incident(
       response({
         round: 2,
-        findingSets: [set(1, [question("a", "First block")])],
+        findingSets: [set(1, [block("a", "First block")])],
       }),
     ),
   );
@@ -153,10 +154,10 @@ test("half blocks pair on desktop, everything stacks on phone", () => {
       response({
         findingSets: [
           set(1, [
-            question("a", "Half one", "half"),
-            question("b", "Half two", "half"),
-            question("c", "Full", "full"),
-            question("d", "Lone half", "half"),
+            block("a", "Half one", "half"),
+            block("b", "Half two", "half"),
+            block("c", "Full", "full"),
+            block("d", "Lone half", "half"),
           ]),
         ],
       }),
@@ -173,4 +174,55 @@ test("half blocks pair on desktop, everything stacks on phone", () => {
     html.indexOf(t),
   );
   expect(order).toEqual([...order].sort((a, b) => a - b));
+});
+
+test("an open incident's questions go to the Next card, a closed one's stay", () => {
+  const r = response({
+    findingSets: [
+      set(1, [
+        block("a", "Timeline"),
+        question("q", "Who restores billing for acme?"),
+      ]),
+    ],
+  });
+  const open = render(incident(r));
+  expect(open).toContain("Timeline");
+  expect(open).not.toContain("Who restores billing for acme?");
+  const closed = render({ ...incident(r), state: "closed-without-action" });
+  expect(closed).toContain("Who restores billing for acme?");
+});
+
+test("the byline is said once for the section, not on every block", () => {
+  const html = render(
+    incident(
+      response({
+        findingSets: [set(1, [block("a", "One"), block("b", "Two")])],
+      }),
+    ),
+  );
+  expect(html.split("From the investigator, ").length).toBe(2);
+  expect(html).not.toContain("from the investigator, ");
+});
+
+test("round 2 says what changed, marks the blocks and links round 1", () => {
+  const html = render(
+    incident(
+      response({
+        round: 2,
+        findingSets: [
+          set(1, [block("a", "Kept"), block("b", "Edited")]),
+          set(2, [
+            block("a", "Kept"),
+            block("b", "Edited again"),
+            block("c", "Added"),
+          ]),
+        ],
+      }),
+    ),
+  );
+  expect(html).toContain("Round 2: 1 changed, 1 new");
+  expect(html).toContain("Changed in round 2");
+  expect(html).toContain("New in round 2");
+  expect(html.split("in round 2</p>").length).toBe(3);
+  expect(html).toMatch(/<button[^>]*>Round 1 findings<\/button>/);
 });

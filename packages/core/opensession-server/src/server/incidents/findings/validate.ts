@@ -506,7 +506,35 @@ function parseChange(
     change = { type: "commit", sha };
   }
   const why = cleanText(value.why, true) ?? "";
-  return { kind: "change", change, why: clip(why, L.prose, "why", note) };
+  const out: Body<"change"> = {
+    kind: "change",
+    change,
+    why: clip(why, L.prose, "why", note),
+  };
+  // The cited file and line only narrow what the page shows of the
+  // change, so a bad one is left out rather than dropping the block.
+  if (value.file !== undefined) {
+    const raw = value.file;
+    const file =
+      typeof raw === "string" && !/[\u0000-\u001f]/.test(raw)
+        ? cleanText(raw)
+        : null;
+    if (file && file.length <= L.path)
+      out.file = file.replace(/^(?:a|b)\//, "");
+    else note("file must be one path in the change; left out.");
+  }
+  if (value.line !== undefined) {
+    const line = value.line;
+    if (
+      out.file &&
+      typeof line === "number" &&
+      Number.isInteger(line) &&
+      line >= 1
+    )
+      out.line = line;
+    else note("line needs a file and a whole number from 1; left out.");
+  }
+  return out;
 }
 
 function parseCompare(

@@ -3,24 +3,33 @@ import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
 import { FINDINGS_COPY } from "../../../shared/findings";
 import type { Incident, StripLane } from "../../../shared/incidents";
 import type { IncidentCauseView } from "../../lib/incidents/cause";
-import { type DetailTarget, ledgerEntries } from "../../lib/incidents/details";
+import type { DetailTarget } from "../../lib/incidents/details";
 import {
+  asksInNext,
   changedKeys,
   FINDINGS_HIGHLIGHT_MS,
+  FINDINGS_SECTION_ID,
   type FindingItem,
   type FindingSource,
+  type FindingsSheetState,
   findingsPage,
+  openFindingSource,
+  roundChanges,
+  roundChangesCopy,
 } from "../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../lib/incidents/strip-layout";
 import {
+  FINDINGS_SECTION_BYLINE,
+  FINDINGS_ROUND_LINK,
+  FINDINGS_ROUNDS,
   FINDINGS_SECTION_HEAD,
   FINDINGS_UNDER_WAY,
   INCIDENT_SECTION_LABEL,
 } from "../../lib/incident-classes";
-import { RunLedger } from "../RunLedger";
+import { PlainButton } from "../../ui/plain-button";
 import { FindingsGrid } from "./findings/FindingsGrid";
+import { FindingsSheets } from "./findings/FindingsSheets";
 import { IncidentCause } from "./IncidentCause";
-import { DetailSheet } from "./IncidentDetails";
 
 type PrTarget = Extract<DetailTarget, { kind: "pr" }>;
 
@@ -64,9 +73,12 @@ function useChangedBlocks(
 
 /**
  * What the agents found, in the slot the Cause section had: the page
- * round's blocks with a quiet "Round 2 under way" while a newer round has
- * not shown anything yet. With no findings, the Cause view exactly as it
- * was. Blocks only open things: a session, a PR, the agents' cost.
+ * round's blocks under who they are from, with a quiet "Round 2 under
+ * way" while a newer round has not shown anything yet. In a later round
+ * the head says what changed since the round before, each changed block
+ * says so, and the earlier rounds open from here. With no findings, the
+ * Cause view exactly as it was. Blocks only open things: a session, a PR,
+ * the agents' cost, an earlier round.
  */
 export function FindingsSection({
   incident,
@@ -85,29 +97,52 @@ export function FindingsSection({
   onOpenSession: (id: string) => void;
   onOpenPr: (target: PrTarget) => void;
 }) {
-  const page = findingsPage(incident);
+  // The open questions go with the decision in the Next card.
+  const withoutAsks = asksInNext(incident);
+  const page = findingsPage(incident, { withoutAsks });
   const reduceMotion = useReducedMotion() ?? false;
   const highlighted = useChangedBlocks(page?.items ?? null, !reduceMotion);
-  const [costOpen, setCostOpen] = useState(false);
+  const [sheet, setSheet] = useState<FindingsSheetState | null>(null);
   const headingId = useId();
 
   if (!page) return <IncidentCause cause={cause} waiting={waiting} />;
 
-  const openSource = (target: FindingSource) => {
-    if (target.kind === "session") onOpenSession(target.sessionId);
-    else if (target.kind === "pr") onOpenPr(target);
-    else if (target.kind === "ledger") setCostOpen(true);
-    else if (target.kind === "url")
-      window.open(target.url, "_blank", "noopener,noreferrer");
-  };
-  const response = incident.response;
+  const changes = roundChanges(incident, { withoutAsks });
+  const openSource = (target: FindingSource) =>
+    openFindingSource(target, {
+      sheet: setSheet,
+      session: onOpenSession,
+      pr: onOpenPr,
+      url: (url) => window.open(url, "_blank", "noopener,noreferrer"),
+    });
 
   return (
-    <section aria-labelledby={headingId} className="flex min-w-0 flex-col">
+    <section
+      id={FINDINGS_SECTION_ID}
+      aria-labelledby={headingId}
+      className="flex min-w-0 scroll-mt-4 flex-col"
+    >
       <div className={FINDINGS_SECTION_HEAD}>
         <h2 id={headingId} className={INCIDENT_SECTION_LABEL}>
           {FINDINGS_COPY.heading}
         </h2>
+        <p className={FINDINGS_SECTION_BYLINE}>{page.byline}</p>
+        {changes || page.earlierRounds.length > 0 ? (
+          <div className={FINDINGS_ROUNDS}>
+            {changes ? (
+              <p className="m-0">{roundChangesCopy(changes)}</p>
+            ) : null}
+            {page.earlierRounds.map((round) => (
+              <PlainButton
+                key={round}
+                className={FINDINGS_ROUND_LINK}
+                onClick={() => setSheet({ kind: "round", round })}
+              >
+                {FINDINGS_COPY.earlierRow(round)}
+              </PlainButton>
+            ))}
+          </div>
+        ) : null}
         {page.underWay !== null ? (
           <p className={FINDINGS_UNDER_WAY}>
             {FINDINGS_COPY.underWay(page.underWay)}
@@ -118,26 +153,21 @@ export function FindingsSection({
         page={page}
         incident={incident}
         highlighted={highlighted}
+        marks={changes?.marks}
         animate={!reduceMotion}
         meta={meta}
         signalName={signalName}
         onOpenSource={openSource}
       />
-      {response ? (
-        <DetailSheet
-          title="Agent cost"
-          open={costOpen}
-          onClose={() => setCostOpen(false)}
-        >
-          <RunLedger
-            entries={ledgerEntries(response, Date.now())}
-            onOpenSession={(id) => {
-              setCostOpen(false);
-              onOpenSession(id);
-            }}
-          />
-        </DetailSheet>
-      ) : null}
+      <FindingsSheets
+        incident={incident}
+        sheet={sheet}
+        onSheet={setSheet}
+        meta={meta}
+        signalName={signalName}
+        onOpenSession={onOpenSession}
+        onOpenPr={onOpenPr}
+      />
     </section>
   );
 }

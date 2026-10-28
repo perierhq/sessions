@@ -8,6 +8,7 @@ import {
 } from "../../../../shared/findings";
 import type { Incident } from "../../../../shared/incidents";
 import type { FindingItem } from "../../../lib/incidents/findings";
+import { clockTime } from "../../../lib/time";
 import {
   FINDINGS_LOG_MARK,
   FINDINGS_SOURCE_QUIET,
@@ -41,6 +42,7 @@ const item = (block: FindingBlock, over: Partial<FindingItem> = {}) =>
     block,
     span: "full",
     byline: FINDINGS_COPY.byline("investigator", "14:32"),
+    ownByline: false,
     ...over,
   }) satisfies FindingItem;
 
@@ -82,7 +84,9 @@ const log = (
   }) satisfies FindingBlock;
 
 test("frame: heading, byline and show source", () => {
-  const titled = item(hypothesis({ title: "Pool exhaustion" }));
+  const titled = item(hypothesis({ title: "Pool exhaustion" }), {
+    ownByline: true,
+  });
   const html = renderToStaticMarkup(
     <BlockFrame item={titled} highlight={false} onOpenSource={() => {}}>
       <p>body</p>
@@ -107,8 +111,10 @@ test("frame: heading, byline and show source", () => {
     </BlockFrame>,
   );
   expect(plain).not.toContain("Show source");
+  // The section says who; a block of the same role doesn't repeat it.
+  expect(plain).not.toContain("from the investigator");
   // No title: the kind's own name.
-  expect(plain).toMatch(/<h3[^>]*>Hypothesis<\/h3>/);
+  expect(plain).toMatch(/<h3[^>]*>Likely cause<\/h3>/);
 });
 
 test("frame: a changed block carries the highlight", () => {
@@ -182,14 +188,53 @@ test("a log from a connector says where it came from in the normal voice", () =>
   expect(html).not.toContain(FINDINGS_LOG_MARK);
 });
 
-test("hypothesis shows confidence and status", () => {
+test("hypothesis shows its status as a mark first, then the confidence", () => {
   const html = renderToStaticMarkup(
     <HypothesisBlock
       item={item(hypothesis({ confidence: "high" }), { status: "refuted" })}
     />,
   );
-  expect(html).toContain("High confidence");
-  expect(html).toContain("Refuted");
+  expect(html).toMatch(/rounded-full bg-red[^"]*"><\/span><span[^>]*>Refuted</);
+  expect(html.indexOf("Refuted")).toBeLessThan(html.indexOf("high confidence"));
+});
+
+test("a hypothesis's claims already on the claims block aren't repeated", () => {
+  const html = renderToStaticMarkup(
+    <HypothesisBlock
+      item={item(hypothesis({ claims: ["The pool is too small"] }), {
+        restsOn: [],
+      })}
+    />,
+  );
+  expect(html).not.toContain("Rests on");
+  expect(html).not.toContain("The pool is too small");
+});
+
+test("a block without a title is named by its kind; a hypothesis is the likely cause", () => {
+  const html = renderToStaticMarkup(
+    <BlockFrame item={item(hypothesis())} highlight={false} onOpenSource={null}>
+      <p>body</p>
+    </BlockFrame>,
+  );
+  expect(html).toMatch(/<h3[^>]*>Likely cause<\/h3>/);
+});
+
+test("claims nobody has checked yet collapse to one line", () => {
+  const claims: ClaimRow[] = [
+    { text: "The pool is too small", status: "unchecked" },
+    { text: "Retries are off", status: "unchecked" },
+    { text: "The release removed the replica", status: "unchecked" },
+  ];
+  const html = renderToStaticMarkup(
+    <ClaimsBlock
+      item={item({ id: "claims", kind: "claims", size: "full" }, { claims })}
+    />,
+  );
+  expect(html).toContain("<details");
+  expect(html).toMatch(/<summary[^>]*>[^<]*3 claims, not checked yet/);
+  // Still there to read when opened.
+  expect(html).toContain("Retries are off");
+  expect(html.split("Not checked yet").length).toBe(1);
 });
 
 test("hypothesis lists the claims it rests on", () => {
@@ -313,4 +358,50 @@ test("a claims block with no rows yet says so", () => {
     />,
   );
   expect(html).toContain("No claims yet");
+});
+
+test("times from data read local: prose ISO times and UTC log stamps", () => {
+  const at = "2026-10-27T11:13:00Z";
+  const q: FindingBlock = {
+    id: "ci",
+    kind: "question",
+    size: "full",
+    text: `Did the ${at} check run on acme?`,
+    wouldAnswer: "",
+  };
+  const html = renderToStaticMarkup(<QuestionBlock item={item(q)} />);
+  expect(html).toContain(`Did the ${clockTime(at)} check run on acme?`);
+  expect(html).not.toContain(at);
+
+  const stamped = renderToStaticMarkup(
+    <LogBlock
+      item={item(
+        log(["2026-10-28T11:06:16.930348960Z info <-- GET /api"], [], 0),
+      )}
+    />,
+  );
+  expect(stamped).toContain("from the agent&#x27;s shell · times in UTC");
+  // The quoted line itself stays verbatim.
+  expect(stamped).toContain("2026-10-28T11:06:16.930348960Z info");
+});
+
+test("a short quote shows every line; only a long one scrolls in its well", () => {
+  const long = (i: number) =>
+    `2026-10-28T11:06:1${i}.930348960Z info <-- GET /api/v2/journeys?from=8000262&to=8100108&departure=2026-10-30T22%3A48&travelClass=2&stream=1`;
+  const short = renderToStaticMarkup(
+    <LogBlock item={item(log([0, 1, 2].map(long), [1], 0))} />,
+  );
+  expect(short).not.toMatch(/<pre[^>]*max-h-/);
+  const many = renderToStaticMarkup(
+    <LogBlock
+      item={item(
+        log(
+          Array.from({ length: 30 }, (_, i) => long(i % 10)),
+          [],
+          0,
+        ),
+      )}
+    />,
+  );
+  expect(many).toMatch(/<pre[^>]*max-h-96[^>]*overflow-auto/);
 });

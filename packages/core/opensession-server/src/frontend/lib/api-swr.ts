@@ -72,6 +72,7 @@ export const apiSWRKey = {
   // A findings block's signal window and change. Deliberately outside the
   // "incident" prefix: an incident write must not refetch every block's
   // data; a window refreshes on its own bucket and a commit never changes.
+  // A window's 404 is a signal deleted since: the block says so, no retry.
   findingsWindow: (signalId: string, from: string, to: string) =>
     ["api", "findings-window", signalId, from, to] as const,
   findingsCommit: (sha: string, repo: string) =>

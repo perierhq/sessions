@@ -15,12 +15,21 @@ import type {
 import type { Incident } from "../../../shared/incidents";
 import { clockTime } from "../time";
 import {
+  asksInNext,
+  blockSource,
   changedKeys,
   earlierFindingRounds,
   type FindingItem,
+  type FindingsSheetState,
   findingSpans,
   findingsPage,
   itemSource,
+  localizeTimes,
+  logTimesInUtc,
+  nextFindings,
+  openFindingSource,
+  roundChanges,
+  roundChangesCopy,
   sourceTarget,
   timelineRows,
 } from "./findings";
@@ -497,6 +506,18 @@ test("bylines name the role and the set's time", () => {
   expect(page?.items[1]?.byline).toBe(
     FINDINGS_COPY.byline("verifier", clockTime(verifier.updatedAt)),
   );
+  // Said once for the section; a block repeats it only when its role
+  // differs from the section's.
+  expect(page?.byline).toBe(`From the investigator, ${clockTime(T("12:15"))}`);
+  expect(page?.items.map((item) => item.ownByline)).toEqual([false, true]);
+});
+
+test("a verifier-only page is bylined by the verifier", () => {
+  const page = findingsPage(
+    open(response({ findingSets: [set("verifier", 1, [question("c")])] })),
+  );
+  expect(page?.byline).toBe(`From the verifier, ${clockTime(T("12:15"))}`);
+  expect(page?.items[0]?.ownByline).toBe(false);
 });
 
 test("timeline adds the incident's own anchors and sorts by time", () => {
@@ -577,8 +598,13 @@ test("show source opens the owner of the data", () => {
         provenance: { kind: "shell" },
       },
       incident,
+      ["ERROR acme db timeout"],
     ),
-  ).toEqual({ kind: "session", sessionId: "os-inv" });
+  ).toMatchObject({
+    kind: "tool",
+    ref: { sessionId: "os-inv", resultId: "tr-toolu_1" },
+    quote: ["ERROR acme db timeout"],
+  });
   const url = "https://github.com/acme/web/pull/12";
   expect(
     sourceTarget(
@@ -662,6 +688,7 @@ test("a block's source is its data: the quoted call, the PR, the first evidence 
     block,
     span: "full",
     byline: "",
+    ownByline: false,
   });
   expect(
     itemSource(
@@ -723,4 +750,261 @@ test("a block's source is its data: the quoted call, the PR, the first evidence 
     ),
   ).toEqual(tool);
   expect(itemSource(asItem(question("q")))).toBeNull();
+});
+
+test("open questions go with the decision while the incident is open", () => {
+  const r = response({
+    findingSets: [
+      set("investigator", 1, [question("a"), question("b")]),
+      set("verifier", 1, [question("c")]),
+    ],
+  });
+  const asks = nextFindings(open(r))?.asks ?? [];
+  expect(asks.map((a) => a.key)).toEqual([
+    "investigator:a",
+    "investigator:b",
+    "verifier:c",
+  ]);
+  expect(asks[0]).toMatchObject({
+    text: "What about a?",
+    wouldAnswer: "A look at the acme logs.",
+  });
+  expect(asksInNext(open(r))).toBe(true);
+  // The section leaves them to the Next card.
+  expect(findingsPage(open(r), { withoutAsks: true })).toBeNull();
+});
+
+test("a closed incident keeps its questions in the section", () => {
+  const r = response({
+    findingSets: [set("investigator", 1, [question("a")])],
+  });
+  const closed: PageIncident = { state: "closed-without-action", response: r };
+  expect(asksInNext(closed)).toBe(false);
+  expect(nextFindings(closed)?.asks ?? []).toEqual([]);
+  expect(asksInNext({ state: "investigating" })).toBe(false);
+});
+
+test("the Next card's likely cause is the page's first hypothesis", () => {
+  const hypothesis = (id: string, statement: string): FindingBlock => ({
+    id,
+    kind: "hypothesis",
+    size: "full",
+    statement,
+    confidence: "high",
+    evidence: [],
+    claims: [],
+  });
+  const r = response({
+    findingSets: [
+      set("investigator", 1, [
+        question("a"),
+        hypothesis("pool", "The acme pool is too small."),
+        hypothesis("dns", "DNS is slow."),
+      ]),
+    ],
+  });
+  expect(nextFindings(open(r))?.cause).toEqual({
+    key: "investigator:pool",
+    statement: "The acme pool is too small.",
+    status: "unchecked",
+    confidence: "high",
+  });
+  // A closed incident still says what the cause was.
+  const closed: PageIncident = { state: "resolved", response: r };
+  expect(nextFindings(closed)?.cause?.key).toBe("investigator:pool");
+  expect(
+    nextFindings(
+      open(
+        response({ findingSets: [set("investigator", 1, [question("a")])] }),
+      ),
+    )?.cause,
+  ).toBeNull();
+});
+
+test("ISO times in agent prose read in the reader's zone", () => {
+  const at = "2026-10-27T11:13:00Z";
+  expect(
+    localizeTimes(`the ${at} check (until 2026-10-27T11:15:30.5+01:00)`),
+  ).toBe(
+    `the ${clockTime(at)} check (until ${clockTime("2026-10-27T11:15:30.5+01:00")})`,
+  );
+  // Code spans and times without a zone stay as written.
+  expect(localizeTimes("`2026-10-27T11:13:00Z` at 2026-10-27T11:13")).toBe(
+    "`2026-10-27T11:13:00Z` at 2026-10-27T11:13",
+  );
+});
+
+test("log lines stamped in UTC say so", () => {
+  expect(
+    logTimesInUtc(["2026-10-28T11:06:16.930348960Z info <-- GET /api"]),
+  ).toBe(true);
+  expect(logTimesInUtc(["12:01:02 UTC cron ran"])).toBe(true);
+  expect(logTimesInUtc(["ERROR db: pool exhausted"])).toBe(false);
+});
+
+test("a later round marks its new and changed blocks against the one before", () => {
+  const edited = { ...question("b"), text: "What about b now?" };
+  const r = response({
+    round: 2,
+    findingSets: [
+      set("investigator", 1, [question("a"), question("b"), question("gone")]),
+      set("investigator", 2, [question("a"), edited, question("c")]),
+    ],
+  });
+  const changes = roundChanges(open(r));
+  expect(changes).toEqual({
+    round: 2,
+    previous: 1,
+    marks: new Map([
+      ["investigator:b", "changed"],
+      ["investigator:c", "new"],
+    ]),
+    changed: 1,
+    added: 1,
+    removed: 1,
+  });
+  expect(roundChangesCopy(changes!)).toBe(
+    "Round 2: 1 changed, 1 new, 1 removed",
+  );
+  // Round 1 has nothing to compare with.
+  expect(
+    roundChanges(
+      open(
+        response({ findingSets: [set("investigator", 1, [question("a")])] }),
+      ),
+    ),
+  ).toBeNull();
+});
+
+test("a round that only re-sent its blocks says nothing changed", () => {
+  const r = response({
+    round: 2,
+    findingSets: [
+      set("investigator", 1, [question("a")]),
+      set("investigator", 2, [question("a")], { updatedAt: T("13:00") }),
+    ],
+  });
+  const changes = roundChanges(open(r))!;
+  expect(changes.marks.size).toBe(0);
+  expect(roundChangesCopy(changes)).toBe("Round 2: nothing changed");
+});
+
+test("a source opens a sheet over the page, or leaves it closed", () => {
+  const calls: string[] = [];
+  const to = {
+    sheet: (next: FindingsSheetState | null) =>
+      calls.push(`sheet:${JSON.stringify(next)}`),
+    session: (id: string) => calls.push(`session:${id}`),
+    pr: (t: { number: number }) => calls.push(`pr:${t.number}`),
+    url: (url: string) => calls.push(`url:${url}`),
+  };
+  openFindingSource({ kind: "ledger", id: "l1" }, to);
+  openFindingSource({ kind: "session", sessionId: "os-inv" }, to);
+  openFindingSource({ kind: "pr", repo: "acme", number: 7 }, to);
+  expect(calls).toEqual([
+    'sheet:{"kind":"cost"}',
+    "sheet:null",
+    "session:os-inv",
+    "sheet:null",
+    "pr:7",
+  ]);
+});
+
+test("a hypothesis rests only on claims the claims block doesn't list", () => {
+  const claims = [{ text: "The pool is too small." }];
+  const page = findingsPage(
+    open(
+      response({
+        agents: [invRun(1, claims)],
+        findingSets: [
+          set("investigator", 1, [
+            {
+              id: "pool",
+              kind: "hypothesis",
+              size: "full",
+              statement: "The acme pool is too small.",
+              confidence: "high",
+              evidence: [],
+              claims: ["the pool is too small", "Retries pile up."],
+            },
+          ]),
+        ],
+      }),
+    ),
+  );
+  // The first is on the claims block (matched loosely); the second isn't.
+  expect(page?.items[0]?.restsOn).toEqual(["Retries pile up."]);
+  expect(page?.items.at(-1)?.key).toBe("auto:claims");
+});
+
+test("every block with data behind it has a source, quoted lines first", () => {
+  const tool = {
+    type: "tool" as const,
+    sessionId: "os-inv",
+    useId: "toolu_2",
+    resultId: "tr-toolu_2",
+    tool: "Bash",
+    at: T("12:05"),
+    provenance: { kind: "shell" as const },
+  };
+  const asItem = (block: FindingBlock): FindingItem => ({
+    key: `investigator:${block.id}`,
+    role: "investigator",
+    block,
+    span: "full",
+    byline: "",
+    ownByline: false,
+  });
+  const log = asItem({
+    id: "errors",
+    kind: "log",
+    size: "full",
+    source: tool,
+    lines: ["INFO acme start", "ERROR acme db timeout"],
+    highlight: [1],
+    dropped: 0,
+  });
+  const hyp = asItem({
+    id: "pool",
+    kind: "hypothesis",
+    size: "full",
+    statement: "The pool is too small.",
+    confidence: "high",
+    evidence: [{ type: "block", id: "errors", role: "investigator" }],
+    claims: [],
+  });
+  const timeline = asItem({
+    id: "when",
+    kind: "timeline",
+    size: "full",
+    events: [
+      { at: T("12:01"), text: "Start" },
+      { at: T("12:02"), text: "Timeout", ref: tool },
+    ],
+  });
+  const items = [log, hyp, timeline];
+  expect(blockSource(log, items)).toEqual({
+    ref: tool,
+    quote: ["ERROR acme db timeout", "INFO acme start"],
+  });
+  // A hypothesis citing a block opens that block's data.
+  expect(blockSource(hyp, items)).toEqual(blockSource(log, items));
+  expect(blockSource(timeline, items)).toEqual({ ref: tool, quote: [] });
+});
+
+test("what changed counts only the blocks the section shows", () => {
+  const r = response({
+    round: 2,
+    findingSets: [
+      set("investigator", 1, [
+        { id: "t", kind: "timeline", size: "full", events: [] },
+      ]),
+      set("investigator", 2, [
+        { id: "t", kind: "timeline", size: "full", events: [] },
+        question("billing"),
+      ]),
+    ],
+  });
+  expect(roundChanges(open(r))?.added).toBe(1);
+  expect(roundChanges(open(r), { withoutAsks: true })?.added).toBe(0);
 });

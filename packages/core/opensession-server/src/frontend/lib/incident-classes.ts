@@ -95,6 +95,24 @@ export const NEXT_EYEBROW =
 export const NEXT_BUTTON_INERT =
   "aria-disabled:pointer-events-none aria-disabled:opacity-40";
 
+/** What the Next card shows of the findings, between its sentence and
+ *  its buttons: each part a label over its text. */
+export const NEXT_FINDINGS = "mt-2 flex min-w-0 flex-col gap-3";
+export const NEXT_FINDINGS_PART = "flex min-w-0 flex-col gap-0.5";
+
+/** The likely cause under the status line, aligned with its facts past
+ *  the dot. */
+export const LIKELY_CAUSE = "flex min-w-0 flex-col gap-0.5 pl-6";
+
+/** The likely cause's status, the agent's confidence and "See findings":
+ *  one wrapping row; the link goes to the row's end on a desktop. */
+export const NEXT_FINDINGS_META =
+  "m-0 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0 text-supporting text-dim";
+
+/** "See findings": a quiet link, 44px tall under a finger. */
+export const NEXT_FINDINGS_LINK =
+  "ml-auto min-h-6 cursor-pointer border-none bg-transparent p-0 text-supporting text-dim hover:text-fg hover:underline focus-ring phone:-my-2.5 phone:min-h-11";
+
 /** The next action's buttons: right on a desktop, left and wrapping under
  *  a finger. */
 export const NEXT_BUTTONS =
@@ -210,7 +228,12 @@ export const FINDINGS_LABEL = "m-0 text-label text-faint";
 /** Quoted log lines: the code well, one line per row, wrapping anywhere so
  *  a long line never scrolls the page sideways. */
 export const FINDINGS_LOG =
-  "m-0 max-h-80 overflow-auto rounded-control bg-code-well px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre-wrap text-code-well-ink [overflow-wrap:anywhere] select-text phone:max-h-64";
+  "m-0 overflow-x-hidden rounded-control bg-code-well px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre-wrap text-code-well-ink [overflow-wrap:anywhere] select-text";
+
+/** A long quote (`logFitsWhole` false) scrolls in its well. A short one
+ *  never does: a pixel cap cut a three-line quote's last wrapped row on a
+ *  phone, where long lines wrap many times. */
+export const FINDINGS_LOG_CAPPED = "max-h-96 overflow-auto";
 
 /** A highlighted line (`<mark>`): a tint across the well and a stripe on
  *  its leading edge, so the mark never rests on the colour alone. */
@@ -231,6 +254,21 @@ export const FINDINGS_STATUS_TONE = {
   "cant-tell": "text-dim",
   unchecked: "text-faint",
 } as const;
+
+/** A hypothesis's status mark and the agent's confidence, one line. */
+export const FINDINGS_STATUS_LINE =
+  "m-0 flex min-w-0 flex-wrap items-center gap-x-1.5 text-supporting text-dim";
+
+/** An all-unchecked claims block: one line that opens to the claims. */
+export const FINDINGS_CLAIMS_FOLD = "group min-w-0 [&[open]>summary]:mb-1";
+
+/** The fold's chevron, turned while open. */
+export const FINDINGS_CLAIMS_CHEVRON =
+  "shrink-0 text-faint transition-transform duration-150 group-open:rotate-180 motion-reduce:transition-none";
+
+/** Its line: a disclosure with the platform's marker, 44px under a finger. */
+export const FINDINGS_CLAIMS_SUMMARY =
+  "flex min-h-6 w-fit cursor-pointer list-none items-center gap-1 rounded-sm text-supporting text-dim select-none hover:text-fg focus-ring phone:min-h-11 [&::-webkit-details-marker]:hidden";
 
 /** A claim row: the claim, then its status and evidence under it. */
 export const FINDINGS_CLAIM_ROW =
@@ -309,10 +347,44 @@ export const FINDINGS_COMPARE = "grid min-w-0 grid-cols-1 gap-x-4 gap-y-4";
 export const FINDINGS_CHANGE_TITLE =
   "m-0 text-body font-medium text-fg [overflow-wrap:anywhere]";
 
+/** A commit's title as a link to its page. */
+export const FINDINGS_CHANGE_LINK =
+  "text-link hover:underline phone:inline-flex phone:min-h-11 phone:items-center";
+
+/** One file a change touches: its path, then its line counts. */
+export const FINDINGS_CHANGE_FILE =
+  "flex min-w-0 items-baseline justify-between gap-3 py-0.5 text-meta text-dim";
+
+/** The cited hunk: lines wrap, so nothing is cut at the edge, and a long
+ *  hunk scrolls in its own well. */
+export const FINDINGS_CHANGE_HUNK =
+  "max-h-80 overflow-auto rounded-xl bg-code-well text-label";
+
 /** The Findings section's heading and its "Round 2 under way" line,
  *  outdented like the Cause section's so the label's text lines up with
  *  the blocks' text and the rest of the page. */
 export const FINDINGS_SECTION_HEAD = "-mx-2 flex min-w-0 flex-col";
+
+/** Who the section's blocks are from and when, once, under the heading. */
+export const FINDINGS_SECTION_BYLINE =
+  "m-0 px-2 text-meta text-dim tabular-nums";
+
+/** What a later round changed and the earlier rounds' links, one
+ *  wrapping row under the byline. */
+export const FINDINGS_ROUNDS =
+  "flex min-w-0 flex-wrap items-center gap-x-3 px-2 text-meta text-dim";
+
+/** "Round 1 findings": a quiet link, 44px tall under a finger. */
+export const FINDINGS_ROUND_LINK =
+  "min-h-6 cursor-pointer border-none bg-transparent p-0 text-left text-meta text-link hover:underline focus-ring phone:min-h-11";
+
+/** A block's "New in round 2" / "Changed in round 2". */
+export const FINDINGS_ROUND_MARK = "m-0 text-meta font-medium text-dim";
+
+/** The source sheet's call: the quoted line it lands on is marked the
+ *  way a findings log marks one. */
+export const FINDINGS_SOURCE_BODY =
+  "min-w-0 [&_*::highlight(findings-quote)]:bg-yellow-soft [&_[data-findings-quote]]:bg-yellow-soft [&_[data-findings-quote]]:shadow-[inset_2px_0_0_var(--yellow)]";
 
 /** "Round 2 under way": quiet, under the heading. */
 export const FINDINGS_UNDER_WAY = "m-0 px-2 text-supporting text-faint";

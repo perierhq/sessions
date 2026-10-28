@@ -86,6 +86,9 @@ interface Props {
   /** Lets os-blob: image markers (transcript-v2 bounded entries) resolve to
    *  the transcript-image route. Optional — without it markers pass through. */
   sessionId?: string;
+  /** Start open when nobody has chosen yet: a call shown on its own (an
+   *  incident finding's cited source), not one row of a transcript. */
+  defaultExpanded?: boolean;
 }
 
 const fullEntryDetailSchema = z.object({
@@ -374,6 +377,7 @@ export const ToolCallBlock = function ToolCallBlock({
   pending,
   onOpenSubagent,
   sessionId,
+  defaultExpanded = false,
 }: Props) {
   const entryInput = parseToolInput(entry.toolInput);
   const entryNeedsHydration =
@@ -388,7 +392,8 @@ export const ToolCallBlock = function ToolCallBlock({
     transcriptDisclosureLedger.read("tool-call", sessionId, [entry.id]),
   );
   const [expanded, setExpanded] = useState(
-    rememberedExpanded ?? Boolean(result?.featuredMedia?.length),
+    rememberedExpanded ??
+      (defaultExpanded || Boolean(result?.featuredMedia?.length)),
   );
   const userToggledRef = useRef(rememberedExpanded !== undefined);
   const [durationVisible, setDurationVisible] = useState(false);

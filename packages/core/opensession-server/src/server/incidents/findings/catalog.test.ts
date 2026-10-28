@@ -63,7 +63,7 @@ describe("findings catalog", () => {
       "40 lines",
       "31 days",
       "They count toward the block's 64 KB, so keep them short there.",
-      "Times are ISO 8601 with a time zone, like 2026-10-27T10:00:00Z.",
+      "Times in refs and fields are ISO 8601 with a time zone, like 2026-10-27T10:00:00Z.",
       '{"at": "<ISO time>", "label": "deploy", "ref": <ref>} with ref optional: a release, an observation or an event; a marker without one shows as your note, not as checked data',
     ])
       expect(brief).toContain(s);
@@ -237,5 +237,52 @@ describe("findings catalog", () => {
         { prose: true },
       ),
     ).toBe("- checks · claims");
+  });
+});
+
+describe("findings brief steering", () => {
+  test("owner asks go in a question block, shown with the decision", () => {
+    const brief = findingsBrief("investigator").join("\n");
+    expect(brief).toContain(
+      "Anything you need the owner to do or decide goes in a question block: the page shows open questions with the owner's decision.",
+    );
+    const question = FINDINGS_CATALOG.find((k) => k.kind === "question");
+    expect(question?.use).toBe(
+      "what you don't know yet, or what you need the owner to do or decide",
+    );
+  });
+
+  test("a change cites one file and line, shown as one hunk", () => {
+    const change = FINDINGS_CATALOG.find((k) => k.kind === "change");
+    expect(change?.fields).toContain(
+      "file (optional: the one file in it that matters) and line (optional: a line of that file on the new side), which the page shows as one hunk",
+    );
+  });
+});
+
+describe("findings brief times", () => {
+  test("ISO times with a zone in refs and fields, no clock times in prose", () => {
+    const brief = findingsBrief("investigator").join("\n");
+    expect(brief).toContain(
+      "Times in refs and fields are ISO 8601 with a time zone, like 2026-10-27T10:00:00Z.",
+    );
+    expect(brief).toContain(
+      "Don't write clock times in prose (statement, text, why, question): the page shows times in the reader's zone, so refer to a timeline event (\"at the first failed check\") instead.",
+    );
+    // The example teaches it too.
+    const prose = JSON.stringify(
+      FINDINGS_EXAMPLE.blocks.map((b) => {
+        const { text, wouldAnswer, statement } = b as Record<string, unknown>;
+        return [text, wouldAnswer, statement];
+      }),
+    );
+    expect(prose).not.toMatch(/\d{1,2}:\d{2}/);
+  });
+
+  test("a later round leaves marking what changed to the page", () => {
+    const brief = findingsBrief("investigator").join("\n");
+    expect(brief).toContain(
+      'Don\'t write "Round 2:" or what changed into prose; the page marks new and changed blocks against the round before.',
+    );
   });
 });

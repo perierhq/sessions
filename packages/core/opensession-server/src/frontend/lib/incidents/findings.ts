@@ -3,6 +3,7 @@
 // anchors and where each block's "Show source" leads. Pure.
 import {
   type ClaimRow,
+  claimKey,
   type FindingBlock,
   type FindingKind,
   type FindingRef,
@@ -10,6 +11,8 @@ import {
   type FindingsSet,
   findingSetOf,
   type HypothesisStatus,
+  type LogExcerpt,
+  type ToolRef,
 } from "../../../shared/findings";
 import {
   claimRows,
@@ -28,6 +31,7 @@ import {
 } from "../../../shared/incidents";
 import { clockTime } from "../time";
 import type { DetailTarget } from "./details";
+import type { DotTone } from "./tone";
 import { httpUrl } from "./links";
 
 export interface FindingItem {
@@ -37,15 +41,24 @@ export interface FindingItem {
   block: FindingBlock;
   span: "full" | "half";
   byline: string;
+  /** Whether the block shows its byline: only when its role differs from
+   *  the section's (`FindingsPageView.byline` says it once). */
+  ownByline: boolean;
   auto?: true;
   /** Hypothesis only. */
   status?: HypothesisStatus;
+  /** Hypothesis only: the claims it rests on that no claims block on the
+   *  page lists, so the block doesn't repeat them. */
+  restsOn?: string[];
   /** Claims only. */
   claims?: ClaimRow[];
 }
 
 export interface FindingsPageView {
   round: number;
+  /** Who the section's blocks are from and when, said once under its
+   *  heading: the first set's role and time. */
+  byline: string;
   /** The newer round under way while this one still shows, else null. */
   underWay: number | null;
   items: FindingItem[];
@@ -102,6 +115,9 @@ function investigatorRun(
   );
 }
 
+const sentenceCase = (text: string) =>
+  text.charAt(0).toUpperCase() + text.slice(1);
+
 /** Consecutive `half` blocks pair up; a `half` without a partner spans the
  *  full width, so the grid never leaves a hole. */
 export function findingSpans(
@@ -138,7 +154,12 @@ export function earlierFindingRounds(
 
 export function findingsPage(
   incident: Pick<Incident, "state" | "response">,
-  opts: { round?: number } = {},
+  opts: {
+    round?: number;
+    /** Leave the open questions out: the Next card shows them
+     *  (`asksInNext`). */
+    withoutAsks?: boolean;
+  } = {},
 ): FindingsPageView | null {
   const response = incident.response;
   const sets = response?.findingSets ?? [];
@@ -151,13 +172,14 @@ export function findingsPage(
   const verifier = reports.verifier?.report;
   const rows = () => claimRows(reports.investigator?.report, verifier);
 
-  type Draft = Omit<FindingItem, "span">;
+  type Draft = Omit<FindingItem, "span" | "ownByline">;
   const drafts: Draft[] = [];
   for (const role of ROLES) {
     const s = findingSetOf(response, role, round);
     if (!hasBlocks(s)) continue;
     const byline = FINDINGS_COPY.byline(role, clockTime(s.updatedAt));
     for (const block of s.blocks) {
+      if (opts.withoutAsks && block.kind === "question") continue;
       const item: Draft = { key: `${role}:${block.id}`, role, block, byline };
       if (block.kind === "hypothesis")
         item.status = hypothesisStatus(block.claims, verifier);
@@ -187,8 +209,30 @@ export function findingsPage(
     });
   }
 
+  const lead = drafts[0]!.role;
+  const leadSet = findingSetOf(response, lead, round);
+  const byline = sentenceCase(
+    FINDINGS_COPY.byline(lead, clockTime(leadSet?.updatedAt ?? "")),
+  );
+  // A claims block lists the report's claims with their checks; a
+  // hypothesis repeats only the claims it cites that the block doesn't.
+  const listed = new Set(
+    drafts.flatMap((item) =>
+      (item.claims ?? []).map((row) => claimKey(row.text)),
+    ),
+  );
+  for (const item of drafts)
+    if (item.block.kind === "hypothesis")
+      item.restsOn = item.block.claims.filter(
+        (claim) => !listed.has(claimKey(claim)),
+      );
+
   const spans = findingSpans(drafts.map((item) => item.block.size));
-  const items = drafts.map((item, i) => ({ ...item, span: spans[i]! }));
+  const items = drafts.map((item, i) => ({
+    ...item,
+    span: spans[i]!,
+    ownByline: item.role !== lead,
+  }));
 
   const earlierRounds = roundsBefore(sets, round);
 
@@ -200,7 +244,76 @@ export function findingsPage(
       ? current
       : null;
 
-  return { round, underWay, items, earlierRounds };
+  return { round, byline, underWay, items, earlierRounds };
+}
+
+/** Whether the open questions show with the decision in the Next card:
+ *  while the incident is open and has agents, so there is a card. A
+ *  closed incident keeps them in its Findings. */
+export function asksInNext(
+  incident: Pick<Incident, "state" | "response">,
+): boolean {
+  return !!incident.response && !isTerminalIncidentState(incident.state);
+}
+
+/** An open question the Next card shows with the decision. */
+export interface NextAsk {
+  key: string;
+  text: string;
+  wouldAnswer: string;
+}
+
+/** The likely cause the Next card leads with: the page's first
+ *  hypothesis in one sentence, with its status. */
+export interface NextCause {
+  key: string;
+  statement: string;
+  status: HypothesisStatus;
+  confidence: Extract<FindingBlock, { kind: "hypothesis" }>["confidence"];
+}
+
+/** What the Next card shows of the findings, so the owner sees the cause
+ *  while deciding: the page's first hypothesis, and the page round's open
+ *  questions, the owner's asks among them (`asksInNext`). Null without
+ *  findings. */
+export interface NextFindings {
+  cause: NextCause | null;
+  asks: NextAsk[];
+}
+
+export const NEXT_FINDINGS_COPY = Object.freeze({
+  cause: "Likely cause",
+  seeFindings: "See findings",
+  ask: "Open question",
+  wouldAnswer: "What would answer it",
+});
+
+export function nextFindings(
+  incident: Pick<Incident, "state" | "response">,
+): NextFindings | null {
+  const page = findingsPage(incident);
+  if (!page) return null;
+  let cause: NextCause | null = null;
+  for (const item of page.items)
+    if (item.block.kind === "hypothesis") {
+      cause = {
+        key: item.key,
+        statement: item.block.statement,
+        status: item.status ?? "unchecked",
+        confidence: item.block.confidence,
+      };
+      break;
+    }
+  const asks: NextAsk[] = [];
+  if (asksInNext(incident))
+    for (const item of page.items)
+      if (item.block.kind === "question")
+        asks.push({
+          key: item.key,
+          text: item.block.text,
+          wouldAnswer: item.block.wouldAnswer,
+        });
+  return { cause, asks };
 }
 
 const timeOf = (iso: string) => {
@@ -255,26 +368,108 @@ export function timelineRows(
   return [...anchors, ...events].sort((a, b) => timeOf(a.at) - timeOf(b.at));
 }
 
+/** An ISO 8601 date and time with a zone, as an agent may write one. */
+const ISO_WITH_ZONE =
+  /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})(?![\w:])/g;
+
+/** Agent prose with each ISO time that carries a zone written as the
+ *  reader's clock time, the way every time from data on the page reads.
+ *  Code spans stay as written; a time without a zone can't be placed. */
+export function localizeTimes(text: string): string {
+  return text
+    .split(/(`[^`]*`)/)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        : part.replace(ISO_WITH_ZONE, (iso) => clockTime(iso) || iso),
+    )
+    .join("");
+}
+
+/** Log lines stamped in UTC (an ISO time ending in Z, or "UTC"): quoted
+ *  verbatim, so the block says which zone they are in. */
+export function logTimesInUtc(lines: readonly string[]): boolean {
+  return lines.some((line) =>
+    /\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z\b|\bUTC\b/.test(line),
+  );
+}
+
+/** Whether a log quote shows whole, however many times its lines wrap:
+ *  a few lines of moderate length. Longer quotes scroll in their well. */
+export function logFitsWhole(lines: readonly string[]): boolean {
+  const chars = lines.reduce((sum, line) => sum + line.length, 0);
+  return lines.length <= 8 && chars <= 1200;
+}
+
+/** Said after a log's source when its lines are stamped in UTC. */
+export const LOG_UTC_COPY = "times in UTC";
+
 /** How findings prose renders (`renderMarkdown`): it sits under its
  *  block's own heading, so no headings and no embeds of its own. */
 export const FINDINGS_MARKDOWN = Object.freeze({ plain: true });
 
-/** Somewhere a block's "Show source" opens. */
-export type FindingSource = DetailTarget | { kind: "ledger"; id: string };
+/** Somewhere a block's "Show source" opens: the cited tool call in a
+ *  sheet (landing on the quoted lines), the PR review, the ledger. */
+export type FindingSource =
+  | DetailTarget
+  | { kind: "ledger"; id: string }
+  | { kind: "tool"; ref: ToolRef; quote: string[] };
+
+/** The sheet the Findings section (or History) has open over the page:
+ *  an earlier round's findings, or the agents' cost a ledger ref opens. */
+export type FindingsSheetState =
+  | { kind: "round"; round: number }
+  | { kind: "cost" }
+  | { kind: "source"; ref: ToolRef; quote: string[] };
+
+/** Where opening a block's source goes: a sheet over the page, or away
+ *  to the session, the PR review or a link. Leaving closes the sheet. */
+export function openFindingSource(
+  target: FindingSource,
+  to: {
+    sheet: (next: FindingsSheetState | null) => void;
+    session: (sessionId: string) => void;
+    pr: (target: Extract<DetailTarget, { kind: "pr" }>) => void;
+    url: (url: string) => void;
+  },
+): void {
+  switch (target.kind) {
+    case "ledger":
+      to.sheet({ kind: "cost" });
+      return;
+    case "tool":
+      to.sheet({ kind: "source", ref: target.ref, quote: target.quote });
+      return;
+    case "url":
+      to.url(target.url);
+      return;
+    case "session":
+      to.sheet(null);
+      to.session(target.sessionId);
+      return;
+    case "pr":
+      to.sheet(null);
+      to.pr(target);
+      return;
+    default:
+      return;
+  }
+}
 
 /** How long a block whose content changed keeps its tint, in ms. */
 export const FINDINGS_HIGHLIGHT_MS = 1200;
 
-/** Where a block's "Show source" leads: the agent session behind a tool
- *  call, the PR, the cost ledger. Null when the page has nothing to open
- *  (commit links come from the loaded commit). */
+/** Where a block's "Show source" leads: the cited tool call (with the
+ *  lines to land on), the PR, the cost ledger. Null when the page has
+ *  nothing to open (commit links come from the loaded commit). */
 export function sourceTarget(
   ref: FindingRef,
   incident: Pick<Incident, "project" | "response">,
+  quote: string[] = [],
 ): FindingSource | null {
   switch (ref.type) {
     case "tool":
-      return { kind: "session", sessionId: ref.sessionId };
+      return { kind: "tool", ref, quote };
     case "pr": {
       const target: DetailTarget = {
         kind: "pr",
@@ -315,6 +510,70 @@ export function changedKeys(
   return changed;
 }
 
+/** How a block of a later round differs from the round before. */
+export type RoundMark = "new" | "changed";
+
+/** What a later round changed: its blocks marked new or changed against
+ *  the newest earlier round with findings, and how many that round had
+ *  that this one dropped. Blocks keep their ids across rounds (carried
+ *  forward or kept), so the same key is the same block. */
+export interface RoundChanges {
+  round: number;
+  previous: number;
+  marks: Map<string, RoundMark>;
+  changed: number;
+  added: number;
+  removed: number;
+}
+
+export function roundChanges(
+  incident: Pick<Incident, "state" | "response">,
+  opts: { round?: number; withoutAsks?: boolean } = {},
+): RoundChanges | null {
+  const page = findingsPage(incident, opts);
+  const previous = page?.earlierRounds.at(-1);
+  if (!page || previous === undefined) return null;
+  // Counted over the blocks the section shows: questions the Next card
+  // holds are left out of both rounds.
+  const before = findingsPage(incident, {
+    round: previous,
+    withoutAsks: opts.withoutAsks,
+  });
+  if (!before) return null;
+  const changed = changedKeys(before.items, page.items);
+  const known = new Set(before.items.map((item) => item.key));
+  const marks = new Map<string, RoundMark>();
+  for (const item of page.items)
+    if (!known.has(item.key)) marks.set(item.key, "new");
+    else if (changed.has(item.key)) marks.set(item.key, "changed");
+  const now = new Set(page.items.map((item) => item.key));
+  let added = 0;
+  for (const mark of marks.values()) if (mark === "new") added++;
+  return {
+    round: page.round,
+    previous,
+    marks,
+    changed: marks.size - added,
+    added,
+    removed: before.items.filter((item) => !now.has(item.key)).length,
+  };
+}
+
+/** "Round 2: 1 changed, 2 new", under the section's heading. */
+export function roundChangesCopy(changes: RoundChanges): string {
+  const parts = [
+    changes.changed ? `${changes.changed} changed` : "",
+    changes.added ? `${changes.added} new` : "",
+    changes.removed ? `${changes.removed} removed` : "",
+  ].filter(Boolean);
+  return `Round ${changes.round}: ${parts.length ? parts.join(", ") : "nothing changed"}`;
+}
+
+/** A block's mark beside its heading. */
+export function roundMarkCopy(mark: RoundMark, round: number): string {
+  return mark === "new" ? `New in round ${round}` : `Changed in round ${round}`;
+}
+
 /** Ref types the page has somewhere to open (`sourceTarget`). */
 const OPENS: ReadonlySet<FindingRef["type"]> = new Set([
   "tool",
@@ -343,9 +602,81 @@ export function itemSource(item: FindingItem): FindingRef | null {
   }
 }
 
+/** A hypothesis or claim status as a mark: the dot's tone beside the
+ *  word (the Next card's eyebrow dot). */
+export const STATUS_DOT: Record<HypothesisStatus, DotTone> = {
+  verified: "green",
+  refuted: "red",
+  "cant-tell": "yellow",
+  unchecked: "faint",
+};
+
+/** The agent's own rating, said after the status ("high confidence"). */
+export const CONFIDENCE_WORD: Record<
+  Extract<FindingBlock, { kind: "hypothesis" }>["confidence"],
+  string
+> = {
+  low: "low confidence",
+  medium: "medium confidence",
+  high: "high confidence",
+};
+
+/** Where the Findings section is, for the Next card's "See findings". */
+export const FINDINGS_SECTION_ID = "incident-findings";
+
+/** The data behind a block's "Show source" and the lines to land on in
+ *  it: a log's quoted lines (highlighted first), a change's PR, the first
+ *  evidence of a hypothesis that opens (a cited block opens that block's
+ *  data), a timeline's first event that cites something that opens. */
+export function blockSource(
+  item: FindingItem,
+  items: readonly FindingItem[],
+): { ref: FindingRef; quote: string[] } | null {
+  const block = item.block;
+  const quoted = (excerpt: LogExcerpt) => {
+    const marked = new Set(excerpt.highlight);
+    return [
+      ...excerpt.lines.filter((_, i) => marked.has(i)),
+      ...excerpt.lines.filter((_, i) => !marked.has(i)),
+    ];
+  };
+  switch (block.kind) {
+    case "log":
+      return { ref: block.source, quote: quoted(block) };
+    case "compare":
+      for (const side of block.sides)
+        if ("log" in side)
+          return { ref: side.log.source, quote: quoted(side.log) };
+      return null;
+    case "hypothesis":
+      for (const ref of block.evidence) {
+        if (OPENS.has(ref.type)) return { ref, quote: [] };
+        if (ref.type !== "block") continue;
+        const cited = items.find(
+          (other) =>
+            other.block.id === ref.id &&
+            other.role === ref.role &&
+            other.block.kind !== "hypothesis",
+        );
+        const source = cited ? blockSource(cited, items) : null;
+        if (source) return source;
+      }
+      return null;
+    case "timeline":
+      for (const event of block.events)
+        if (event.ref && OPENS.has(event.ref.type))
+          return { ref: event.ref, quote: [] };
+      return null;
+    default: {
+      const ref = itemSource(item);
+      return ref ? { ref, quote: [] } : null;
+    }
+  }
+}
+
 /** A block's heading when the agent gave it no title. */
 export const BLOCK_TITLES: Record<FindingKind, string> = {
-  hypothesis: "Hypothesis",
+  hypothesis: "Likely cause",
   timeline: "Timeline",
   signal: "Signal",
   log: "Log",
@@ -355,20 +686,7 @@ export const BLOCK_TITLES: Record<FindingKind, string> = {
   question: "Open question",
 };
 
-export const CONFIDENCE_COPY: Record<
-  Extract<FindingBlock, { kind: "hypothesis" }>["confidence"],
-  string
-> = {
-  low: "Low confidence",
-  medium: "Medium confidence",
-  high: "High confidence",
-};
-
-/** A claim row's status in words; "unverifiable" reads as the hypothesis
- *  status does. */
-export const CLAIM_STATUS_COPY: Record<ClaimRow["status"], string> = {
-  verified: FINDINGS_COPY.status.verified,
-  refuted: FINDINGS_COPY.status.refuted,
-  unverifiable: FINDINGS_COPY.status["cant-tell"],
-  unchecked: FINDINGS_COPY.status.unchecked,
-};
+/** An all-unchecked claims block's one line. */
+export function unCheckedClaimsCopy(n: number): string {
+  return `${n} ${n === 1 ? "claim" : "claims"}, not checked yet`;
+}

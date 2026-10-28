@@ -49,7 +49,7 @@ export const FINDINGS_CATALOG: ReadonlyArray<{
   {
     kind: "change",
     use: "the pull request or commit that matters, with why",
-    fields: `pr (a number) or commit (7 to 40 hex characters), not both; why`,
+    fields: `pr (a number) or commit (7 to 40 hex characters), not both; why (one line: what the change does for this incident, not how); file (optional: the one file in it that matters) and line (optional: a line of that file on the new side), which the page shows as one hunk; the page lists the files and links to the review for the rest`,
   },
   {
     kind: "claims",
@@ -63,7 +63,7 @@ export const FINDINGS_CATALOG: ReadonlyArray<{
   },
   {
     kind: "question",
-    use: "what you don't know yet",
+    use: "what you don't know yet, or what you need the owner to do or decide",
     fields: "text (the question), wouldAnswer (what would answer it)",
   },
 ];
@@ -131,8 +131,8 @@ export const FINDINGS_EXAMPLE: { blocks: unknown[] } = {
       id: "unknown",
       kind: "question",
       size: "half",
-      text: "Why do checkout requests to api.example.test time out since 11:02?",
-      wouldAnswer: "The database logs on prod-1 around 11:02.",
+      text: "Why do checkout requests to api.example.test time out since release v1.4.0?",
+      wouldAnswer: "The database logs on prod-1 around the release.",
     },
     {
       id: "when",
@@ -193,6 +193,7 @@ export function findingsBrief(role: AgentRole): string[] {
     out.push(
       "Start early with a question or a timeline and refine it as you learn.",
       `In a later round, carry the previous round's blocks forward instead of starting over: keep one unchanged with ${KEEP}, or send it again under the same id to edit it.`,
+      'Don\'t write "Round 2:" or what changed into prose; the page marks new and changed blocks against the round before.',
     );
   else
     out.push(
@@ -201,6 +202,7 @@ export function findingsBrief(role: AgentRole): string[] {
     );
   out.push(
     `Prefer a few precise blocks: 3 to 8, at most ${L.blocks}.`,
+    "Anything you need the owner to do or decide goes in a question block: the page shows open questions with the owner's decision.",
     "Cite real data: every chart, quote and change must point at something Sessions can load, and a block whose data can't be found is dropped.",
     "Quote log lines exactly as the tool printed them; lines that aren't in the result are dropped.",
     `If you never called show_findings, put the same list under "findings" in your incident-report block. They count toward the block's ${REPORT_BLOCK_MAX_BYTES / 1024} KB, so keep them short there.`,
@@ -214,7 +216,8 @@ export function findingsBrief(role: AgentRole): string[] {
     "References:",
     ...REF_CATALOG.map((r) => `- ${r.shape}: ${r.use}.`),
     "",
-    "Times are ISO 8601 with a time zone, like 2026-10-27T10:00:00Z.",
+    "Times in refs and fields are ISO 8601 with a time zone, like 2026-10-27T10:00:00Z.",
+    "Don't write clock times in prose (statement, text, why, question): the page shows times in the reader's zone, so refer to a timeline event (\"at the first failed check\") instead.",
     `Limits: title at most ${L.title} characters; prose fields at most ${L.prose}; a statement or question at most ${L.statement}; timeline events at most ${L.eventText} characters; marker labels and compare labels at most ${L.markerLabel}; a log at most ${L.logLines} lines of ${L.logLineChars} characters; a signal window at most ${days} days.`,
     "",
     "Example:",
