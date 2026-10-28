@@ -546,3 +546,10 @@ test("History opens the credential's audit lines", async () => {
     find(tree.output(), CredentialHistoryDialog)?.props.credential.id,
   ).toBe("kc-1");
 });
+
+test("a row shows the ceiling its grants inherit", async () => {
+  const tree = await section();
+  expect(JSON.stringify(row(tree, "acme-api").props.desc)).toContain(
+    "allows any method, any path",
+  );
+});

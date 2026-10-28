@@ -22,6 +22,11 @@ export type SessionKeychainAsk = {
     kind?: "api" | "login";
     username?: string;
     loginUrl?: string;
+    description?: string;
+    /** The ceiling the grant inherits. */
+    allowedMethods?: string[];
+    allowedPathPrefixes?: string[];
+    statusOnly?: boolean;
   }>;
   createdAt: string;
 };

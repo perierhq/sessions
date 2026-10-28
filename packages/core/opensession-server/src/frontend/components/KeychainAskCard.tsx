@@ -7,7 +7,9 @@ import {
   type SessionKeychainAsk,
 } from "../lib/keychain-ask-store";
 import { useKeychainAsks } from "../hooks/useKeychainAsks";
+import { askChoices, askCeilings } from "../lib/keychain-ask-copy";
 import { Button } from "../ui/button";
+import { cn } from "../ui/cn";
 
 type Decision = Parameters<typeof answerKeychainAsk>[1];
 
@@ -64,19 +66,7 @@ function AskCard({
   }
 
   const login = ask.requestedMode === "release";
-  const choices: Array<{ decision: Decision; label: string }> = login
-    ? [{ decision: "release", label: "Release password" }]
-    : ask.run
-      ? [{ decision: "run", label: "Allow run" }]
-      : ask.requestedMode === "standing"
-        ? [
-            { decision: "once", label: "Allow once" },
-            { decision: "standing", label: "Allow 7 days" },
-          ]
-        : [
-            { decision: "standing", label: "Allow 7 days" },
-            { decision: "once", label: "Allow once" },
-          ];
+  const choices = askChoices(ask);
 
   return (
     <section className={ASK_CARD_SHELL} aria-label="Keychain request">
@@ -95,21 +85,40 @@ function AskCard({
       </div>
 
       <div className="flex flex-col gap-1">
-        {ask.credentials.map((c, index) => (
-          <p
-            key={index}
-            className="m-0 text-body leading-6 text-fg [overflow-wrap:anywhere]"
-          >
-            <span className="font-semibold">{c.service}</span>
-            {c.kind === "login" ? (
-              <>
-                : {c.username} on {c.loginUrl}
-              </>
-            ) : c.host ? (
-              <> for {c.host}</>
-            ) : null}
-          </p>
-        ))}
+        {ask.credentials.map((c, index) => {
+          // What the grant may reach: the credential's own ceiling. An
+          // open one is said in a warning tone.
+          const ceiling = askCeilings({ ...ask, credentials: [c] })[0];
+          return (
+            <div key={index} className="flex flex-col">
+              <p className="m-0 text-body leading-6 text-fg [overflow-wrap:anywhere]">
+                <span className="font-semibold">{c.service}</span>
+                {c.kind === "login" ? (
+                  <>
+                    : {c.username} on {c.loginUrl}
+                  </>
+                ) : c.host ? (
+                  <> for {c.host}</>
+                ) : null}
+              </p>
+              {c.description && (
+                <p className="m-0 text-meta text-dim [overflow-wrap:anywhere]">
+                  {c.description}
+                </p>
+              )}
+              {ceiling && (
+                <p
+                  className={cn(
+                    "m-0 text-meta font-medium [overflow-wrap:anywhere]",
+                    ceiling.open ? "text-yellow" : "text-dim",
+                  )}
+                >
+                  Allows {ceiling.text}
+                </p>
+              )}
+            </div>
+          );
+        })}
         <p className="m-0 text-supporting text-fg [overflow-wrap:anywhere]">
           {ask.purpose}
         </p>
@@ -127,6 +136,17 @@ function AskCard({
       </div>
 
       <p className="m-0 text-meta text-faint">{summary(ask)}</p>
+      {/* What each answer permits, so the choice is made on the terms. */}
+      {choices.length > 1 && (
+        <ul className="m-0 flex list-none flex-col gap-0.5 p-0 text-meta text-dim">
+          {choices.map((choice) => (
+            <li key={choice.decision}>
+              <span className="font-medium text-fg">{choice.label}:</span>{" "}
+              {choice.terms}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {error && (
         <p className="m-0 text-meta text-red" role="alert">
@@ -134,7 +154,8 @@ function AskCard({
         </p>
       )}
 
-      {/* The mode the agent asked for is the primary choice. */}
+      {/* The mode the agent asked for is the primary choice, unless the
+          credential has no limits: then a single call is. */}
       <div className="flex flex-wrap items-center justify-end gap-2">
         <Button
           variant="soft"
@@ -144,10 +165,10 @@ function AskCard({
         >
           Decline
         </Button>
-        {choices.map((choice, index) => (
+        {choices.map((choice) => (
           <Button
             key={choice.decision}
-            variant={index === choices.length - 1 ? "primary" : "soft"}
+            variant={choice.primary ? "primary" : "soft"}
             size="lg"
             disabled={busy !== null}
             onClick={() => void submit(choice.decision)}

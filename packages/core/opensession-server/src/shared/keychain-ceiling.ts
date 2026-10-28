@@ -54,3 +54,29 @@ export function ceilingWidening(
     out.push("responses are no longer status only");
   return out;
 }
+
+/**
+ * The ceiling as one line a person approves against: "GET · /v1/items ·
+ * status only". `open` when neither methods nor paths are limited, so an
+ * approval reaches any method on any path: the card says so in a warning
+ * tone and makes a single call the default.
+ */
+export interface CeilingSummary {
+  text: string;
+  /** Neither methods nor paths are limited. */
+  open: boolean;
+}
+
+export function ceilingSummary(c: CredentialCeiling): CeilingSummary {
+  const methods = c.allowedMethods ?? [];
+  const paths = c.allowedPathPrefixes ?? [];
+  const open = !methods.length && !paths.length;
+  const parts = open
+    ? ["Any method, any path"]
+    : [
+        methods.length ? methods.join(", ") : "Any method",
+        paths.length ? paths.join(", ") : "any path",
+      ];
+  if (c.statusOnly) parts.push("status only");
+  return { text: parts.join(" · "), open };
+}

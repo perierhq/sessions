@@ -733,6 +733,52 @@ describe("the keychain card in the asking session", () => {
     expect(await list(alex)).toEqual([]);
   });
 
+  test("shows the owner the ceiling the grant inherits, in the card and the DM", async () => {
+    kc.addCredential({
+      owner: "Alex",
+      service: "acme-orders",
+      host: "api.example.test",
+      secret: "sk-orders",
+      description: "Orders, read only",
+      allowedMethods: ["GET"],
+      allowedPathPrefixes: ["/v1/orders"],
+      statusOnly: true,
+    });
+    const client = await connect();
+    void client.callTool({
+      name: "request_credential",
+      arguments: { credential: "acme-orders", purpose: "count open orders" },
+    });
+    for (let i = 0; i < 100 && !kc.listKeychainAsks().length; i++)
+      await Bun.sleep(5);
+    const [card] = await list(alex);
+    expect(card.credentials[0]).toMatchObject({
+      service: "acme-orders",
+      description: "Orders, read only",
+      allowedMethods: ["GET"],
+      allowedPathPrefixes: ["/v1/orders"],
+      statusOnly: true,
+    });
+    await deliver(pendingAsk().humanAskId!);
+    expect(slackPosts.map((p) => p.text).join("\n")).toContain(
+      "Allows: GET · /v1/orders · status only",
+    );
+  });
+
+  test("an ask for an unlimited credential says any method, any path", async () => {
+    const client = await connect();
+    void client.callTool({
+      name: "request_credential",
+      arguments: { credential: "acme-prod", purpose: "read the invoices" },
+    });
+    for (let i = 0; i < 100 && !kc.listKeychainAsks().length; i++)
+      await Bun.sleep(5);
+    await deliver(pendingAsk().humanAskId!);
+    expect(slackPosts.map((p) => p.text).join("\n")).toContain(
+      "Allows: Any method, any path",
+    );
+  });
+
   test("a withdrawn ask leaves the card too", async () => {
     const client = await connect();
     void client

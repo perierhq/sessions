@@ -78,7 +78,11 @@ import { isIP } from "node:net";
 import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
 import { audit, auditAsync } from "./audit";
 import { isPrivateHostName } from "./shared/network-address";
-import { ceilingWidening, pathWithinPrefix } from "../shared/keychain-ceiling";
+import {
+  ceilingSummary,
+  ceilingWidening,
+  pathWithinPrefix,
+} from "../shared/keychain-ceiling";
 import {
   resolveTeammate,
   teammateByGithubLogin,
@@ -2775,11 +2779,13 @@ export function requestCredential(
         ? `May this session run a script with your **${credMeta.service}** credential ` +
           `(${credMeta.host})? This is a scripted run: bulk API use, not a single call.\n` +
           `Purpose: ${purpose}\nCommand: \`${run.command}\`\n` +
-          `Expected volume: up to ${run.maxCalls.toLocaleString("en-US")} API calls, refused beyond that.` +
+          `Expected volume: up to ${run.maxCalls.toLocaleString("en-US")} API calls, refused beyond that.\n` +
+          `Allows: ${ceilingSummary(credMeta).text}` +
           interruptedNote(input.sessionId, run.command, [credMeta.id])
         : `May this session borrow your **${credMeta.service}** credential ` +
           `(${credMeta.host})?\nPurpose: ${purpose}\nRequested: ${record.requestedMode} ` +
-          `(once = a single API call through the broker; standing = 7 days, revocable).`,
+          `(once = a single API call through the broker; standing = 7 days, revocable).\n` +
+          `Allows: ${ceilingSummary(credMeta).text}`,
     context: isLogin
       ? "_Releasing writes the password to a short-lived file in that session's workspace, " +
         "once. It never appears in the transcript, but the agent can read it, so treat it as " +
@@ -3452,6 +3458,11 @@ export interface SessionKeychainAsk {
     kind?: CredentialKind;
     username?: string;
     loginUrl?: string;
+    description?: string;
+    /** The ceiling the grant inherits: what the owner approves. */
+    allowedMethods?: string[];
+    allowedPathPrefixes?: string[];
+    statusOnly?: boolean;
   }>;
   createdAt: string;
 }
@@ -3483,6 +3494,14 @@ export function keychainAsksInSession(
       ...(cred?.kind ? { kind: cred.kind } : {}),
       ...(cred?.username ? { username: cred.username } : {}),
       ...(cred?.loginUrl ? { loginUrl: cred.loginUrl } : {}),
+      ...(cred?.description ? { description: cred.description } : {}),
+      ...(cred?.allowedMethods?.length
+        ? { allowedMethods: cred.allowedMethods }
+        : {}),
+      ...(cred?.allowedPathPrefixes?.length
+        ? { allowedPathPrefixes: cred.allowedPathPrefixes }
+        : {}),
+      ...(cred?.statusOnly ? { statusOnly: true } : {}),
     };
     const seen = byTransport.get(a.humanAskId!);
     if (seen) {

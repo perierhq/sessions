@@ -13,6 +13,7 @@ import {
   type KeychainGrantDto,
 } from "../../lib/api";
 import { errorMessage } from "../../lib/error-message";
+import { ceilingSummary } from "../../../shared/keychain-ceiling";
 import { expiryNote, testOutcome } from "../../lib/keychain-credential";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
@@ -279,13 +280,10 @@ export function KeychainSection() {
                         : null,
                       `owner ${c.owner}`,
                       c.description,
-                      c.allowedMethods?.length
-                        ? `methods ${c.allowedMethods.join("/")}`
-                        : null,
-                      c.allowedPathPrefixes?.length
-                        ? `paths ${c.allowedPathPrefixes.join(", ")}`
-                        : null,
-                      c.statusOnly ? "status only" : null,
+                      // The ceiling every grant inherits, as the approval card shows it.
+                      c.kind === "login"
+                        ? null
+                        : `allows ${lowerFirst(ceilingSummary(c).text)}`,
                       expiry && !expiry.expired
                         ? lowerFirst(expiry.text)
                         : null,
@@ -381,7 +379,7 @@ export function KeychainSection() {
                           )}; starts once every owner allows it · ${a.run.command} · ${a.purpose}`
                       : a.run
                         ? `Scripted run, up to ${a.run.maxCalls.toLocaleString()} calls · ${a.run.command} · ${a.purpose}`
-                        : `Asked for ${a.requestedMode === "once" ? "one call" : "7 days"} · ${a.purpose}`
+                        : `Asked for ${a.requestedMode === "once" ? "one call" : "7 days"} · ${a.purpose} · Allows ${ceilingSummary(byId.get(a.credentialId) ?? {}).text}`
                 }
                 controlClassName="flex flex-wrap justify-end gap-1"
                 control={
