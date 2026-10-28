@@ -56,7 +56,11 @@ function findGranted(
     return {
       error: `Two credentials lent to this agent are named ${named[0].service}; name one by its id`,
     };
-  return named[0] ?? { error: `${ref} is not granted to this agent` };
+  return (
+    named[0] ?? {
+      error: `${ref} is not granted to this agent; describe_access lists the credentials it was lent`,
+    }
+  );
 }
 
 function pathOnly(path: string): string {

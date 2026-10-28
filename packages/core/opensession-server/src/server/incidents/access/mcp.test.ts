@@ -176,6 +176,78 @@ test("describe_access reports the fresh access and no secrets", async () => {
     narrowed: [],
   });
 });
+test("describe_access tells the agent how to call each lent credential", async () => {
+  // The kernel fixture's temporary state root, never a real keychain.
+  process.env.OPENSESSION_KEYCHAIN_STORE = `${process.env.OPENSESSION_STATE_DIR!}/keychain.json`;
+  const kc = await import("../../keychain");
+  const limited = kc.addCredential({
+    owner: "Alex",
+    service: "acme-orders",
+    host: "api.example.test",
+    secret: "sk-orders",
+    description: "Read-only orders",
+    allowedMethods: ["GET"],
+    allowedPathPrefixes: ["/v1/orders"],
+    statusOnly: true,
+  });
+  const open = kc.addCredential({
+    owner: "Alex",
+    service: "acme-search",
+    host: "search.example.test",
+    secret: "sk-search",
+  });
+  try {
+    __setBindingResolverForTest(async () =>
+      agentAccessFixture({
+        credentials: [
+          {
+            credential: limited.id,
+            service: "acme-orders",
+            host: "api.example.test",
+            mode: "standing",
+            scope: "personal",
+          },
+          {
+            credential: open.id,
+            service: "acme-search",
+            host: "search.example.test",
+            mode: "once",
+            scope: "personal",
+          },
+        ],
+      }),
+    );
+    const tools = incidentAccessToolDefinitions({
+      sessionId: "os-1",
+      binding,
+      access: agentAccessFixture(),
+    });
+    const out = JSON.parse(textOf(await tools[0].handler({}, {})));
+    expect(out.credentials).toEqual([
+      {
+        service: "acme-orders",
+        mode: "standing",
+        host: "api.example.test",
+        description: "Read-only orders",
+        methods: ["GET"],
+        paths: ["/v1/orders"],
+        statusOnly: true,
+      },
+      {
+        service: "acme-search",
+        mode: "once",
+        host: "search.example.test",
+        methods: "any",
+        paths: "any",
+      },
+    ]);
+    expect(JSON.stringify(out)).not.toContain("sk-");
+  } finally {
+    await kc.deleteCredentialAsync(limited.id, "Alex");
+    await kc.deleteCredentialAsync(open.id, "Alex");
+    delete process.env.OPENSESSION_KEYCHAIN_STORE;
+  }
+});
 test("describe_access lists only what this run is bound to, and names what was allowed later", async () => {
   const policy = {
     ...descendantFixture,

@@ -115,9 +115,18 @@ export async function brokerCall(
 ): Promise<BrokerCallResult> {
   await ensureKeychainLoaded();
   const meta = findCredential(input.credential);
-  if (!meta) return { error: `no credential matches "${input.credential}"` };
+  if (!meta)
+    return {
+      error: `no credential matches "${input.credential}"; list_credentials shows the ones in the keychain`,
+    };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(input.path))
+    return {
+      error: `pass only the path and query: ${meta.service} calls https://${meta.host} itself, e.g. /v1/items?limit=5`,
+    };
   if (!input.path.startsWith("/") || input.path.startsWith("//"))
-    return { error: "path must start with a single /" };
+    return {
+      error: `path must start with a single / and stay on https://${meta.host}`,
+    };
   let target: URL;
   try {
     target = new URL(`https://${meta.host}${input.path}`);

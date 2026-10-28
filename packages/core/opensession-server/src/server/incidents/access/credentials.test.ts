@@ -126,7 +126,10 @@ test("ungranted credentials and missing purposes are refused before the keychain
       path: "/",
       purpose: "x",
     }),
-  ).toEqual({ error: "proxy-api is not granted to this agent" });
+  ).toEqual({
+    error:
+      "proxy-api is not granted to this agent; describe_access lists the credentials it was lent",
+  });
   const c = ctx([granted("kc-x")]);
   expect(
     await incidentCredentialCall(c, {
@@ -164,7 +167,9 @@ test("the grant is minted at the mode the fresh access names, not the caller's",
       { credential: cred.id, method: "GET", path: "/", purpose: "x" },
       { net: fetchBackedNet(fetchImpl) },
     ),
-  ).toEqual({ error: `${cred.id} is not granted to this agent` });
+  ).toEqual({
+    error: `${cred.id} is not granted to this agent; describe_access lists the credentials it was lent`,
+  });
   expect(kc.listIncidentGrants({ incidentId: "inc-1" })).toEqual([]);
 });
 test("a refused resolution mints nothing", async () => {
