@@ -190,6 +190,29 @@ describe("call_credential broker", () => {
     expect(long.body.length).toBeLessThanOrEqual(60_000);
   });
 
+  test("asks only for encodings it can decode, whatever the caller sends", async () => {
+    setup();
+    await call({ headers: { "accept-encoding": "zstd" } });
+    expect(new Headers(seen[0]!.init.headers).get("accept-encoding")).toBe(
+      "gzip, deflate, br",
+    );
+  });
+
+  test("a body in an encoding it can't decode is omitted, never returned raw", async () => {
+    setup();
+    reply = () =>
+      new Response(`{"echoed":"${SECRET}"}`, {
+        headers: {
+          "content-type": "application/json",
+          "content-encoding": "zstd",
+        },
+      });
+    const r = (await call()) as { status: number; body: string };
+    expect(r.status).toBe(200);
+    expect(r.body).toContain("zstd content omitted");
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
   test("no grant, no call", async () => {
     kc.addCredential({
       owner: "Alex",

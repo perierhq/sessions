@@ -6,6 +6,7 @@
  */
 import {
   __setPinnedFetchSendForTest,
+  isDecodableEncoding,
   type PinnedFetchDeps,
 } from "../shared/pinned-fetch";
 
@@ -51,8 +52,10 @@ export const TEST_PUBLIC_ADDRESS = "203.0.113.10";
  * Pinned-fetch seams for code that takes them (`net`): every name resolves
  * to `addresses` and the address check runs for real, then `fetchImpl`
  * answers the request in place of the network. Like the real transport, a
- * redirect comes back unread and a body over `maxBodyBytes` is cut short when
- * the caller asked for `overflow: "truncate"`.
+ * redirect comes back unread, a body over `maxBodyBytes` is cut short when
+ * the caller asked for `overflow: "truncate"`, and with `overflow:
+ * "truncate"` a body in an encoding the transport can't decode comes back
+ * raw and marked `undecodable`.
  */
 export function fetchBackedNet(
   fetchImpl: (url: URL, init: RequestInit) => Promise<Response>,
@@ -82,6 +85,14 @@ export function fetchBackedNet(
           truncated: true,
         };
       }
+      const encoding = response.headers.get("content-encoding") ?? "";
+      if (init.overflow === "truncate" && !isDecodableEncoding(encoding))
+        return {
+          status: response.status,
+          headers: response.headers,
+          body,
+          undecodable: true,
+        };
       return { status: response.status, headers: response.headers, body };
     },
   };

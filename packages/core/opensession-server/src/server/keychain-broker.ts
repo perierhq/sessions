@@ -26,14 +26,13 @@
  */
 
 import { audit } from "./audit";
-import { isBlockedAddress } from "./shared/network-address";
 import {
   BlockedAddressError,
+  DECODABLE_ACCEPT_ENCODING,
+  defaultPinnedFetchDeps,
   type PinnedFetchDeps,
   type PinnedResponse,
-  pinnedHttpRequest,
   resolvePinnedTarget,
-  resolveWithDns,
   untilAborted,
   withDefaultHeaders,
 } from "./shared/pinned-fetch";
@@ -275,17 +274,16 @@ export async function brokerCall(
   };
 }
 
-const defaultNet: PinnedFetchDeps = {
-  resolve: resolveWithDns,
-  isBlocked: isBlockedAddress,
-  send: (target, init, isBlocked) => pinnedHttpRequest(target, init, isBlocked),
-};
-
 /**
  * One request to a credential's host, for the broker and the scripted-run
  * proxy: resolved once, refused if any address is private, and connected
  * only to the checked addresses. A redirect comes back unread. A body over
  * `maxBodyBytes` is cut there and marked `truncated`.
+ *
+ * Accept-Encoding is always the proxy's, never the caller's: it names only
+ * the codings the pinned transport decodes, so the body reaches the secret
+ * scrubber as text. A server that answers in another coding anyway comes
+ * back `undecodable`, and the caller must not hand that body on raw.
  */
 export async function credentialRequest(
   target: URL,
@@ -298,7 +296,7 @@ export async function credentialRequest(
   },
   net?: Partial<PinnedFetchDeps>,
 ): Promise<PinnedResponse> {
-  const deps: PinnedFetchDeps = { ...defaultNet, ...net };
+  const deps: PinnedFetchDeps = { ...defaultPinnedFetchDeps, ...net };
   const pinned = await untilAborted(
     resolvePinnedTarget(target.href, deps),
     init.signal,
@@ -308,7 +306,16 @@ export async function credentialRequest(
       pinned,
       {
         method: init.method,
-        headers: withDefaultHeaders(init.headers),
+        headers: {
+          ...withDefaultHeaders(
+            Object.fromEntries(
+              Object.entries(init.headers).filter(
+                ([name]) => name.toLowerCase() !== "accept-encoding",
+              ),
+            ),
+          ),
+          "accept-encoding": DECODABLE_ACCEPT_ENCODING,
+        },
         ...(init.body !== undefined ? { body: init.body } : {}),
         signal: init.signal,
         maxBodyBytes: init.maxBodyBytes,
