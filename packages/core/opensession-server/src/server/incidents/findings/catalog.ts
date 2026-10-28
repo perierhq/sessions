@@ -193,6 +193,7 @@ export function findingsBrief(role: AgentRole): string[] {
     out.push(
       "Start early with a question or a timeline and refine it as you learn.",
       `In a later round, carry the previous round's blocks forward instead of starting over: keep one unchanged with ${KEEP}, or send it again under the same id to edit it.`,
+      'Don\'t write "Round 2:" or what changed into prose; the page marks new and changed blocks against the round before.',
     );
   else
     out.push(

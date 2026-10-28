@@ -278,4 +278,11 @@ describe("findings brief times", () => {
     );
     expect(prose).not.toMatch(/\d{1,2}:\d{2}/);
   });
+
+  test("a later round leaves marking what changed to the page", () => {
+    const brief = findingsBrief("investigator").join("\n");
+    expect(brief).toContain(
+      'Don\'t write "Round 2:" or what changed into prose; the page marks new and changed blocks against the round before.',
+    );
+  });
 });

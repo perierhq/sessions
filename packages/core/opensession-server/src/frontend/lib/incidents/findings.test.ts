@@ -19,12 +19,16 @@ import {
   changedKeys,
   earlierFindingRounds,
   type FindingItem,
+  type FindingsSheetState,
   findingSpans,
   findingsPage,
   itemSource,
   localizeTimes,
   logTimesInUtc,
   nextFindings,
+  openFindingSource,
+  roundChanges,
+  roundChangesCopy,
   sourceTarget,
   timelineRows,
 } from "./findings";
@@ -830,4 +834,72 @@ test("log lines stamped in UTC say so", () => {
   ).toBe(true);
   expect(logTimesInUtc(["12:01:02 UTC cron ran"])).toBe(true);
   expect(logTimesInUtc(["ERROR db: pool exhausted"])).toBe(false);
+});
+
+test("a later round marks its new and changed blocks against the one before", () => {
+  const edited = { ...question("b"), text: "What about b now?" };
+  const r = response({
+    round: 2,
+    findingSets: [
+      set("investigator", 1, [question("a"), question("b"), question("gone")]),
+      set("investigator", 2, [question("a"), edited, question("c")]),
+    ],
+  });
+  const changes = roundChanges(open(r));
+  expect(changes).toEqual({
+    round: 2,
+    previous: 1,
+    marks: new Map([
+      ["investigator:b", "changed"],
+      ["investigator:c", "new"],
+    ]),
+    changed: 1,
+    added: 1,
+    removed: 1,
+  });
+  expect(roundChangesCopy(changes!)).toBe(
+    "Round 2: 1 changed, 1 new, 1 removed",
+  );
+  // Round 1 has nothing to compare with.
+  expect(
+    roundChanges(
+      open(
+        response({ findingSets: [set("investigator", 1, [question("a")])] }),
+      ),
+    ),
+  ).toBeNull();
+});
+
+test("a round that only re-sent its blocks says nothing changed", () => {
+  const r = response({
+    round: 2,
+    findingSets: [
+      set("investigator", 1, [question("a")]),
+      set("investigator", 2, [question("a")], { updatedAt: T("13:00") }),
+    ],
+  });
+  const changes = roundChanges(open(r))!;
+  expect(changes.marks.size).toBe(0);
+  expect(roundChangesCopy(changes)).toBe("Round 2: nothing changed");
+});
+
+test("a source opens a sheet over the page, or leaves it closed", () => {
+  const calls: string[] = [];
+  const to = {
+    sheet: (next: FindingsSheetState | null) =>
+      calls.push(`sheet:${JSON.stringify(next)}`),
+    session: (id: string) => calls.push(`session:${id}`),
+    pr: (t: { number: number }) => calls.push(`pr:${t.number}`),
+    url: (url: string) => calls.push(`url:${url}`),
+  };
+  openFindingSource({ kind: "ledger", id: "l1" }, to);
+  openFindingSource({ kind: "session", sessionId: "os-inv" }, to);
+  openFindingSource({ kind: "pr", repo: "acme", number: 7 }, to);
+  expect(calls).toEqual([
+    'sheet:{"kind":"cost"}',
+    "sheet:null",
+    "session:os-inv",
+    "sheet:null",
+    "pr:7",
+  ]);
 });

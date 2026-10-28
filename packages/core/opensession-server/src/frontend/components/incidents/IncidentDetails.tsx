@@ -3,7 +3,6 @@ import type {
   AccessPreview,
   IncidentAgentsAccessView,
 } from "../../../shared/incident-access";
-import { FINDINGS_COPY } from "../../../shared/findings";
 import type {
   Incident,
   IncidentSummary,
@@ -11,12 +10,10 @@ import type {
 } from "../../../shared/incidents";
 import { useSessionPrResource } from "../../hooks/useApiResources";
 import { useIncidentAccess } from "../../hooks/useIncidents";
-import { useIsPhone } from "../../hooks/useIsPhone";
 import { dayMonth, FIXED_BY_LABEL, formatUsd } from "../../lib/incidents/copy";
 import {
   earlierFindingRounds,
-  type FindingSource,
-  findingsPage,
+  type FindingsSheetState,
 } from "../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../lib/incidents/strip-layout";
 import type { ProjectSectionId } from "../../lib/project-settings/page-model";
@@ -51,7 +48,6 @@ import {
 import { Button } from "../../ui/button";
 import { cn } from "../../ui/cn";
 import { MeterTrack } from "../../ui/meter";
-import { ResponsiveDialog } from "../../ui/sheet";
 import {
   IconChevronRight,
   IconFileText2,
@@ -60,12 +56,12 @@ import {
   IconPerson,
   IconPullRequest,
   IconShieldCheck,
-  IconX,
 } from "../icons";
 import { RunLedger } from "../RunLedger";
 import { LineStats } from "../TurnFooter";
 import { PlainButton } from "../../ui/plain-button";
-import { FindingsGrid } from "./findings/FindingsGrid";
+import { DetailSheet } from "./DetailSheet";
+import { FindingsSheets } from "./findings/FindingsSheets";
 
 const BANDS = ["Fix", "Agents", "History"] as const;
 
@@ -219,54 +215,6 @@ export function IncidentDetailsView({
   );
 }
 
-/** A sheet the summary rows open: a centred dialog on a desktop, a bottom
- *  sheet on a phone, with a visible Close. The Findings section opens the
- *  agents' cost in one too. */
-export function DetailSheet({
-  title,
-  open,
-  onClose,
-  children,
-}: {
-  title: string;
-  open: boolean;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  const phone = useIsPhone();
-  return (
-    <ResponsiveDialog
-      open={open}
-      onClose={onClose}
-      phone={phone}
-      label={title}
-      sheetClassName="max-h-[88dvh]"
-      modalClassName="w-[min(560px,calc(100vw-32px))] max-h-[min(640px,calc(100dvh-32px))]"
-    >
-      {(dismiss) => (
-        <div className="flex min-h-0 flex-col">
-          <header className="flex shrink-0 items-center gap-3 px-5 pt-4 pb-2 phone:px-4">
-            <h2 className="m-0 min-w-0 flex-1 truncate text-dialog-title font-semibold text-fg">
-              {title}
-            </h2>
-            <Button
-              variant="ghost"
-              size="lg"
-              className="phone:min-h-11 phone:min-w-11"
-              aria-label="Close"
-              icon={<IconX />}
-              onClick={dismiss}
-            />
-          </header>
-          <div className="flex min-h-0 flex-col gap-4 overflow-y-auto overscroll-contain px-5 pb-5 phone:px-4">
-            {children}
-          </div>
-        </div>
-      )}
-    </ResponsiveDialog>
-  );
-}
-
 function CostSheetBody({
   incident,
   budgetUsd,
@@ -401,8 +349,7 @@ function EarlierSheetBody({
   );
 }
 
-type Sheet = "cost" | "access" | "earlier" | "findings";
-const NO_HIGHLIGHT: ReadonlySet<string> = new Set();
+type Sheet = "cost" | "access" | "earlier";
 type PrTarget = Extract<DetailTarget, { kind: "pr" }>;
 
 /**
@@ -435,7 +382,7 @@ export function IncidentDetails({
 }) {
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [shown, setShown] = useState<Sheet>("cost");
-  const [round, setRound] = useState(0);
+  const [findings, setFindings] = useState<FindingsSheetState | null>(null);
   const prSession = incident.response?.agents.findLast(
     (run) => run.role === "investigator" && run.prUrl,
   )?.sessionId;
@@ -459,9 +406,12 @@ export function IncidentDetails({
     if (target.kind === "pr") onOpenPr(target);
     else if (target.kind === "session") onOpenSession(target.sessionId);
     else if (target.kind === "sheet") {
-      if (target.sheet === "findings") setRound(target.round);
-      setShown(target.sheet);
-      setSheet(target.sheet);
+      if (target.sheet === "findings")
+        setFindings({ kind: "round", round: target.round });
+      else {
+        setShown(target.sheet);
+        setSheet(target.sheet);
+      }
     }
   };
   const close = () => setSheet(null);
@@ -469,22 +419,6 @@ export function IncidentDetails({
     cost: "Agent cost",
     access: "Access",
     earlier: "Earlier incidents",
-    findings: FINDINGS_COPY.earlierRow(round),
-  };
-  const roundPage =
-    shown === "findings" ? findingsPage(incident, { round }) : null;
-  const openSource = (target: FindingSource) => {
-    if (target.kind === "ledger") {
-      setShown("cost");
-      return;
-    }
-    if (target.kind === "url") {
-      window.open(target.url, "_blank", "noopener,noreferrer");
-      return;
-    }
-    close();
-    if (target.kind === "session") onOpenSession(target.sessionId);
-    else if (target.kind === "pr") onOpenPr(target);
   };
 
   return (
@@ -514,19 +448,6 @@ export function IncidentDetails({
               }}
             />
           )
-        ) : shown === "findings" ? (
-          roundPage && (
-            <FindingsGrid
-              page={roundPage}
-              incident={incident}
-              highlighted={NO_HIGHLIGHT}
-              animate={false}
-              meta={meta}
-              signalName={signalName}
-              onOpenSource={openSource}
-              columns={1}
-            />
-          )
         ) : (
           <EarlierSheetBody
             earlier={earlier}
@@ -537,6 +458,15 @@ export function IncidentDetails({
           />
         )}
       </DetailSheet>
+      <FindingsSheets
+        incident={incident}
+        sheet={findings}
+        onSheet={setFindings}
+        meta={meta}
+        signalName={signalName}
+        onOpenSession={onOpenSession}
+        onOpenPr={onOpenPr}
+      />
     </>
   );
 }

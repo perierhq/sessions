@@ -5,6 +5,7 @@ import {
   type FindingSource,
   type FindingsPageView,
   itemSource,
+  type RoundMark,
   sourceTarget,
 } from "../../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../../lib/incidents/strip-layout";
@@ -82,6 +83,7 @@ export function FindingsGrid({
   page,
   incident,
   highlighted,
+  marks,
   animate,
   meta,
   signalName,
@@ -91,6 +93,8 @@ export function FindingsGrid({
   page: FindingsPageView;
   incident: Incident;
   highlighted: ReadonlySet<string>;
+  /** New and changed blocks against the round before (`roundChanges`). */
+  marks?: ReadonlyMap<string, RoundMark>;
   animate: boolean;
   meta: Meta;
   signalName: (id: string) => string;
@@ -110,6 +114,8 @@ export function FindingsGrid({
       <BlockFrame
         item={item}
         highlight={highlighted.has(item.key)}
+        mark={marks?.get(item.key) ?? null}
+        round={page.round}
         onOpenSource={target ? () => onOpenSource(target) : null}
       >
         <BlockBody

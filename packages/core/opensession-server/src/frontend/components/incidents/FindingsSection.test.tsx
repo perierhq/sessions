@@ -203,3 +203,26 @@ test("the byline is said once for the section, not on every block", () => {
   expect(html.split("From the investigator, ").length).toBe(2);
   expect(html).not.toContain("from the investigator, ");
 });
+
+test("round 2 says what changed, marks the blocks and links round 1", () => {
+  const html = render(
+    incident(
+      response({
+        round: 2,
+        findingSets: [
+          set(1, [block("a", "Kept"), block("b", "Edited")]),
+          set(2, [
+            block("a", "Kept"),
+            block("b", "Edited again"),
+            block("c", "Added"),
+          ]),
+        ],
+      }),
+    ),
+  );
+  expect(html).toContain("Round 2: 1 changed, 1 new");
+  expect(html).toContain("Changed in round 2");
+  expect(html).toContain("New in round 2");
+  expect(html.split("in round 2</p>").length).toBe(3);
+  expect(html).toMatch(/<button[^>]*>Round 1 findings<\/button>/);
+});

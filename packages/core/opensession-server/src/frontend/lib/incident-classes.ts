@@ -348,6 +348,18 @@ export const FINDINGS_SECTION_HEAD = "-mx-2 flex min-w-0 flex-col";
 export const FINDINGS_SECTION_BYLINE =
   "m-0 px-2 text-meta text-dim tabular-nums";
 
+/** What a later round changed and the earlier rounds' links, one
+ *  wrapping row under the byline. */
+export const FINDINGS_ROUNDS =
+  "flex min-w-0 flex-wrap items-center gap-x-3 px-2 text-meta text-dim";
+
+/** "Round 1 findings": a quiet link, 44px tall under a finger. */
+export const FINDINGS_ROUND_LINK =
+  "min-h-6 cursor-pointer border-none bg-transparent p-0 text-left text-meta text-link hover:underline focus-ring phone:min-h-11";
+
+/** A block's "New in round 2" / "Changed in round 2". */
+export const FINDINGS_ROUND_MARK = "m-0 text-meta font-medium text-dim";
+
 /** "Round 2 under way": quiet, under the heading. */
 export const FINDINGS_UNDER_WAY = "m-0 px-2 text-supporting text-faint";
 

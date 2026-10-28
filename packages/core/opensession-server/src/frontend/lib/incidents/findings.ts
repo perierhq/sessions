@@ -385,6 +385,43 @@ export const FINDINGS_MARKDOWN = Object.freeze({ plain: true });
 /** Somewhere a block's "Show source" opens. */
 export type FindingSource = DetailTarget | { kind: "ledger"; id: string };
 
+/** The sheet the Findings section (or History) has open over the page:
+ *  an earlier round's findings, or the agents' cost a ledger ref opens. */
+export type FindingsSheetState =
+  | { kind: "round"; round: number }
+  | { kind: "cost" };
+
+/** Where opening a block's source goes: a sheet over the page, or away
+ *  to the session, the PR review or a link. Leaving closes the sheet. */
+export function openFindingSource(
+  target: FindingSource,
+  to: {
+    sheet: (next: FindingsSheetState | null) => void;
+    session: (sessionId: string) => void;
+    pr: (target: Extract<DetailTarget, { kind: "pr" }>) => void;
+    url: (url: string) => void;
+  },
+): void {
+  switch (target.kind) {
+    case "ledger":
+      to.sheet({ kind: "cost" });
+      return;
+    case "url":
+      to.url(target.url);
+      return;
+    case "session":
+      to.sheet(null);
+      to.session(target.sessionId);
+      return;
+    case "pr":
+      to.sheet(null);
+      to.pr(target);
+      return;
+    default:
+      return;
+  }
+}
+
 /** How long a block whose content changed keeps its tint, in ms. */
 export const FINDINGS_HIGHLIGHT_MS = 1200;
 
@@ -436,6 +473,65 @@ export function changedKeys(
     if (was !== undefined && was !== contentOf(item)) changed.add(item.key);
   }
   return changed;
+}
+
+/** How a block of a later round differs from the round before. */
+export type RoundMark = "new" | "changed";
+
+/** What a later round changed: its blocks marked new or changed against
+ *  the newest earlier round with findings, and how many that round had
+ *  that this one dropped. Blocks keep their ids across rounds (carried
+ *  forward or kept), so the same key is the same block. */
+export interface RoundChanges {
+  round: number;
+  previous: number;
+  marks: Map<string, RoundMark>;
+  changed: number;
+  added: number;
+  removed: number;
+}
+
+export function roundChanges(
+  incident: Pick<Incident, "state" | "response">,
+  opts: { round?: number } = {},
+): RoundChanges | null {
+  const page = findingsPage(incident, opts);
+  const previous = page?.earlierRounds.at(-1);
+  if (!page || previous === undefined) return null;
+  const before = findingsPage(incident, { round: previous });
+  if (!before) return null;
+  const changed = changedKeys(before.items, page.items);
+  const known = new Set(before.items.map((item) => item.key));
+  const marks = new Map<string, RoundMark>();
+  for (const item of page.items)
+    if (!known.has(item.key)) marks.set(item.key, "new");
+    else if (changed.has(item.key)) marks.set(item.key, "changed");
+  const now = new Set(page.items.map((item) => item.key));
+  let added = 0;
+  for (const mark of marks.values()) if (mark === "new") added++;
+  return {
+    round: page.round,
+    previous,
+    marks,
+    changed: marks.size - added,
+    added,
+    removed: before.items.filter((item) => !now.has(item.key)).length,
+  };
+}
+
+/** "Round 2: 1 changed, 2 new", under the section's heading. */
+export function roundChangesCopy(changes: RoundChanges): string {
+  const parts = [
+    changes.changed ? `${changes.changed} changed` : "",
+    changes.added ? `${changes.added} new` : "",
+    changes.removed ? `${changes.removed} removed` : "",
+  ].filter(Boolean);
+  return `Round ${changes.round}: ${parts.length ? parts.join(", ") : "nothing changed"}`;
+}
+
+/** A block's mark beside its heading. */
+export function roundMarkCopy(mark: RoundMark, round: number): string {
+  return mark === "new" ? `New in round ${round}` : `Changed in round ${round}`;
 }
 
 /** Ref types the page has somewhere to open (`sourceTarget`). */
