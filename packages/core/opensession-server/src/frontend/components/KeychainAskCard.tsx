@@ -113,7 +113,7 @@ function AskCard({
                     ceiling.open ? "text-yellow" : "text-dim",
                   )}
                 >
-                  Allows {ceiling.text}
+                  Allows {ceiling.text.replace(/^Any /, "any ")}
                 </p>
               )}
             </div>
@@ -160,6 +160,7 @@ function AskCard({
         <Button
           variant="soft"
           size="lg"
+          className="phone:min-h-11"
           disabled={busy !== null}
           onClick={() => void submit("decline")}
         >
@@ -170,6 +171,8 @@ function AskCard({
             key={choice.decision}
             variant={choice.primary ? "primary" : "soft"}
             size="lg"
+            className="phone:min-h-11"
+            className="phone:min-h-11"
             disabled={busy !== null}
             onClick={() => void submit(choice.decision)}
           >

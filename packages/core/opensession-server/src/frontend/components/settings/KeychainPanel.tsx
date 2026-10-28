@@ -308,9 +308,7 @@ export function KeychainSection() {
                       `owner ${c.owner}`,
                       c.description,
                       // The ceiling every grant inherits, as the approval card shows it.
-                      c.kind === "login"
-                        ? null
-                        : `allows ${lowerFirst(ceilingSummary(c).text)}`,
+                      c.kind === "login" ? null : `allows ${ceilingPhrase(c)}`,
                       expiry && !expiry.expired
                         ? lowerFirst(expiry.text)
                         : null,
@@ -422,7 +420,7 @@ export function KeychainSection() {
                           )}; starts once every owner allows it · ${a.run.command} · ${a.purpose}`
                       : a.run
                         ? `Scripted run, up to ${a.run.maxCalls.toLocaleString()} calls · ${a.run.command} · ${a.purpose}`
-                        : `Asked for ${a.requestedMode === "once" ? "one call" : "7 days"} · ${a.purpose} · Allows ${ceilingSummary(byId.get(a.credentialId) ?? {}).text}`
+                        : `Asked for ${a.requestedMode === "once" ? "one call" : "7 days"} · ${a.purpose} · allows ${ceilingPhrase(byId.get(a.credentialId) ?? {})}`
                 }
                 controlClassName="flex flex-wrap justify-end gap-1"
                 control={
@@ -589,7 +587,7 @@ export function KeychainSection() {
 /** A link inside a row's description: underlined in the text's colour,
  *  with a hit area taller than the line (TextLink's recipe, as an anchor). */
 const INLINE_LINK =
-  "relative underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg";
+  "relative text-inherit underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg";
 
 /** "Last used 2h ago by <agent>": the session links to its transcript. */
 function lastUsedLine(use: NonNullable<KeychainCredentialDto["lastUsed"]>) {
@@ -635,6 +633,12 @@ function lentInLine(lentIn: NonNullable<KeychainCredentialDto["lentIn"]>) {
       ))}
     </span>
   );
+}
+
+/** The ceiling inside a sentence: "any method, any path" or "GET ·
+ *  /v1/orders", never a lower-cased method. */
+function ceilingPhrase(c: Parameters<typeof ceilingSummary>[0]): string {
+  return ceilingSummary(c).text.replace(/^Any /, "any ");
 }
 
 function lowerFirst(text: string): string {
