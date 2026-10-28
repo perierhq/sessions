@@ -172,7 +172,6 @@ function AskCard({
             variant={choice.primary ? "primary" : "soft"}
             size="lg"
             className="phone:min-h-11"
-            className="phone:min-h-11"
             disabled={busy !== null}
             onClick={() => void submit(choice.decision)}
           >
