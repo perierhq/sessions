@@ -234,6 +234,18 @@ export interface KeychainAskDto {
   canAnswer?: boolean;
 }
 
+/** The methods a credential can limit itself to: the ones call_credential
+ *  and scripted runs can send (keychain-broker.ts BROKER_METHODS). */
+export const KEYCHAIN_METHODS = [
+  "GET",
+  "HEAD",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+] as const;
+export type KeychainMethod = (typeof KEYCHAIN_METHODS)[number];
+
 export async function fetchKeychain(): Promise<{
   credentials: KeychainCredentialDto[];
   grants: KeychainGrantDto[];

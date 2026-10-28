@@ -1,7 +1,11 @@
 // The Keychain section and its Add credential dialog. The components' own
 // hooks run in the hook harness; children are read, not rendered.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import type { addKeychainCredential } from "../../lib/api/settings";
+import {
+  KEYCHAIN_METHODS,
+  type KeychainMethod,
+  type addKeychainCredential,
+} from "../../lib/api/settings";
 import {
   createHookHarness,
   find,
@@ -29,6 +33,8 @@ mock.module("../../lib/api", () => ({
 const { AddCredentialForm, AddLoginForm } = await import("./KeychainPanel");
 const { Input } = await import("../../ui/input");
 const { InlineAlert } = await import("../../ui/state");
+const { Field } = await import("../../ui/input");
+const { PlainButton } = await import("../../ui/plain-button");
 const { Modal } = await import("../../ui/modal");
 
 beforeEach(() => {
@@ -136,4 +142,78 @@ test("a login's failed save shows inside its dialog too", async () => {
   await submit(tree);
   expect(text(tree)).toContain("loginUrl must be a full https:// URL");
   expect(order(tree).slice(-2)).toEqual(["alert", "footer"]);
+});
+
+/** The method chips, by label, with whether each is on. */
+function chips(tree: Tree): Partial<Record<KeychainMethod, boolean>> {
+  const out: Partial<Record<KeychainMethod, boolean>> = {};
+  for (const method of KEYCHAIN_METHODS) {
+    const chip = find(
+      tree.output(),
+      PlainButton,
+      (p) => p.children === method && p["aria-pressed"] !== undefined,
+    );
+    if (chip) out[method] = chip.props["aria-pressed"] === true;
+  }
+  return out;
+}
+
+async function toggle(tree: Tree, method: string) {
+  const chip = find(tree.output(), PlainButton, (p) => p.children === method);
+  // SAFETY: the chip's handler ignores the click event.
+  chip!.props.onClick!(undefined as never);
+  await settle();
+}
+
+test("field rules are visible text, not hover-only titles", async () => {
+  for (const form of [AddCredentialForm, AddLoginForm]) {
+    const tree = harness.mount(form, {
+      serviceRef: { current: null },
+      onAdded: () => {},
+    });
+    await settle();
+    expect(find(tree.output(), Field, (p) => p.title !== undefined)).toBe(
+      undefined,
+    );
+    expect(text(tree)).toContain("Optional");
+  }
+  const tree = await mountForm();
+  const all = text(tree);
+  expect(all).toContain("None selected allows any method");
+  expect(all).toContain("Separate several with commas");
+  expect(all).toContain("Use this when the API might echo the key");
+});
+
+test("methods are chips, and the chosen ones are saved", async () => {
+  const tree = await mountForm();
+  expect(chips(tree)).toEqual({
+    GET: false,
+    HEAD: false,
+    POST: false,
+    PUT: false,
+    PATCH: false,
+    DELETE: false,
+  });
+  await toggle(tree, "DELETE");
+  await toggle(tree, "GET");
+  await toggle(tree, "POST");
+  await toggle(tree, "POST");
+  expect(chips(tree)).toMatchObject({ GET: true, POST: false, DELETE: true });
+  await type(tree, "vercel", "acme");
+  await type(tree, "api.vercel.com", "api.example.test");
+  await type(tree, "Never shown again", "sk-acme");
+  await type(tree, "/v1/orders", "/v1/orders, /v2/orders");
+  await submit(tree);
+  expect(added).toHaveLength(1);
+  expect(added[0]!.allowedMethods).toEqual(["GET", "DELETE"]);
+  expect(added[0]!.allowedPathPrefixes).toEqual(["/v1/orders", "/v2/orders"]);
+});
+
+test("no chip selected sends no method limit", async () => {
+  const tree = await mountForm();
+  await type(tree, "vercel", "acme");
+  await type(tree, "api.vercel.com", "api.example.test");
+  await type(tree, "Never shown again", "sk-acme");
+  await submit(tree);
+  expect(added[0]!.allowedMethods).toBeUndefined();
 });

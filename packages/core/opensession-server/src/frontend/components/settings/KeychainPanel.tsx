@@ -11,11 +11,13 @@ import {
   answerKeychainAsk,
   deleteKeychainCredential,
   fetchKeychain,
+  KEYCHAIN_METHODS,
   revokeKeychainGrant,
   setKeychainCredentialScope,
   type KeychainAskDto,
   type KeychainCredentialDto,
   type KeychainGrantDto,
+  type KeychainMethod,
 } from "../../lib/api";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
@@ -23,6 +25,12 @@ import { Checkbox } from "../../ui/checkbox";
 import { useConfirm } from "../../ui/confirm";
 import { Field, Input } from "../../ui/input";
 import { FIELD_HINT } from "../../lib/incident-settings-classes";
+import {
+  ROLE_CHIP_OFF,
+  ROLE_CHIP_ON,
+} from "../../lib/project-settings-classes";
+import { cn } from "../../ui/cn";
+import { PlainButton } from "../../ui/plain-button";
 import { Modal } from "../../ui/modal";
 import {
   SettingCard,
@@ -441,7 +449,7 @@ export function AddCredentialForm({
   const [secret, setSecret] = useState("");
   const [description, setDescription] = useState("");
   const [header, setHeader] = useState("");
-  const [methods, setMethods] = useState("");
+  const [methods, setMethods] = useState<KeychainMethod[]>([]);
   const [prefixes, setPrefixes] = useState("");
   const [statusOnly, setStatusOnly] = useState(false);
   const [workspace, setWorkspace] = useState(false);
@@ -449,8 +457,19 @@ export function AddCredentialForm({
   // A failed save is the dialog's own message: it sits above the buttons,
   // where the person who pressed Add is looking (not on the page behind).
   const [error, setError] = useState<string | null>(null);
+  const descriptionHintId = useId();
   const headerHintId = useId();
+  const methodsLabelId = useId();
+  const methodsHintId = useId();
+  const prefixesHintId = useId();
+  const statusOnlyHintId = useId();
   const ready = Boolean(service.trim() && host.trim() && secret);
+  const toggleMethod = (method: KeychainMethod) =>
+    setMethods((on) =>
+      on.includes(method)
+        ? on.filter((m) => m !== method)
+        : KEYCHAIN_METHODS.filter((m) => m === method || on.includes(m)),
+    );
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -464,7 +483,7 @@ export function AddCredentialForm({
     };
     if (description.trim()) credential.description = description.trim();
     if (header.trim()) credential.injection = { header: header.trim() };
-    if (methods.trim()) credential.allowedMethods = list(methods);
+    if (methods.length) credential.allowedMethods = methods;
     if (prefixes.trim()) credential.allowedPathPrefixes = list(prefixes);
     if (statusOnly) credential.statusOnly = true;
     if (workspace) credential.scope = "workspace";
@@ -515,13 +534,19 @@ export function AddCredentialForm({
               autoComplete="off"
             />
           </Field>
-          <Field label="Description" title="Optional.">
-            <Input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="What it is for"
-            />
-          </Field>
+          <div className="flex flex-col gap-1.5">
+            <Field label="Description">
+              <Input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What it is for"
+                aria-describedby={descriptionHintId}
+              />
+            </Field>
+            <p id={descriptionHintId} className={FIELD_HINT}>
+              Optional. Teammates and their sessions see it
+            </p>
+          </div>
         </div>
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
@@ -540,32 +565,67 @@ export function AddCredentialForm({
               the token alone; a leading Bearer is dropped.
             </p>
           </div>
-          <Field label="Allowed methods" title="Comma-separated.">
-            <Input
-              value={methods}
-              onChange={(e) => setMethods(e.target.value)}
-              placeholder="Any method"
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-          </Field>
-          <Field label="Allowed path prefixes" title="Comma-separated.">
-            <Input
-              value={prefixes}
-              onChange={(e) => setPrefixes(e.target.value)}
-              placeholder="Any path"
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-          </Field>
-          <label className="flex cursor-pointer items-center gap-2 text-label">
-            <Checkbox
-              checked={statusOnly}
-              onCheckedChange={(v) => setStatusOnly(v === true)}
-            />
-            Return only the status code, never the response
-          </label>
-          <label className="flex cursor-pointer items-center gap-2 text-label">
+          {/* Six fixed values: chips, not a text field to spell them in. */}
+          <div
+            className="flex flex-col gap-1.5"
+            role="group"
+            aria-labelledby={methodsLabelId}
+            aria-describedby={methodsHintId}
+          >
+            <span
+              id={methodsLabelId}
+              className="text-label font-medium text-dim"
+            >
+              Allowed methods
+            </span>
+            <div className="flex flex-wrap gap-x-1.5">
+              {KEYCHAIN_METHODS.map((method) => (
+                <PlainButton
+                  key={method}
+                  aria-pressed={methods.includes(method)}
+                  className={
+                    methods.includes(method) ? ROLE_CHIP_ON : ROLE_CHIP_OFF
+                  }
+                  onClick={() => toggleMethod(method)}
+                >
+                  {method}
+                </PlainButton>
+              ))}
+            </div>
+            <p id={methodsHintId} className={FIELD_HINT}>
+              None selected allows any method
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Field label="Allowed path prefixes">
+              <Input
+                value={prefixes}
+                onChange={(e) => setPrefixes(e.target.value)}
+                placeholder="/v1/orders"
+                autoCapitalize="none"
+                spellCheck={false}
+                aria-describedby={prefixesHintId}
+              />
+            </Field>
+            <p id={prefixesHintId} className={FIELD_HINT}>
+              Separate several with commas. Each one covers the paths under it.
+              Empty allows any path
+            </p>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <label className="flex cursor-pointer items-center gap-2 text-label phone:min-h-11">
+              <Checkbox
+                checked={statusOnly}
+                onCheckedChange={(v) => setStatusOnly(v === true)}
+                aria-describedby={statusOnlyHintId}
+              />
+              Return only the status code, never the response
+            </label>
+            <p id={statusOnlyHintId} className={cn(FIELD_HINT, "pl-6")}>
+              Use this when the API might echo the key back
+            </p>
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 text-label phone:min-h-11">
             <Checkbox
               checked={workspace}
               onCheckedChange={(v) => setWorkspace(v === true)}
@@ -617,6 +677,7 @@ export function AddLoginForm({
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const descriptionHintId = useId();
   const ready = Boolean(
     service.trim() && loginUrl.trim() && username.trim() && password,
   );
@@ -689,13 +750,19 @@ export function AddLoginForm({
               autoComplete="new-password"
             />
           </Field>
-          <Field label="Description" title="Optional.">
-            <Input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="What it is for"
-            />
-          </Field>
+          <div className="flex flex-col gap-1.5">
+            <Field label="Description">
+              <Input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What it is for"
+                aria-describedby={descriptionHintId}
+              />
+            </Field>
+            <p id={descriptionHintId} className={FIELD_HINT}>
+              Optional. Teammates and their sessions see it
+            </p>
+          </div>
         </div>
         {error && <InlineAlert>{error}</InlineAlert>}
         <Modal.Footer>

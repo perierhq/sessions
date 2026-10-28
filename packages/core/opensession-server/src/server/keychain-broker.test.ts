@@ -491,3 +491,9 @@ describe("control characters", () => {
       ).toThrow(/injection/);
   });
 });
+
+test("the dialog's method chips are the methods the broker can send", async () => {
+  const { BROKER_METHODS } = await import("./keychain-broker");
+  const { KEYCHAIN_METHODS } = await import("../frontend/lib/api/settings");
+  expect([...KEYCHAIN_METHODS]).toEqual([...BROKER_METHODS]);
+});
