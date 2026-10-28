@@ -1,11 +1,14 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { SWRConfig, unstable_serialize } from "swr";
 import type {
   FindingBlock,
   SignalMarker,
   ToolRef,
 } from "../../../../shared/findings";
 import type { StripResponse } from "../../../../shared/incidents";
+import { apiSWRKey } from "../../../lib/api-swr";
+import { ApiError } from "../../../lib/api/request";
 import { STRIP_NOTE_LINE } from "../../../lib/incident-classes";
 import type { FindingItem } from "../../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../../lib/incidents/strip-layout";
@@ -146,6 +149,68 @@ test("a signal window that failed to load offers a retry", () => {
   );
   expect(html).toContain("Couldn&#x27;t load the signal");
   expect(html).toContain("Try again");
+});
+
+test("a removed signal says so, without a retry", () => {
+  const html = renderToStaticMarkup(
+    <SignalWindowView
+      strip={undefined}
+      error
+      removed
+      onRetry={noop}
+      markers={[]}
+      title="Checkout"
+      meta={meta}
+    />,
+  );
+  expect(html).toContain("This signal was removed");
+  expect(html).toContain('role="status"');
+  expect(html).toContain("bg-blue-soft");
+  expect(html).not.toContain("Couldn&#x27;t load the signal");
+  expect(html).not.toContain("Try again");
+});
+
+test("a compare side whose signal is gone says so; a failed one retries", () => {
+  const gone = { signalId: "sig-gone", from: at(0), to: at(60) };
+  const down = { signalId: "sig-down", from: at(0), to: at(60) };
+  const cache = new Map<string, { error: Error }>([
+    [
+      unstable_serialize(
+        apiSWRKey.findingsWindow(gone.signalId, gone.from, gone.to),
+      ),
+      { error: new ApiError("Not found", 404) },
+    ],
+    [
+      unstable_serialize(
+        apiSWRKey.findingsWindow(down.signalId, down.from, down.to),
+      ),
+      { error: new ApiError("Failed to load the strip", 500) },
+    ],
+  ]);
+  const html = renderToStaticMarkup(
+    <SWRConfig value={{ provider: () => cache }}>
+      <CompareBlock
+        item={item({
+          id: "before-after",
+          kind: "compare",
+          size: "full",
+          sides: [
+            { label: "before deploy", signal: gone },
+            { label: "after", signal: down },
+          ],
+        })}
+        meta={meta}
+        signalName={() => "Checkout"}
+      />
+    </SWRConfig>,
+  );
+  const removed = html.indexOf("This signal was removed");
+  const failed = html.indexOf("Couldn&#x27;t load the signal");
+  expect(html.indexOf("before deploy")).toBeGreaterThan(-1);
+  expect(removed).toBeGreaterThan(html.indexOf("before deploy"));
+  expect(html.indexOf(">after<")).toBeGreaterThan(removed);
+  expect(failed).toBeGreaterThan(html.indexOf(">after<"));
+  expect(html.match(/Try again/g)?.length).toBe(1);
 });
 
 test("compare labels both sides", () => {

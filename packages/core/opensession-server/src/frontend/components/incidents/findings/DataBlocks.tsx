@@ -28,6 +28,7 @@ import {
   FINDINGS_PROSE_QUIET,
   FINDINGS_STRIP_SUMMARY,
 } from "../../../lib/incident-classes";
+import { apiStatus } from "../../../lib/api/incidents";
 import { ApiError } from "../../../lib/api/request";
 import {
   type FindingItem,
@@ -69,10 +70,13 @@ type ChangeRef = ChangeBlockOf["change"];
  * reference draws like the strip's own; one without is the agent's note,
  * drawn dashed and named so in the summary. The summary's line holds a space
  * while the window loads so the block does not grow when the data lands.
+ * A signal deleted since the agent cited it (`removed`, the window's 404)
+ * is a fact to state, not a failed load: no retry could bring it back.
  */
 export function SignalWindowView({
   strip,
   error,
+  removed = false,
   onRetry,
   markers,
   title,
@@ -81,6 +85,7 @@ export function SignalWindowView({
 }: {
   strip: StripResponse | undefined;
   error: boolean;
+  removed?: boolean;
   onRetry: () => void;
   markers: SignalMarker[];
   title: string;
@@ -88,7 +93,11 @@ export function SignalWindowView({
   lane?: string;
 }) {
   if (error && !strip)
-    return (
+    return removed ? (
+      <InlineAlert variant="info" role="status">
+        This signal was removed
+      </InlineAlert>
+    ) : (
       <InlineAlert onRetry={onRetry}>Couldn&apos;t load the signal</InlineAlert>
     );
   const shown = strip ? windowStrip(strip, lane) : undefined;
@@ -141,6 +150,7 @@ function LoadedWindow({
     <SignalWindowView
       strip={data}
       error={!!error}
+      removed={apiStatus(error) === 404}
       onRetry={() => void mutate()}
       markers={markers}
       title={signalName(w.signalId)}
