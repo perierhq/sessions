@@ -1097,6 +1097,27 @@ describe("a scripted run with several credentials", () => {
     expect("error" in multi && multi.error).toContain("already pending");
   });
 
+  test("an expired credential in the run is refused before any owner is asked", async () => {
+    addPair();
+    await kc.patchCredentialAsync(
+      kc.findCredential("payments-prod")!.id,
+      "Alex",
+      { expiresOn: "2020-01-01" },
+    );
+    const result = kc.requestCredentialRun({
+      credentials: CREDS,
+      sessionId: SESSION,
+      requestedBy: "Alex",
+      purpose: "sync every subscription into billing",
+      run: { command: COMMAND, maxCalls: 14000 },
+    });
+    expect(result).toEqual({
+      error: expect.stringMatching(/payments-prod expired on 2020-01-01/),
+    });
+    expect(kc.listKeychainAsks({ sessionId: SESSION })).toHaveLength(0);
+    expect(slackPosts).toHaveLength(0);
+  });
+
   test("after a restart cuts a run off, asking again tells the owners how far it got", async () => {
     addPair();
     const group = {

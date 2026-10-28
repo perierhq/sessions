@@ -2992,6 +2992,9 @@ export function requestCredentialRun(
       return {
         error: `${credMeta.service} is a login: it can't be used by a scripted run`,
       };
+    const stored = credentials.get(credMeta.id);
+    const expired = stored && expiredProblem(stored);
+    if (expired) return { error: expired };
     if (!isWorkspaceCredential(credMeta) && !resolveTeammate(credMeta.owner))
       return {
         error: `credential owner "${credMeta.owner}" is not in the identity roster`,
