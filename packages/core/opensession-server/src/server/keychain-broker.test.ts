@@ -295,3 +295,95 @@ describe("a credential's host", () => {
     expect(kc.findCredential("acme")?.host).toBe("api.example.test");
   });
 });
+
+describe("path prefixes", () => {
+  const refused = async (path: string) => {
+    const r = await call({ path });
+    return "error" in r;
+  };
+
+  test("match whole path segments, not characters", async () => {
+    setup({ allowedPathPrefixes: ["/v1/items"] });
+    for (const path of [
+      "/v1/items-admin",
+      "/v1/itemsanything",
+      "/v1/items.json",
+      "/v1/admin?next=/v1/items/1",
+    ])
+      expect(await refused(path)).toBe(true);
+    expect(seen).toHaveLength(0);
+    for (const path of [
+      "/v1/items",
+      "/v1/items/",
+      "/v1/items/1",
+      "/v1/items?next=/admin",
+      "/v1/items/1?q=..%2Fadmin",
+    ])
+      expect(await refused(path)).toBe(false);
+  });
+
+  test("refuse encoded separators and dots once a prefix is set", async () => {
+    setup({ allowedPathPrefixes: ["/v1/items"] });
+    for (const path of [
+      "/v1/items/..%2Fadmin",
+      "/v1/items/..%2fadmin",
+      "/v1/items%2F..%2F..%2Fadmin",
+      "/v1/items/..%5Cadmin",
+      "/v1/items/a%2Ejson",
+      "/v1/items/%252F..%252Fadmin",
+    ])
+      expect(await refused(path)).toBe(true);
+    expect(seen).toHaveLength(0);
+  });
+
+  test("without a prefix, an encoded slash is passed on as is", async () => {
+    setup();
+    expect(await refused("/v1/items/a%2Fb")).toBe(false);
+    expect(seen[0]!.url).toBe("https://api.example.test/v1/items/a%2Fb");
+  });
+
+  test("the same rule holds for a scripted run's and an incident's calls", () => {
+    const { grant } = setup({ allowedPathPrefixes: ["/v1/items"] });
+    expect(
+      kc.consumeGrantForBroker(grant.id, "s-1", "GET", "/v1/items-admin"),
+    ).toHaveProperty("error");
+    expect(
+      kc.consumeGrantForBroker(grant.id, "s-1", "GET", "/v1/items/..%2Fx"),
+    ).toHaveProperty("error");
+    expect(
+      kc.consumeGrantForBroker(grant.id, "s-1", "GET", "/v1/items/../x"),
+    ).toHaveProperty("error");
+    expect(
+      kc.consumeGrantForBroker(grant.id, "s-1", "GET", "/v1/items/1"),
+    ).toHaveProperty("credential");
+  });
+
+  test("are stored without a trailing slash, and refused when they can't name a segment", () => {
+    const meta = kc.addCredential({
+      owner: "Alex",
+      service: "acme",
+      host: "api.example.test",
+      secret: SECRET,
+      allowedPathPrefixes: ["/v1/items/", "/v2//", "/"],
+    });
+    expect(meta.allowedPathPrefixes).toEqual(["/v1/items", "/v2", "/"]);
+    for (const prefix of [
+      "/v1/../admin",
+      "/v1/./items",
+      "/v1/%2e%2e",
+      "/v1?x=1",
+      "/v1#top",
+      "/v1\\items",
+      "v1/items",
+    ])
+      expect(() =>
+        kc.addCredential({
+          owner: "Alex",
+          service: "acme-2",
+          host: "api.example.test",
+          secret: SECRET,
+          allowedPathPrefixes: [prefix],
+        }),
+      ).toThrow(/path prefix/);
+  });
+});

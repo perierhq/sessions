@@ -210,7 +210,7 @@ const credentialFields = {
     .max(20)
     .optional()
     .describe(
-      "Limit broker calls to paths starting with these, e.g. ['/v1/customers']. Omit for all.",
+      "Limit broker calls to these paths and everything under them, matched on whole segments: '/v1/customers' covers '/v1/customers/42', not '/v1/customers-admin'. The query string doesn't count. Omit for all.",
     ),
   header: z
     .string()

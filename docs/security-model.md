@@ -191,8 +191,12 @@ addresses. A scripted run's proxy sends its calls the same way. A host that is
 an IP address, or a name that only means something private (`localhost`,
 `*.internal`, a single label), is refused when the credential is added or
 changed. The method and the parsed, normalized path are checked against the
-credential's ceiling; redirects are not followed; agent-supplied headers are
-limited to a short allowlist. The secret is scrubbed from the returned headers
+credential's ceiling. A path prefix matches whole segments (`/v1/items` covers
+`/v1/items/1`, not `/v1/items-admin`) and ignores the query; once a credential
+has prefixes, a path that keeps an encoded `/`, `\` or `.` (`%2F`, `%5C`,
+`%2E`, also double-encoded) or a dot segment is refused, since an upstream
+may decode it into a route the check never saw. Redirects are not followed;
+agent-supplied headers are limited to a short allowlist. The secret is scrubbed from the returned headers
 and body verbatim and in common encodings (URL, JSON, base64), which is best
 effort. A credential registered as status-only returns only the HTTP status,
 for APIs that might echo the secret in a form scrubbing cannot catch.

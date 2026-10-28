@@ -579,11 +579,8 @@ export function normalizeCredentialSpec(
   }
   const prefixes = (input.allowedPathPrefixes || [])
     .map((p) => p.trim())
-    .filter(Boolean);
-  for (const p of prefixes) {
-    if (!p.startsWith("/"))
-      throw new Error(`path prefix must start with /: ${p}`);
-  }
+    .filter(Boolean)
+    .map(normalizePathPrefix);
   let injection: NormalizedCredentialSpec["injection"];
   if (input.injection) {
     const { header, scheme } = input.injection;
@@ -1351,8 +1348,35 @@ export function consumeGrantForBroker(
   return { credential: cred, grant: gr };
 }
 
+/** A path prefix as stored: whole segments, without a trailing slash (`/`
+ *  alone means any path). Throws for one that can't name a segment. */
+function normalizePathPrefix(raw: string): string {
+  if (!raw.startsWith("/"))
+    throw new Error(`path prefix must start with /: ${raw}`);
+  if (/[%?#\\]/.test(raw))
+    throw new Error(
+      `path prefix must be a plain path, without %, ?, # or \\: ${raw}`,
+    );
+  if (raw.split("/").some((segment) => segment === "." || segment === ".."))
+    throw new Error(`path prefix can't contain . or .. segments: ${raw}`);
+  return raw.replace(/\/+$/, "") || "/";
+}
+
+/** A separator or dot left percent-encoded (once or more) in a normalized
+ *  path. URL parsing keeps them encoded, and an upstream that decodes them
+ *  routes the request somewhere a prefix check never saw. */
+const ENCODED_SEPARATOR = /%(?:25)*(?:2f|5c|2e)/i;
+
+/** Whether a normalized path is the prefix or sits under it, on a segment
+ *  boundary: `/v1/items` covers `/v1/items/1`, never `/v1/items-admin`. */
+export function pathWithinPrefix(path: string, prefix: string): boolean {
+  const base = prefix.endsWith("/") ? prefix : `${prefix}/`;
+  return path === prefix || path.startsWith(base);
+}
+
 /** Why the credential's method/path ceiling refuses a call, or null. `path`
- *  must already be parsed and normalized. */
+ *  is the parsed, normalized path without its query; a query never affects
+ *  the match. */
 function ceilingRefusal(
   cred: KeychainCredential,
   method: string,
@@ -1361,11 +1385,14 @@ function ceilingRefusal(
   const m = method.toUpperCase();
   if (cred.allowedMethods?.length && !cred.allowedMethods.includes(m))
     return `method ${m} is not allowed for this credential (allowed: ${cred.allowedMethods.join(", ")})`;
-  if (
-    cred.allowedPathPrefixes?.length &&
-    !cred.allowedPathPrefixes.some((p) => path.startsWith(p))
-  )
-    return `path is outside this credential's allowed prefixes (${cred.allowedPathPrefixes.join(", ")})`;
+  const prefixes = cred.allowedPathPrefixes;
+  if (!prefixes?.length) return null;
+  if (ENCODED_SEPARATOR.test(path))
+    return "path can't contain an encoded /, \\ or . (%2F, %5C, %2E) when this credential limits its paths";
+  if (path.split("/").some((segment) => segment === "." || segment === ".."))
+    return "path can't contain . or .. segments when this credential limits its paths";
+  if (!prefixes.some((p) => pathWithinPrefix(path, p)))
+    return `path is outside this credential's allowed prefixes (${prefixes.join(", ")})`;
   return null;
 }
 
