@@ -113,6 +113,9 @@ const DROPPED_REQUEST_HEADERS = new Set([
   "x-forwarded-host",
   "x-forwarded-proto",
   "x-real-ip",
+  // The proxy asks only for codings it can decode (credentialRequest), so
+  // the body can be scrubbed before the script sees it.
+  "accept-encoding",
   // The script host's own routing header.
   RELAY_INDEX_HEADER,
 ]);
@@ -630,16 +633,21 @@ async function relay(
       502,
       `the response from ${leg.host} is larger than ${MAX_RESPONSE_BYTES} bytes`,
     );
-  // An encoding the proxy can't undo reaches the script as it came.
-  const encoding = res.undecodable && res.headers.get("content-encoding");
-  if (encoding) outHeaders.set("content-encoding", encoding);
+  const empty = res.status === 204 || res.status === 304 || method === "HEAD";
+  // A coding the proxy can't undo can't be scrubbed: refuse the body rather
+  // than hand on bytes that may hold the secret. The proxy never asks for
+  // one, so only a server that encodes unasked gets here.
+  if (res.undecodable && !empty && res.body.length)
+    return refuse(
+      502,
+      `the response from ${leg.host} came in a content-encoding the proxy can't decode (${scrub(
+        res.headers.get("content-encoding") || "unknown",
+      )}), so it can't be checked for the credential`,
+    );
   const bytes = res.body;
   const contentType = res.headers.get("content-type") || "";
   const textual =
-    !encoding &&
-    (!contentType ||
-      /text\/|json|xml|x-www-form-urlencoded/i.test(contentType));
-  const empty = res.status === 204 || res.status === 304 || method === "HEAD";
+    !contentType || /text\/|json|xml|x-www-form-urlencoded/i.test(contentType);
   return new Response(
     empty
       ? null

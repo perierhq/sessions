@@ -6,13 +6,11 @@
 // only a few harmless headers are forwarded, and the audit keeps the host and
 // path only: never the query, headers or body. Never throws.
 import type { ResolvedEgress } from "../../../shared/incident-access";
-import { isBlockedAddress } from "../../shared/network-address";
 import {
   BlockedAddressError,
+  defaultPinnedFetchDeps,
   type PinnedFetchDeps,
-  pinnedHttpRequest,
   resolvePinnedTarget,
-  resolveWithDns,
   untilAborted,
 } from "../../shared/pinned-fetch";
 import {
@@ -100,12 +98,6 @@ export interface EgressDeps {
   runner?: RunnerFetchDeps["runner"];
   proxyHeaders?: ProxyHeaders;
 }
-
-const defaultNet: PinnedFetchDeps = {
-  resolve: resolveWithDns,
-  isBlocked: isBlockedAddress,
-  send: (target, init, isBlocked) => pinnedHttpRequest(target, init, isBlocked),
-};
 
 type Fail = { ok: false; error: string };
 const fail = (error: string): Fail => ({ ok: false, error });
@@ -265,7 +257,7 @@ async function egressFetchInner(
   };
 
   if (egress.route === "server") {
-    const net: PinnedFetchDeps = { ...defaultNet, ...deps.net };
+    const net: PinnedFetchDeps = { ...defaultPinnedFetchDeps, ...deps.net };
     const signal = AbortSignal.timeout(timeout * 1000);
     let target: Awaited<ReturnType<typeof resolvePinnedTarget>>;
     try {
