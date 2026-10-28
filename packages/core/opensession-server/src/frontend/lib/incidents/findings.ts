@@ -528,12 +528,17 @@ export interface RoundChanges {
 
 export function roundChanges(
   incident: Pick<Incident, "state" | "response">,
-  opts: { round?: number } = {},
+  opts: { round?: number; withoutAsks?: boolean } = {},
 ): RoundChanges | null {
   const page = findingsPage(incident, opts);
   const previous = page?.earlierRounds.at(-1);
   if (!page || previous === undefined) return null;
-  const before = findingsPage(incident, { round: previous });
+  // Counted over the blocks the section shows: questions the Next card
+  // holds are left out of both rounds.
+  const before = findingsPage(incident, {
+    round: previous,
+    withoutAsks: opts.withoutAsks,
+  });
   if (!before) return null;
   const changed = changedKeys(before.items, page.items);
   const known = new Set(before.items.map((item) => item.key));

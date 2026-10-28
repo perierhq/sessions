@@ -991,3 +991,20 @@ test("every block with data behind it has a source, quoted lines first", () => {
   expect(blockSource(hyp, items)).toEqual(blockSource(log, items));
   expect(blockSource(timeline, items)).toEqual({ ref: tool, quote: [] });
 });
+
+test("what changed counts only the blocks the section shows", () => {
+  const r = response({
+    round: 2,
+    findingSets: [
+      set("investigator", 1, [
+        { id: "t", kind: "timeline", size: "full", events: [] },
+      ]),
+      set("investigator", 2, [
+        { id: "t", kind: "timeline", size: "full", events: [] },
+        question("billing"),
+      ]),
+    ],
+  });
+  expect(roundChanges(open(r))?.added).toBe(1);
+  expect(roundChanges(open(r), { withoutAsks: true })?.added).toBe(0);
+});

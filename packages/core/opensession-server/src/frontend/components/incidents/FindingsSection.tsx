@@ -98,7 +98,8 @@ export function FindingsSection({
   onOpenPr: (target: PrTarget) => void;
 }) {
   // The open questions go with the decision in the Next card.
-  const page = findingsPage(incident, { withoutAsks: asksInNext(incident) });
+  const withoutAsks = asksInNext(incident);
+  const page = findingsPage(incident, { withoutAsks });
   const reduceMotion = useReducedMotion() ?? false;
   const highlighted = useChangedBlocks(page?.items ?? null, !reduceMotion);
   const [sheet, setSheet] = useState<FindingsSheetState | null>(null);
@@ -106,7 +107,7 @@ export function FindingsSection({
 
   if (!page) return <IncidentCause cause={cause} waiting={waiting} />;
 
-  const changes = roundChanges(incident);
+  const changes = roundChanges(incident, { withoutAsks });
   const openSource = (target: FindingSource) =>
     openFindingSource(target, {
       sheet: setSheet,
