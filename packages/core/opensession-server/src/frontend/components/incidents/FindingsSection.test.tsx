@@ -191,3 +191,15 @@ test("an open incident's questions go to the Next card, a closed one's stay", ()
   const closed = render({ ...incident(r), state: "closed-without-action" });
   expect(closed).toContain("Who restores billing for acme?");
 });
+
+test("the byline is said once for the section, not on every block", () => {
+  const html = render(
+    incident(
+      response({
+        findingSets: [set(1, [block("a", "One"), block("b", "Two")])],
+      }),
+    ),
+  );
+  expect(html.split("From the investigator, ").length).toBe(2);
+  expect(html).not.toContain("from the investigator, ");
+});

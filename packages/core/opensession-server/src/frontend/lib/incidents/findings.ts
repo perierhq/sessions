@@ -38,6 +38,9 @@ export interface FindingItem {
   block: FindingBlock;
   span: "full" | "half";
   byline: string;
+  /** Whether the block shows its byline: only when its role differs from
+   *  the section's (`FindingsPageView.byline` says it once). */
+  ownByline: boolean;
   auto?: true;
   /** Hypothesis only. */
   status?: HypothesisStatus;
@@ -47,6 +50,9 @@ export interface FindingItem {
 
 export interface FindingsPageView {
   round: number;
+  /** Who the section's blocks are from and when, said once under its
+   *  heading: the first set's role and time. */
+  byline: string;
   /** The newer round under way while this one still shows, else null. */
   underWay: number | null;
   items: FindingItem[];
@@ -103,6 +109,9 @@ function investigatorRun(
   );
 }
 
+const sentenceCase = (text: string) =>
+  text.charAt(0).toUpperCase() + text.slice(1);
+
 /** Consecutive `half` blocks pair up; a `half` without a partner spans the
  *  full width, so the grid never leaves a hole. */
 export function findingSpans(
@@ -157,7 +166,7 @@ export function findingsPage(
   const verifier = reports.verifier?.report;
   const rows = () => claimRows(reports.investigator?.report, verifier);
 
-  type Draft = Omit<FindingItem, "span">;
+  type Draft = Omit<FindingItem, "span" | "ownByline">;
   const drafts: Draft[] = [];
   for (const role of ROLES) {
     const s = findingSetOf(response, role, round);
@@ -194,8 +203,17 @@ export function findingsPage(
     });
   }
 
+  const lead = drafts[0]!.role;
+  const leadSet = findingSetOf(response, lead, round);
+  const byline = sentenceCase(
+    FINDINGS_COPY.byline(lead, clockTime(leadSet?.updatedAt ?? "")),
+  );
   const spans = findingSpans(drafts.map((item) => item.block.size));
-  const items = drafts.map((item, i) => ({ ...item, span: spans[i]! }));
+  const items = drafts.map((item, i) => ({
+    ...item,
+    span: spans[i]!,
+    ownByline: item.role !== lead,
+  }));
 
   const earlierRounds = roundsBefore(sets, round);
 
@@ -207,7 +225,7 @@ export function findingsPage(
       ? current
       : null;
 
-  return { round, underWay, items, earlierRounds };
+  return { round, byline, underWay, items, earlierRounds };
 }
 
 /** Whether the open questions show with the decision in the Next card:

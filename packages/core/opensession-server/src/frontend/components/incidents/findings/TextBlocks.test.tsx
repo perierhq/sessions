@@ -42,6 +42,7 @@ const item = (block: FindingBlock, over: Partial<FindingItem> = {}) =>
     block,
     span: "full",
     byline: FINDINGS_COPY.byline("investigator", "14:32"),
+    ownByline: false,
     ...over,
   }) satisfies FindingItem;
 
@@ -83,7 +84,9 @@ const log = (
   }) satisfies FindingBlock;
 
 test("frame: heading, byline and show source", () => {
-  const titled = item(hypothesis({ title: "Pool exhaustion" }));
+  const titled = item(hypothesis({ title: "Pool exhaustion" }), {
+    ownByline: true,
+  });
   const html = renderToStaticMarkup(
     <BlockFrame item={titled} highlight={false} onOpenSource={() => {}}>
       <p>body</p>
@@ -108,6 +111,8 @@ test("frame: heading, byline and show source", () => {
     </BlockFrame>,
   );
   expect(plain).not.toContain("Show source");
+  // The section says who; a block of the same role doesn't repeat it.
+  expect(plain).not.toContain("from the investigator");
   // No title: the kind's own name.
   expect(plain).toMatch(/<h3[^>]*>Hypothesis<\/h3>/);
 });

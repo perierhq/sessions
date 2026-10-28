@@ -501,6 +501,18 @@ test("bylines name the role and the set's time", () => {
   expect(page?.items[1]?.byline).toBe(
     FINDINGS_COPY.byline("verifier", clockTime(verifier.updatedAt)),
   );
+  // Said once for the section; a block repeats it only when its role
+  // differs from the section's.
+  expect(page?.byline).toBe(`From the investigator, ${clockTime(T("12:15"))}`);
+  expect(page?.items.map((item) => item.ownByline)).toEqual([false, true]);
+});
+
+test("a verifier-only page is bylined by the verifier", () => {
+  const page = findingsPage(
+    open(response({ findingSets: [set("verifier", 1, [question("c")])] })),
+  );
+  expect(page?.byline).toBe(`From the verifier, ${clockTime(T("12:15"))}`);
+  expect(page?.items[0]?.ownByline).toBe(false);
 });
 
 test("timeline adds the incident's own anchors and sorts by time", () => {
@@ -666,6 +678,7 @@ test("a block's source is its data: the quoted call, the PR, the first evidence 
     block,
     span: "full",
     byline: "",
+    ownByline: false,
   });
   expect(
     itemSource(

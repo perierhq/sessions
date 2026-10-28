@@ -86,6 +86,7 @@ function item(block: FindingBlock): FindingItem {
     block,
     span: block.size,
     byline: "from the investigator, 14:32",
+    ownByline: false,
   };
 }
 

@@ -15,6 +15,7 @@ import {
 } from "../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../lib/incidents/strip-layout";
 import {
+  FINDINGS_SECTION_BYLINE,
   FINDINGS_SECTION_HEAD,
   FINDINGS_UNDER_WAY,
   INCIDENT_SECTION_LABEL,
@@ -115,6 +116,7 @@ export function FindingsSection({
         <h2 id={headingId} className={INCIDENT_SECTION_LABEL}>
           {FINDINGS_COPY.heading}
         </h2>
+        <p className={FINDINGS_SECTION_BYLINE}>{page.byline}</p>
         {page.underWay !== null ? (
           <p className={FINDINGS_UNDER_WAY}>
             {FINDINGS_COPY.underWay(page.underWay)}

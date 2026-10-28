@@ -344,6 +344,10 @@ export const FINDINGS_CHANGE_HUNK =
  *  the blocks' text and the rest of the page. */
 export const FINDINGS_SECTION_HEAD = "-mx-2 flex min-w-0 flex-col";
 
+/** Who the section's blocks are from and when, once, under the heading. */
+export const FINDINGS_SECTION_BYLINE =
+  "m-0 px-2 text-meta text-dim tabular-nums";
+
 /** "Round 2 under way": quiet, under the heading. */
 export const FINDINGS_UNDER_WAY = "m-0 px-2 text-supporting text-faint";
 
