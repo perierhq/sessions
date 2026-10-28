@@ -28,6 +28,7 @@ import {
 } from "../../../shared/incidents";
 import { clockTime } from "../time";
 import type { DetailTarget } from "./details";
+import type { DotTone } from "./tone";
 import { httpUrl } from "./links";
 
 export interface FindingItem {
@@ -225,14 +226,27 @@ export interface NextAsk {
   wouldAnswer: string;
 }
 
-/** What the Next card shows of the findings: the page round's open
+/** The likely cause the Next card leads with: the page's first
+ *  hypothesis in one sentence, with its status. */
+export interface NextCause {
+  key: string;
+  statement: string;
+  status: HypothesisStatus;
+  confidence: Extract<FindingBlock, { kind: "hypothesis" }>["confidence"];
+}
+
+/** What the Next card shows of the findings, so the owner sees the cause
+ *  while deciding: the page's first hypothesis, and the page round's open
  *  questions, the owner's asks among them (`asksInNext`). Null without
  *  findings. */
 export interface NextFindings {
+  cause: NextCause | null;
   asks: NextAsk[];
 }
 
 export const NEXT_FINDINGS_COPY = Object.freeze({
+  cause: "Likely cause",
+  seeFindings: "See findings",
   ask: "Open question",
   wouldAnswer: "What would answer it",
 });
@@ -242,6 +256,17 @@ export function nextFindings(
 ): NextFindings | null {
   const page = findingsPage(incident);
   if (!page) return null;
+  let cause: NextCause | null = null;
+  for (const item of page.items)
+    if (item.block.kind === "hypothesis") {
+      cause = {
+        key: item.key,
+        statement: item.block.statement,
+        status: item.status ?? "unchecked",
+        confidence: item.block.confidence,
+      };
+      break;
+    }
   const asks: NextAsk[] = [];
   if (asksInNext(incident))
     for (const item of page.items)
@@ -251,7 +276,7 @@ export function nextFindings(
           text: item.block.text,
           wouldAnswer: item.block.wouldAnswer,
         });
-  return { asks };
+  return { cause, asks };
 }
 
 const timeOf = (iso: string) => {
@@ -393,6 +418,28 @@ export function itemSource(item: FindingItem): FindingRef | null {
       return null;
   }
 }
+
+/** A hypothesis or claim status as a mark: the dot's tone beside the
+ *  word (the Next card's eyebrow dot). */
+export const STATUS_DOT: Record<HypothesisStatus, DotTone> = {
+  verified: "green",
+  refuted: "red",
+  "cant-tell": "yellow",
+  unchecked: "faint",
+};
+
+/** The agent's own rating, said after the status ("high confidence"). */
+export const CONFIDENCE_WORD: Record<
+  Extract<FindingBlock, { kind: "hypothesis" }>["confidence"],
+  string
+> = {
+  low: "low confidence",
+  medium: "medium confidence",
+  high: "high confidence",
+};
+
+/** Where the Findings section is, for the Next card's "See findings". */
+export const FINDINGS_SECTION_ID = "incident-findings";
 
 /** A block's heading when the agent gave it no title. */
 export const BLOCK_TITLES: Record<FindingKind, string> = {

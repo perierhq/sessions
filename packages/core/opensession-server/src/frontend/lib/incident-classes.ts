@@ -100,6 +100,19 @@ export const NEXT_BUTTON_INERT =
 export const NEXT_FINDINGS = "mt-2 flex min-w-0 flex-col gap-3";
 export const NEXT_FINDINGS_PART = "flex min-w-0 flex-col gap-0.5";
 
+/** The likely cause under the status line, aligned with its facts past
+ *  the dot. */
+export const LIKELY_CAUSE = "flex min-w-0 flex-col gap-0.5 pl-6";
+
+/** The likely cause's status, the agent's confidence and "See findings":
+ *  one wrapping row; the link goes to the row's end on a desktop. */
+export const NEXT_FINDINGS_META =
+  "m-0 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0 text-supporting text-dim";
+
+/** "See findings": a quiet link, 44px tall under a finger. */
+export const NEXT_FINDINGS_LINK =
+  "ml-auto min-h-6 cursor-pointer border-none bg-transparent p-0 text-supporting text-dim hover:text-fg hover:underline focus-ring phone:-my-2.5 phone:min-h-11";
+
 /** The next action's buttons: right on a desktop, left and wrapping under
  *  a finger. */
 export const NEXT_BUTTONS =

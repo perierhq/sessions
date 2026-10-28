@@ -758,3 +758,40 @@ test("a closed incident keeps its questions in the section", () => {
   expect(nextFindings(closed)?.asks ?? []).toEqual([]);
   expect(asksInNext({ state: "investigating" })).toBe(false);
 });
+
+test("the Next card's likely cause is the page's first hypothesis", () => {
+  const hypothesis = (id: string, statement: string): FindingBlock => ({
+    id,
+    kind: "hypothesis",
+    size: "full",
+    statement,
+    confidence: "high",
+    evidence: [],
+    claims: [],
+  });
+  const r = response({
+    findingSets: [
+      set("investigator", 1, [
+        question("a"),
+        hypothesis("pool", "The acme pool is too small."),
+        hypothesis("dns", "DNS is slow."),
+      ]),
+    ],
+  });
+  expect(nextFindings(open(r))?.cause).toEqual({
+    key: "investigator:pool",
+    statement: "The acme pool is too small.",
+    status: "unchecked",
+    confidence: "high",
+  });
+  // A closed incident still says what the cause was.
+  const closed: PageIncident = { state: "resolved", response: r };
+  expect(nextFindings(closed)?.cause?.key).toBe("investigator:pool");
+  expect(
+    nextFindings(
+      open(
+        response({ findingSets: [set("investigator", 1, [question("a")])] }),
+      ),
+    )?.cause,
+  ).toBeNull();
+});

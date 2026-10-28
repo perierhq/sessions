@@ -28,7 +28,7 @@ Object.assign(globalThis, {
 });
 
 const { NextActionView } = await import("../NextAction");
-const { NextFindingsView } = await import("./NextFindings");
+const { LikelyCause, NextFindingsView } = await import("./NextFindings");
 
 const card: ShellCard = {
   mode: "shell",
@@ -57,6 +57,7 @@ test("the agents' open question sits in the Next card, above its buttons", () =>
       context={
         <NextFindingsView
           findings={{
+            cause: null,
             asks: [
               {
                 key: "investigator:billing",
@@ -74,11 +75,34 @@ test("the agents' open question sits in the Next card, above its buttons", () =>
   expect(ask).toBeGreaterThan(-1);
   expect(ask).toBeLessThan(html.indexOf("Send it back"));
   expect(html).toContain("Open question");
+
   expect(html).toContain("What would answer it: The owner fixing billing");
 });
 
 test("without questions the card shows nothing extra", () => {
   expect(
-    renderToStaticMarkup(<NextFindingsView findings={{ asks: [] }} />),
+    renderToStaticMarkup(
+      <NextFindingsView findings={{ cause: null, asks: [] }} />,
+    ),
   ).toBe("");
+});
+
+test("the likely cause: one sentence, its status as a mark, the confidence", () => {
+  const html = renderToStaticMarkup(
+    <LikelyCause
+      cause={{
+        key: "investigator:pool",
+        statement: "The acme pool is too small.",
+        status: "refuted",
+        confidence: "high",
+      }}
+    />,
+  );
+  expect(html).toContain("Likely cause");
+  expect(html).toContain("The acme pool is too small.");
+  expect(html).toMatch(
+    /rounded-full bg-red[^"]*"><\/span><span class="[^"]*text-red[^"]*">Refuted</,
+  );
+  expect(html).toContain("high confidence");
+  expect(html).toContain("See findings");
 });

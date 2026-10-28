@@ -8,6 +8,7 @@ import {
   asksInNext,
   changedKeys,
   FINDINGS_HIGHLIGHT_MS,
+  FINDINGS_SECTION_ID,
   type FindingItem,
   type FindingSource,
   findingsPage,
@@ -105,7 +106,11 @@ export function FindingsSection({
   const response = incident.response;
 
   return (
-    <section aria-labelledby={headingId} className="flex min-w-0 flex-col">
+    <section
+      id={FINDINGS_SECTION_ID}
+      aria-labelledby={headingId}
+      className="flex min-w-0 scroll-mt-4 flex-col"
+    >
       <div className={FINDINGS_SECTION_HEAD}>
         <h2 id={headingId} className={INCIDENT_SECTION_LABEL}>
           {FINDINGS_COPY.heading}

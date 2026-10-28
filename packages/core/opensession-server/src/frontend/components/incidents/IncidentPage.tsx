@@ -23,6 +23,7 @@ import { DEFAULT_DOC_TITLE, docTitle } from "../../lib/brand";
 import { causeOf } from "../../lib/incidents/cause";
 import type { DetailTarget } from "../../lib/incidents/details";
 import { earlierIncidents } from "../../lib/incidents/details";
+import { nextFindings } from "../../lib/incidents/findings";
 import {
   type IncidentPageModel,
   pageModel,
@@ -62,6 +63,7 @@ import {
 import { IconChevronLeft, IconChevronRight } from "../icons";
 import { RepoTile } from "../RepoTile";
 import { FindingsSection } from "./FindingsSection";
+import { LikelyCause } from "./findings/NextFindings";
 import { IncidentDetails } from "./IncidentDetails";
 import { NextAction } from "./NextAction";
 import { SignalStrip } from "./SignalStrip";
@@ -137,15 +139,19 @@ function Sections({
   const verification = strip ? proofLane(response?.proof, strip) : null;
   const signalName = (id: string) =>
     body.signals.find((signal) => signal.id === id)?.name ?? id;
+  const cause = nextFindings(incident)?.cause ?? null;
   return (
     <>
-      <StatusLine
-        tone={model.dot.tone}
-        pulse={model.dot.pulse}
-        headline={model.headline}
-        facts={model.facts}
-        level="page"
-      />
+      <div className="flex min-w-0 flex-col gap-3">
+        <StatusLine
+          tone={model.dot.tone}
+          pulse={model.dot.pulse}
+          headline={model.headline}
+          facts={model.facts}
+          level="page"
+        />
+        {cause && <LikelyCause cause={cause} />}
+      </div>
       {body.onRetryStrip ? (
         <div className={INCIDENT_STRIP_ERROR}>
           <InlineAlert onRetry={body.onRetryStrip}>
