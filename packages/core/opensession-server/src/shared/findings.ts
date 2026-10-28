@@ -31,6 +31,7 @@ export const FINDINGS_LIMITS = {
   logLines: 40,
   logLineChars: 500,
   sideLabel: 40,
+  path: 300,
   blocks: 12,
   windowMs: 31 * 86_400_000,
   setBytes: 64 * 1024,
@@ -128,6 +129,11 @@ export type FindingBlockOf<R extends { type: string }, T> = BlockBase &
         kind: "change";
         change: Extract<R, { type: "pr" | "commit" }>;
         why: string;
+        /** The one file of the change the agent points at; the page shows
+         *  its hunk (the one holding `line`, else the first). */
+        file?: string;
+        /** A line of `file` on the new side. */
+        line?: number;
       }
     | { kind: "claims" }
     | { kind: "compare"; sides: [CompareSideOf<T>, CompareSideOf<T>] }

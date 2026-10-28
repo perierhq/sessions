@@ -251,4 +251,11 @@ describe("findings brief steering", () => {
       "what you don't know yet, or what you need the owner to do or decide",
     );
   });
+
+  test("a change cites one file and line, shown as one hunk", () => {
+    const change = FINDINGS_CATALOG.find((k) => k.kind === "change");
+    expect(change?.fields).toContain(
+      "file (optional: the one file in it that matters) and line (optional: a line of that file on the new side), which the page shows as one hunk",
+    );
+  });
 });

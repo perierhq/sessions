@@ -61,7 +61,7 @@ function BlockBody({
     case "log":
       return <LogBlock item={item} />;
     case "change":
-      return <ChangeBlock item={item} />;
+      return <ChangeBlock item={item} incident={incident} />;
     case "claims":
       return <ClaimsBlock item={item} />;
     case "compare":

@@ -327,6 +327,18 @@ export const FINDINGS_COMPARE = "grid min-w-0 grid-cols-1 gap-x-4 gap-y-4";
 export const FINDINGS_CHANGE_TITLE =
   "m-0 text-body font-medium text-fg [overflow-wrap:anywhere]";
 
+/** A commit's title as a link to its page. */
+export const FINDINGS_CHANGE_LINK = "text-link hover:underline";
+
+/** One file a change touches: its path, then its line counts. */
+export const FINDINGS_CHANGE_FILE =
+  "flex min-w-0 items-baseline justify-between gap-3 py-0.5 text-meta text-dim";
+
+/** The cited hunk: lines wrap, so nothing is cut at the edge, and a long
+ *  hunk scrolls in its own well. */
+export const FINDINGS_CHANGE_HUNK =
+  "max-h-80 overflow-auto rounded-xl bg-code-well text-label";
+
 /** The Findings section's heading and its "Round 2 under way" line,
  *  outdented like the Cause section's so the label's text lines up with
  *  the blocks' text and the rest of the page. */

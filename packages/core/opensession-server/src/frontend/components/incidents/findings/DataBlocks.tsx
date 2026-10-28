@@ -5,7 +5,11 @@ import {
   type SignalMarker,
   type SignalWindow,
 } from "../../../../shared/findings";
-import type { StripLane, StripResponse } from "../../../../shared/incidents";
+import type {
+  Incident,
+  StripLane,
+  StripResponse,
+} from "../../../../shared/incidents";
 import {
   useSessionPrDiffResource,
   useSessionPrResource,
@@ -16,6 +20,9 @@ import {
 } from "../../../hooks/useIncidents";
 import {
   FINDINGS_COMPARE,
+  FINDINGS_CHANGE_FILE,
+  FINDINGS_CHANGE_HUNK,
+  FINDINGS_CHANGE_LINK,
   FINDINGS_CHANGE_TITLE,
   FINDINGS_LABEL,
   FINDINGS_PROSE_QUIET,
@@ -26,7 +33,15 @@ import {
   type FindingItem,
   FINDINGS_MARKDOWN,
 } from "../../../lib/incidents/findings";
+import {
+  changeMoreCopy,
+  citedHunk,
+  patchFileStats,
+  shownFiles,
+} from "../../../lib/incidents/change";
+import { fixPrNumber } from "../../../lib/incidents/details";
 import { httpUrl } from "../../../lib/incidents/links";
+import type { PrFile } from "../../../lib/types";
 import type { StripLaneMeta } from "../../../lib/incidents/strip-layout";
 import {
   stripSummary,
@@ -43,7 +58,8 @@ import { SignalStrip } from "../SignalStrip";
 import { LogLines } from "./TextBlocks";
 
 type Meta = (lane: StripLane) => StripLaneMeta;
-type ChangeRef = Extract<FindingBlock, { kind: "change" }>["change"];
+type ChangeBlockOf = Extract<FindingBlock, { kind: "change" }>;
+type ChangeRef = ChangeBlockOf["change"];
 
 /**
  * A signal window as a block: the strip the page already draws, narrowed to
@@ -218,24 +234,33 @@ export function CompareBlock({
 }
 
 /**
- * A PR or commit: what it is (a link that only opens it), why the agent
- * points at it, and its patch. `title` is null while the change loads.
+ * A PR or commit as a summary: what it is (`head`, a link only for a
+ * commit; a PR opens through the block's Show source, the review), why
+ * the agent points at it, the files it touches with their line counts,
+ * and the one hunk the agent cited. The whole diff stays in the review.
+ * `head` and `files` are null while the change loads.
  */
 export function ChangeView({
-  title,
-  patch,
+  head,
   kind,
   why,
   url,
+  files,
+  total,
+  hunk,
   truncated = false,
   error,
   onRetry,
 }: {
-  title: string | null;
-  patch: string | null;
+  head: string | null;
   kind: "pr" | "commit";
   why: string;
   url?: string;
+  files: PrFile[] | null;
+  /** How many files the change touches; more than `files` may list. */
+  total: number;
+  /** The cited file's hunk (`citedHunk`), when there is one. */
+  hunk: string | null;
   /** The patch was cut to its size limit. */
   truncated?: boolean;
   error: boolean;
@@ -243,9 +268,10 @@ export function ChangeView({
 }) {
   const theme = useResolvedTheme();
   const href = url ? httpUrl(url) : null;
+  const listed = files ? shownFiles(files, total) : null;
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      {title === null ? (
+      {head === null ? (
         <p aria-hidden className={cn(FINDINGS_CHANGE_TITLE, "text-faint")}>
           {" "}
         </p>
@@ -256,12 +282,12 @@ export function ChangeView({
               href={href}
               target="_blank"
               rel="noreferrer"
-              className="text-link hover:underline"
+              className={FINDINGS_CHANGE_LINK}
             >
-              {title}
+              {head}
             </a>
           ) : (
-            title
+            head
           )}
         </p>
       )}
@@ -276,23 +302,44 @@ export function ChangeView({
         <InlineAlert onRetry={onRetry}>
           Couldn&apos;t load the change
         </InlineAlert>
-      ) : patch?.trim() ? (
+      ) : null}
+      {listed && listed.files.length > 0 ? (
+        <ul className="m-0 flex list-none flex-col p-0">
+          {listed.files.map((file) => (
+            <li key={file.path} className={FINDINGS_CHANGE_FILE}>
+              <span className="min-w-0 font-mono [overflow-wrap:anywhere]">
+                {file.path}
+              </span>
+              <span className="shrink-0 tabular-nums">
+                <span className="text-green">+{file.additions}</span>{" "}
+                <span className="text-red">−{file.deletions}</span>
+              </span>
+            </li>
+          ))}
+          {listed.more > 0 ? (
+            <li className={cn(FINDINGS_CHANGE_FILE, "text-faint")}>
+              {changeMoreCopy(listed.more, kind)}
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+      {!error && hunk ? (
         kind === "pr" ? (
           <PatchDiffs
             key={theme}
-            patch={patch}
+            patch={hunk}
             options={{
               diffStyle: "unified",
-              overflow: "scroll",
+              overflow: "wrap",
               enableLineSelection: false,
               theme: theme === "light" ? "pierre-light" : "pierre-dark",
               themeType: theme,
             }}
-            className="max-h-96 overflow-auto rounded-xl bg-code-well text-label"
+            className={FINDINGS_CHANGE_HUNK}
             header={null}
           />
         ) : (
-          <CommitDiff diff={patch} />
+          <CommitDiff diff={hunk} />
         )
       ) : null}
       {truncated && !error ? (
@@ -305,42 +352,51 @@ export function ChangeView({
 }
 
 function PrChange({
-  change,
-  why,
+  block,
+  fixPr,
 }: {
-  change: Extract<ChangeRef, { type: "pr" }>;
-  why: string;
+  block: ChangeBlockOf;
+  fixPr: number | null;
 }) {
+  // SAFETY: ChangeBlock hands PrChange only a PR change.
+  const change = block.change as Extract<ChangeRef, { type: "pr" }>;
   const pr = useSessionPrResource(change.sessionId);
   // The session's PR is the one the server matched to this number; a
   // different number means it has since opened another, so the ref alone
   // (number and link) is what is left to show.
   const same = pr.data?.number === change.number;
+  // The diff only for the cited hunk, or for line counts the PR lacks.
   const diff = useSessionPrDiffResource(
     change.sessionId,
     undefined,
     undefined,
-    {
-      enabled: same,
-    },
+    { enabled: same && (!!block.file || !pr.data?.files) },
   );
   const loading = pr.data === undefined && !pr.error;
   // A 404 (the session or its PR is gone) leaves the ref's number and link;
   // Try again could not bring it back. Anything else is a failed load.
   const failed = (e: Error | undefined) =>
     !!e && !(e instanceof ApiError && e.status === 404);
-  const title = loading
+  const number = `PR #${change.number}`;
+  // The Fix section already names the incident's own PR with its title
+  // and counts; here the number says which one it is.
+  const head = loading
     ? null
-    : same && pr.data
-      ? `PR #${change.number} · ${pr.data.title}`
-      : `PR #${change.number}`;
+    : same && pr.data && fixPr !== change.number
+      ? `${number} · ${pr.data.title}`
+      : number;
+  const patch = same ? (diff.data?.patch ?? null) : null;
+  const files = same
+    ? (pr.data?.files ?? (patch ? patchFileStats(patch) : null))
+    : [];
   return (
     <ChangeView
-      title={title}
-      patch={same ? (diff.data?.patch ?? null) : null}
+      head={head}
       kind="pr"
-      why={why}
-      url={change.url}
+      why={block.why}
+      files={files}
+      total={same ? (pr.data?.changedFiles ?? 0) : 0}
+      hunk={patch ? citedHunk(patch, block.file, block.line) : null}
       error={failed(pr.error) || (same && failed(diff.error) && !diff.data)}
       onRetry={() => {
         void pr.mutate();
@@ -350,29 +406,28 @@ function PrChange({
   );
 }
 
-function CommitChange({
-  change,
-  why,
-}: {
-  change: Extract<ChangeRef, { type: "commit" }>;
-  why: string;
-}) {
+function CommitChange({ block }: { block: ChangeBlockOf }) {
+  // SAFETY: ChangeBlock hands CommitChange only a commit change.
+  const change = block.change as Extract<ChangeRef, { type: "commit" }>;
   const commit = useIncidentCommit(change.sha, change.repo);
   const data = commit.data;
   const short = data?.shortSha ?? change.sha.slice(0, 7);
-  const title =
+  const head =
     data === undefined && !commit.error
       ? null
       : data
         ? `${short} · ${data.title}`
         : short;
+  const patch = data?.rawPatch ?? null;
   return (
     <ChangeView
-      title={title}
-      patch={data?.rawPatch ?? null}
+      head={head}
       kind="commit"
-      why={why}
+      why={block.why}
       url={data?.url}
+      files={patch ? patchFileStats(patch) : data ? [] : null}
+      total={data?.filesChanged ?? 0}
+      hunk={patch ? citedHunk(patch, block.file, block.line) : null}
       truncated={!!data?.patchTruncated}
       error={!!commit.error && !data}
       onRetry={() => void commit.mutate()}
@@ -380,12 +435,18 @@ function CommitChange({
   );
 }
 
-export function ChangeBlock({ item }: { item: FindingItem }) {
+export function ChangeBlock({
+  item,
+  incident,
+}: {
+  item: FindingItem;
+  incident: Pick<Incident, "response">;
+}) {
   const block = item.block;
   if (block.kind !== "change") return null;
   return block.change.type === "pr" ? (
-    <PrChange change={block.change} why={block.why} />
+    <PrChange block={block} fixPr={fixPrNumber(incident.response)} />
   ) : (
-    <CommitChange change={block.change} why={block.why} />
+    <CommitChange block={block} />
   );
 }

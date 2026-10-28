@@ -49,7 +49,7 @@ export const FINDINGS_CATALOG: ReadonlyArray<{
   {
     kind: "change",
     use: "the pull request or commit that matters, with why",
-    fields: `pr (a number) or commit (7 to 40 hex characters), not both; why`,
+    fields: `pr (a number) or commit (7 to 40 hex characters), not both; why (one line: what the change does for this incident, not how); file (optional: the one file in it that matters) and line (optional: a line of that file on the new side), which the page shows as one hunk; the page lists the files and links to the review for the rest`,
   },
   {
     kind: "claims",

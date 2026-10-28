@@ -13,6 +13,7 @@ import {
   stripSummary,
   windowStrip,
 } from "../../../lib/incidents/strip-summary";
+import { citedHunk } from "../../../lib/incidents/change";
 import { ChangeView, CompareBlock, SignalWindowView } from "./DataBlocks";
 
 // Set after the imports on purpose: with a window at import time the theme
@@ -173,17 +174,34 @@ test("compare labels both sides", () => {
   expect(html).toContain("GET /api/checkout 503 in 980ms");
 });
 
-test("a commit change shows its title, why and link", () => {
+test("a commit change: title link, why, files and the cited hunk only", () => {
   const url = "https://github.com/acme/web/commit/abc";
+  const patch = [
+    "diff --git a/AGENTS.md b/AGENTS.md",
+    "--- a/AGENTS.md",
+    "+++ b/AGENTS.md",
+    "@@ -514 +514 @@",
+    "-old docs rule",
+    "+new docs rule",
+    "diff --git a/db.ts b/db.ts",
+    "--- a/db.ts",
+    "+++ b/db.ts",
+    "@@ -1 +1 @@",
+    "-replicas: 2",
+    "+replicas: 1",
+  ].join("\n");
   const html = renderToStaticMarkup(
     <ChangeView
-      title="abc1234 · Drop the search replica from the pool"
-      patch={
-        "diff --git a/db.ts b/db.ts\n--- a/db.ts\n+++ b/db.ts\n@@ -1 +1 @@\n-replicas: 2\n+replicas: 1"
-      }
+      head="abc1234 · Drop the search replica from the pool"
       kind="commit"
       why="The **pool** lost its only replica here."
       url={url}
+      files={[
+        { path: "AGENTS.md", additions: 1, deletions: 1 },
+        { path: "db.ts", additions: 1, deletions: 1 },
+      ]}
+      total={2}
+      hunk={citedHunk(patch, "db.ts")}
       error={false}
       onRetry={noop}
     />,
@@ -191,17 +209,49 @@ test("a commit change shows its title, why and link", () => {
   expect(html).toContain("abc1234 · Drop the search replica from the pool");
   expect(html).toContain("<strong>pool</strong>");
   expect(html).toContain(`href="${url}"`);
+  expect(html).toContain("AGENTS.md");
   expect(html).toContain("+replicas: 1");
+  // Only the cited hunk: the docs edit is a row in the list, not a diff.
+  expect(html).not.toContain("new docs rule");
   expect(html).not.toContain("<button");
+});
+
+test("a PR change lists its first files and leaves the rest to the review", () => {
+  const files = Array.from({ length: 7 }, (_, i) => ({
+    path: `src/part-${i}.ts`,
+    additions: 10 + i,
+    deletions: i,
+  }));
+  const html = renderToStaticMarkup(
+    <ChangeView
+      head="PR #128"
+      kind="pr"
+      why="One slow search can't flip Search alone."
+      files={files}
+      total={9}
+      hunk={null}
+      error={false}
+      onRetry={noop}
+    />,
+  );
+  expect(html).toContain("PR #128");
+  expect(html).toContain("src/part-4.ts");
+  expect(html).not.toContain("src/part-5.ts");
+  expect(html).toContain("4 more files in the review");
+  expect(html).toContain("+14");
+  // No link on a PR's head: Show source opens the review, one target.
+  expect(html).not.toContain("<a ");
 });
 
 test("a change that failed to load offers a retry", () => {
   const html = renderToStaticMarkup(
     <ChangeView
-      title={null}
-      patch={null}
+      head={null}
       kind="pr"
       why=""
+      files={null}
+      total={0}
+      hunk={null}
       error
       onRetry={noop}
     />,

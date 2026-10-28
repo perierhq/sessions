@@ -16,6 +16,7 @@ import {
   agentsWorkspaceNote,
   detailRows,
   earlierIncidents,
+  fixPrNumber,
   ledgerEntries,
   rowWrapsOnPhone,
 } from "./details";
@@ -581,4 +582,13 @@ test("earlier rounds get a findings row", () => {
       r.key.startsWith("findings-"),
     ),
   ).toBe(false);
+});
+
+test("the Fix section's PR number, for a change block not to repeat it", () => {
+  expect(fixPrNumber(undefined)).toBeNull();
+  const runs = [
+    run("investigator", 1, { prUrl: "https://github.com/acme/web/pull/12" }),
+    run("investigator", 2, { prUrl: "https://github.com/acme/web/pull/14" }),
+  ];
+  expect(fixPrNumber(response({ agents: runs }))).toBe(14);
 });

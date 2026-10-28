@@ -111,14 +111,30 @@ function checksWord(pr: PrDetails): Pick<DetailRow, "value" | "tone"> {
   return { value: "" };
 }
 
-function changeRow(incident: Incident, pr: PrDetails | null): DetailRow {
-  const response = incident.response;
-  // The investigator's run names its PR; a candidate restored without one
-  // (an earlier round, a restart) still carries the PR it was built on.
-  const prUrl =
+/** The link of the PR the Fix section shows. The investigator's run names
+ *  its PR; a candidate restored without one (an earlier round, a restart)
+ *  still carries the PR it was built on. */
+function fixPrUrl(response: IncidentResponse | undefined): string | undefined {
+  return (
     runsOf(response, "investigator").findLast((run) => run.prUrl)?.prUrl ??
     response?.candidate?.prUrl ??
-    response?.candidate?.pr?.url;
+    response?.candidate?.pr?.url
+  );
+}
+
+/** The number of the PR the Fix section shows, so a findings change block
+ *  citing the same PR doesn't repeat its row. */
+export function fixPrNumber(
+  response: IncidentResponse | undefined,
+): number | null {
+  const url = fixPrUrl(response);
+  if (!url) return null;
+  return prNumberFromUrl(url) ?? response?.candidate?.pr?.number ?? null;
+}
+
+function changeRow(incident: Incident, pr: PrDetails | null): DetailRow {
+  const response = incident.response;
+  const prUrl = fixPrUrl(response);
   const row = { key: "change", band: "Fix" } as const;
   if (prUrl && pr)
     return {
