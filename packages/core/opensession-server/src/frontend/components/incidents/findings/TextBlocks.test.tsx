@@ -384,3 +384,24 @@ test("times from data read local: prose ISO times and UTC log stamps", () => {
   // The quoted line itself stays verbatim.
   expect(stamped).toContain("2026-10-28T11:06:16.930348960Z info");
 });
+
+test("a short quote shows every line; only a long one scrolls in its well", () => {
+  const long = (i: number) =>
+    `2026-10-28T11:06:1${i}.930348960Z info <-- GET /api/v2/journeys?from=8000262&to=8100108&departure=2026-10-30T22%3A48&travelClass=2&stream=1`;
+  const short = renderToStaticMarkup(
+    <LogBlock item={item(log([0, 1, 2].map(long), [1], 0))} />,
+  );
+  expect(short).not.toMatch(/<pre[^>]*max-h-/);
+  const many = renderToStaticMarkup(
+    <LogBlock
+      item={item(
+        log(
+          Array.from({ length: 30 }, (_, i) => long(i % 10)),
+          [],
+          0,
+        ),
+      )}
+    />,
+  );
+  expect(many).toMatch(/<pre[^>]*max-h-96[^>]*overflow-auto/);
+});

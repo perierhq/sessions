@@ -14,6 +14,7 @@ import {
   FINDINGS_MARKDOWN,
   LOG_UTC_COPY,
   localizeTimes,
+  logFitsWhole,
   logTimesInUtc,
   timelineRows,
   unCheckedClaimsCopy,
@@ -27,6 +28,7 @@ import {
   FINDINGS_INLINE_PROSE,
   FINDINGS_LABEL,
   FINDINGS_LOG,
+  FINDINGS_LOG_CAPPED,
   FINDINGS_LOG_MARK,
   FINDINGS_PROSE,
   FINDINGS_PROSE_QUIET,
@@ -203,7 +205,12 @@ export function LogLines({ excerpt }: { excerpt: LogExcerpt }) {
   return (
     <div className="flex min-w-0 flex-col gap-1">
       {excerpt.lines.length > 0 ? (
-        <pre className={FINDINGS_LOG}>
+        <pre
+          className={cn(
+            FINDINGS_LOG,
+            !logFitsWhole(excerpt.lines) && FINDINGS_LOG_CAPPED,
+          )}
+        >
           <code>
             {excerpt.lines.map((line, i) => {
               // renderAnsiHtml escapes the text; colours are integers.

@@ -394,6 +394,13 @@ export function logTimesInUtc(lines: readonly string[]): boolean {
   );
 }
 
+/** Whether a log quote shows whole, however many times its lines wrap:
+ *  a few lines of moderate length. Longer quotes scroll in their well. */
+export function logFitsWhole(lines: readonly string[]): boolean {
+  const chars = lines.reduce((sum, line) => sum + line.length, 0);
+  return lines.length <= 8 && chars <= 1200;
+}
+
 /** Said after a log's source when its lines are stamped in UTC. */
 export const LOG_UTC_COPY = "times in UTC";
 

@@ -228,7 +228,12 @@ export const FINDINGS_LABEL = "m-0 text-label text-faint";
 /** Quoted log lines: the code well, one line per row, wrapping anywhere so
  *  a long line never scrolls the page sideways. */
 export const FINDINGS_LOG =
-  "m-0 max-h-80 overflow-auto rounded-control bg-code-well px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre-wrap text-code-well-ink [overflow-wrap:anywhere] select-text phone:max-h-64";
+  "m-0 overflow-x-hidden rounded-control bg-code-well px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre-wrap text-code-well-ink [overflow-wrap:anywhere] select-text";
+
+/** A long quote (`logFitsWhole` false) scrolls in its well. A short one
+ *  never does: a pixel cap cut a three-line quote's last wrapped row on a
+ *  phone, where long lines wrap many times. */
+export const FINDINGS_LOG_CAPPED = "max-h-96 overflow-auto";
 
 /** A highlighted line (`<mark>`): a tint across the well and a stripe on
  *  its leading edge, so the mark never rests on the colour alone. */
@@ -343,7 +348,8 @@ export const FINDINGS_CHANGE_TITLE =
   "m-0 text-body font-medium text-fg [overflow-wrap:anywhere]";
 
 /** A commit's title as a link to its page. */
-export const FINDINGS_CHANGE_LINK = "text-link hover:underline";
+export const FINDINGS_CHANGE_LINK =
+  "text-link hover:underline phone:inline-flex phone:min-h-11 phone:items-center";
 
 /** One file a change touches: its path, then its line counts. */
 export const FINDINGS_CHANGE_FILE =
