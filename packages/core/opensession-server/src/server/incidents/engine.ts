@@ -248,8 +248,20 @@ function quietFor(signal: Signal, snapshot: EngineSnapshot): Quiet | undefined {
   return hold;
 }
 
-/** Signals related to `signal` by a declared dependency, either direction,
- *  that still exist. */
+/** The host an http signal polls, lower-cased; undefined for any other
+ *  source or a URL that does not parse. */
+function polledHost(signal: Signal): string | undefined {
+  if (signal.source.kind !== "http") return undefined;
+  try {
+    return new URL(signal.source.url).hostname.toLowerCase() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Signals related to `signal` that still exist: a declared dependency,
+ *  either direction, or an http signal of the same project that polls the
+ *  same host (two parts of one status page fail on the same blip). */
 function relatedSignalIds(
   signal: Signal,
   snapshot: EngineSnapshot,
@@ -257,9 +269,17 @@ function relatedSignalIds(
   const related = new Set<string>();
   for (const id of signal.dependsOn ?? [])
     if (id !== signal.id && snapshot.signals.has(id)) related.add(id);
-  for (const other of snapshot.signals.values())
-    if (other.id !== signal.id && other.dependsOn?.includes(signal.id))
+  const host = polledHost(signal);
+  for (const other of snapshot.signals.values()) {
+    if (other.id === signal.id) continue;
+    if (other.dependsOn?.includes(signal.id)) related.add(other.id);
+    else if (
+      host !== undefined &&
+      other.project === signal.project &&
+      polledHost(other) === host
+    )
       related.add(other.id);
+  }
   return related;
 }
 

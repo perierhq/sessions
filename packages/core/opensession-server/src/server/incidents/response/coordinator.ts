@@ -38,6 +38,7 @@ import {
   isOpenIncident,
 } from "../../../shared/incidents";
 import type { Automation } from "../../automations";
+import { getPrsByRepo } from "../../pr-cache";
 import { serviceReadiness } from "../../service-readiness";
 import { onSessionStateChange } from "../../session-state-events";
 import { isShuttingDown } from "../../shutdown-state";
@@ -82,6 +83,7 @@ import {
   nextActionFor,
   rereadsReport,
   roundRan,
+  waitingMayBeStale,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
 import { appendLedger, emptyResponse, spendInMonth } from "./ledger";
@@ -106,6 +108,9 @@ import {
 } from "./project-settings";
 import { runProof } from "./proof";
 import {
+  type CarriedWork,
+  EARLIER_INCIDENTS_MAX,
+  type EarlierIncident,
   INCIDENT_DOCS_DIR,
   buildInvestigatorPrompt,
   buildReminder,
@@ -114,10 +119,10 @@ import {
   notePathFor,
   runbookPathsFor,
 } from "./prompts";
-import type { CarriedWork } from "./prompts";
 import { plainReportProblem } from "./reports";
 import { productionRunOnProblem, runnerLabel } from "./runners";
 import {
+  FINAL_TEXT_GRACE_MS,
   PARALLEL_INVESTIGATOR_RETRY_MS,
   type ResponseStep,
   type ResponseView,
@@ -163,6 +168,12 @@ export interface CoordinatorDeps {
   /** The service finished recovery and is not shutting down. Until then
    *  the tick and wake-ups do nothing. */
   ready: () => boolean;
+  /** A pull request's state as the PR cache has it; undefined when it
+   *  doesn't know the pull request. Cheap: no GitHub call. */
+  prState: (
+    project: string,
+    url: string,
+  ) => "OPEN" | "MERGED" | "CLOSED" | undefined;
   /** Saves the findings an accepted report carries, unless the run already
    *  showed some with `show_findings` this round. Never throws. */
   applyReportFindings: (req: {
@@ -204,6 +215,11 @@ function defaultDeps(): CoordinatorDeps {
     },
     runAction: runIncidentAction,
     recordRelease,
+    prState: (project, url) => {
+      for (const pr of getPrsByRepo().get(project)?.values() ?? [])
+        if (pr.url === url) return pr.state;
+      return undefined;
+    },
     agentsPaused: (project) =>
       peekProjectSettings(project)?.agentsPaused === true,
     ready: () => serviceReadiness().phase === "ready" && !isShuttingDown(),
@@ -410,6 +426,24 @@ function liveRunStatus(live: AgentLive): AgentRun["status"] {
   }
 }
 
+/**
+ * Whether a working run's live `done` is still its previous turn's: a turn
+ * just sent (a send-back or a reminder) that the session has not started
+ * yet reads as idle for a moment. Nothing it wrote after the turn was sent,
+ * within FINAL_TEXT_GRACE_MS of sending it: the run is still working. Past
+ * that, a turn that ended without a word is the report rules' to handle.
+ */
+async function turnNotStarted(
+  run: AgentRun,
+  live: AgentLive,
+  now: number,
+  finalText: () => Promise<string | undefined>,
+): Promise<boolean> {
+  if (run.status !== "running" || liveRunStatus(live) !== "done") return false;
+  if (!(now - Date.parse(run.turnSentAt) < FINAL_TEXT_GRACE_MS)) return false;
+  return (await finalText().catch(() => undefined)) === undefined;
+}
+
 /** Runs whose live status matters: working, or finished without a report. */
 function watchedRun(run: AgentRun): boolean {
   return (
@@ -502,9 +536,16 @@ async function syncAgents(
   const usages = new Map<string, { costUsd: number; tokens: number }>();
   for (const run of r.agents) {
     try {
-      if (watchedRun(run))
-        lives.set(run.sessionId, await agents.status(run.sessionId));
-      else {
+      if (watchedRun(run)) {
+        const live = await agents.status(run.sessionId);
+        const pending = await turnNotStarted(run, live, d.now(), () =>
+          agents.finalText(run.sessionId, run.turnSentAt),
+        );
+        lives.set(
+          run.sessionId,
+          pending ? { ...live, status: "running" } : live,
+        );
+      } else {
         const usage = await agents.usage(run.sessionId);
         if (usage) usages.set(run.sessionId, usage);
       }
@@ -676,8 +717,14 @@ export async function buildResponseView(
           (!run.reportError || (reread(run) && live.prUrl))
             ? await handle.finalText(run.sessionId, run.turnSentAt)
             : undefined;
+        const pending = await turnNotStarted(run, live, now, async () =>
+          finalText !== undefined
+            ? finalText
+            : handle.finalText(run.sessionId, run.turnSentAt),
+        );
         agents.set(run.sessionId, {
           ...live,
+          ...(pending ? { status: "running" as const } : {}),
           ...(finalText !== undefined ? { finalText } : {}),
         });
       } catch (error) {
@@ -1086,6 +1133,7 @@ async function startAgent(
       actions: settings.actions,
       baseBranch: d.defaultBranch(incident.project),
       notePath: await incidentNotePath(incident, d),
+      earlierIncidents: await earlierIncidentsOf(incident, d),
       round,
       maxRounds: r.maxRounds,
       connections,
@@ -1135,6 +1183,7 @@ async function startAgent(
       // Ids, kinds and references only: buildVerifierPrompt never shows
       // the investigator's prose.
       findings: { investigator: findingSetOf(r, "investigator", round) },
+      ...(r.proof.deferred ? { recent: view.primaryRecent } : {}),
     });
   }
 
@@ -1331,6 +1380,46 @@ async function sharedBranch(
 }
 
 /** The incident's note path, next to the project's other incidents. */
+/** Earlier incidents of the project on any of this incident's signals,
+ *  newest first, as facts for the investigator's brief: when, how it
+ *  ended up, and its agents' pull requests with their state when the PR
+ *  cache knows it. Empty when they can't be read. */
+async function earlierIncidentsOf(
+  incident: Incident,
+  d: CoordinatorDeps,
+): Promise<EarlierIncident[]> {
+  let all: Incident[];
+  try {
+    all = await d.listIncidents({ project: incident.project });
+  } catch {
+    return [];
+  }
+  const signals = new Set(incident.signalIds);
+  return all
+    .filter(
+      (i) =>
+        i.id !== incident.id &&
+        i.openedAt <= incident.openedAt &&
+        i.signalIds.some((id) => signals.has(id)),
+    )
+    .sort((a, b) => (a.openedAt < b.openedAt ? 1 : -1))
+    .slice(0, EARLIER_INCIDENTS_MAX)
+    .map((i) => ({
+      id: i.id,
+      openedAt: i.openedAt,
+      outcome: i.state,
+      prs: openAgentPrs(i, d, { keepClosed: true }).map((pr) => {
+        let state: ReturnType<CoordinatorDeps["prState"]>;
+        try {
+          state = d.prState(i.project, pr.url);
+        } catch {
+          state = undefined;
+        }
+        return { number: pr.number, ...(state ? { state } : {}) };
+      }),
+    }));
+}
+
 async function incidentNotePath(
   incident: Incident,
   d: CoordinatorDeps,
@@ -1998,6 +2087,36 @@ async function applyTransition(
   return next !== null;
 }
 
+/** The pull requests the incident's agents opened that the PR cache does
+ *  not know as merged or closed (with `keepClosed`, all of them), oldest
+ *  first. */
+function openAgentPrs(
+  incident: Incident,
+  d: CoordinatorDeps,
+  opts: { keepClosed?: boolean } = {},
+): AgentPullRequest[] {
+  const out: AgentPullRequest[] = [];
+  const seen = new Set<string>();
+  for (const run of incident.response?.agents ?? []) {
+    const url = run.prUrl;
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const pr = parsePrUrl(url);
+    if (!pr) continue;
+    if (!opts.keepClosed) {
+      let state: ReturnType<CoordinatorDeps["prState"]>;
+      try {
+        state = d.prState(incident.project, url);
+      } catch {
+        state = undefined;
+      }
+      if (state === "MERGED" || state === "CLOSED") continue;
+    }
+    out.push({ url, number: pr.number, sessionId: run.sessionId });
+  }
+  return out;
+}
+
 async function needsYou(
   view: ResponseView,
   step: Extract<ResponseStep, { step: "needs-you" }>,
@@ -2005,6 +2124,7 @@ async function needsYou(
 ): Promise<boolean> {
   const { incident, settings } = view;
   await write(incident.id, d, settings, guardOf(view), (c, base, at) => {
+    const prs = openAgentPrs(c, d);
     const b = patched(base, step.patch);
     const resumePhase =
       b.phase === "needs-you"
@@ -2022,6 +2142,7 @@ async function needsYou(
             resumePhase,
             ...(step.retryable === false ? { retryable: false } : {}),
             ...(step.fix ? { fix: step.fix } : {}),
+            ...(prs.length ? { prs } : {}),
           },
         },
         { retryRequested: undefined },
@@ -2605,7 +2726,10 @@ function needsAttention(
   switch (r?.phase) {
     case "needs-you":
       // A setup problem: Try again follows whether the agents could start.
-      return working || r?.needsYou?.kind === "setup";
+      // A proof card whose signal failed again is brought up to date.
+      return (
+        working || r?.needsYou?.kind === "setup" || waitingMayBeStale(incident)
+      );
     case "done":
       return working;
     case "paused":
@@ -2760,9 +2884,13 @@ function decisionAllowed(
     case "approve":
       return (
         c.state === "needs-you" &&
-        APPROVABLE.has(r.needsYou?.kind ?? "") &&
         !!r.candidate &&
-        (r.verdict?.verdict === "certain" || r.candidate.rollbackFirst === true)
+        ((APPROVABLE.has(r.needsYou?.kind ?? "") &&
+          (r.verdict?.verdict === "certain" ||
+            r.candidate.rollbackFirst === true)) ||
+          // Not proven before release: the head the verifier reviewed is
+          // the one merged, and the watch after release is the proof.
+          (r.needsYou?.kind === "unproven" && !!r.verdict?.verifiedSha))
       );
     case "send-back":
       return c.state === "needs-you" || c.state === "veto";
@@ -2914,7 +3042,15 @@ function decisionMove(
           // A round no investigator worked in is not used up: it is the
           // one sent back.
           round: roundRan(base) ? base.round + 1 : base.round,
-          sendBack: { kind: "owner", by, note: input.note },
+          sendBack: {
+            kind: "owner",
+            by,
+            note: input.note,
+            // What the card said, so the agent knows why it came back.
+            ...(c.state === "needs-you" && base.needsYou?.reason
+              ? { answering: base.needsYou.reason }
+              : {}),
+          },
           candidate: undefined,
           proof: undefined,
           verdict: undefined,

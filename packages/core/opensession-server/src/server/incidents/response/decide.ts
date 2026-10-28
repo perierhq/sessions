@@ -12,6 +12,7 @@ import type {
   NeedsYouKind,
   NextAction,
   OwnerDecision,
+  ProofDeferral,
   ReportIssue,
   ResponsePhase,
   SendBackReason,
@@ -26,7 +27,9 @@ import {
 import {
   type Incident,
   type IncidentState,
+  type Observation,
   type Signal,
+  type SignalState,
   isTerminalIncidentState,
 } from "../../../shared/incidents";
 import { recoveriesFor } from "../rules";
@@ -202,9 +205,43 @@ export function needsYouOptions(
       return ["retry", "resolve", "close"];
     case "question":
       return [];
+    case "proof-stopped":
+      // Another round meets the same gate while the problem is away, so
+      // Send it back is offered only while a round would be left after it.
+      return sendBackLeavesARound(r)
+        ? ["send-back", "resolve", "close"]
+        : ["resolve", "close"];
+    case "unproven":
+      // Deploy the fix merges the head the verifier reviewed, and the watch
+      // after release is the proof.
+      return [
+        ...(r.candidate && r.verdict?.verifiedSha
+          ? (["approve"] as const)
+          : []),
+        "send-back",
+        "close",
+      ];
     default:
       return ["send-back", "resolve", "close"];
   }
+}
+
+function sendBackLeavesARound(r: IncidentResponse): boolean {
+  return r.round + 1 < r.maxRounds;
+}
+
+/** What the card says beyond the stored reason: why Send it back is not
+ *  offered, and the incident's open pull requests. */
+function needsYouReason(r: IncidentResponse): string {
+  const ny = r.needsYou!;
+  let reason = ny.reason;
+  if (ny.kind === "proof-stopped" && !sendBackLeavesARound(r))
+    reason +=
+      ". Sending it back would spend the last round and stop here again while the problem is away; Sessions measures again if it fails again";
+  const prs = ny.prs ?? [];
+  if (!prs.length) return reason;
+  const numbers = prs.map((p) => `#${p.number}`).join(", ");
+  return `${reason.replace(/\.$/, "")}. Open pull ${prs.length === 1 ? "request" : "requests"}: ${numbers}.`;
 }
 
 function runningActionLabel(r: IncidentResponse): string {
@@ -248,11 +285,11 @@ export function nextActionFor(
   if (incident.state === "needs-you") {
     if (!r?.needsYou)
       return { kind: "info", detail: "This incident needs you" };
-    const { kind, reason, fix } = r.needsYou;
+    const { kind, fix } = r.needsYou;
     const rule = kind === "policy" ? r.decision?.rule : undefined;
     return {
       kind: "needs-you",
-      reason,
+      reason: needsYouReason(r),
       needsYou: kind,
       ...(rule ? { rule } : {}),
       ...(kind === "setup" && fix ? { fix } : {}),
@@ -434,6 +471,53 @@ function setupChanged(view: ResponseView): ResponseStep | undefined {
   };
 }
 
+/**
+ * Whether a waiting card may say something no longer true: a proof that
+ * stopped or a fix not proven before release whose signal failed again
+ * since the card appeared, or a proof that stopped on a fix only a release
+ * can prove (it goes on to the verifier now). The tick reads such an
+ * incident again; `staleWaiting` decides.
+ */
+export function waitingMayBeStale(incident: Incident): boolean {
+  const r = incident.response;
+  const ny = r?.needsYou;
+  if (incident.state !== "needs-you" || !r || !ny) return false;
+  if (ny.kind !== "proof-stopped" && ny.kind !== "unproven") return false;
+  if (Date.parse(incident.lastProblemAt) > Date.parse(ny.since)) return true;
+  return (
+    ny.kind === "proof-stopped" && r.candidate?.check.kind === "after-deploy"
+  );
+}
+
+const FAILED_AGAIN = / \(.+ failed again at \d\d:\d\d UTC\)$/;
+
+/** A waiting card brought up to date (see waitingMayBeStale): a proof that
+ *  stopped is measured again, and an unproven fix says when its signal
+ *  failed again. */
+function staleWaiting(view: ResponseView): ResponseStep | undefined {
+  const { incident } = view;
+  const ny = incident.response?.needsYou;
+  if (!ny || !incident.response?.candidate || !waitingMayBeStale(incident))
+    return undefined;
+  const again = `${primaryName(view)} failed again at ${hhmmUtc(Date.parse(incident.lastProblemAt))} UTC`;
+  const back = Date.parse(incident.lastProblemAt) > Date.parse(ny.since);
+  if (ny.kind === "proof-stopped")
+    return {
+      step: "transition",
+      to: "fix-ready",
+      phase: "proving",
+      detail: back
+        ? `${again}: measuring the fix again`
+        : "The fix can only be proven after release: the verifier checks it",
+      patch: { needsYou: undefined, proof: undefined },
+    };
+  return {
+    step: "needs-you",
+    kind: ny.kind,
+    reason: `${ny.reason.replace(FAILED_AGAIN, "")} (${again})`,
+  };
+}
+
 function guards(view: ResponseView): ResponseStep | undefined {
   const { incident, settings } = view;
   const r = incident.response;
@@ -540,7 +624,7 @@ function guards(view: ResponseView): ResponseStep | undefined {
         detail: "Question answered",
         patch: { needsYou: undefined },
       };
-    return setupChanged(view) ?? NONE;
+    return setupChanged(view) ?? staleWaiting(view) ?? NONE;
   }
   if (!r) return undefined;
 
@@ -982,11 +1066,81 @@ function investigation(view: ResponseView): ResponseStep {
   };
 }
 
+const PROBLEM_STATES: ReadonlySet<SignalState> = new Set(["failing", "slow"]);
+
+/** Separate spells of failed checks in a signal's recent main lane. */
+function failingSpells(observations: readonly Observation[]): number {
+  let spells = 0;
+  let failing = false;
+  for (const o of observations) {
+    if (o.lane !== undefined) continue;
+    if (o.result === "fail") {
+      if (!failing) spells++;
+      failing = true;
+    } else if (o.result === "ok") failing = false;
+  }
+  return spells;
+}
+
+/** The primary signal turned failing or slow again after it passed while
+ *  the incident was open, or reopened it. */
+function cameBack(incident: Incident): boolean {
+  const id = incident.primarySignalId;
+  let bad = true;
+  for (const e of incident.events) {
+    if (e.kind === "reopened") {
+      if (!bad) return true;
+      bad = true;
+    } else if (
+      (e.kind === "signal-state" || e.kind === "signal-attached") &&
+      e.signalId === id &&
+      e.signalState
+    ) {
+      if (PROBLEM_STATES.has(e.signalState)) {
+        if (!bad) return true;
+        bad = true;
+      } else if (e.signalState === "ok") bad = false;
+    }
+  }
+  return false;
+}
+
+/** The incident's signal fails on and off: flaky now, quiet flaps, back
+ *  after it passed, or more than one failing spell in its recent checks. */
+export function intermittent(view: ResponseView): boolean {
+  const { incident } = view;
+  return (
+    view.evaluations.get(incident.primarySignalId)?.state === "flaky" ||
+    (incident.quiet?.flaps ?? 0) > 0 ||
+    cameBack(incident) ||
+    failingSpells(view.primaryRecent) >= 2
+  );
+}
+
+/**
+ * Why a baseline that does not fail now proves nothing either way, so the
+ * proof goes on to the verifier, who decides what it can prove: the
+ * investigator said the fix can only be shown after release, or the signal
+ * comes and goes. Undefined for a one-off problem that stopped.
+ */
+export function proofDeferral(view: ResponseView): ProofDeferral | undefined {
+  if (view.incident.response?.candidate?.check.kind === "after-deploy")
+    return "after-release";
+  return intermittent(view) ? "intermittent" : undefined;
+}
+
+const DEFERRAL_WHY: Record<ProofDeferral, string> = {
+  "after-release": "the fix can only be proven after release",
+  intermittent: "the problem comes and goes",
+};
+
 function proving(view: ResponseView): ResponseStep {
   const r = view.incident.response!;
   // 20.
   if (r.proof?.round !== r.round) return { step: "run-proof" };
-  if (r.proof.baseline.verdict === "passes")
+  const deferred =
+    r.proof.baseline.verdict === "fails" ? undefined : proofDeferral(view);
+  if (r.proof.baseline.verdict === "passes" && !deferred)
     return {
       step: "needs-you",
       kind: "proof-stopped",
@@ -994,6 +1148,14 @@ function proving(view: ResponseView): ResponseStep {
     };
   if (!r.candidate?.pr || stale(r.candidate.pr.fetchedAt, view.now))
     return { step: "fetch-pr", purpose: "verify" };
+  if (deferred)
+    return {
+      step: "transition",
+      to: null,
+      phase: "verifying",
+      detail: `Proof measured: the problem is not happening now and ${DEFERRAL_WHY[deferred]}, so the verifier judges what it can prove`,
+      patch: { proof: { ...r.proof, deferred } },
+    };
   return {
     step: "transition",
     to: null,
@@ -1033,11 +1195,8 @@ function verifying(view: ResponseView): ResponseStep {
   if (!r.proof) return { step: "run-proof" };
 
   // 22. Sessions' verdict over the verifier's.
-  const verdict = effectiveVerdict({
-    report,
-    proof: r.proof,
-    knowledge: checkKnowledge(r.candidate.pr.files, r.candidate),
-  });
+  const knowledge = checkKnowledge(r.candidate.pr.files, r.candidate);
+  const verdict = effectiveVerdict({ report, proof: r.proof, knowledge });
   if (verdict.verdict === "certain")
     return {
       step: "transition",
@@ -1057,6 +1216,30 @@ function verifying(view: ResponseView): ResponseStep {
   const reasons = verdict.reasons.length
     ? verdict.reasons
     : ["The verifier was not certain"];
+  // 22b. Not proven before release, and nothing wrong with the fix itself
+  // that another round could mend: the owner decides whether to merge it
+  // and watch the release.
+  const deferred = r.proof.deferred;
+  if (
+    deferred &&
+    knowledge.note &&
+    knowledge.runbook &&
+    !report.claims.some((c) => c.status === "refuted")
+  )
+    return {
+      step: "needs-you",
+      kind: "unproven",
+      reason: `${deferred === "intermittent" ? "The problem comes and goes, so the fix" : "The fix"} can only be proven after release: ${reasons[0]}`,
+      patch: {
+        verdict: {
+          round: r.round,
+          at,
+          verdict: "not-certain",
+          reasons,
+          verifiedSha: r.candidate.pr.headSha,
+        },
+      },
+    };
   return sendBack(view, { kind: "not-certain", reasons }, reasons[0]!, {
     round: r.round,
     at,

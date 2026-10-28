@@ -716,7 +716,9 @@ fix when one is missing:
 - Registry access and about 1.5 GB free on Podman's storage for the sandbox
   image (`localhost/opensession-sandbox:<tag>`, built from a pinned
   `ubuntu:24.04` at qualification, never during a session; it carries the
-  workspace tools plus `ffmpeg` and ImageMagick), and at least
+  workspace tools plus `ffmpeg` and ImageMagick, and pnpm through Node's
+  corepack, which fetches a repository's `packageManager` version on first
+  use), and at least
   5 GiB free there for sandboxes to start (see Disk limits).
 - SELinux enforcing is recommended. Without it qualification passes with a
   warning, and containers rely on namespaces and seccomp alone.

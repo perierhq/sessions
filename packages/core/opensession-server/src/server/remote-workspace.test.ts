@@ -334,6 +334,30 @@ describe("remote command environment", () => {
   });
 });
 
+describe("remote command home", () => {
+  test("an automation's home stays the same across the turns of one session; its gh config does not", () => {
+    const workspace = {
+      scratchDir: "/home/ubuntu/.opensession/session-scratch/s1",
+    };
+    const first = remoteCommandEnv({}, workspace, "turn-1", true, "sess-1");
+    const second = remoteCommandEnv({}, workspace, "turn-2", true, "sess-1");
+    expect(first.HOME).toBe(
+      "/home/ubuntu/.opensession/session-scratch/s1/automation-home-sess-1",
+    );
+    expect(second.HOME).toBe(first.HOME);
+    expect(second.XDG_CONFIG_HOME).toBe(`${first.HOME}/.config`);
+    // gh's login is per turn: a turn never inherits another's.
+    expect(first.GH_CONFIG_DIR).toBe(
+      "/home/ubuntu/.opensession/session-scratch/s1/gh-config-turn-1",
+    );
+    expect(second.GH_CONFIG_DIR).not.toBe(first.GH_CONFIG_DIR);
+    // Without a session key the turn's own key names the home.
+    expect(remoteCommandEnv({}, workspace, "turn-3", true).HOME).toBe(
+      "/home/ubuntu/.opensession/session-scratch/s1/automation-home-turn-3",
+    );
+  });
+});
+
 describe("remote context", () => {
   test("mirrors AGENTS.md and the checkout's skills, mapping paths back", async () => {
     const mirror = join(root, "mirror");

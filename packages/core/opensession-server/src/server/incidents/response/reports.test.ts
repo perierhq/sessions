@@ -1102,3 +1102,44 @@ test("a refused report names every problem at once", () => {
     },
   ]);
 });
+
+test("effective verdict: a deferred proof stands on the verifier accepting proof after release", () => {
+  const report = {
+    role: "verifier" as const,
+    verdict: "certain" as const,
+    reasons: [],
+    proofAccepted: true,
+    claims: [{ text: "A", status: "verified" as const, evidence: "x" }],
+  };
+  const passing = {
+    round: 1,
+    at: "x",
+    baseline: { samples: [], verdict: "passes" as const },
+    candidate: {
+      kind: "request" as const,
+      samples: [],
+      verdict: "passes" as const,
+    },
+  };
+  const knowledge = { note: true, runbook: true };
+  // Passing now proves nothing without the deferral.
+  expect(effectiveVerdict({ report, proof: passing, knowledge })).toEqual({
+    verdict: "not-certain",
+    reasons: ["The baseline did not fail with the incident's signal"],
+  });
+  const deferred = { ...passing, deferred: "intermittent" as const };
+  expect(effectiveVerdict({ report, proof: deferred, knowledge })).toEqual({
+    verdict: "certain",
+    reasons: [],
+  });
+  expect(
+    effectiveVerdict({
+      report: { ...report, proofAccepted: false },
+      proof: deferred,
+      knowledge,
+    }),
+  ).toEqual({
+    verdict: "not-certain",
+    reasons: ["The verifier did not accept proving this after release"],
+  });
+});

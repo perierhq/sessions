@@ -1252,7 +1252,12 @@ export function effectiveVerdict(input: {
   for (const claim of report.claims)
     if (claim.status !== "verified")
       reasons.push(`Claim not verified: ${claim.text}`);
-  if (proof.baseline.verdict !== "fails")
+  // A deferred proof went on with a baseline that does not fail now: the
+  // verifier's acceptance stands in for it, and the watch after release
+  // is the proof.
+  const deferred =
+    proof.deferred !== undefined && proof.baseline.verdict !== "fails";
+  if (proof.baseline.verdict !== "fails" && !deferred)
     reasons.push("The baseline did not fail with the incident's signal");
   if (
     proof.candidate.kind === "request" &&
@@ -1261,7 +1266,10 @@ export function effectiveVerdict(input: {
     reasons.push(
       `The candidate check did not pass from production${proof.candidate.refused ? `: ${proof.candidate.refused}` : ""}`,
     );
-  if (proof.candidate.kind === "after-deploy" && !report.proofAccepted)
+  if (
+    (proof.candidate.kind === "after-deploy" || deferred) &&
+    !report.proofAccepted
+  )
     reasons.push("The verifier did not accept proving this after release");
   if (!knowledge.note) reasons.push("The incident note is missing from the PR");
   if (!knowledge.runbook) reasons.push("The runbook was not updated in the PR");

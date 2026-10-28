@@ -943,6 +943,10 @@ export function remoteCommandEnv(
   workspace: Pick<RemoteWorkspace, "scratchDir">,
   runKey: string,
   isolatedHome: boolean,
+  /** Names the isolated home: the session's id, so a home (and the tools an
+   *  agent installed in it) stays from one turn to the next. Defaults to
+   *  the run key. gh's config stays per run either way. */
+  homeKey: string = runKey,
 ): Record<string, string> {
   const dropped = new Set([
     "PATH",
@@ -978,10 +982,9 @@ export function remoteCommandEnv(
   env.OPENSESSION_SCRATCH = scratch;
   env.GH_CONFIG_DIR = `${scratch}/gh-config-${safeKey}`;
   if (isolatedHome) {
-    const home = `${scratch}/automation-home-${safeKey}`;
+    const home = `${scratch}/automation-home-${homeKey.replace(/[^A-Za-z0-9_-]/g, "_")}`;
     env.HOME = home;
     env.XDG_CONFIG_HOME = `${home}/.config`;
-    env.GH_CONFIG_DIR = `${home}/.config/gh`;
   }
   return env;
 }

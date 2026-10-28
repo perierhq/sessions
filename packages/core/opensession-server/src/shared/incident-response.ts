@@ -419,7 +419,14 @@ export interface ProofResult {
     verdict: "passes" | "fails" | "unclear" | "after-deploy";
     refused?: string;
   };
+  /** The baseline did not fail, and the proof went on to the verifier
+   *  anyway: the investigator said the fix can only be shown after release
+   *  (`after-release`), or the signal fails on and off (`intermittent`).
+   *  The verifier then decides what it can prove (`proofAccepted`). */
+  deferred?: ProofDeferral;
 }
+
+export type ProofDeferral = "after-release" | "intermittent";
 
 export interface Verdict {
   round: number;
@@ -518,6 +525,7 @@ export const NEEDS_YOU_KINDS = [
   "no-candidate",
   "question",
   "proof-stopped",
+  "unproven",
   "merge",
   "action-failed",
   "interrupted",
@@ -627,7 +635,13 @@ export type ResponsePhase = (typeof RESPONSE_PHASES)[number];
 
 export type SendBackReason =
   | { kind: "not-certain"; reasons: string[] }
-  | { kind: "owner"; by: string; note: string }
+  | {
+      kind: "owner";
+      by: string;
+      note: string;
+      /** The needs-you reason the owner answered by sending it back. */
+      answering?: string;
+    }
   | { kind: "rolled-back"; detail: string }
   | { kind: "reopened"; detail: string }
   | { kind: "check-failed"; detail: string };
@@ -681,6 +695,9 @@ export interface IncidentResponse {
     retryable?: boolean;
     /** A setup problem: where it is fixed. */
     fix?: SetupFix;
+    /** The incident's agents' pull requests still open when the card
+     *  appeared, named on the card. */
+    prs?: AgentPullRequest[];
   };
   note?: { prUrl?: string; pr?: PrSnapshot; merged: boolean; detail?: string };
   /** Closed without action: pull requests the incident's agents opened that
