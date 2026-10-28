@@ -520,6 +520,28 @@ export function credentialSpecHost(spec: CredentialSpec): string {
 // bidi-override characters that could make it say something else.
 const UNSAFE_DISPLAY_CHARS = /[\x00-\x1f\x7f‪-‮⁦-⁩]/;
 
+/** The longest purpose or description kept. */
+export const MAX_DISPLAY_TEXT_CHARS = 500;
+
+/** Model-authored or pasted text shown to a person: control and
+ *  bidi-override characters become spaces, so it can't make a card or a
+ *  message say something else, and it stops at `max` characters. */
+export function displaySafe(
+  text: string | undefined,
+  max = MAX_DISPLAY_TEXT_CHARS,
+): string | undefined {
+  return text
+    ?.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, " ")
+    .trim()
+    .slice(0, max)
+    .trim();
+}
+
+/** A purpose as kept: display-safe, at most 500 characters, "" if none. */
+function safePurpose(raw: string | undefined): string {
+  return displaySafe(raw) ?? "";
+}
+
 /**
  * Validate and normalize everything about a credential except its owner and
  * secret. Throws with a message safe to show the caller. Shared by the HTTP
@@ -593,7 +615,7 @@ export function normalizeCredentialSpec(
       ...(scheme !== undefined ? { scheme } : {}),
     };
   }
-  const description = input.description?.trim();
+  const description = displaySafe(input.description);
   return {
     service,
     host,
@@ -637,7 +659,7 @@ function normalizeLoginSpec(
     throw new Error("a login needs a username of at most 200 characters");
   if (taken)
     throw new Error(`a credential for service "${service}" already exists`);
-  const description = input.description?.trim();
+  const description = displaySafe(input.description);
   return {
     service,
     host: url.hostname,
@@ -1191,7 +1213,7 @@ function insertImplicitGrant(input: {
       owner: input.cred.owner,
       sessionId: input.sessionId,
       requestedBy: input.requestedBy,
-      purpose: input.purpose,
+      purpose: safePurpose(input.purpose),
       requestedMode: input.mode,
       ...(input.run ? { run: input.run } : {}),
       status: "approved",
@@ -1469,7 +1491,7 @@ export async function incidentGrantFor(input: {
     owner: cred.owner,
     sessionId: input.sessionId,
     requestedBy: `incident ${input.incident.incidentId} ${input.incident.role}`,
-    purpose: input.purpose.trim().slice(0, MAX_INCIDENT_PURPOSE_CHARS),
+    purpose: safePurpose(input.purpose).slice(0, MAX_INCIDENT_PURPOSE_CHARS),
     mode: input.mode,
     status: "active",
     createdAt: new Date(now).toISOString(),
@@ -1790,7 +1812,7 @@ function workspaceRunGrants(
   },
   metas: KeychainCredentialMeta[],
 ): { grants: KeychainGrant[] } | { error: string } {
-  const purpose = input.purpose?.trim();
+  const purpose = safePurpose(input.purpose);
   if (!purpose)
     return {
       error:
@@ -2269,7 +2291,7 @@ export function requestCredential(
       error: `no credential matches "${input.credential}"${known ? ` (known: ${known})` : ""}`,
     };
   }
-  const purpose = input.purpose.trim();
+  const purpose = safePurpose(input.purpose);
   if (!purpose)
     return {
       error: "a purpose is required — the owner approves that, not the tool",
@@ -2608,7 +2630,7 @@ export function requestCredentialRun(
     return {
       error: `two of these credentials would share the variable ${clash}; run them separately`,
     };
-  const purpose = input.purpose.trim();
+  const purpose = safePurpose(input.purpose);
   if (!purpose)
     return {
       error: "a purpose is required — the owner approves that, not the tool",

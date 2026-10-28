@@ -367,3 +367,30 @@ describe("grant instructions", () => {
     expect(text).not.toContain("sk-live-secret");
   });
 });
+
+describe("text a person reads", () => {
+  const UNSAFE = /[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/;
+
+  test("a description loses control and bidi-override characters and stops at 500", () => {
+    const meta = cred({
+      description: `Read-only\u202e key\nfor reports${"y".repeat(900)}`,
+    });
+    expect(meta.description).not.toMatch(UNSAFE);
+    expect(meta.description!.startsWith("Read-only")).toBe(true);
+    expect(meta.description!.length).toBeLessThanOrEqual(500);
+  });
+
+  test("a purpose for a workspace credential does too", () => {
+    cred({ scope: "workspace" });
+    const result = kc.requestCredential({
+      credential: "vercel",
+      sessionId: "s-1",
+      requestedBy: "Sam",
+      purpose: `deploy\u2066 status\r\n${"z".repeat(900)}`,
+    });
+    expect(result).toHaveProperty("grant");
+    const grant = (result as { grant: { purpose: string } }).grant;
+    expect(grant.purpose).not.toMatch(UNSAFE);
+    expect(grant.purpose.length).toBeLessThanOrEqual(500);
+  });
+});

@@ -42,6 +42,7 @@ import {
   activeIncidentGrantFor,
   brokerHeaders,
   consumeGrantForBroker,
+  displaySafe,
   ensureKeychainLoaded,
   headerProblem,
   findCredential,
@@ -61,8 +62,6 @@ export const BROKER_METHODS = [
 export type BrokerMethod = (typeof BROKER_METHODS)[number];
 
 const BROKER_TIMEOUT_MS = 30_000;
-/** A call's purpose as audited. */
-const MAX_PURPOSE_CHARS = 500;
 /** What we read of a response body, and what reaches the model of it. */
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_RETURNED_CHARS = 60_000;
@@ -128,7 +127,7 @@ export async function brokerCall(
   if (target.hostname !== meta.host || target.port || target.username)
     return { error: `path must stay on https://${meta.host}` };
 
-  const purpose = input.purpose?.trim().slice(0, MAX_PURPOSE_CHARS) || "";
+  const purpose = displaySafe(input.purpose) || "";
   const incident = input.incident;
   const incidentFields = incident
     ? { incident_id: incident.incidentId, incident_role: incident.role }

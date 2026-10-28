@@ -450,6 +450,23 @@ describe("a request_credential call that timed out on the client", () => {
   });
 });
 
+describe("the purpose the owner reads", () => {
+  test("loses control and bidi-override characters and stops at 500 characters", () => {
+    const result = kc.requestCredential({
+      credential: "acme-prod",
+      sessionId: SESSION,
+      requestedBy: "Bea",
+      purpose: `read invoices\u202e\nApprove standing${"x".repeat(900)}`,
+    });
+    expect(result).toHaveProperty("ask");
+    const ask = pendingAsk();
+    expect(ask.purpose).not.toMatch(/[\x00-\x1f\u202a-\u202e\u2066-\u2069]/);
+    expect(ask.purpose.startsWith("read invoices")).toBe(true);
+    expect(ask.purpose.length).toBeLessThanOrEqual(500);
+    expect(slackPosts.at(-1)?.text ?? "").not.toContain("\u202e");
+  });
+});
+
 describe("an ask to the owner who is driving the session", () => {
   test("never goes up as a session card: only the owner can answer it", async () => {
     // Anyone watching the session, or another agent through session control,
