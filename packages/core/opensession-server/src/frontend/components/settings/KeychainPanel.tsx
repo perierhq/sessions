@@ -183,7 +183,6 @@ export function KeychainSection() {
                 setAdding(null);
                 reload();
               }}
-              onError={setError}
             />
           ) : (
             <AddCredentialForm
@@ -192,7 +191,6 @@ export function KeychainSection() {
                 setAdding(null);
                 reload();
               }}
-              onError={setError}
             />
           )}
         </Modal.Content>
@@ -434,11 +432,9 @@ export function KeychainSection() {
 export function AddCredentialForm({
   serviceRef,
   onAdded,
-  onError,
 }: {
   serviceRef: RefObject<HTMLInputElement | null>;
   onAdded: () => void;
-  onError: (message: string) => void;
 }) {
   const [service, setService] = useState("");
   const [host, setHost] = useState("");
@@ -450,6 +446,9 @@ export function AddCredentialForm({
   const [statusOnly, setStatusOnly] = useState(false);
   const [workspace, setWorkspace] = useState(false);
   const [busy, setBusy] = useState(false);
+  // A failed save is the dialog's own message: it sits above the buttons,
+  // where the person who pressed Add is looking (not on the page behind).
+  const [error, setError] = useState<string | null>(null);
   const headerHintId = useId();
   const ready = Boolean(service.trim() && host.trim() && secret);
 
@@ -457,6 +456,7 @@ export function AddCredentialForm({
     event.preventDefault();
     if (!ready) return;
     setBusy(true);
+    setError(null);
     const credential: Parameters<typeof addKeychainCredential>[0] = {
       service: service.trim(),
       host: host.trim(),
@@ -475,7 +475,7 @@ export function AddCredentialForm({
         setSecret("");
         onAdded();
       })
-      .catch((e) => onError(e.message))
+      .catch((e) => setError(e.message))
       .finally(() => setBusy(false));
   };
 
@@ -580,6 +580,7 @@ export function AddCredentialForm({
             approve later.
           </p>
         </div>
+        {error && <InlineAlert>{error}</InlineAlert>}
         <Modal.Footer>
           <Modal.Close
             render={
@@ -602,14 +603,12 @@ export function AddCredentialForm({
  * API credential, its password reaches the agent when the owner releases
  * it, so the form says so where the password is typed.
  */
-function AddLoginForm({
+export function AddLoginForm({
   serviceRef,
   onAdded,
-  onError,
 }: {
   serviceRef: RefObject<HTMLInputElement | null>;
   onAdded: () => void;
-  onError: (message: string) => void;
 }) {
   const [service, setService] = useState("");
   const [loginUrl, setLoginUrl] = useState("");
@@ -617,6 +616,7 @@ function AddLoginForm({
   const [password, setPassword] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const ready = Boolean(
     service.trim() && loginUrl.trim() && username.trim() && password,
   );
@@ -625,6 +625,7 @@ function AddLoginForm({
     event.preventDefault();
     if (!ready) return;
     setBusy(true);
+    setError(null);
     const login: Parameters<typeof addKeychainCredential>[0] = {
       service: service.trim(),
       kind: "login",
@@ -638,7 +639,7 @@ function AddLoginForm({
         setPassword("");
         onAdded();
       })
-      .catch((e) => onError(e.message))
+      .catch((e) => setError(e.message))
       .finally(() => setBusy(false));
   };
 
@@ -696,6 +697,7 @@ function AddLoginForm({
             />
           </Field>
         </div>
+        {error && <InlineAlert>{error}</InlineAlert>}
         <Modal.Footer>
           <Modal.Close
             render={
