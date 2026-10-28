@@ -53,6 +53,7 @@ export const NEEDS_YOU_PUSH: Record<NeedsYouKind, string> = {
   "no-candidate": "Agents found no fix to try",
   question: "Agents have a question for you",
   "proof-stopped": "The proof stopped and needs a decision",
+  unproven: "The fix can only be proven after release and needs a decision",
   merge: "The fix could not merge and needs you",
   "action-failed": "An action failed and needs a decision",
   interrupted: "The response was interrupted and needs a decision",

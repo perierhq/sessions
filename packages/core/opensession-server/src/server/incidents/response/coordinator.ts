@@ -1135,6 +1135,7 @@ async function startAgent(
       // Ids, kinds and references only: buildVerifierPrompt never shows
       // the investigator's prose.
       findings: { investigator: findingSetOf(r, "investigator", round) },
+      ...(r.proof.deferred ? { recent: view.primaryRecent } : {}),
     });
   }
 
@@ -2760,9 +2761,13 @@ function decisionAllowed(
     case "approve":
       return (
         c.state === "needs-you" &&
-        APPROVABLE.has(r.needsYou?.kind ?? "") &&
         !!r.candidate &&
-        (r.verdict?.verdict === "certain" || r.candidate.rollbackFirst === true)
+        ((APPROVABLE.has(r.needsYou?.kind ?? "") &&
+          (r.verdict?.verdict === "certain" ||
+            r.candidate.rollbackFirst === true)) ||
+          // Not proven before release: the head the verifier reviewed is
+          // the one merged, and the watch after release is the proof.
+          (r.needsYou?.kind === "unproven" && !!r.verdict?.verifiedSha))
       );
     case "send-back":
       return c.state === "needs-you" || c.state === "veto";

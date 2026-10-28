@@ -1021,3 +1021,40 @@ test("send-back reminds the agent its findings stay", () => {
     buildSendBackMessage(2, 3, why, { ...investigatorSet(1), blocks: [] }),
   ).toBe(plain);
 });
+
+test("a deferred proof tells the verifier it decides what it can prove, with the signal's failures", () => {
+  const p = buildVerifierPrompt({
+    incident,
+    signal,
+    candidate,
+    headSha: "abc1234",
+    proof: {
+      ...proof,
+      baseline: { samples: [], verdict: "passes" },
+      deferred: "intermittent",
+    },
+    mode: "ask",
+    runnerLabel: "Production · acme",
+    independence: "other-provider",
+    round: 1,
+    recent: [
+      { at: "2026-10-20T10:00:00.000Z", result: "fail", detail: "search slow" },
+      { at: "2026-10-20T10:01:00.000Z", result: "ok", detail: "ok" },
+      {
+        at: "2026-10-20T10:02:00.000Z",
+        result: "fail",
+        detail: "search down",
+        lane: "web",
+      },
+    ],
+  });
+  expect(p).toContain(
+    "The problem is not happening now and the signal comes and goes",
+  );
+  expect(p).toContain("Judge what you can prove from the evidence you have");
+  expect(p).toContain("- 2026-10-20T10:00:00.000Z · fail · search slow");
+  // Only the main lane, and only failures.
+  expect(p).not.toContain("search down");
+  expect(p).not.toContain("10:01:00.000Z · ok");
+  expect(p).toContain("proving it after release is acceptable (proofAccepted)");
+});

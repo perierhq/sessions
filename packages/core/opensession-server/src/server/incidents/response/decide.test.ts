@@ -2822,3 +2822,219 @@ test("setup: options and next action follow retryable and fix", () => {
     options: ["resolve", "close"],
   });
 });
+
+// ── Proof that can only come after release ─────────────────────────────────
+
+const afterDeployCheck = {
+  kind: "after-deploy" as const,
+  reason: "A request now can't tell before from after",
+};
+
+function obs(offsetMs: number, result: "ok" | "fail") {
+  return { at: iso(offsetMs), result, detail: result };
+}
+
+/** Failed, passed, failed and passed again: the signal comes and goes. */
+const flapping = [
+  obs(-50 * 60_000, "fail"),
+  obs(-49 * 60_000, "fail"),
+  obs(-48 * 60_000, "ok"),
+  obs(-20 * 60_000, "fail"),
+  obs(-19 * 60_000, "fail"),
+  obs(-18 * 60_000, "ok"),
+];
+
+test("proving: a passing baseline goes on to the verifier when the fix can only be proven after release", () => {
+  const passing = proofResult({
+    round: 1,
+    baseline: "passes",
+    candidate: "after-deploy",
+  });
+  const proving = (c: CandidateState) =>
+    view({
+      incident: incident(
+        "fix-ready",
+        response({ phase: "proving", candidate: c, proof: passing }),
+      ),
+      evaluations: new Map([["sig-a", evaluation("ok", iso(-60_000))]]),
+    });
+  expect(
+    decideNextStep(proving(candidate({ check: afterDeployCheck }))),
+  ).toEqual({ step: "fetch-pr", purpose: "verify" });
+  expect(
+    decideNextStep(
+      proving(candidate({ check: afterDeployCheck, pr: prSnapshot() })),
+    ),
+  ).toEqual({
+    step: "transition",
+    to: null,
+    phase: "verifying",
+    detail:
+      "Proof measured: the problem is not happening now and the fix can only be proven after release, so the verifier judges what it can prove",
+    patch: { proof: { ...passing, deferred: "after-release" } },
+  });
+});
+
+test("proving: a passing baseline goes on to the verifier when the signal comes and goes", () => {
+  const passing = proofResult({
+    round: 1,
+    baseline: "passes",
+    candidate: "passes",
+  });
+  const step = decideNextStep(
+    view({
+      incident: incident(
+        "fix-ready",
+        response({
+          phase: "proving",
+          candidate: candidate({ pr: prSnapshot() }),
+          proof: passing,
+        }),
+      ),
+      evaluations: new Map([["sig-a", evaluation("ok", iso(-60_000))]]),
+      primaryRecent: flapping,
+    }),
+  );
+  expect(step).toMatchObject({
+    step: "transition",
+    phase: "verifying",
+    patch: { proof: { deferred: "intermittent" } },
+  });
+});
+
+test("proving: a one-off problem that stopped still asks, and Send it back is not offered when it would spend the last round at the same gate", () => {
+  const stopped = decideNextStep(
+    view({
+      incident: incident(
+        "fix-ready",
+        response({
+          phase: "proving",
+          candidate: candidate({ pr: prSnapshot() }),
+          proof: proofResult({
+            round: 1,
+            baseline: "passes",
+            candidate: "passes",
+          }),
+        }),
+      ),
+      evaluations: new Map([["sig-a", evaluation("ok", iso(-60_000))]]),
+      primaryRecent: [obs(-5 * 60_000, "fail"), obs(-4 * 60_000, "ok")],
+    }),
+  );
+  expect(stopped).toMatchObject({ step: "needs-you", kind: "proof-stopped" });
+  const waiting = (round: number, maxRounds: number) =>
+    response({
+      round,
+      maxRounds,
+      phase: "needs-you",
+      needsYou: {
+        kind: "proof-stopped",
+        reason: "x",
+        since: iso(0),
+        resumePhase: "proving",
+      },
+    });
+  expect(needsYouOptions("proof-stopped", waiting(1, 2))).toEqual([
+    "resolve",
+    "close",
+  ]);
+  expect(needsYouOptions("proof-stopped", waiting(1, 3))).toEqual([
+    "send-back",
+    "resolve",
+    "close",
+  ]);
+  expect(
+    nextActionFor(
+      incident("needs-you", waiting(1, 2)),
+      defaultProjectSettings("acme"),
+    ),
+  ).toMatchObject({
+    kind: "needs-you",
+    reason: expect.stringContaining("would spend the last round"),
+  });
+});
+
+function deferredVerifying(report: VerifierReport, round = 1): ResponseView {
+  return view({
+    incident: incident(
+      "fix-ready",
+      response({
+        phase: "verifying",
+        round,
+        candidate: candidate({
+          check: afterDeployCheck,
+          pr: prSnapshot({ headSha: "abc1234" }),
+        }),
+        proof: {
+          ...proofResult({
+            round,
+            baseline: "passes",
+            candidate: "after-deploy",
+          }),
+          deferred: "after-release",
+        },
+        agents: [
+          run("investigator", { round, status: "done" }),
+          run("verifier", { round, status: "done", report }),
+        ],
+      }),
+    ),
+    evaluations: new Map([["sig-a", evaluation("ok", iso(-60_000))]]),
+  });
+}
+
+test("verifying a fix proven after release: certain with the proof accepted goes on to the policy", () => {
+  expect(
+    decideNextStep(deferredVerifying({ ...goodVerifier, proofAccepted: true })),
+  ).toMatchObject({
+    step: "transition",
+    phase: "deciding",
+    patch: { verdict: { verdict: "certain", verifiedSha: "abc1234" } },
+  });
+});
+
+test("verifying a fix proven after release: unproven asks the owner to merge and watch, close or send back", () => {
+  const unproven = {
+    ...goodVerifier,
+    verdict: "not-certain" as const,
+    reasons: ["Only the release can show the slow verdicts are gone"],
+    proofAccepted: false,
+  };
+  const step = decideNextStep(deferredVerifying(unproven));
+  expect(step).toMatchObject({
+    step: "needs-you",
+    kind: "unproven",
+    patch: {
+      verdict: {
+        verdict: "not-certain",
+        verifiedSha: "abc1234",
+        reasons: [
+          "Only the release can show the slow verdicts are gone",
+          "The verifier did not accept proving this after release",
+        ],
+      },
+    },
+  });
+  if (step.step !== "needs-you") throw new Error("expected needs-you");
+  expect(step.reason).toContain("after release");
+  expect(step.reason).not.toContain("problem stopped");
+  const r = response({
+    phase: "needs-you",
+    candidate: candidate({ pr: prSnapshot() }),
+    verdict: step.patch!.verdict,
+  });
+  expect(needsYouOptions("unproven", r)).toEqual([
+    "approve",
+    "send-back",
+    "close",
+  ]);
+  // A refuted claim is the fix's own problem: the investigator gets it back.
+  expect(
+    decideNextStep(
+      deferredVerifying({
+        ...unproven,
+        claims: [{ ...unproven.claims[0]!, status: "refuted" }],
+      }),
+    ),
+  ).toMatchObject({ step: "transition", phase: "investigating" });
+});

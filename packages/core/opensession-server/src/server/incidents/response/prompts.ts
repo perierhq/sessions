@@ -49,6 +49,9 @@ import {
 export const INCIDENT_DOCS_DIR = "docs/incidents/";
 const RUNBOOK = `${INCIDENT_DOCS_DIR}runbook.md`;
 const RECENT_LINES = 20;
+/** How far back a deferred proof looks for failed checks: a day of a
+ *  one-minute signal at most (the observation ring holds less). */
+const RING_FOR_FAILURES = 1_440;
 const DETAIL_MAX = 300;
 const SEND_BACK_TAIL =
   "Update the PR and the note, then end with a new incident-report block.";
@@ -746,7 +749,13 @@ export interface VerifierPromptInput {
   /** The round's investigator set, listed by id, kind and references
    *  only: never its prose. */
   findings?: { investigator?: FindingsSet };
+  /** The primary signal's recent checks; a deferred proof shows the
+   *  failed ones as the evidence it has. */
+  recent?: Observation[];
 }
+
+/** The most recent failed checks a deferred proof shows the verifier. */
+const DEFERRED_FAILURES = 10;
 
 function proofSamples(samples: ProofSample[]): string[] {
   return samples.length ? samples.map(sampleLine) : ["- no samples"];
@@ -797,6 +806,25 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
     ),
     "",
   );
+  if (proof.deferred) {
+    const failures = mainLane(input.recent ?? [], RING_FOR_FAILURES)
+      .filter((o) => o.result === "fail")
+      .slice(-DEFERRED_FAILURES);
+    out.push(
+      proof.deferred === "after-release"
+        ? "The problem is not happening now, and the investigator says the fix can only be proven after release, so a check now can't tell before from after."
+        : "The problem is not happening now and the signal comes and goes, so a check now can't tell before from after.",
+      "Judge what you can prove from the evidence you have: the signal's failures below, the PR and the claims. Set proofAccepted to true only if you accept that releasing the fix and watching the signal is the proof; otherwise say not-certain and why. Sessions then asks the owner whether to release it.",
+      "",
+      ...dataBlock(
+        "The signal's recent failed checks, oldest first (at · result · detail)",
+        failures.length
+          ? failures.map(sampleLine)
+          : ["- none in the recent checks"],
+      ),
+      "",
+    );
+  }
   if (proof.candidate.kind === "after-deploy") {
     const reason =
       candidate.check.kind === "after-deploy" ? candidate.check.reason : "";
@@ -819,7 +847,9 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
 
   out.push("## What to check", "");
   out.push(
-    "1. The proof holds: the baseline fails and the candidate passes, or proving it after release is acceptable (proofAccepted).",
+    proof.deferred
+      ? "1. The evidence shows the fix addresses the failures, and proving it after release is acceptable (proofAccepted)."
+      : "1. The proof holds: the baseline fails and the candidate passes, or proving it after release is acceptable (proofAccepted).",
     "2. Check every claim and source below. Open each source.",
     `3. The note at ${dataText(candidate.notePath)} and one of ${candidate.runbookPaths.map((path) => dataText(path)).join(", ")} are in the PR and match the diff.`,
     input.mode === "ask"

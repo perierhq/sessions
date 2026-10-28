@@ -419,7 +419,14 @@ export interface ProofResult {
     verdict: "passes" | "fails" | "unclear" | "after-deploy";
     refused?: string;
   };
+  /** The baseline did not fail, and the proof went on to the verifier
+   *  anyway: the investigator said the fix can only be shown after release
+   *  (`after-release`), or the signal fails on and off (`intermittent`).
+   *  The verifier then decides what it can prove (`proofAccepted`). */
+  deferred?: ProofDeferral;
 }
+
+export type ProofDeferral = "after-release" | "intermittent";
 
 export interface Verdict {
   round: number;
@@ -518,6 +525,7 @@ export const NEEDS_YOU_KINDS = [
   "no-candidate",
   "question",
   "proof-stopped",
+  "unproven",
   "merge",
   "action-failed",
   "interrupted",

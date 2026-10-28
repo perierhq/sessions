@@ -3522,3 +3522,69 @@ test("the coordinator session is created only when an agent starts", async () =>
     agents: [{ role: "investigator", sessionId: "child-1", round: 1 }],
   });
 });
+
+test("a fix proven only after release reaches the verifier; unproven, the owner can deploy it and watch", async () => {
+  const w = await world();
+  w.evaluate("sig-a", "ok");
+  w.deps.proof = async (input) => ({
+    round: input.round,
+    at: new Date(w.clock).toISOString(),
+    baseline: {
+      samples: [1, 2, 3].map(() => ({
+        at: new Date(w.clock).toISOString(),
+        result: "ok" as const,
+        detail: "200",
+      })),
+      verdict: "passes",
+    },
+    candidate: { kind: "after-deploy", samples: [], verdict: "after-deploy" },
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      check: {
+        kind: "after-deploy",
+        reason: "A request now can't tell before from after",
+      },
+    }),
+    { prUrl: "https://github.com/acme/web/pull/12" },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("fix-ready");
+  expect(i?.response).toMatchObject({
+    phase: "verifying",
+    proof: { baseline: { verdict: "passes" }, deferred: "after-release" },
+  });
+  expect(w.spawns[1]).toMatchObject({
+    role: "verifier",
+    prompt: expect.stringContaining("can only be proven after release"),
+  });
+  w.finish(
+    "child-2",
+    fence({
+      ...goodVerifier,
+      verdict: "not-certain",
+      reasons: ["Only the release can show it"],
+      proofAccepted: false,
+    }),
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.next).toMatchObject({
+    kind: "needs-you",
+    needsYou: "unproven",
+    options: ["approve", "send-back", "close"],
+  });
+  expect(i?.response?.next).not.toMatchObject({
+    reason: expect.stringContaining("problem stopped"),
+  });
+  expect(
+    await applyOwnerDecision(w.incident.id, "approve", "Bo", undefined, w.deps),
+  ).toMatchObject({ state: "deploying" });
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.merges).toEqual([{ ghRepo: "acme/web", n: 12, sha: "abc1234" }]);
+});
