@@ -3588,3 +3588,49 @@ test("a fix proven only after release reaches the verifier; unproven, the owner 
   await advanceIncident(w.incident.id, w.deps);
   expect(w.merges).toEqual([{ ghRepo: "acme/web", n: 12, sha: "abc1234" }]);
 });
+
+test("a proof that stopped is measured again when the signal fails again, instead of saying it stopped", async () => {
+  const w = await world();
+  w.evaluate("sig-a", "ok");
+  let baseline: "ok" | "fail" = "ok";
+  w.deps.proof = async (input) => {
+    const samples = [1, 2, 3].map(() => ({
+      at: new Date(w.clock).toISOString(),
+      result: baseline,
+      detail: baseline === "ok" ? "200" : "403",
+    }));
+    return {
+      round: input.round,
+      at: new Date(w.clock).toISOString(),
+      baseline: { samples, verdict: baseline === "ok" ? "passes" : "fails" },
+      candidate: {
+        kind: "request",
+        samples: samples.map((s) => ({ ...s, result: "ok" as const })),
+        verdict: "passes",
+      },
+    };
+  };
+  __setCoordinatorDepsForTest(w.deps);
+  await w.runToVerifier();
+  let i = await getIncident(w.incident.id);
+  expect(i?.response?.needsYou?.kind).toBe("proof-stopped");
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+
+  w.clock += 600_000;
+  baseline = "fail";
+  w.evaluate("sig-a", "failing");
+  await updateIncident(w.incident.id, (c) => ({
+    ...c,
+    lastProblemAt: new Date(w.clock).toISOString(),
+  }));
+  expect(await runResponseTick(w.clock, w.deps)).toContain(w.incident.id);
+  await __waitForCoordinatorForTest();
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("fix-ready");
+  expect(i?.response?.phase).toBe("verifying");
+  expect(i?.response?.proof?.baseline.verdict).toBe("fails");
+  expect(i?.events.map((e) => e.detail)).toContainEqual(
+    "Search failed again at 12:10 UTC: measuring the fix again",
+  );
+});

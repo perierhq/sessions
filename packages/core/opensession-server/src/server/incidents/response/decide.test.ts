@@ -27,6 +27,7 @@ import {
   nextActionFor,
   ownSignalIds,
   rollbackFirstApplies,
+  waitingMayBeStale,
 } from "./decide";
 import { defaultProjectSettings } from "./project-settings";
 import type { ResponseView } from "./steps";
@@ -3037,4 +3038,99 @@ test("verifying a fix proven after release: unproven asks the owner to merge and
       }),
     ),
   ).toMatchObject({ step: "transition", phase: "investigating" });
+});
+
+// ── A waiting card whose signal failed again ───────────────────────────────
+
+function waitingOn(
+  kind: "proof-stopped" | "unproven",
+  over: Partial<Incident> = {},
+  c: CandidateState = candidate({ pr: prSnapshot() }),
+): ResponseView {
+  return view({
+    incident: incident(
+      "needs-you",
+      response({
+        phase: "needs-you",
+        candidate: c,
+        proof: proofResult({
+          round: 1,
+          baseline: "passes",
+          candidate: "passes",
+        }),
+        needsYou: {
+          kind,
+          reason:
+            kind === "proof-stopped"
+              ? "The problem stopped before the fix could be proven"
+              : "The fix can only be proven after release: Only the release can show it",
+          since: iso(-30 * 60_000),
+          resumePhase: "proving",
+        },
+      }),
+      { lastProblemAt: iso(-40 * 60_000), resumeState: "fix-ready", ...over },
+    ),
+    evaluations: new Map([["sig-a", evaluation("ok", iso(-60_000))]]),
+  });
+}
+
+test("a proof that stopped is measured again once the signal fails again", () => {
+  expect(waitingMayBeStale(waitingOn("proof-stopped").incident)).toBe(false);
+  expect(decideNextStep(waitingOn("proof-stopped"))).toEqual({ step: "none" });
+  const back = waitingOn("proof-stopped", { lastProblemAt: iso(-5 * 60_000) });
+  expect(waitingMayBeStale(back.incident)).toBe(true);
+  expect(decideNextStep(back)).toEqual({
+    step: "transition",
+    to: "fix-ready",
+    phase: "proving",
+    detail: "Search failed again at 11:55 UTC: measuring the fix again",
+    patch: { needsYou: undefined, proof: undefined },
+  });
+});
+
+test("a proof that stopped on a fix only a release can prove goes on to the verifier", () => {
+  const legacy = waitingOn(
+    "proof-stopped",
+    {},
+    candidate({ check: afterDeployCheck, pr: prSnapshot() }),
+  );
+  expect(waitingMayBeStale(legacy.incident)).toBe(true);
+  expect(decideNextStep(legacy)).toMatchObject({
+    step: "transition",
+    to: "fix-ready",
+    phase: "proving",
+    patch: { needsYou: undefined, proof: undefined },
+  });
+});
+
+test("an unproven fix whose signal failed again says so, once per return", () => {
+  const back = waitingOn("unproven", { lastProblemAt: iso(-5 * 60_000) });
+  const step = decideNextStep(back);
+  expect(step).toEqual({
+    step: "needs-you",
+    kind: "unproven",
+    reason:
+      "The fix can only be proven after release: Only the release can show it (Search failed again at 11:55 UTC)",
+  });
+  // Said again later, the newer time replaces the older one.
+  const r = back.incident.response!;
+  const again = decideNextStep({
+    ...back,
+    incident: {
+      ...back.incident,
+      lastProblemAt: iso(-60_000),
+      response: {
+        ...r,
+        needsYou: {
+          ...r.needsYou!,
+          reason: (step as { reason: string }).reason,
+          since: iso(-4 * 60_000),
+        },
+      },
+    },
+  });
+  expect(again).toMatchObject({
+    reason:
+      "The fix can only be proven after release: Only the release can show it (Search failed again at 11:59 UTC)",
+  });
 });

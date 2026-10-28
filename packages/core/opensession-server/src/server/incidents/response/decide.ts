@@ -465,6 +465,53 @@ function setupChanged(view: ResponseView): ResponseStep | undefined {
   };
 }
 
+/**
+ * Whether a waiting card may say something no longer true: a proof that
+ * stopped or a fix not proven before release whose signal failed again
+ * since the card appeared, or a proof that stopped on a fix only a release
+ * can prove (it goes on to the verifier now). The tick reads such an
+ * incident again; `staleWaiting` decides.
+ */
+export function waitingMayBeStale(incident: Incident): boolean {
+  const r = incident.response;
+  const ny = r?.needsYou;
+  if (incident.state !== "needs-you" || !r || !ny) return false;
+  if (ny.kind !== "proof-stopped" && ny.kind !== "unproven") return false;
+  if (Date.parse(incident.lastProblemAt) > Date.parse(ny.since)) return true;
+  return (
+    ny.kind === "proof-stopped" && r.candidate?.check.kind === "after-deploy"
+  );
+}
+
+const FAILED_AGAIN = / \(.+ failed again at \d\d:\d\d UTC\)$/;
+
+/** A waiting card brought up to date (see waitingMayBeStale): a proof that
+ *  stopped is measured again, and an unproven fix says when its signal
+ *  failed again. */
+function staleWaiting(view: ResponseView): ResponseStep | undefined {
+  const { incident } = view;
+  const ny = incident.response?.needsYou;
+  if (!ny || !incident.response?.candidate || !waitingMayBeStale(incident))
+    return undefined;
+  const again = `${primaryName(view)} failed again at ${hhmmUtc(Date.parse(incident.lastProblemAt))} UTC`;
+  const back = Date.parse(incident.lastProblemAt) > Date.parse(ny.since);
+  if (ny.kind === "proof-stopped")
+    return {
+      step: "transition",
+      to: "fix-ready",
+      phase: "proving",
+      detail: back
+        ? `${again}: measuring the fix again`
+        : "The fix can only be proven after release: the verifier checks it",
+      patch: { needsYou: undefined, proof: undefined },
+    };
+  return {
+    step: "needs-you",
+    kind: ny.kind,
+    reason: `${ny.reason.replace(FAILED_AGAIN, "")} (${again})`,
+  };
+}
+
 function guards(view: ResponseView): ResponseStep | undefined {
   const { incident, settings } = view;
   const r = incident.response;
@@ -571,7 +618,7 @@ function guards(view: ResponseView): ResponseStep | undefined {
         detail: "Question answered",
         patch: { needsYou: undefined },
       };
-    return setupChanged(view) ?? NONE;
+    return setupChanged(view) ?? staleWaiting(view) ?? NONE;
   }
   if (!r) return undefined;
 

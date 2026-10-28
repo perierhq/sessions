@@ -82,6 +82,7 @@ import {
   nextActionFor,
   rereadsReport,
   roundRan,
+  waitingMayBeStale,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
 import { appendLedger, emptyResponse, spendInMonth } from "./ledger";
@@ -2606,7 +2607,10 @@ function needsAttention(
   switch (r?.phase) {
     case "needs-you":
       // A setup problem: Try again follows whether the agents could start.
-      return working || r?.needsYou?.kind === "setup";
+      // A proof card whose signal failed again is brought up to date.
+      return (
+        working || r?.needsYou?.kind === "setup" || waitingMayBeStale(incident)
+      );
     case "done":
       return working;
     case "paused":
