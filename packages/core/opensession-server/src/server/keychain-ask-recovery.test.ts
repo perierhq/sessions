@@ -604,6 +604,78 @@ describe("the keychain routes", () => {
   });
 });
 
+describe("owning, deleting and revoking", () => {
+  const alex = { login: "alex-gh", name: "Alex Example" };
+  const call = (
+    method: "POST" | "DELETE",
+    path: string,
+    authUser: { login: string; name: string; automation?: boolean } | null,
+    body?: unknown,
+  ) => {
+    const url = new URL(path, "https://os.example.test");
+    return handleKeychainRoutes({
+      path: url.pathname,
+      url,
+      publicPrefix: "",
+      authUser,
+      req: new Request(url, {
+        method,
+        ...(body === undefined
+          ? {}
+          : {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body),
+            }),
+      }),
+    }) as Promise<Response>;
+  };
+
+  test("a claimed name or an automation token can't add a credential", async () => {
+    const body = {
+      service: "acme-staging",
+      host: "api.example.test",
+      secret: "sk-staging",
+      owner: "Alex",
+    };
+    for (const who of [null, { ...alex, automation: true }]) {
+      const res = await call("POST", "/api/keychain/credentials", who, body);
+      expect(res.status).toBe(401);
+      expect((await res.json()).error).toContain("Sign in with GitHub");
+    }
+    expect(kc.findCredential("acme-staging")).toBeUndefined();
+    const res = await call("POST", "/api/keychain/credentials", alex, body);
+    expect(res.status).toBe(200);
+    expect(kc.findCredential("acme-staging")?.owner).toBe("Alex");
+  });
+
+  test("a claimed name can't delete a credential or revoke a grant", async () => {
+    const id = kc.findCredential("acme-prod")!.id;
+    const grant = kc.__mintGrantForTest({
+      credentialId: id,
+      sessionId: SESSION,
+      requestedBy: "Bea",
+      mode: "standing",
+    });
+    const revoke = `/api/keychain/grants/${grant.id}`;
+    const remove = `/api/keychain/credentials/${id}`;
+    for (const who of [null, { ...alex, automation: true }]) {
+      expect((await call("DELETE", revoke, who, { user: "Alex" })).status).toBe(
+        401,
+      );
+      expect((await call("DELETE", remove, who, { user: "Alex" })).status).toBe(
+        401,
+      );
+    }
+    expect(kc.listGrants({ sessionId: SESSION })[0]!.status).toBe("active");
+    expect(kc.findCredential("acme-prod")).toBeDefined();
+
+    expect((await call("DELETE", revoke, alex)).status).toBe(200);
+    expect(kc.listGrants({ sessionId: SESSION })[0]!.status).toBe("revoked");
+    expect((await call("DELETE", remove, alex)).status).toBe(200);
+    expect(kc.findCredential("acme-prod")).toBeUndefined();
+  });
+});
+
 describe("the keychain card in the asking session", () => {
   const alex = { login: "alex-gh", name: "Alex Example" };
   const bob = { login: "bob-gh", name: "Bob Example" };

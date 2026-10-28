@@ -165,7 +165,9 @@ key's write ceiling.)
 
 A teammate registers a credential (host, header, optional method and path
 ceiling) over the signed-in HTTP route; it is stored 0600 on the server and no
-API or tool returns it. Any interactive session may ask to borrow any
+API or tool returns it. Adding, deleting and revoking over HTTP need a verified
+GitHub sign-in, like sharing and answering: a claimed name or an automation
+token is refused. Any interactive session may ask to borrow any
 credential for a stated purpose. Only the owner answers: in their Slack DM,
 where a button counts only when the clicking Slack user is the one the ask was
 sent to, or on the web, which requires the owner's verified GitHub sign-in
