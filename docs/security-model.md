@@ -200,7 +200,11 @@ has prefixes, a path that keeps an encoded `/`, `\` or `.` (`%2F`, `%5C`,
 may decode it into a route the check never saw. Redirects are not followed;
 agent-supplied headers are limited to a short allowlist. The secret is scrubbed from the returned headers
 and body verbatim and in common encodings (URL, JSON, base64), which is best
-effort. A credential registered as status-only returns only the HTTP status,
+effort. The secret rides in the credential's header after its scheme
+(Authorization and Bearer by default; Basic, Token or none can be chosen); a
+Basic secret stored as `user:password` is sent base64-encoded, and that
+encoded form is scrubbed like the others. A credential registered as
+status-only returns only the HTTP status,
 for APIs that might echo the secret in a form scrubbing cannot catch.
 
 Each brokered call is audited once its outcome is known

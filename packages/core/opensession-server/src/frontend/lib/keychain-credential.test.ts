@@ -6,6 +6,7 @@ import {
   editEffect,
   expiryNote,
   formChanged,
+  injectionPreview,
   lendingRoles,
   testOutcome,
 } from "./keychain-credential";
@@ -160,5 +161,61 @@ test("only your own credentials and workspace ones can be lent, never a login", 
 test("a lending says which roles, and how", () => {
   expect(lendingRoles({ investigator: "standing", verifier: "once" })).toBe(
     "investigator always, verifier ask once",
+  );
+});
+
+test("header and scheme: defaults are sent as nothing, the rest as set", () => {
+  const form = credentialForm();
+  expect(form).toMatchObject({ header: "", scheme: "Bearer" });
+  expect(credentialSpec(form).injection).toEqual({});
+  expect(
+    credentialSpec({ ...form, header: "authorization", scheme: "Bearer" })
+      .injection,
+  ).toEqual({});
+  expect(credentialSpec({ ...form, scheme: "Basic" }).injection).toEqual({
+    header: "Authorization",
+    scheme: "Basic",
+  });
+  expect(credentialSpec({ ...form, scheme: "" }).injection).toEqual({
+    header: "Authorization",
+    scheme: "",
+  });
+  expect(
+    credentialSpec({ ...form, header: "X-Api-Key", scheme: "" }).injection,
+  ).toEqual({ header: "X-Api-Key" });
+  expect(
+    credentialSpec({ ...form, header: "X-Api-Key", scheme: "Token" }).injection,
+  ).toEqual({ header: "X-Api-Key", scheme: "Token" });
+});
+
+test("an edit opens with the stored header and scheme", () => {
+  const base = {
+    id: "kc",
+    owner: "Alex",
+    service: "acme",
+    host: "api.example.test",
+    createdAt: "",
+    updatedAt: "",
+  };
+  expect(credentialForm(base)).toMatchObject({ header: "", scheme: "Bearer" });
+  expect(
+    credentialForm({ ...base, injection: { header: "X-Api-Key" } }),
+  ).toMatchObject({ header: "X-Api-Key", scheme: "" });
+  expect(
+    credentialForm({
+      ...base,
+      injection: { header: "Authorization", scheme: "Basic" },
+    }),
+  ).toMatchObject({ header: "Authorization", scheme: "Basic" });
+});
+
+test("the preview line is what goes out, with the secret masked", () => {
+  const form = credentialForm();
+  expect(injectionPreview(form)).toBe("Authorization: Bearer ••••");
+  expect(injectionPreview({ ...form, header: "X-Api-Key", scheme: "" })).toBe(
+    "X-Api-Key: ••••",
+  );
+  expect(injectionPreview({ ...form, scheme: "Token" })).toBe(
+    "Authorization: Token ••••",
   );
 });

@@ -133,6 +133,7 @@ const { Button } = await import("../../ui/button");
 const { ConfirmDialog } = await import("../../ui/confirm");
 const { Input } = await import("../../ui/input");
 const { Field } = await import("../../ui/input");
+const { OptionSelect } = await import("../../ui/select");
 const { Menu } = await import("../../ui/menu");
 const { PlainButton } = await import("../../ui/plain-button");
 const { SettingRow } = await import("./shared");
@@ -201,7 +202,7 @@ async function submit(tree: Tree) {
   await settle();
 }
 
-test("the header field shows a bare header name and says what empty sends", async () => {
+test("header and scheme are two fields, with what is sent shown live", async () => {
   const tree = await mountForm();
   const header = find(
     tree.output(),
@@ -210,7 +211,20 @@ test("the header field shows a bare header name and says what empty sends", asyn
   );
   expect(header).toBeDefined();
   expect(header!.props["aria-describedby"]).toBeTruthy();
-  expect(text(tree)).toContain("Authorization: Bearer <secret>");
+  expect(text(tree)).toContain("Authorization: Bearer ••••");
+  // Another header drops the default scheme with it.
+  await type(tree, placeholder("Authorization"), "X-Api-Key");
+  expect(text(tree)).toContain("X-Api-Key: ••••");
+  const scheme = find(tree.output(), OptionSelect, (p) => p.label === "Scheme");
+  expect(scheme?.props.value).toBe("none");
+  scheme!.props.onChange("Token");
+  await settle();
+  expect(text(tree)).toContain("X-Api-Key: Token ••••");
+  await type(tree, placeholder("acme-api"), "acme");
+  await type(tree, placeholder("api.example.test"), "api.example.test");
+  await type(tree, secretField, "sk-acme");
+  await submit(tree);
+  expect(added[0]!.injection).toEqual({ header: "X-Api-Key", scheme: "Token" });
 });
 
 test("a failed save shows its error inside the dialog, above its buttons", async () => {

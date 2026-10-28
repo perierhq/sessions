@@ -55,7 +55,9 @@ function fieldValue(
   switch (field) {
     case "injection": {
       const header = values?.injection?.header ?? "Authorization";
-      const scheme = values?.injection?.scheme ?? "Bearer";
+      const scheme =
+        values?.injection?.scheme ??
+        (header.toLowerCase() === "authorization" ? "Bearer" : "");
       return scheme ? `${header}: ${scheme}` : header;
     }
     case "statusOnly":

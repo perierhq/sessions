@@ -2464,7 +2464,14 @@ export function brokerHeaders(
   cred: KeychainCredential,
 ): Record<string, string> {
   const { header, scheme } = credentialInjection(cred.injection);
-  return { [header]: scheme ? `${scheme} ${cred.secret}` : cred.secret };
+  // Basic takes base64(user:password). A secret stored as user:password is
+  // encoded here; an encoded one has no colon (base64 never does) and is
+  // sent as it is. scrubSecret already covers the encoded form.
+  const value =
+    scheme.toLowerCase() === "basic" && cred.secret.includes(":")
+      ? Buffer.from(cred.secret).toString("base64")
+      : cred.secret;
+  return { [header]: scheme ? `${scheme} ${value}` : value };
 }
 
 /** What no header value may carry: CR, LF, NUL and the other controls. A

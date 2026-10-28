@@ -533,3 +533,47 @@ describe("where a credential is lent", () => {
     __setKeychainProjectsForTest(undefined);
   });
 });
+
+describe("header and scheme", () => {
+  const sent = async () => {
+    await testCredential({
+      by: "Alex",
+      credentialId: kc.findCredential("acme-api")!.id,
+      net,
+    });
+    return new Headers(seen.at(-1)!.init.headers);
+  };
+
+  test("Basic with user:password is sent base64-encoded", async () => {
+    add({
+      secret: "qa:pa55",
+      injection: { header: "Authorization", scheme: "Basic" },
+    });
+    expect((await sent()).get("authorization")).toBe(
+      `Basic ${Buffer.from("qa:pa55").toString("base64")}`,
+    );
+  });
+
+  test("Basic with an encoded value, Token, and no scheme are sent as given", async () => {
+    const meta = add({
+      secret: "dXNlcjpwYXNz",
+      injection: { header: "Authorization", scheme: "Basic" },
+    });
+    expect((await sent()).get("authorization")).toBe("Basic dXNlcjpwYXNz");
+    await kc.patchCredentialAsync(meta.id, "Alex", {
+      injection: { header: "Authorization", scheme: "Token" },
+    });
+    expect((await sent()).get("authorization")).toBe("Token dXNlcjpwYXNz");
+    await kc.patchCredentialAsync(meta.id, "Alex", {
+      injection: { header: "X-Api-Key", scheme: "" },
+    });
+    expect((await sent()).get("x-api-key")).toBe("dXNlcjpwYXNz");
+  });
+
+  test("the Basic encoding is scrubbed from what comes back", () => {
+    const encoded = Buffer.from("qa:pa55").toString("base64");
+    expect(kc.scrubSecret(`echo ${encoded}`, "qa:pa55")).toBe(
+      "echo [redacted]",
+    );
+  });
+});

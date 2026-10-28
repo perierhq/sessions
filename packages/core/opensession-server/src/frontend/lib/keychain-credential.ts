@@ -16,7 +16,10 @@ export interface CredentialFormState {
   service: string;
   host: string;
   description: string;
+  /** "" means Authorization. */
   header: string;
+  /** The word before the secret: Bearer, Basic, Token, or "" for none. */
+  scheme: string;
   methods: KeychainMethod[];
   /** Comma-separated, as typed. */
   prefixes: string;
@@ -33,6 +36,7 @@ export function credentialForm(c?: KeychainCredentialDto): CredentialFormState {
     host: c?.host ?? "",
     description: c?.description ?? "",
     header: c?.injection?.header ?? "",
+    scheme: c?.injection?.scheme ?? defaultScheme(c?.injection?.header ?? ""),
     methods: KEYCHAIN_METHODS.filter((m) => c?.allowedMethods?.includes(m)),
     prefixes: (c?.allowedPathPrefixes ?? []).join(", "),
     statusOnly: c?.statusOnly === true,
@@ -57,12 +61,11 @@ export function list(value: string): string[] {
 export function credentialSpec(
   form: CredentialFormState,
 ): KeychainCredentialSpec & { service: string; host: string } {
-  const header = form.header.trim();
   return {
     service: form.service.trim(),
     host: form.host.trim(),
     description: form.description.trim(),
-    injection: header ? { header } : {},
+    injection: injectionOf(form),
     allowedMethods: form.methods,
     allowedPathPrefixes: list(form.prefixes),
     statusOnly: form.statusOnly,
@@ -70,6 +73,34 @@ export function credentialSpec(
     expiresOn: form.expiresOn || null,
     testPath: form.testPath.trim() || null,
   };
+}
+
+/** The schemes the dialog offers, "" meaning none. */
+export const SCHEMES = ["Bearer", "Basic", "Token", ""] as const;
+
+/** The scheme a header gets when none is chosen, as the server decides it:
+ *  Bearer for Authorization (any case), nothing for anything else. */
+export function defaultScheme(header: string): string {
+  const name = header.trim() || "Authorization";
+  return name.toLowerCase() === "authorization" ? "Bearer" : "";
+}
+
+/** The injection to store: nothing when it is the default (Authorization:
+ *  Bearer), so an untouched edit changes nothing; else what was set. */
+function injectionOf(
+  form: CredentialFormState,
+): NonNullable<KeychainCredentialSpec["injection"]> {
+  const header = form.header.trim() || "Authorization";
+  const isDefaultHeader = header.toLowerCase() === "authorization";
+  if (isDefaultHeader && form.scheme === "Bearer") return {};
+  if (form.scheme === defaultScheme(header)) return { header };
+  return { header, scheme: form.scheme };
+}
+
+/** The header line a call carries, the secret masked: what "Sends:" shows. */
+export function injectionPreview(form: CredentialFormState): string {
+  const header = form.header.trim() || "Authorization";
+  return `${header}: ${form.scheme ? `${form.scheme} ` : ""}••••`;
 }
 
 /** Whether the form saves something different from where it started. */

@@ -16,8 +16,10 @@ import {
 import {
   credentialForm,
   credentialSpec,
+  defaultScheme,
   editEffect,
   expiryNote,
+  injectionPreview,
   formChanged,
   list,
   testOutcome,
@@ -32,11 +34,20 @@ import { errorMessage } from "../../lib/error-message";
 import { Button } from "../../ui/button";
 import { Checkbox } from "../../ui/checkbox";
 import { cn } from "../../ui/cn";
-import { Field, Input } from "../../ui/input";
+import { Field, FieldGrid, Input } from "../../ui/input";
+import { OptionSelect } from "../../ui/select";
 import { PlainButton } from "../../ui/plain-button";
 import { InlineAlert } from "../../ui/state";
 import { TextLink } from "../../ui/text-link";
 import { SettingsDialog } from "./incidents/SettingsDialog";
+
+/** Bearer, Basic, Token or none: "" can't be a select value. */
+const SCHEME_OPTIONS = [
+  { value: "Bearer", label: "Bearer" },
+  { value: "Basic", label: "Basic" },
+  { value: "Token", label: "Token" },
+  { value: "none", label: "None" },
+];
 
 /** A test result's line takes its tone's ink. */
 const TEST_TONE = {
@@ -273,20 +284,46 @@ export function CredentialDialog({
           </p>
         </div>
         <div className="flex flex-col gap-1.5">
-          <Field label="Injection header">
-            <Input
-              className={DIALOG_INPUT}
-              value={form.header}
-              onChange={(e) => set("header", e.target.value)}
-              placeholder="Authorization"
-              autoCapitalize="none"
-              spellCheck={false}
-              aria-describedby={headerHintId}
-            />
-          </Field>
-          <p id={headerHintId} className={FIELD_HINT}>
-            Leave empty to send Authorization: Bearer &lt;secret&gt;. Paste the
-            token alone; a leading Bearer is dropped.
+          <FieldGrid>
+            <Field label="Header">
+              <Input
+                className={DIALOG_INPUT}
+                value={form.header}
+                onChange={(e) => {
+                  const header = e.target.value;
+                  // The scheme follows the header until it is chosen:
+                  // Bearer for Authorization, none for anything else.
+                  if (form.scheme === defaultScheme(form.header))
+                    set("scheme", defaultScheme(header));
+                  set("header", header);
+                }}
+                placeholder="Authorization"
+                autoCapitalize="none"
+                spellCheck={false}
+                aria-describedby={headerHintId}
+              />
+            </Field>
+            <Field label="Scheme">
+              <OptionSelect
+                label="Scheme"
+                value={form.scheme || "none"}
+                options={SCHEME_OPTIONS}
+                onChange={(value) =>
+                  set("scheme", value === "none" ? "" : value)
+                }
+                className="w-full justify-between phone:min-h-11"
+              />
+            </Field>
+          </FieldGrid>
+          <p
+            id={headerHintId}
+            className="m-0 font-mono text-meta text-fg [overflow-wrap:anywhere]"
+          >
+            Sends: {injectionPreview(form)}
+          </p>
+          <p className={FIELD_HINT}>
+            Paste the token alone; a pasted scheme is dropped. For Basic, paste
+            user:password and it is sent base64-encoded
           </p>
         </div>
       </div>
