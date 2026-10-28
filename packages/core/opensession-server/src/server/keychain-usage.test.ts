@@ -3,8 +3,16 @@
  * with its outcome and the credential it used, and the credential keeps
  * when it was last used and by which session.
  */
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setSystemTime,
+  test,
+} from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -146,6 +154,38 @@ describe("last used", () => {
     // An edit keeps it.
     await kc.patchCredentialAsync(meta.id, "Alex", { description: "Orders" });
     expect(kc.findCredential(meta.id)?.lastUsed?.sessionId).toBe("s-1");
+  });
+
+  test("a busy credential still saves its last use once a minute", async () => {
+    const meta = setup();
+    const saved = () =>
+      JSON.parse(readFileSync(STORE, "utf8")).credentials.find(
+        (c: { id: string }) => c.id === meta.id,
+      )?.lastUsed?.at;
+    const start = Date.now();
+    const at = (ms: number) => new Date(start + ms).toISOString();
+    const useAt = async (ms: number) => {
+      setSystemTime(new Date(start + ms));
+      kc.recordCredentialUse(meta.id, { sessionId: "s-1", status: 200 });
+      // Let any write it started land before the next call.
+      await Bun.sleep(40);
+    };
+    try {
+      await useAt(0);
+      expect(saved()).toBe(at(0));
+      // Within a minute of the last save: rides along with the next write.
+      await useAt(30_000);
+      expect(saved()).toBe(at(0));
+      // A minute after the last save, though only 30s after the last call.
+      await useAt(60_000);
+      expect(saved()).toBe(at(60_000));
+      await useAt(90_000);
+      expect(saved()).toBe(at(60_000));
+      await useAt(120_000);
+      expect(saved()).toBe(at(120_000));
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("a refused call is not a use", async () => {

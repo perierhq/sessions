@@ -1320,6 +1320,9 @@ export function testRefusal(
  *  store on every call. */
 const USE_WRITE_INTERVAL_MS = 60_000;
 
+/** When each credential's last use was last written, by credential id. */
+const useSavedAt: Map<string, number> = (g.__keychainUseSavedAt ??= new Map());
+
 /**
  * Note a call that went out with a credential: kept on the credential as
  * `lastUsed`. Never blocks: the store is written asynchronously, at most
@@ -1331,16 +1334,15 @@ export function recordCredentialUse(
 ): void {
   const cred = credentials.get(credentialId);
   if (!cred) return;
-  const previous = cred.lastUsed ? Date.parse(cred.lastUsed.at) : 0;
   const now = Date.now();
   cred.lastUsed = { at: new Date(now).toISOString(), ...use };
-  if (now - previous >= USE_WRITE_INTERVAL_MS)
-    persistAsync().catch((error) =>
-      console.error(
-        "[keychain] failed to save a credential's last use:",
-        error,
-      ),
-    );
+  // Measured from the last save, not the last use: a credential called
+  // every few seconds still saves once a minute.
+  if (now - (useSavedAt.get(credentialId) ?? 0) < USE_WRITE_INTERVAL_MS) return;
+  useSavedAt.set(credentialId, now);
+  persistAsync().catch((error) =>
+    console.error("[keychain] failed to save a credential's last use:", error),
+  );
 }
 
 export function listCredentials(): KeychainCredentialMeta[] {
