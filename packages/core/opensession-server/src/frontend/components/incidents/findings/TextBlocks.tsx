@@ -9,18 +9,21 @@ import {
 } from "../../../../shared/findings";
 import type { Incident } from "../../../../shared/incidents";
 import {
-  CLAIM_STATUS_COPY,
-  CONFIDENCE_COPY,
+  CONFIDENCE_WORD,
   type FindingItem,
   FINDINGS_MARKDOWN,
   LOG_UTC_COPY,
   localizeTimes,
   logTimesInUtc,
   timelineRows,
+  unCheckedClaimsCopy,
 } from "../../../lib/incidents/findings";
 import {
   AUDIT_ROW,
   FINDINGS_CLAIM_ROW,
+  FINDINGS_CLAIMS_CHEVRON,
+  FINDINGS_CLAIMS_FOLD,
+  FINDINGS_CLAIMS_SUMMARY,
   FINDINGS_INLINE_PROSE,
   FINDINGS_LABEL,
   FINDINGS_LOG,
@@ -29,13 +32,15 @@ import {
   FINDINGS_PROSE_QUIET,
   FINDINGS_SOURCE,
   FINDINGS_SOURCE_QUIET,
-  FINDINGS_STATUS_TONE,
+  FINDINGS_STATUS_LINE,
 } from "../../../lib/incident-classes";
 import { parseAnsi, renderAnsiHtml } from "../../../lib/ansi-block";
 import { renderMarkdown } from "../../../lib/markdown";
 import { clockTime, fullTime } from "../../../lib/time";
 import { cn } from "../../../ui/cn";
 import { MarkdownBody } from "../../MarkdownBody";
+import { IconChevronDown } from "../../icons";
+import { StatusMark } from "./StatusMark";
 
 type BlockOf<K extends FindingBlock["kind"]> = Extract<
   FindingBlock,
@@ -89,32 +94,26 @@ function blockOf<K extends FindingBlock["kind"]>(
   return item.block.kind === kind ? (item.block as BlockOf<K>) : null;
 }
 
-function StatusWord({ status }: { status: HypothesisStatus }) {
-  return (
-    <span className={FINDINGS_STATUS_TONE[status]}>
-      {FINDINGS_COPY.status[status]}
-    </span>
-  );
-}
-
-/** What the agent thinks happened: the sentence, how sure it is, whether
- *  the verifier's checks bear it out, and the claims it rests on. */
+/** What the agent thinks happened: the sentence, then whether the
+ *  verifier's checks bear it out (a mark first) and how sure the agent is,
+ *  and the claims it rests on that no claims block lists. */
 export function HypothesisBlock({ item }: { item: FindingItem }) {
   const block = blockOf(item, "hypothesis");
   if (!block) return null;
+  const restsOn = item.restsOn ?? block.claims;
   return (
     <>
       <Prose text={block.statement} />
-      <p className="m-0 text-supporting text-dim">
-        {CONFIDENCE_COPY[block.confidence]}
-        {" · "}
-        <StatusWord status={item.status ?? "unchecked"} />
+      <p className={FINDINGS_STATUS_LINE}>
+        <StatusMark status={item.status ?? "unchecked"} />
+        <span aria-hidden>·</span>
+        <span>{CONFIDENCE_WORD[block.confidence]}</span>
       </p>
-      {block.claims.length > 0 ? (
+      {restsOn.length > 0 ? (
         <div className="flex min-w-0 flex-col gap-1">
           <p className={FINDINGS_LABEL}>Rests on</p>
           <ul className="m-0 flex list-disc flex-col gap-0.5 pl-5 text-supporting text-dim [overflow-wrap:anywhere]">
-            {block.claims.map((claim, i) => (
+            {restsOn.map((claim, i) => (
               // Claims are free text and may repeat; the list never reorders.
               <li key={i}>
                 <InlineProse
@@ -243,16 +242,17 @@ export function LogBlock({ item }: { item: FindingItem }) {
   return <LogLines excerpt={block} />;
 }
 
+/** A claim row's status as the hypothesis's mark: "unverifiable" reads
+ *  as can't tell. */
+const rowStatus = (status: ClaimRow["status"]): HypothesisStatus =>
+  status === "unverifiable" ? "cant-tell" : status;
+
 function ClaimRowView({ row }: { row: ClaimRow }) {
-  const tone =
-    row.status === "unverifiable"
-      ? FINDINGS_STATUS_TONE["cant-tell"]
-      : FINDINGS_STATUS_TONE[row.status];
   return (
     <li className={FINDINGS_CLAIM_ROW}>
       <InlineProse text={row.text} className="text-supporting text-fg" />
-      <span className={cn("text-meta", tone)}>
-        {CLAIM_STATUS_COPY[row.status]}
+      <span className="text-meta">
+        <StatusMark status={rowStatus(row.status)} />
       </span>
       {row.evidence ? (
         <InlineProse text={row.evidence} className="text-meta text-faint" />
@@ -261,17 +261,35 @@ function ClaimRowView({ row }: { row: ClaimRow }) {
   );
 }
 
-/** The report's claims, each with what the verifier found. */
+/** The report's claims, each with what the verifier found. Before any
+ *  check, one line that opens to the claims, instead of a row per claim
+ *  all saying "Not checked yet". */
 export function ClaimsBlock({ item }: { item: FindingItem }) {
   const rows = item.claims ?? [];
   if (rows.length === 0)
     return <p className="m-0 text-supporting text-faint">No claims yet</p>;
+  if (rows.some((row) => row.status !== "unchecked"))
+    return (
+      <ul className="m-0 flex list-none flex-col p-0">
+        {rows.map((row, i) => (
+          // Claims follow the report's order and may repeat.
+          <ClaimRowView key={i} row={row} />
+        ))}
+      </ul>
+    );
   return (
-    <ul className="m-0 flex list-none flex-col p-0">
-      {rows.map((row, i) => (
-        // Claims follow the report's order and may repeat.
-        <ClaimRowView key={i} row={row} />
-      ))}
-    </ul>
+    <details className={FINDINGS_CLAIMS_FOLD}>
+      <summary className={FINDINGS_CLAIMS_SUMMARY}>
+        {unCheckedClaimsCopy(rows.length)}
+        <IconChevronDown size={16} dense className={FINDINGS_CLAIMS_CHEVRON} />
+      </summary>
+      <ul className="m-0 flex list-none flex-col p-0">
+        {rows.map((row, i) => (
+          <li key={i} className={FINDINGS_CLAIM_ROW}>
+            <InlineProse text={row.text} className="text-supporting text-fg" />
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

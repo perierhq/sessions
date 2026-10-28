@@ -903,3 +903,30 @@ test("a source opens a sheet over the page, or leaves it closed", () => {
     "pr:7",
   ]);
 });
+
+test("a hypothesis rests only on claims the claims block doesn't list", () => {
+  const claims = [{ text: "The pool is too small." }];
+  const page = findingsPage(
+    open(
+      response({
+        agents: [invRun(1, claims)],
+        findingSets: [
+          set("investigator", 1, [
+            {
+              id: "pool",
+              kind: "hypothesis",
+              size: "full",
+              statement: "The acme pool is too small.",
+              confidence: "high",
+              evidence: [],
+              claims: ["the pool is too small", "Retries pile up."],
+            },
+          ]),
+        ],
+      }),
+    ),
+  );
+  // The first is on the claims block (matched loosely); the second isn't.
+  expect(page?.items[0]?.restsOn).toEqual(["Retries pile up."]);
+  expect(page?.items.at(-1)?.key).toBe("auto:claims");
+});

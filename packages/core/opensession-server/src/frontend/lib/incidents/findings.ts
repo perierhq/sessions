@@ -3,6 +3,7 @@
 // anchors and where each block's "Show source" leads. Pure.
 import {
   type ClaimRow,
+  claimKey,
   type FindingBlock,
   type FindingKind,
   type FindingRef,
@@ -44,6 +45,9 @@ export interface FindingItem {
   auto?: true;
   /** Hypothesis only. */
   status?: HypothesisStatus;
+  /** Hypothesis only: the claims it rests on that no claims block on the
+   *  page lists, so the block doesn't repeat them. */
+  restsOn?: string[];
   /** Claims only. */
   claims?: ClaimRow[];
 }
@@ -208,6 +212,19 @@ export function findingsPage(
   const byline = sentenceCase(
     FINDINGS_COPY.byline(lead, clockTime(leadSet?.updatedAt ?? "")),
   );
+  // A claims block lists the report's claims with their checks; a
+  // hypothesis repeats only the claims it cites that the block doesn't.
+  const listed = new Set(
+    drafts.flatMap((item) =>
+      (item.claims ?? []).map((row) => claimKey(row.text)),
+    ),
+  );
+  for (const item of drafts)
+    if (item.block.kind === "hypothesis")
+      item.restsOn = item.block.claims.filter(
+        (claim) => !listed.has(claimKey(claim)),
+      );
+
   const spans = findingSpans(drafts.map((item) => item.block.size));
   const items = drafts.map((item, i) => ({
     ...item,
@@ -586,7 +603,7 @@ export const FINDINGS_SECTION_ID = "incident-findings";
 
 /** A block's heading when the agent gave it no title. */
 export const BLOCK_TITLES: Record<FindingKind, string> = {
-  hypothesis: "Hypothesis",
+  hypothesis: "Likely cause",
   timeline: "Timeline",
   signal: "Signal",
   log: "Log",
@@ -596,20 +613,7 @@ export const BLOCK_TITLES: Record<FindingKind, string> = {
   question: "Open question",
 };
 
-export const CONFIDENCE_COPY: Record<
-  Extract<FindingBlock, { kind: "hypothesis" }>["confidence"],
-  string
-> = {
-  low: "Low confidence",
-  medium: "Medium confidence",
-  high: "High confidence",
-};
-
-/** A claim row's status in words; "unverifiable" reads as the hypothesis
- *  status does. */
-export const CLAIM_STATUS_COPY: Record<ClaimRow["status"], string> = {
-  verified: FINDINGS_COPY.status.verified,
-  refuted: FINDINGS_COPY.status.refuted,
-  unverifiable: FINDINGS_COPY.status["cant-tell"],
-  unchecked: FINDINGS_COPY.status.unchecked,
-};
+/** An all-unchecked claims block's one line. */
+export function unCheckedClaimsCopy(n: number): string {
+  return `${n} ${n === 1 ? "claim" : "claims"}, not checked yet`;
+}

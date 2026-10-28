@@ -250,6 +250,21 @@ export const FINDINGS_STATUS_TONE = {
   unchecked: "text-faint",
 } as const;
 
+/** A hypothesis's status mark and the agent's confidence, one line. */
+export const FINDINGS_STATUS_LINE =
+  "m-0 flex min-w-0 flex-wrap items-center gap-x-1.5 text-supporting text-dim";
+
+/** An all-unchecked claims block: one line that opens to the claims. */
+export const FINDINGS_CLAIMS_FOLD = "group min-w-0 [&[open]>summary]:mb-1";
+
+/** The fold's chevron, turned while open. */
+export const FINDINGS_CLAIMS_CHEVRON =
+  "shrink-0 text-faint transition-transform duration-150 group-open:rotate-180 motion-reduce:transition-none";
+
+/** Its line: a disclosure with the platform's marker, 44px under a finger. */
+export const FINDINGS_CLAIMS_SUMMARY =
+  "flex min-h-6 w-fit cursor-pointer list-none items-center gap-1 rounded-sm text-supporting text-dim select-none hover:text-fg focus-ring phone:min-h-11 [&::-webkit-details-marker]:hidden";
+
 /** A claim row: the claim, then its status and evidence under it. */
 export const FINDINGS_CLAIM_ROW =
   "flex min-w-0 flex-col gap-0.5 border-b border-line py-2 last:border-b-0";

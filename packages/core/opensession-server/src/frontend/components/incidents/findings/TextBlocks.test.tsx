@@ -114,7 +114,7 @@ test("frame: heading, byline and show source", () => {
   // The section says who; a block of the same role doesn't repeat it.
   expect(plain).not.toContain("from the investigator");
   // No title: the kind's own name.
-  expect(plain).toMatch(/<h3[^>]*>Hypothesis<\/h3>/);
+  expect(plain).toMatch(/<h3[^>]*>Likely cause<\/h3>/);
 });
 
 test("frame: a changed block carries the highlight", () => {
@@ -188,14 +188,53 @@ test("a log from a connector says where it came from in the normal voice", () =>
   expect(html).not.toContain(FINDINGS_LOG_MARK);
 });
 
-test("hypothesis shows confidence and status", () => {
+test("hypothesis shows its status as a mark first, then the confidence", () => {
   const html = renderToStaticMarkup(
     <HypothesisBlock
       item={item(hypothesis({ confidence: "high" }), { status: "refuted" })}
     />,
   );
-  expect(html).toContain("High confidence");
-  expect(html).toContain("Refuted");
+  expect(html).toMatch(/rounded-full bg-red[^"]*"><\/span><span[^>]*>Refuted</);
+  expect(html.indexOf("Refuted")).toBeLessThan(html.indexOf("high confidence"));
+});
+
+test("a hypothesis's claims already on the claims block aren't repeated", () => {
+  const html = renderToStaticMarkup(
+    <HypothesisBlock
+      item={item(hypothesis({ claims: ["The pool is too small"] }), {
+        restsOn: [],
+      })}
+    />,
+  );
+  expect(html).not.toContain("Rests on");
+  expect(html).not.toContain("The pool is too small");
+});
+
+test("a block without a title is named by its kind; a hypothesis is the likely cause", () => {
+  const html = renderToStaticMarkup(
+    <BlockFrame item={item(hypothesis())} highlight={false} onOpenSource={null}>
+      <p>body</p>
+    </BlockFrame>,
+  );
+  expect(html).toMatch(/<h3[^>]*>Likely cause<\/h3>/);
+});
+
+test("claims nobody has checked yet collapse to one line", () => {
+  const claims: ClaimRow[] = [
+    { text: "The pool is too small", status: "unchecked" },
+    { text: "Retries are off", status: "unchecked" },
+    { text: "The release removed the replica", status: "unchecked" },
+  ];
+  const html = renderToStaticMarkup(
+    <ClaimsBlock
+      item={item({ id: "claims", kind: "claims", size: "full" }, { claims })}
+    />,
+  );
+  expect(html).toContain("<details");
+  expect(html).toMatch(/<summary[^>]*>[^<]*3 claims, not checked yet/);
+  // Still there to read when opened.
+  expect(html).toContain("Retries are off");
+  expect(html.split("Not checked yet").length).toBe(1);
 });
 
 test("hypothesis lists the claims it rests on", () => {
