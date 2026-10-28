@@ -154,7 +154,10 @@ import {
 } from "./sandbox/config";
 import { disposeAutomationSandbox } from "./sandbox/automation-disposal";
 import { isRunSetupRefusal, RunSetupRefusedError } from "./run-setup-refusal";
-import { ensureSandboxWaitingForCapacity } from "./sandbox/reliability";
+import {
+  ensureSandboxWaitingForCapacity,
+  sandboxWaitNote,
+} from "./sandbox/reliability";
 import {
   automationUnderProject,
   getAutomation,
@@ -2224,8 +2227,9 @@ export async function maybeLaunchSandboxedRun(
             provider: sbProvider,
           });
         },
-        // A full provider (every Mac host at its VM budget) is waited out,
-        // not failed: the record says why the start is taking longer.
+        // A full provider (every Mac host at its VM budget) or one building
+        // its image after an update is waited out, not failed: the record
+        // says why the start is taking longer.
         onWaiting(error) {
           if (session.source !== "opensession" || !session.sandbox) return;
           touchNativeSession(session.id, {
@@ -2233,7 +2237,7 @@ export async function maybeLaunchSandboxedRun(
               ...session.sandbox,
               lifecycle: session.sandbox.sandboxId ? "waking" : "preparing",
               lastLifecycleError: undefined,
-              lifecycleNote: `Waiting for room: ${error instanceof Error ? error.message : String(error)}`,
+              lifecycleNote: sandboxWaitNote(error),
             },
           });
         },

@@ -9,6 +9,7 @@ import {
   IMAGE,
 } from "./podman-test-fixture";
 import { readRemoteState, writeRemoteState } from "./bootstrap";
+import { SandboxImageBuildingError } from "../reliability";
 import {
   forgetPodmanDiskState,
   GIB,
@@ -148,6 +149,39 @@ describe("podman provider ensure", () => {
       /Requalify This machine \(container\)/,
     );
     expect(verbs(fake.calls)).not.toContain("pod create");
+  });
+
+  test("a missing image on a qualified host waits on its build and creates nothing", async () => {
+    const fake = fakePodman({ imageExists: false });
+    const asked: string[] = [];
+    const building = new SandboxImageBuildingError(Promise.resolve());
+    const provider = new PodmanProvider(
+      deps(fake, {
+        missingImage: (tag) => {
+          asked.push(tag);
+          return building;
+        },
+      }),
+    );
+    await expect(provider.ensure({ sessionId: sessionId() })).rejects.toBe(
+      building,
+    );
+    expect(asked).toEqual([IMAGE]);
+    expect(verbs(fake.calls)).not.toContain("pod create");
+    expect(verbs(fake.calls)).not.toContain("volume create");
+  });
+
+  test("a pod whose workload is gone waits on a missing image too", async () => {
+    const fake = fakePodman({ podExists: true, imageExists: false });
+    fake.state.workloadExists = false;
+    const building = new SandboxImageBuildingError(Promise.resolve());
+    const provider = new PodmanProvider(
+      deps(fake, { missingImage: () => building }),
+    );
+    await expect(provider.ensure({ sessionId: sessionId() })).rejects.toBe(
+      building,
+    );
+    expect(verbs(fake.calls)).not.toContain("create workload");
   });
 
   test("a callback on a private or tailnet address is refused", async () => {

@@ -20,6 +20,7 @@ import {
   MIN_CLAUDE_CODE_VERSION,
   claudeCodeVersionSatisfies,
 } from "../../packages/core/opensession-server/src/server/claude-code-version";
+import { reportSandboxImage } from "./sandbox-image";
 import * as service from "./service";
 import { defaultUnitTargets, planUnitSync, unitDrift } from "./unit-sync";
 import { dim, fail, heading, info, ok, run, warn } from "./ui";
@@ -309,6 +310,7 @@ async function checkService(
             lastError?: string;
           }
         >;
+        sandboxImage?: unknown;
       } | null;
       for (const [job, health] of Object.entries(body?.housekeeping ?? {})) {
         if (!health?.failing) continue;
@@ -318,6 +320,8 @@ async function checkService(
         );
         t.warnings++;
       }
+      // A release that changed the container image: the server builds it.
+      if (reportSandboxImage(body?.sandboxImage)) t.warnings++;
     } else {
       warn(`health endpoint returned ${res.status}`, `http://${host}:${port}`);
       t.warnings++;

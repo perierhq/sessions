@@ -220,9 +220,12 @@ function latestOperation(
   provider: SandboxConnectionInfo["provider"],
   operations: SandboxOperationInfo[],
 ): SandboxOperationInfo | undefined {
+  // A repair is the image This machine (container) builds on its own after
+  // an update changed it.
   return operations.find(
     (operation) =>
-      operation.provider === provider && operation.kind === "qualification",
+      operation.provider === provider &&
+      (operation.kind === "qualification" || operation.kind === "repair"),
   );
 }
 
@@ -837,9 +840,13 @@ function ConnectionCard({
 
   const checking =
     connection.state === "checking" || operation?.status === "running";
+  const repairFailed =
+    operation?.kind === "repair" && operation.status === "failed";
   const summary = checking
     ? operation?.stage || "Checking connection"
-    : connection.qualification?.failureSummary;
+    : repairFailed
+      ? operation.failureSummary
+      : connection.qualification?.failureSummary;
   const macHosts =
     connection.provider === "tart" ? macHostsOf(connection.settings) : [];
 
@@ -860,7 +867,11 @@ function ConnectionCard({
                     statusClasses(checking ? "checking" : connection.state),
                   )}
                 >
-                  {checking ? "Checking" : STATE_LABEL[connection.state]}
+                  {checking
+                    ? operation?.kind === "repair"
+                      ? "Updating"
+                      : "Checking"
+                    : STATE_LABEL[connection.state]}
                 </span>
               </div>
               <p className="m-0 mt-1 text-supporting leading-relaxed text-dim">
@@ -893,7 +904,7 @@ function ConnectionCard({
                 <p
                   className={cn(
                     "m-0 mt-2 text-supporting break-words",
-                    connection.state === "needs_attention"
+                    connection.state === "needs_attention" || repairFailed
                       ? "text-red"
                       : "text-dim",
                   )}

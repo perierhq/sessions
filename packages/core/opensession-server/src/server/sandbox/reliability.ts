@@ -110,8 +110,73 @@ export function isSandboxCapacityError(error: unknown): boolean {
   );
 }
 
+/** What a start waiting on a sandbox image build shows, and the marker a
+ *  run's error keeps when the wait ran out. */
+export const SANDBOX_IMAGE_BUILDING_MESSAGE =
+  "Building the sandbox image after an update";
+
+/**
+ * The provider's image for this release is being built (a release changed
+ * it). Like capacity, it clears on its own: a start waits for `ready`, the
+ * build it joined, and then tries again.
+ */
+export class SandboxImageBuildingError extends Error {
+  readonly code = "SANDBOX_IMAGE_BUILDING";
+  constructor(readonly ready: Promise<unknown>) {
+    super(SANDBOX_IMAGE_BUILDING_MESSAGE);
+    this.name = "SandboxImageBuildingError";
+  }
+}
+
+/** The error itself, or a run's error text that carries it. */
+export function isSandboxImageBuildingError(error: unknown): boolean {
+  if (typeof error === "string")
+    return error.includes(SANDBOX_IMAGE_BUILDING_MESSAGE);
+  return errorValues(error).some(
+    (value) =>
+      value instanceof SandboxImageBuildingError ||
+      (typeof value === "object" &&
+        value !== null &&
+        (value as { code?: unknown }).code === "SANDBOX_IMAGE_BUILDING"),
+  );
+}
+
+/** The plain note a waiting start shows on its session. */
+export function sandboxWaitNote(error: unknown): string {
+  if (isSandboxImageBuildingError(error)) return SANDBOX_IMAGE_BUILDING_MESSAGE;
+  return `Waiting for room: ${error instanceof Error ? error.message : String(error)}`;
+}
+
 /** How long a start waits for room before it fails. */
 export const SANDBOX_CAPACITY_WAIT_MS = 15 * 60_000;
+
+/** `promise` settling or `ms` passing, whichever is first; never rejects.
+ *  Without an injected sleep the timer is cleared once the promise wins. */
+async function settledOrTimeout(
+  promise: Promise<unknown>,
+  ms: number,
+  sleep?: (ms: number) => Promise<unknown>,
+): Promise<void> {
+  const settled = promise.then(
+    () => undefined,
+    () => undefined,
+  );
+  if (sleep) {
+    await Promise.race([settled, sleep(ms)]);
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Backoff between capacity checks: 15s, 30s, then once a minute. */
 export function capacityRetryDelayMs(attempt: number): number {
@@ -119,9 +184,11 @@ export function capacityRetryDelayMs(attempt: number): number {
 }
 
 /**
- * Start a Sandbox, waiting while the provider is at capacity (up to
- * `capacityWaitMs`, reported through `onWaiting`) and retrying a transport
- * transient once.
+ * Start a Sandbox, waiting while the provider is at capacity or building
+ * its image (up to `capacityWaitMs`, reported through `onWaiting`) and
+ * retrying a transport transient once. An image build is waited on
+ * directly, so the start goes on the moment it ends; one that failed is not
+ * waited on again: the next ensure gives the provider's own answer.
  */
 export async function ensureSandboxWaitingForCapacity(
   provider: SandboxProvider,
@@ -142,6 +209,14 @@ export async function ensureSandboxWaitingForCapacity(
       return await ensureSandboxWithTransientRetry(provider, spec, options);
     } catch (error) {
       const remaining = deadline - Date.now();
+      if (error instanceof SandboxImageBuildingError && remaining > 0) {
+        options.onWaiting?.(error);
+        console.log(
+          `[sandbox:${provider.id}] ${spec.sessionId}: waiting for the sandbox image build`,
+        );
+        await settledOrTimeout(error.ready, remaining, options.sleep);
+        continue;
+      }
       if (!isSandboxCapacityError(error) || remaining <= 0) throw error;
       options.onWaiting?.(error);
       console.log(

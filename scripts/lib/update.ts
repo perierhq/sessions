@@ -46,6 +46,7 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { ENV_PATH, OPENSESSION_HOME, REPO_ROOT } from "./paths";
 import { readConfig } from "./config-edit";
+import { reportSandboxImageAfterRestart } from "./sandbox-image";
 import * as service from "./service";
 import {
   bold,
@@ -696,7 +697,14 @@ export async function restartReleaseWithRollback(
     healthBaseUrl: () => Promise<string>;
     /** Re-sync the units to a release root (syncUnitsAt). */
     syncUnits?: (root: string) => Promise<number>;
-  } = { service, healthBaseUrl, syncUnits: syncUnitsAt },
+    /** Where the new release's sandbox image stands (sandbox-image.ts). */
+    reportSandboxImage?: (base: string) => Promise<void>;
+  } = {
+    service,
+    healthBaseUrl,
+    syncUnits: syncUnitsAt,
+    reportSandboxImage: reportSandboxImageAfterRestart,
+  },
 ): Promise<number> {
   const { service: services, healthBaseUrl: getHealthBaseUrl } = runtime;
   if (opts.restart === false) return 0;
@@ -715,6 +723,7 @@ export async function restartReleaseWithRollback(
   const healthy = restarted && (await services.waitHealthy(base));
   if (healthy) {
     ok("restarted and healthy");
+    await runtime.reportSandboxImage?.(base);
     return 0;
   }
   if (!prevTarget) {
@@ -790,6 +799,7 @@ async function restartAfterUpdate(
     );
     if (code === 0) {
       ok("restarted and healthy", `rollback pin ${pin.slice(0, 8)}`);
+      await reportSandboxImageAfterRestart(await healthBaseUrl());
     } else {
       fail(
         "deploy did not come back healthy",
@@ -802,8 +812,10 @@ async function restartAfterUpdate(
     // restart has to sync them first.
     await syncUnitsAt(REPO_ROOT);
     heading("Restart");
-    if ((await service.control("restart")) === 0) ok("service restarted");
-    else warn("restart failed — do it by hand");
+    if ((await service.control("restart")) === 0) {
+      ok("service restarted");
+      await reportSandboxImageAfterRestart(await healthBaseUrl());
+    } else warn("restart failed — do it by hand");
   } else {
     warn(
       "no service installed",

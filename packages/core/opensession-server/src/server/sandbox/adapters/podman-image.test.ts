@@ -227,4 +227,33 @@ describe("ensure podman image", () => {
       "not found after build",
     );
   });
+
+  test("callers that find the same image missing share one build", async () => {
+    let built = false;
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => (finish = resolve));
+    const { run, calls } = fakeRunner((argv) => {
+      if (argv[0] === "image") return built ? ok : missing;
+      return ok;
+    });
+    const slow: PodmanRunner = async (argv, opts) => {
+      if (argv[0] === "build") {
+        await gate;
+        built = true;
+      }
+      return run(argv, opts);
+    };
+    const first = ensurePodmanImage(slow);
+    const second = ensurePodmanImage(slow);
+    await Bun.sleep(5);
+    finish();
+    expect(await Promise.all([first, second])).toEqual([
+      podmanImageTag(),
+      podmanImageTag(),
+    ]);
+    expect(calls.filter((c) => c.argv[0] === "build")).toHaveLength(1);
+    // Settled: the next caller checks again rather than reusing it.
+    expect(await ensurePodmanImage(slow)).toBe(podmanImageTag());
+    expect(calls.filter((c) => c.argv[0] === "build")).toHaveLength(1);
+  });
 });

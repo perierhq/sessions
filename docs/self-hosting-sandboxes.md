@@ -715,13 +715,25 @@ fix when one is missing:
   since the firewall would have to open that address to the sandbox.
 - Registry access and about 1.5 GB free on Podman's storage for the sandbox
   image (`localhost/opensession-sandbox:<tag>`, built from a pinned
-  `ubuntu:24.04` at qualification, never during a session; it carries the
+  `ubuntu:24.04` at qualification; it carries the
   workspace tools plus `ffmpeg` and ImageMagick, and pnpm through Node's
   corepack, which fetches a repository's `packageManager` version on first
   use), and at least
   5 GiB free there for sandboxes to start (see Disk limits).
 - SELinux enforcing is recommended. Without it qualification passes with a
   warning, and containers rely on namespaces and seccomp alone.
+
+**Image updates.** The image tag hashes its Containerfile, so a release that
+changes it names a new image. While the connection is qualified and on, the
+server builds that image on its own, once, in the background after the
+restart; Workspace → Sandboxes shows it on the This machine (container) card
+as "Updating" with its progress. A session that starts meanwhile waits for
+the build (its sandbox status reads "Building the sandbox image after an
+update", for up to 15 minutes) instead of failing, and incident agents that
+ran out of that wait start again on their own. Only a failed build refuses,
+with "Requalify This machine (container)"; the next start a minute later
+tries the build again. `opensession update` and `opensession doctor` report
+where the build stands.
 
 **Limits.** Each sandbox gets a memory limit (default 4096 MB), a process
 limit (default 4096) and a CPU limit (default 2 CPUs, or every CPU on a

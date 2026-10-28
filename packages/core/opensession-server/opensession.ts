@@ -864,6 +864,11 @@ if (!g.__opensessionBooted) {
         const { startPodmanIdleSweep } =
           await import("./src/server/sandbox/adapters/podman");
         startPodmanIdleSweep();
+        // A release that changed the sandbox image builds the new one now,
+        // in the background, instead of waiting for someone to requalify.
+        const { startPodmanImageRollout } =
+          await import("./src/server/sandbox/adapters/podman-image-rollout");
+        startPodmanImageRollout();
         const { startModalIdleSweep } =
           await import("./src/server/sandbox/adapters/modal");
         startModalIdleSweep();
