@@ -659,7 +659,10 @@ function insertCredential(input: AddCredentialInput): KeychainCredential {
     owner: ownerName(input.owner),
     ...spec,
     // A password may begin or end with a space; an API token never does.
-    secret: spec.kind === "login" ? input.secret : input.secret.trim(),
+    secret:
+      spec.kind === "login"
+        ? input.secret
+        : apiSecret(input.secret, spec.injection),
     createdAt: now,
     updatedAt: now,
   };
@@ -934,7 +937,7 @@ export async function updateCredentialAsync(
         ? undefined
         : cred.kind === "login"
           ? input.secret
-          : input.secret.trim();
+          : apiSecret(input.secret, spec.injection);
     if (secret !== undefined && !secret.trim())
       throw new Error("secret is empty");
     if (!changed.length && secret === undefined)
@@ -2061,13 +2064,39 @@ export function activeGrantFor(
   );
 }
 
+/** The header a credential rides in and the scheme before its secret:
+ *  `Authorization: Bearer` unless the credential says otherwise. Header
+ *  names are case-insensitive, so `authorization` gets Bearer too. */
+export function credentialInjection(
+  injection: KeychainCredential["injection"],
+): { header: string; scheme: string } {
+  const header = injection?.header || "Authorization";
+  const scheme =
+    injection?.scheme ??
+    (header.toLowerCase() === "authorization" ? "Bearer" : "");
+  return { header, scheme };
+}
+
 export function brokerHeaders(
   cred: KeychainCredential,
 ): Record<string, string> {
-  const header = cred.injection?.header || "Authorization";
-  const scheme =
-    cred.injection?.scheme ?? (header === "Authorization" ? "Bearer" : "");
+  const { header, scheme } = credentialInjection(cred.injection);
   return { [header]: scheme ? `${scheme} ${cred.secret}` : cred.secret };
+}
+
+/** An API secret as stored: trimmed, and without the scheme the broker adds
+ *  itself, so a pasted `Bearer sk-…` is not sent as `Bearer Bearer sk-…`. */
+function apiSecret(
+  raw: string,
+  injection: KeychainCredential["injection"],
+): string {
+  const secret = raw.trim();
+  const { scheme } = credentialInjection(injection);
+  if (!scheme) return secret;
+  const pasted = secret.match(/^(\S+)\s+(\S.*)$/s);
+  return pasted && pasted[1]!.toLowerCase() === scheme.toLowerCase()
+    ? pasted[2]!
+    : secret;
 }
 
 /** Scrub the secret from a text body the remote echoed back: verbatim, and

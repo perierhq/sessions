@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type FormEvent,
@@ -21,6 +22,7 @@ import { Button } from "../../ui/button";
 import { Checkbox } from "../../ui/checkbox";
 import { useConfirm } from "../../ui/confirm";
 import { Field, Input } from "../../ui/input";
+import { FIELD_HINT } from "../../lib/incident-settings-classes";
 import { Modal } from "../../ui/modal";
 import {
   SettingCard,
@@ -429,7 +431,7 @@ export function KeychainSection() {
  *
  * Two zones: what the credential IS, then the ceiling on how it may be used.
  */
-function AddCredentialForm({
+export function AddCredentialForm({
   serviceRef,
   onAdded,
   onError,
@@ -448,6 +450,7 @@ function AddCredentialForm({
   const [statusOnly, setStatusOnly] = useState(false);
   const [workspace, setWorkspace] = useState(false);
   const [busy, setBusy] = useState(false);
+  const headerHintId = useId();
   const ready = Boolean(service.trim() && host.trim() && secret);
 
   const submit = (event: FormEvent) => {
@@ -521,15 +524,22 @@ function AddCredentialForm({
           </Field>
         </div>
         <div className="flex flex-col gap-3">
-          <Field label="Injection header">
-            <Input
-              value={header}
-              onChange={(e) => setHeader(e.target.value)}
-              placeholder="Authorization: Bearer"
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-          </Field>
+          <div className="flex flex-col gap-1.5">
+            <Field label="Injection header">
+              <Input
+                value={header}
+                onChange={(e) => setHeader(e.target.value)}
+                placeholder="Authorization"
+                autoCapitalize="none"
+                spellCheck={false}
+                aria-describedby={headerHintId}
+              />
+            </Field>
+            <p id={headerHintId} className={FIELD_HINT}>
+              Leave empty to send Authorization: Bearer &lt;secret&gt;. Paste
+              the token alone; a leading Bearer is dropped.
+            </p>
+          </div>
           <Field label="Allowed methods" title="Comma-separated.">
             <Input
               value={methods}

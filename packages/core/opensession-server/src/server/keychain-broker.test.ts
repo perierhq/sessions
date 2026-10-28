@@ -387,3 +387,43 @@ describe("path prefixes", () => {
       ).toThrow(/path prefix/);
   });
 });
+
+describe("the injected header", () => {
+  const sent = async () => {
+    expect(await call()).toMatchObject({ status: 200 });
+    return new Headers(seen.at(-1)!.init.headers);
+  };
+
+  test("Authorization gets its Bearer scheme in any letter case", async () => {
+    setup({ injection: { header: "authorization" } });
+    expect((await sent()).get("authorization")).toBe(`Bearer ${SECRET}`);
+  });
+
+  test("a pasted secret that already starts with its scheme is stored without it", async () => {
+    setup({ secret: `Bearer ${SECRET}` });
+    expect((await sent()).get("authorization")).toBe(`Bearer ${SECRET}`);
+    reset();
+    setup({ secret: `  bearer   ${SECRET}` });
+    expect((await sent()).get("authorization")).toBe(`Bearer ${SECRET}`);
+    reset();
+    setup({
+      secret: `Token ${SECRET}`,
+      injection: { header: "Authorization", scheme: "Token" },
+    });
+    expect((await sent()).get("authorization")).toBe(`Token ${SECRET}`);
+  });
+
+  test("a header without a scheme keeps the secret as pasted", async () => {
+    setup({ secret: `Bearer ${SECRET}`, injection: { header: "X-Api-Key" } });
+    expect((await sent()).get("x-api-key")).toBe(`Bearer ${SECRET}`);
+  });
+
+  test("a new secret loses a pasted scheme too", async () => {
+    const { meta } = setup();
+    await kc.updateCredentialAsync(meta.id, "Alex", {
+      spec: { service: "acme", host: "api.example.test" },
+      secret: `Bearer sk-rotated-9999`,
+    });
+    expect((await sent()).get("authorization")).toBe("Bearer sk-rotated-9999");
+  });
+});
