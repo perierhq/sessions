@@ -63,7 +63,7 @@ export const FINDINGS_CATALOG: ReadonlyArray<{
   },
   {
     kind: "question",
-    use: "what you don't know yet",
+    use: "what you don't know yet, or what you need the owner to do or decide",
     fields: "text (the question), wouldAnswer (what would answer it)",
   },
 ];
@@ -201,6 +201,7 @@ export function findingsBrief(role: AgentRole): string[] {
     );
   out.push(
     `Prefer a few precise blocks: 3 to 8, at most ${L.blocks}.`,
+    "Anything you need the owner to do or decide goes in a question block: the page shows open questions with the owner's decision.",
     "Cite real data: every chart, quote and change must point at something Sessions can load, and a block whose data can't be found is dropped.",
     "Quote log lines exactly as the tool printed them; lines that aren't in the result are dropped.",
     `If you never called show_findings, put the same list under "findings" in your incident-report block. They count toward the block's ${REPORT_BLOCK_MAX_BYTES / 1024} KB, so keep them short there.`,

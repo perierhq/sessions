@@ -138,7 +138,12 @@ export function earlierFindingRounds(
 
 export function findingsPage(
   incident: Pick<Incident, "state" | "response">,
-  opts: { round?: number } = {},
+  opts: {
+    round?: number;
+    /** Leave the open questions out: the Next card shows them
+     *  (`asksInNext`). */
+    withoutAsks?: boolean;
+  } = {},
 ): FindingsPageView | null {
   const response = incident.response;
   const sets = response?.findingSets ?? [];
@@ -158,6 +163,7 @@ export function findingsPage(
     if (!hasBlocks(s)) continue;
     const byline = FINDINGS_COPY.byline(role, clockTime(s.updatedAt));
     for (const block of s.blocks) {
+      if (opts.withoutAsks && block.kind === "question") continue;
       const item: Draft = { key: `${role}:${block.id}`, role, block, byline };
       if (block.kind === "hypothesis")
         item.status = hypothesisStatus(block.claims, verifier);
@@ -201,6 +207,51 @@ export function findingsPage(
       : null;
 
   return { round, underWay, items, earlierRounds };
+}
+
+/** Whether the open questions show with the decision in the Next card:
+ *  while the incident is open and has agents, so there is a card. A
+ *  closed incident keeps them in its Findings. */
+export function asksInNext(
+  incident: Pick<Incident, "state" | "response">,
+): boolean {
+  return !!incident.response && !isTerminalIncidentState(incident.state);
+}
+
+/** An open question the Next card shows with the decision. */
+export interface NextAsk {
+  key: string;
+  text: string;
+  wouldAnswer: string;
+}
+
+/** What the Next card shows of the findings: the page round's open
+ *  questions, the owner's asks among them (`asksInNext`). Null without
+ *  findings. */
+export interface NextFindings {
+  asks: NextAsk[];
+}
+
+export const NEXT_FINDINGS_COPY = Object.freeze({
+  ask: "Open question",
+  wouldAnswer: "What would answer it",
+});
+
+export function nextFindings(
+  incident: Pick<Incident, "state" | "response">,
+): NextFindings | null {
+  const page = findingsPage(incident);
+  if (!page) return null;
+  const asks: NextAsk[] = [];
+  if (asksInNext(incident))
+    for (const item of page.items)
+      if (item.block.kind === "question")
+        asks.push({
+          key: item.key,
+          text: item.block.text,
+          wouldAnswer: item.block.wouldAnswer,
+        });
+  return { asks };
 }
 
 const timeOf = (iso: string) => {

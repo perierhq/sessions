@@ -239,3 +239,16 @@ describe("findings catalog", () => {
     ).toBe("- checks · claims");
   });
 });
+
+describe("findings brief steering", () => {
+  test("owner asks go in a question block, shown with the decision", () => {
+    const brief = findingsBrief("investigator").join("\n");
+    expect(brief).toContain(
+      "Anything you need the owner to do or decide goes in a question block: the page shows open questions with the owner's decision.",
+    );
+    const question = FINDINGS_CATALOG.find((k) => k.kind === "question");
+    expect(question?.use).toBe(
+      "what you don't know yet, or what you need the owner to do or decide",
+    );
+  });
+});

@@ -95,6 +95,11 @@ export const NEXT_EYEBROW =
 export const NEXT_BUTTON_INERT =
   "aria-disabled:pointer-events-none aria-disabled:opacity-40";
 
+/** What the Next card shows of the findings, between its sentence and
+ *  its buttons: each part a label over its text. */
+export const NEXT_FINDINGS = "mt-2 flex min-w-0 flex-col gap-3";
+export const NEXT_FINDINGS_PART = "flex min-w-0 flex-col gap-0.5";
+
 /** The next action's buttons: right on a desktop, left and wrapping under
  *  a finger. */
 export const NEXT_BUTTONS =

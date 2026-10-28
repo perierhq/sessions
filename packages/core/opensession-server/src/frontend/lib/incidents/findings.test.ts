@@ -15,12 +15,14 @@ import type {
 import type { Incident } from "../../../shared/incidents";
 import { clockTime } from "../time";
 import {
+  asksInNext,
   changedKeys,
   earlierFindingRounds,
   type FindingItem,
   findingSpans,
   findingsPage,
   itemSource,
+  nextFindings,
   sourceTarget,
   timelineRows,
 } from "./findings";
@@ -723,4 +725,36 @@ test("a block's source is its data: the quoted call, the PR, the first evidence 
     ),
   ).toEqual(tool);
   expect(itemSource(asItem(question("q")))).toBeNull();
+});
+
+test("open questions go with the decision while the incident is open", () => {
+  const r = response({
+    findingSets: [
+      set("investigator", 1, [question("a"), question("b")]),
+      set("verifier", 1, [question("c")]),
+    ],
+  });
+  const asks = nextFindings(open(r))?.asks ?? [];
+  expect(asks.map((a) => a.key)).toEqual([
+    "investigator:a",
+    "investigator:b",
+    "verifier:c",
+  ]);
+  expect(asks[0]).toMatchObject({
+    text: "What about a?",
+    wouldAnswer: "A look at the acme logs.",
+  });
+  expect(asksInNext(open(r))).toBe(true);
+  // The section leaves them to the Next card.
+  expect(findingsPage(open(r), { withoutAsks: true })).toBeNull();
+});
+
+test("a closed incident keeps its questions in the section", () => {
+  const r = response({
+    findingSets: [set("investigator", 1, [question("a")])],
+  });
+  const closed: PageIncident = { state: "closed-without-action", response: r };
+  expect(asksInNext(closed)).toBe(false);
+  expect(nextFindings(closed)?.asks ?? []).toEqual([]);
+  expect(asksInNext({ state: "investigating" })).toBe(false);
 });

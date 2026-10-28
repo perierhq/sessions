@@ -84,6 +84,12 @@ interface Props {
    * decisions). The letters run on across groups.
    */
   groups?: readonly AskOptionGroup[];
+  /**
+   * What the person should read before answering a lone question, under
+   * the question and above its options (an incident's likely cause and
+   * the agents' open questions).
+   */
+  context?: React.ReactNode;
 }
 
 /**
@@ -158,6 +164,7 @@ export function AskCard({
   notes,
   freeText = true,
   groups,
+  context,
 }: Props) {
   const repo = useMarkdownRepo();
   const titleBase = React.useId();
@@ -483,6 +490,7 @@ export function AskCard({
                 )
               }
             />
+            {lone && context}
             <Questionnaire.Choices className="flex flex-col gap-1.5">
               {optionRuns(q, lone ? groups : undefined).map((run, r) => {
                 const rows = run.options.map((opt) => {

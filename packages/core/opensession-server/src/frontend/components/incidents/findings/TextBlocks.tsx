@@ -41,7 +41,13 @@ type BlockOf<K extends FindingBlock["kind"]> = Extract<
 
 /** Agent prose: Markdown through the shared renderer (raw HTML stays text,
  *  images follow #106's rules), never upgraded into live blocks. */
-function Prose({ text, quiet = false }: { text: string; quiet?: boolean }) {
+export function Prose({
+  text,
+  quiet = false,
+}: {
+  text: string;
+  quiet?: boolean;
+}) {
   return (
     <MarkdownBody
       html={renderMarkdown(text, FINDINGS_MARKDOWN)}
@@ -53,7 +59,13 @@ function Prose({ text, quiet = false }: { text: string; quiet?: boolean }) {
 
 /** One line of agent prose inside a row (a claim, its evidence): the same
  *  Markdown path, without paragraph margins. */
-function InlineProse({ text, className }: { text: string; className: string }) {
+export function InlineProse({
+  text,
+  className,
+}: {
+  text: string;
+  className: string;
+}) {
   return (
     <MarkdownBody
       html={renderMarkdown(text, FINDINGS_MARKDOWN)}

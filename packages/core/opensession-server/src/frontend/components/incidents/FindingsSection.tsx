@@ -5,6 +5,7 @@ import type { Incident, StripLane } from "../../../shared/incidents";
 import type { IncidentCauseView } from "../../lib/incidents/cause";
 import { type DetailTarget, ledgerEntries } from "../../lib/incidents/details";
 import {
+  asksInNext,
   changedKeys,
   FINDINGS_HIGHLIGHT_MS,
   type FindingItem,
@@ -85,7 +86,8 @@ export function FindingsSection({
   onOpenSession: (id: string) => void;
   onOpenPr: (target: PrTarget) => void;
 }) {
-  const page = findingsPage(incident);
+  // The open questions go with the decision in the Next card.
+  const page = findingsPage(incident, { withoutAsks: asksInNext(incident) });
   const reduceMotion = useReducedMotion() ?? false;
   const highlighted = useChangedBlocks(page?.items ?? null, !reduceMotion);
   const [costOpen, setCostOpen] = useState(false);
