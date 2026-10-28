@@ -196,9 +196,21 @@ export interface KeychainCredential {
   expiresOn?: string;
   /** The path (and query) the owner's status-only test calls with GET. */
   testPath?: string;
+  /** The last call that went out with it, for "Last used" in Settings. */
+  lastUsed?: CredentialUse;
   secret: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** One call made with a credential: when, from which session, by whom,
+ *  and what came back (a status, or why it failed on the way). */
+export interface CredentialUse {
+  at: string;
+  sessionId: string;
+  by?: string;
+  status?: number;
+  error?: string;
 }
 
 /** Everything about a credential except the secret — the only shape any
@@ -1299,6 +1311,34 @@ export function testRefusal(
   return ceilingRefusal(credential, "GET", pathname);
 }
 
+/** How often a credential's last use is written: more often rides along
+ *  with the next write instead, so a busy credential doesn't rewrite the
+ *  store on every call. */
+const USE_WRITE_INTERVAL_MS = 60_000;
+
+/**
+ * Note a call that went out with a credential: kept on the credential as
+ * `lastUsed`. Never blocks: the store is written asynchronously, at most
+ * once a minute per credential, and a failed write only loses the note.
+ */
+export function recordCredentialUse(
+  credentialId: string,
+  use: Omit<CredentialUse, "at">,
+): void {
+  const cred = credentials.get(credentialId);
+  if (!cred) return;
+  const previous = cred.lastUsed ? Date.parse(cred.lastUsed.at) : 0;
+  const now = Date.now();
+  cred.lastUsed = { at: new Date(now).toISOString(), ...use };
+  if (now - previous >= USE_WRITE_INTERVAL_MS)
+    persistAsync().catch((error) =>
+      console.error(
+        "[keychain] failed to save a credential's last use:",
+        error,
+      ),
+    );
+}
+
 export function listCredentials(): KeychainCredentialMeta[] {
   load();
   return [...credentials.values()].map(meta);
@@ -1967,6 +2007,10 @@ export function incidentGrantHeaders(input: {
       console.error("[keychain] failed to save a spent grant:", error),
     );
   }
+  recordCredentialUse(cred.id, {
+    sessionId: input.sessionId,
+    by: gr.requestedBy,
+  });
   return brokerHeaders(cred);
 }
 

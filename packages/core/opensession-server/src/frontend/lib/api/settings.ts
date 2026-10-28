@@ -186,6 +186,14 @@ export interface KeychainCredentialDto {
   expiresOn?: string;
   /** The path the owner's status-only test calls. */
   testPath?: string;
+  /** The last call that went out with it. */
+  lastUsed?: {
+    at: string;
+    sessionId: string;
+    by?: string;
+    status?: number;
+    error?: string;
+  };
   createdAt: string;
   updatedAt: string;
   /** The signed-in person owns it, so they can delete it. */

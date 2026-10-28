@@ -48,6 +48,7 @@ import {
   findCredential,
   isWorkspaceCredential,
   prepareCredentialTest,
+  recordCredentialUse,
   scrubSecret,
   suspendedGrantFor,
   SUSPENDED_GRANT_ERROR,
@@ -145,11 +146,30 @@ export async function brokerCall(
   const incidentFields = incident
     ? { incident_id: incident.incidentId, incident_role: incident.role }
     : {};
+  const who = {
+    credential_id: meta.id,
+    service: meta.service,
+    session_id: input.sessionId,
+    method: input.method,
+    path: target.pathname,
+    ...(input.requestedBy ? { requested_by: input.requestedBy } : {}),
+    ...incidentFields,
+  };
+  /** A refused call, on the record with the credential it named. */
+  const deny = (error: string, grantId?: string): { error: string } => {
+    audit({
+      kind: "keychain_broker_denied",
+      ...who,
+      ...(grantId ? { grant_id: grantId } : {}),
+      reason: error,
+    });
+    return { error };
+  };
   let grant = incident
     ? activeIncidentGrantFor(input.sessionId, meta.id, incident.incidentId)
     : activeGrantFor(input.sessionId, meta.id);
   if (incident && !grant)
-    return { error: `This agent holds no grant for ${meta.service}` };
+    return deny(`This agent holds no grant for ${meta.service}`);
   const workspace = !incident && isWorkspaceCredential(meta);
   if (workspace && !purpose && (!grant || grant.mode === "workspace"))
     return {
@@ -166,11 +186,11 @@ export async function brokerCall(
     grant = minted;
   }
   if (!grant && suspendedGrantFor(input.sessionId, meta.id))
-    return { error: `${meta.service}: ${SUSPENDED_GRANT_ERROR}` };
+    return deny(`${meta.service}: ${SUSPENDED_GRANT_ERROR}`);
   if (!grant)
-    return {
-      error: `this session holds no live grant for ${meta.service}. Ask its owner with request_credential first.`,
-    };
+    return deny(
+      `this session holds no live grant for ${meta.service}. Ask its owner with request_credential first.`,
+    );
   // Checked before the grant is spent: a header that can't be sent would
   // fail the request after a once grant was already used.
   const forwarded: Record<string, string> = {};
@@ -185,39 +205,38 @@ export async function brokerCall(
     target.pathname,
     incident?.incidentId,
   );
-  if ("error" in use) {
-    audit({
-      kind: "keychain_broker_denied",
-      grant_id: grant.id,
-      session_id: input.sessionId,
-      method: input.method,
-      path: target.pathname,
-      reason: use.error,
-      ...incidentFields,
-    });
-    return { error: use.error };
-  }
+  if ("error" in use) return deny(use.error, grant.id);
   const { credential } = use;
 
   const headers = new Headers(forwarded);
   for (const [k, v] of Object.entries(brokerHeaders(credential)))
     headers.set(k, v);
 
-  audit({
-    kind: "keychain_broker_call",
-    grant_id: grant.id,
-    credential_id: credential.id,
-    session_id: input.sessionId,
-    owner: grant.owner,
-    service: credential.service,
-    method: input.method,
-    host: credential.host,
-    path: target.pathname,
-    mode: grant.mode,
-    ...(input.requestedBy ? { requested_by: input.requestedBy } : {}),
-    ...(purpose ? { purpose } : {}),
-    ...incidentFields,
-  });
+  // One line per call, written once its outcome is known.
+  const started = Date.now();
+  const called = grant;
+  const settle = (
+    outcome: { status: number; bytes: number } | { error: string },
+  ) => {
+    audit({
+      kind: "keychain_broker_call",
+      ...who,
+      grant_id: called.id,
+      owner: called.owner,
+      host: credential.host,
+      mode: called.mode,
+      ...(purpose ? { purpose } : {}),
+      ...outcome,
+      duration_ms: Date.now() - started,
+    });
+    recordCredentialUse(credential.id, {
+      sessionId: input.sessionId,
+      ...(input.requestedBy ? { by: input.requestedBy } : {}),
+      ...("status" in outcome
+        ? { status: outcome.status }
+        : { error: outcome.error }),
+    });
+  };
 
   const signal = input.signal
     ? AbortSignal.any([input.signal, AbortSignal.timeout(BROKER_TIMEOUT_MS)])
@@ -239,8 +258,11 @@ export async function brokerCall(
       input.net,
     );
   } catch (e: any) {
-    return { error: credentialRequestError(credential.host, e) };
+    const error = credentialRequestError(credential.host, e);
+    settle({ error });
+    return { error };
   }
+  settle({ status: res.status, bytes: res.body.length });
 
   if (credential.statusOnly) return { status: res.status, statusOnly: true };
 

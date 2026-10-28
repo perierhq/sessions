@@ -203,6 +203,14 @@ and body verbatim and in common encodings (URL, JSON, base64), which is best
 effort. A credential registered as status-only returns only the HTTP status,
 for APIs that might echo the secret in a form scrubbing cannot catch.
 
+Each brokered call is audited once its outcome is known
+(`keychain_broker_call`: credential, session, requester, method, path
+without its query, status or failure, bytes and duration); a refused call is
+audited as `keychain_broker_denied` with its reason, and scripted-run lines
+name the credential too. The credential keeps its last use (when, which
+session, which status) so Settings can show "Last used", and its History
+reads the same audit lines filtered to it. Neither ever holds the secret.
+
 An owner edits a credential in Settings → Account (`PATCH
 /api/keychain/credentials/:id`, verified GitHub sign-in, owner only): the
 fields the request names change, a non-empty secret rotates it, and the

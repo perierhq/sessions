@@ -3,6 +3,7 @@ import {
   answerKeychainAsk,
   deleteKeychainCredential,
   fetchKeychain,
+  relativeTime,
   resumeKeychainGrant,
   revokeKeychainGrant,
   setKeychainCredentialScope,
@@ -27,6 +28,9 @@ import {
 import { EmptyState, InlineAlert } from "../../ui/state";
 import { toast } from "../../ui/toast";
 import { IconDotsHorizontal } from "../icons";
+import { BASE_PATH } from "../../lib/base";
+import { AgentName } from "../AgentIdentity";
+import { CredentialHistoryDialog } from "./CredentialHistoryDialog";
 import { CredentialDialog, LoginDialog } from "./KeychainDialogs";
 import { SettingRow } from "./shared";
 
@@ -52,6 +56,7 @@ export function KeychainSection() {
     kind: "api" | "login";
     credential?: KeychainCredentialDto;
   } | null>(null);
+  const [history, setHistory] = useState<KeychainCredentialDto | null>(null);
   const [confirm, confirmDialog] = useConfirm();
 
   const reload = () => {
@@ -236,6 +241,13 @@ export function KeychainSection() {
           />
         ))}
 
+      {history && (
+        <CredentialHistoryDialog
+          credential={history}
+          onClose={() => setHistory(null)}
+        />
+      )}
+
       {data.credentials.length === 0 ? (
         <EmptyState placement="card">
           No credentials yet. Add one so sessions can request scoped access
@@ -259,23 +271,30 @@ export function KeychainSection() {
                     {expiry?.expired && <Badge tone="warning">Expired</Badge>}
                   </span>
                 }
-                desc={[
-                  c.kind === "login"
-                    ? `login on ${c.loginUrl ?? c.host}`
-                    : null,
-                  `owner ${c.owner}`,
-                  c.description,
-                  c.allowedMethods?.length
-                    ? `methods ${c.allowedMethods.join("/")}`
-                    : null,
-                  c.allowedPathPrefixes?.length
-                    ? `paths ${c.allowedPathPrefixes.join(", ")}`
-                    : null,
-                  c.statusOnly ? "status only" : null,
-                  expiry && !expiry.expired ? lowerFirst(expiry.text) : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
+                desc={
+                  <>
+                    {[
+                      c.kind === "login"
+                        ? `login on ${c.loginUrl ?? c.host}`
+                        : null,
+                      `owner ${c.owner}`,
+                      c.description,
+                      c.allowedMethods?.length
+                        ? `methods ${c.allowedMethods.join("/")}`
+                        : null,
+                      c.allowedPathPrefixes?.length
+                        ? `paths ${c.allowedPathPrefixes.join(", ")}`
+                        : null,
+                      c.statusOnly ? "status only" : null,
+                      expiry && !expiry.expired
+                        ? lowerFirst(expiry.text)
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                    {c.lastUsed && lastUsedLine(c.lastUsed)}
+                  </>
+                }
                 control={
                   c.mine ? (
                     <div className="flex items-center gap-2">
@@ -303,6 +322,9 @@ export function KeychainSection() {
                           {c.kind !== "login" && (
                             <Menu.Item onClick={() => test(c)}>Test</Menu.Item>
                           )}
+                          <Menu.Item onClick={() => setHistory(c)}>
+                            History
+                          </Menu.Item>
                           {c.kind !== "login" && (
                             <Menu.Item onClick={() => setScope(c)}>
                               {c.scope === "workspace"
@@ -520,6 +542,26 @@ export function KeychainSection() {
         </>
       )}
     </>
+  );
+}
+
+/** "Last used 2h ago by <agent>": the session links to its transcript. */
+function lastUsedLine(use: NonNullable<KeychainCredentialDto["lastUsed"]>) {
+  return (
+    <span className="block">
+      Last used {relativeTime(use.at)} by{" "}
+      <a
+        className="relative underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
+        href={`${BASE_PATH}/session/${encodeURIComponent(use.sessionId)}`}
+      >
+        <AgentName sessionId={use.sessionId} />
+      </a>
+      {use.status !== undefined
+        ? ` · ${use.status}`
+        : use.error
+          ? " · failed"
+          : ""}
+    </span>
   );
 }
 

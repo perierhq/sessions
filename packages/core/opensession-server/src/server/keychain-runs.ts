@@ -60,8 +60,10 @@ import {
   brokerHeaders,
   claimRunGrants,
   ensureKeychainLoaded,
+  findCredential,
   onGrantRevoked,
   proxyEnvName,
+  recordCredentialUse,
   scrubSecret,
   settleOrphanRunGrants,
   settleRunGrants,
@@ -620,6 +622,11 @@ async function relay(
     );
   }
   auditCall(run, leg, method, target.pathname, res.status);
+  recordCredentialUse(credential.id, {
+    sessionId: run.sessionId,
+    by: `scripted run ${run.id}`,
+    status: res.status,
+  });
 
   if (credential.statusOnly) return new Response(null, { status: res.status });
   const scrub = (text: string) => scrubSecret(text, credential.secret);
@@ -669,6 +676,7 @@ function auditCall(
     kind: "keychain_run_call",
     run_id: run.id,
     grant_id: leg.grantId,
+    credential_id: findCredential(leg.service)?.id,
     session_id: run.sessionId,
     service: leg.service,
     method,
@@ -703,6 +711,7 @@ function deny(
     kind: "keychain_run_denied",
     run_id: run.id,
     grant_id: leg.grantId,
+    credential_id: findCredential(leg.service)?.id,
     session_id: run.sessionId,
     service: leg.service,
     method,

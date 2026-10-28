@@ -69,7 +69,14 @@ const isoDay = (offsetDays: number) =>
   new Date(NOW + offsetDays * 86_400_000).toISOString().slice(0, 10);
 const keychain = {
   credentials: [
-    credentialFixture("kc-1", "acme-api"),
+    credentialFixture("kc-1", "acme-api", {
+      lastUsed: {
+        at: new Date(NOW - 2 * 3_600_000).toISOString(),
+        sessionId: "s-used",
+        by: "Sam",
+        status: 200,
+      },
+    }),
     credentialFixture("kc-2", "acme-unused"),
     credentialFixture("kc-3", "acme-old", { expiresOn: isoDay(-3) }),
     credentialFixture("kc-4", "acme-soon", { expiresOn: isoDay(5) }),
@@ -124,6 +131,8 @@ const { SettingRow } = await import("./shared");
 const { SettingsDialog } = await import("./incidents/SettingsDialog");
 const { Badge } = await import("../../ui/badge");
 const { InlineAlert } = await import("../../ui/state");
+const { AgentName } = await import("../AgentIdentity");
+const { CredentialHistoryDialog } = await import("./CredentialHistoryDialog");
 
 beforeEach(() => {
   added.length = 0;
@@ -421,7 +430,9 @@ test("rows show an expired credential and one about to expire", async () => {
       (p) => p.children === "Expired",
     ),
   ).toBeDefined();
-  expect(row(tree, "acme-soon").props.desc).toContain("expires in 5 days");
+  expect(JSON.stringify(row(tree, "acme-soon").props.desc)).toContain(
+    "expires in 5 days",
+  );
 });
 
 test("a row's Edit opens the dialog for that credential", async () => {
@@ -504,4 +515,34 @@ test("a paused grant can be allowed again by the owner", async () => {
   allow!.props.onClick!(undefined as never);
   await settle();
   expect(resumed).toEqual(["g-5"]);
+});
+
+test("a row says when the credential was last used and by which agent", async () => {
+  const tree = await section();
+  const desc = row(tree, "acme-api").props.desc;
+  expect(JSON.stringify(desc)).toContain("Last used ");
+  expect(JSON.stringify(desc)).toContain("2h ago");
+  expect(find(desc, AgentName)?.props.sessionId).toBe("s-used");
+  expect(find<React.ComponentProps<"a">>(desc, "a")?.props.href).toContain(
+    "/session/s-used",
+  );
+  // Never used: nothing to say.
+  expect(JSON.stringify(row(tree, "acme-unused").props.desc)).not.toContain(
+    "Last used",
+  );
+});
+
+test("History opens the credential's audit lines", async () => {
+  const tree = await section();
+  const history = find(
+    row(tree, "acme-api").props.control,
+    Menu.Item,
+    (p) => p.children === "History",
+  );
+  // SAFETY: the History handler ignores the click event.
+  history!.props.onClick!(undefined as never);
+  await settle();
+  expect(
+    find(tree.output(), CredentialHistoryDialog)?.props.credential.id,
+  ).toBe("kc-1");
 });
