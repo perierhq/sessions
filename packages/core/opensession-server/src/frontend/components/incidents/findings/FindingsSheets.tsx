@@ -12,12 +12,13 @@ import type { StripLaneMeta } from "../../../lib/incidents/strip-layout";
 import { RunLedger } from "../../RunLedger";
 import { DetailSheet } from "../DetailSheet";
 import { RoundSheet } from "./RoundSheet";
+import { SourceSheet } from "./SourceSheet";
 
 type PrTarget = Extract<DetailTarget, { kind: "pr" }>;
 
 /**
  * The sheets findings open over the incident page: an earlier round's
- * findings and the agents' cost. A block's source opens here, or leaves
+ * findings, a block's cited tool output and the agents' cost. A block's source opens here, or leaves
  * for the session or the PR review. `sheet` is the parent's state, so the
  * section's head and its blocks open the same sheets.
  */
@@ -56,6 +57,11 @@ export function FindingsSheets({
         meta={meta}
         signalName={signalName}
         onOpenSource={openSource}
+      />
+      <SourceSheet
+        source={sheet?.kind === "source" ? sheet : null}
+        onClose={close}
+        onOpenSession={onOpenSession}
       />
       {response ? (
         <DetailSheet

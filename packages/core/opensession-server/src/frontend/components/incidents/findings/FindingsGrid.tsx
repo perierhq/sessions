@@ -4,7 +4,7 @@ import {
   type FindingItem,
   type FindingSource,
   type FindingsPageView,
-  itemSource,
+  blockSource,
   type RoundMark,
   sourceTarget,
 } from "../../../lib/incidents/findings";
@@ -102,8 +102,10 @@ export function FindingsGrid({
   columns?: 1 | 2;
 }) {
   const cells = page.items.map((item) => {
-    const ref = itemSource(item);
-    const target = ref ? sourceTarget(ref, incident) : null;
+    const source = blockSource(item, page.items);
+    const target = source
+      ? sourceTarget(source.ref, incident, source.quote)
+      : null;
     const cell =
       columns === 1
         ? "min-w-0"

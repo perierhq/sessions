@@ -11,6 +11,8 @@ import {
   type FindingsSet,
   findingSetOf,
   type HypothesisStatus,
+  type LogExcerpt,
+  type ToolRef,
 } from "../../../shared/findings";
 import {
   claimRows,
@@ -399,14 +401,19 @@ export const LOG_UTC_COPY = "times in UTC";
  *  block's own heading, so no headings and no embeds of its own. */
 export const FINDINGS_MARKDOWN = Object.freeze({ plain: true });
 
-/** Somewhere a block's "Show source" opens. */
-export type FindingSource = DetailTarget | { kind: "ledger"; id: string };
+/** Somewhere a block's "Show source" opens: the cited tool call in a
+ *  sheet (landing on the quoted lines), the PR review, the ledger. */
+export type FindingSource =
+  | DetailTarget
+  | { kind: "ledger"; id: string }
+  | { kind: "tool"; ref: ToolRef; quote: string[] };
 
 /** The sheet the Findings section (or History) has open over the page:
  *  an earlier round's findings, or the agents' cost a ledger ref opens. */
 export type FindingsSheetState =
   | { kind: "round"; round: number }
-  | { kind: "cost" };
+  | { kind: "cost" }
+  | { kind: "source"; ref: ToolRef; quote: string[] };
 
 /** Where opening a block's source goes: a sheet over the page, or away
  *  to the session, the PR review or a link. Leaving closes the sheet. */
@@ -422,6 +429,9 @@ export function openFindingSource(
   switch (target.kind) {
     case "ledger":
       to.sheet({ kind: "cost" });
+      return;
+    case "tool":
+      to.sheet({ kind: "source", ref: target.ref, quote: target.quote });
       return;
     case "url":
       to.url(target.url);
@@ -442,16 +452,17 @@ export function openFindingSource(
 /** How long a block whose content changed keeps its tint, in ms. */
 export const FINDINGS_HIGHLIGHT_MS = 1200;
 
-/** Where a block's "Show source" leads: the agent session behind a tool
- *  call, the PR, the cost ledger. Null when the page has nothing to open
- *  (commit links come from the loaded commit). */
+/** Where a block's "Show source" leads: the cited tool call (with the
+ *  lines to land on), the PR, the cost ledger. Null when the page has
+ *  nothing to open (commit links come from the loaded commit). */
 export function sourceTarget(
   ref: FindingRef,
   incident: Pick<Incident, "project" | "response">,
+  quote: string[] = [],
 ): FindingSource | null {
   switch (ref.type) {
     case "tool":
-      return { kind: "session", sessionId: ref.sessionId };
+      return { kind: "tool", ref, quote };
     case "pr": {
       const target: DetailTarget = {
         kind: "pr",
@@ -600,6 +611,56 @@ export const CONFIDENCE_WORD: Record<
 
 /** Where the Findings section is, for the Next card's "See findings". */
 export const FINDINGS_SECTION_ID = "incident-findings";
+
+/** The data behind a block's "Show source" and the lines to land on in
+ *  it: a log's quoted lines (highlighted first), a change's PR, the first
+ *  evidence of a hypothesis that opens (a cited block opens that block's
+ *  data), a timeline's first event that cites something that opens. */
+export function blockSource(
+  item: FindingItem,
+  items: readonly FindingItem[],
+): { ref: FindingRef; quote: string[] } | null {
+  const block = item.block;
+  const quoted = (excerpt: LogExcerpt) => {
+    const marked = new Set(excerpt.highlight);
+    return [
+      ...excerpt.lines.filter((_, i) => marked.has(i)),
+      ...excerpt.lines.filter((_, i) => !marked.has(i)),
+    ];
+  };
+  switch (block.kind) {
+    case "log":
+      return { ref: block.source, quote: quoted(block) };
+    case "compare":
+      for (const side of block.sides)
+        if ("log" in side)
+          return { ref: side.log.source, quote: quoted(side.log) };
+      return null;
+    case "hypothesis":
+      for (const ref of block.evidence) {
+        if (OPENS.has(ref.type)) return { ref, quote: [] };
+        if (ref.type !== "block") continue;
+        const cited = items.find(
+          (other) =>
+            other.block.id === ref.id &&
+            other.role === ref.role &&
+            other.block.kind !== "hypothesis",
+        );
+        const source = cited ? blockSource(cited, items) : null;
+        if (source) return source;
+      }
+      return null;
+    case "timeline":
+      for (const event of block.events)
+        if (event.ref && OPENS.has(event.ref.type))
+          return { ref: event.ref, quote: [] };
+      return null;
+    default: {
+      const ref = itemSource(item);
+      return ref ? { ref, quote: [] } : null;
+    }
+  }
+}
 
 /** A block's heading when the agent gave it no title. */
 export const BLOCK_TITLES: Record<FindingKind, string> = {

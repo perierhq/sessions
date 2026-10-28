@@ -16,6 +16,7 @@ import type { Incident } from "../../../shared/incidents";
 import { clockTime } from "../time";
 import {
   asksInNext,
+  blockSource,
   changedKeys,
   earlierFindingRounds,
   type FindingItem,
@@ -597,8 +598,13 @@ test("show source opens the owner of the data", () => {
         provenance: { kind: "shell" },
       },
       incident,
+      ["ERROR acme db timeout"],
     ),
-  ).toEqual({ kind: "session", sessionId: "os-inv" });
+  ).toMatchObject({
+    kind: "tool",
+    ref: { sessionId: "os-inv", resultId: "tr-toolu_1" },
+    quote: ["ERROR acme db timeout"],
+  });
   const url = "https://github.com/acme/web/pull/12";
   expect(
     sourceTarget(
@@ -929,4 +935,59 @@ test("a hypothesis rests only on claims the claims block doesn't list", () => {
   // The first is on the claims block (matched loosely); the second isn't.
   expect(page?.items[0]?.restsOn).toEqual(["Retries pile up."]);
   expect(page?.items.at(-1)?.key).toBe("auto:claims");
+});
+
+test("every block with data behind it has a source, quoted lines first", () => {
+  const tool = {
+    type: "tool" as const,
+    sessionId: "os-inv",
+    useId: "toolu_2",
+    resultId: "tr-toolu_2",
+    tool: "Bash",
+    at: T("12:05"),
+    provenance: { kind: "shell" as const },
+  };
+  const asItem = (block: FindingBlock): FindingItem => ({
+    key: `investigator:${block.id}`,
+    role: "investigator",
+    block,
+    span: "full",
+    byline: "",
+    ownByline: false,
+  });
+  const log = asItem({
+    id: "errors",
+    kind: "log",
+    size: "full",
+    source: tool,
+    lines: ["INFO acme start", "ERROR acme db timeout"],
+    highlight: [1],
+    dropped: 0,
+  });
+  const hyp = asItem({
+    id: "pool",
+    kind: "hypothesis",
+    size: "full",
+    statement: "The pool is too small.",
+    confidence: "high",
+    evidence: [{ type: "block", id: "errors", role: "investigator" }],
+    claims: [],
+  });
+  const timeline = asItem({
+    id: "when",
+    kind: "timeline",
+    size: "full",
+    events: [
+      { at: T("12:01"), text: "Start" },
+      { at: T("12:02"), text: "Timeout", ref: tool },
+    ],
+  });
+  const items = [log, hyp, timeline];
+  expect(blockSource(log, items)).toEqual({
+    ref: tool,
+    quote: ["ERROR acme db timeout", "INFO acme start"],
+  });
+  // A hypothesis citing a block opens that block's data.
+  expect(blockSource(hyp, items)).toEqual(blockSource(log, items));
+  expect(blockSource(timeline, items)).toEqual({ ref: tool, quote: [] });
 });

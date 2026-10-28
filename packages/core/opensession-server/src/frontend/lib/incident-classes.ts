@@ -375,6 +375,11 @@ export const FINDINGS_ROUND_LINK =
 /** A block's "New in round 2" / "Changed in round 2". */
 export const FINDINGS_ROUND_MARK = "m-0 text-meta font-medium text-dim";
 
+/** The source sheet's call: the quoted line it lands on is marked the
+ *  way a findings log marks one. */
+export const FINDINGS_SOURCE_BODY =
+  "min-w-0 [&_*::highlight(findings-quote)]:bg-yellow-soft [&_[data-findings-quote]]:bg-yellow-soft [&_[data-findings-quote]]:shadow-[inset_2px_0_0_var(--yellow)]";
+
 /** "Round 2 under way": quiet, under the heading. */
 export const FINDINGS_UNDER_WAY = "m-0 px-2 text-supporting text-faint";
 
