@@ -200,8 +200,32 @@ has prefixes, a path that keeps an encoded `/`, `\` or `.` (`%2F`, `%5C`,
 may decode it into a route the check never saw. Redirects are not followed;
 agent-supplied headers are limited to a short allowlist. The secret is scrubbed from the returned headers
 and body verbatim and in common encodings (URL, JSON, base64), which is best
-effort. A credential registered as status-only returns only the HTTP status,
+effort. The secret rides in the credential's header after its scheme
+(Authorization and Bearer by default; Basic, Token or none can be chosen); a
+Basic secret stored as `user:password` is sent base64-encoded, and that
+encoded form is scrubbed like the others. A credential registered as
+status-only returns only the HTTP status,
 for APIs that might echo the secret in a form scrubbing cannot catch.
+
+Each brokered call is audited once its outcome is known
+(`keychain_broker_call`: credential, session, requester, method, path
+without its query, status or failure, bytes and duration); a refused call is
+audited as `keychain_broker_denied` with its reason, and scripted-run lines
+name the credential too. The credential keeps its last use (when, which
+session, which status) so Settings can show "Last used", and its History
+reads the same audit lines filtered to it. Neither ever holds the secret.
+
+An owner edits a credential in Settings → Account (`PATCH
+/api/keychain/credentials/:id`, verified GitHub sign-in, owner only): the
+fields the request names change, a non-empty secret rotates it, and the
+response never carries the secret. The dialog can test what is on screen,
+saved or not, with one status-only GET (`POST /api/keychain/test`, owner only
+for a saved credential): it goes to the credential's host under the same
+address policy and method and path ceiling as any call, returns only the
+status (the body is never read), saves nothing, uses no grant and is audited
+as `keychain_test` without the secret. A credential may carry an expiry day;
+after it, every call, scripted run, login release, incident lend and new ask
+is refused until its owner changes the date.
 
 An owner replaces a credential's secret or metadata, or removes it, from a
 session they drive with `update_credential` or `delete_credential`. The agent
@@ -211,9 +235,15 @@ nothing happens until they paste the new secret or confirm. The card is
 answerable only with the owner's verified GitHub sign-in, and the tools refuse,
 before any card, a credential someone else owns and automation runs. The
 service slug and kind never change. Active grants keep working after a new
-secret or new limits, because the owner approved access to that credential and
-is the one changing it; a new host or sign-in page revokes them, since they
-were approved for calls to the old one. Deleting revokes them too. Each change
+secret or narrower limits, because the owner approved access to that
+credential and is the one changing it. Wider limits (a method or path the old
+ones refused, no limit where there was one, or status-only turned off) pause
+every grant an owner approved under the old ones (`suspended`) until the owner
+allows it again in Settings → Account; the Edit dialog and the update card say
+so before saving. Implicit workspace grants were never approved and stay;
+incident grants are revoked and re-lent from the project's access settings on
+the agent's next call. A new host or sign-in page revokes every grant, since
+they were approved for calls to the old one. Deleting revokes them too. Each change
 is audited with the fields it changed and whether the secret was rotated
 (`keychain_credential_updated`, `keychain_credential_deleted`), never the
 secret itself.

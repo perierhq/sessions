@@ -16,9 +16,19 @@ import {
   ensureKeychainLoaded,
   keychainAsksInSession,
   keychainViewFor,
+  patchCredentialAsync,
+  resumeGrantAsync,
   revokeGrant,
   setCredentialScopeAsync,
+  STALE_CREDENTIAL_ERROR,
 } from "../keychain";
+import { testCredential } from "../keychain-broker";
+import { listProjectDocuments } from "../projects/store";
+import type { CredentialGrantMode } from "../../shared/incident-access";
+import type {
+  IncidentRole,
+  ProjectCredentialRow,
+} from "../../shared/project-settings";
 import { readRequestTextWithinLimit } from "../shared/bounded-body";
 import {
   CredentialRegistrationError,
@@ -55,6 +65,55 @@ export function retiredKeychainBrokerResponse(): Response {
   );
 }
 
+/** What lending reads of a project's settings. */
+type ProjectLending = {
+  project: string;
+  access: {
+    credentials: Array<Pick<ProjectCredentialRow, "credential" | "roles">>;
+  };
+};
+
+export interface CredentialLending {
+  project: string;
+  roles: Partial<Record<IncidentRole, CredentialGrantMode>>;
+}
+
+/** Each credential's projects that lend it to an incident role (a row
+ *  with no role ticked lends nothing). */
+export function lendingByCredential(
+  docs: ProjectLending[],
+): Map<string, CredentialLending[]> {
+  const out = new Map<string, CredentialLending[]>();
+  for (const doc of docs)
+    for (const row of doc.access.credentials) {
+      if (!Object.values(row.roles).some(Boolean)) continue;
+      const list = out.get(row.credential) ?? [];
+      list.push({ project: doc.project, roles: { ...row.roles } });
+      out.set(row.credential, list);
+    }
+  return out;
+}
+
+let projectsForLending: () => Promise<ProjectLending[]> = listProjectDocuments;
+
+/** Replace where lending is read from (undefined restores the catalog). */
+export function __setKeychainProjectsForTest(
+  read?: () => Promise<ProjectLending[]>,
+): void {
+  projectsForLending = read ?? listProjectDocuments;
+}
+
+/** Lending per credential, or an empty map when the project catalog can't
+ *  answer: the Keychain still loads, without the links. */
+async function currentLending(): Promise<Map<string, CredentialLending[]>> {
+  try {
+    return lendingByCredential(await projectsForLending());
+  } catch (error) {
+    console.error("[keychain] couldn't read project lending:", error);
+    return new Map();
+  }
+}
+
 export async function handleKeychainRoutes(
   ctx: RouteContext,
 ): Promise<Response | undefined> {
@@ -72,9 +131,20 @@ export async function handleKeychainRoutes(
   // ── Management ────────────────────────────────────────────────────────────
   if (path === "/api/keychain" && req.method === "GET") {
     await ensureKeychainLoaded();
-    return Response.json(keychainViewFor(verifiedPerson(ctx)), {
-      headers: { "Cache-Control": "no-store" },
-    });
+    const view = keychainViewFor(verifiedPerson(ctx));
+    // Which projects lend each credential to incident agents, so a row
+    // links to that project's access settings.
+    const lending = await currentLending();
+    return Response.json(
+      {
+        ...view,
+        credentials: view.credentials.map((c) => {
+          const lentIn = lending.get(c.id);
+          return lentIn ? { ...c, lentIn } : c;
+        }),
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   // The card in the requesting session. Only the credential's owner, by
@@ -178,6 +248,12 @@ export async function handleKeychainRoutes(
             ? body.allowedPathPrefixes
             : undefined,
           statusOnly: body.statusOnly === true,
+          ...(typeof body.expiresOn === "string"
+            ? { expiresOn: body.expiresOn }
+            : {}),
+          ...(typeof body.testPath === "string"
+            ? { testPath: body.testPath }
+            : {}),
           // Anything but "personal" or "workspace" is refused by the spec
           // check, and so is a workspace login.
           ...(typeof body.scope === "string" ? { scope: body.scope } : {}),
@@ -220,7 +296,74 @@ export async function handleKeychainRoutes(
     }
   }
 
+  // The owner's status-only test of a credential being added or edited:
+  // one GET, only the status back. The body may carry a secret, so nothing
+  // here logs or echoes it.
+  if (path === "/api/keychain/test" && req.method === "POST") {
+    const by = verifiedPerson(ctx);
+    if (!by)
+      return Response.json(
+        { error: "Sign in with GitHub to test a credential" },
+        { status: 401 },
+      );
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object")
+      return Response.json(
+        { error: "expected { credentialId?, spec?, secret?, path? }" },
+        { status: 400 },
+      );
+    const result = await testCredential({
+      by,
+      ...(typeof body.credentialId === "string"
+        ? { credentialId: body.credentialId }
+        : {}),
+      ...(body.spec && typeof body.spec === "object"
+        ? { spec: body.spec }
+        : {}),
+      ...(typeof body.secret === "string" ? { secret: body.secret } : {}),
+      ...(typeof body.path === "string" ? { path: body.path } : {}),
+    });
+    return Response.json(result, {
+      status: "error" in result ? 400 : 200,
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+
   const credMatch = path.match(/^\/api\/keychain\/credentials\/([^/]+)$/);
+  // The owner edits a credential from Settings: the fields the body names
+  // change, a non-empty secret rotates it. Verified sign-in only, like
+  // scope changes.
+  if (credMatch && req.method === "PATCH") {
+    const by = verifiedPerson(ctx);
+    if (!by)
+      return Response.json(
+        { error: "Sign in with GitHub to edit a credential" },
+        { status: 401 },
+      );
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return Response.json(
+        { error: "expected the fields to change" },
+        { status: 400 },
+      );
+    try {
+      return Response.json(
+        await patchCredentialAsync(decodeURIComponent(credMatch[1]!), by, body),
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      const status = /no longer exists/.test(message)
+        ? 404
+        : /owner can/.test(message)
+          ? 403
+          : message === STALE_CREDENTIAL_ERROR
+            ? 409
+            : 400;
+      return Response.json({ error: message }, { status });
+    }
+  }
+
   if (credMatch && req.method === "DELETE") {
     const by = verifiedPerson(ctx);
     if (!by)
@@ -238,6 +381,30 @@ export async function handleKeychainRoutes(
         : Response.json({ error: "no such credential" }, { status: 404 });
     } catch (e: any) {
       return Response.json({ error: e?.message || String(e) }, { status: 403 });
+    }
+  }
+
+  // The owner allows a grant paused by a widening edit again.
+  const resumeMatch = path.match(/^\/api\/keychain\/grants\/([^/]+)\/resume$/);
+  if (resumeMatch && req.method === "POST") {
+    const by = verifiedPerson(ctx);
+    if (!by)
+      return Response.json(
+        { error: "Sign in with GitHub to allow a grant again" },
+        { status: 401 },
+      );
+    try {
+      const grant = await resumeGrantAsync(
+        decodeURIComponent(resumeMatch[1]!),
+        by,
+      );
+      return Response.json({ ok: true, status: grant.status });
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      return Response.json(
+        { error: message },
+        { status: /owner can/.test(message) ? 403 : 409 },
+      );
     }
   }
 

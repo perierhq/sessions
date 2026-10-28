@@ -226,6 +226,15 @@ console.log(JSON.stringify({ statuses, leaked }));
     expect(new Set(calls.map((e) => e.grant_id))).toEqual(
       new Set([run.grantId]),
     );
+    // Each call names its credential, and the credential knows it was used.
+    expect(new Set(calls.map((e) => e.credential_id))).toEqual(
+      new Set([cred.id]),
+    );
+    expect(kc.findCredential(cred.id)?.lastUsed).toMatchObject({
+      sessionId: run.sessionId,
+      by: `scripted run ${run.id}`,
+      status: 200,
+    });
     expect(
       events
         .filter((e) => e.kind === "keychain_run_denied")

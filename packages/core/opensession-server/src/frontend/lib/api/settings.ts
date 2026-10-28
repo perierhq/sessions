@@ -182,10 +182,44 @@ export interface KeychainCredentialDto {
   /** Every session in the workspace may use it without asking. Absent:
    *  personal, each session asks the owner. */
   scope?: "workspace";
+  /** The last day (YYYY-MM-DD, UTC) it may be used. */
+  expiresOn?: string;
+  /** The path the owner's status-only test calls. */
+  testPath?: string;
+  /** Projects whose access settings lend it to incident agents. */
+  lentIn?: Array<{
+    project: string;
+    roles: Partial<Record<"investigator" | "verifier", "once" | "standing">>;
+  }>;
+  /** The last call that went out with it. */
+  lastUsed?: {
+    at: string;
+    sessionId: string;
+    by?: string;
+    status?: number;
+    error?: string;
+  };
   createdAt: string;
   updatedAt: string;
   /** The signed-in person owns it, so they can delete it. */
   mine?: boolean;
+}
+
+/** The fields a credential is added or edited with. */
+export interface KeychainCredentialSpec {
+  service?: string;
+  host?: string;
+  kind?: "login";
+  loginUrl?: string;
+  username?: string;
+  description?: string;
+  injection?: { header?: string; scheme?: string };
+  allowedMethods?: string[];
+  allowedPathPrefixes?: string[];
+  statusOnly?: boolean;
+  scope?: "personal" | "workspace";
+  expiresOn?: string | null;
+  testPath?: string | null;
 }
 
 export interface KeychainScriptedRunDto {
@@ -212,10 +246,17 @@ export interface KeychainGrantDto {
   requestedBy: string;
   purpose: string;
   mode: "once" | "standing" | "run" | "release" | "workspace";
-  status: "active" | "used" | "revoked" | "expired";
+  /** "suspended": paused because its credential's limits were widened
+   *  after it was approved, until the owner allows it again. */
+  status: "active" | "used" | "revoked" | "expired" | "suspended";
   run?: KeychainScriptedRunDto;
   createdAt: string;
   expiresAt: string;
+  suspendedAt?: string;
+  /** Minted without an approval, for a workspace credential. */
+  implicit?: true;
+  /** Lent to an incident agent through a project's access settings. */
+  incident?: { incidentId: string; role: string; project: string };
 }
 
 export interface KeychainAskDto {
@@ -254,21 +295,52 @@ export async function fetchKeychain(): Promise<{
   return request("/keychain", { label: "Failed to fetch the keychain" });
 }
 
-export async function addKeychainCredential(input: {
-  service: string;
-  host?: string;
-  secret: string;
-  kind?: "login";
-  loginUrl?: string;
-  username?: string;
-  description?: string;
-  injection?: { header?: string; scheme?: string };
-  allowedMethods?: string[];
-  allowedPathPrefixes?: string[];
-  statusOnly?: boolean;
-  scope?: "personal" | "workspace";
-}): Promise<{ credential: KeychainCredentialDto }> {
+export async function addKeychainCredential(
+  input: KeychainCredentialSpec & { service: string; secret: string },
+): Promise<{ credential: KeychainCredentialDto }> {
   return request("/keychain/credentials", { method: "POST", body: input });
+}
+
+/** What an edit did: the fields it changed, and what happened to grants. */
+export interface KeychainUpdateDto {
+  credential: KeychainCredentialDto;
+  changed: string[];
+  secretRotated: boolean;
+  grantsKept: number;
+  grantsRevoked: number;
+  /** Grants paused because the edit widened their limits. */
+  grantsSuspended: number;
+  widened: string[];
+}
+
+/** Edit a credential you own: the fields named change (null or empty
+ *  clears one), a non-empty secret rotates it. */
+export async function updateKeychainCredential(
+  id: string,
+  patch: Omit<KeychainCredentialSpec, "service" | "kind"> & {
+    secret?: string;
+    expectedUpdatedAt?: string;
+  },
+): Promise<KeychainUpdateDto> {
+  return request(`/keychain/credentials/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+/** One status-only GET with a credential as it is being added or edited.
+ *  Resolves with the status, rejects with why the test couldn't run. */
+export async function testKeychainCredential(input: {
+  credentialId?: string;
+  spec?: KeychainCredentialSpec;
+  secret?: string;
+  path?: string;
+}): Promise<{ status: number; reason: string }> {
+  return request("/keychain/test", {
+    method: "POST",
+    body: input,
+    label: "Couldn't run the test",
+  });
 }
 
 /** Share a credential you own with every session in the workspace, or make
@@ -298,6 +370,14 @@ export async function answerKeychainAsk(
   return request(`/keychain/asks/${encodeURIComponent(id)}/answer`, {
     method: "POST",
     body: { decision },
+  });
+}
+
+/** Allow a grant paused by a widening edit again. */
+export async function resumeKeychainGrant(id: string): Promise<{ ok: true }> {
+  return request(`/keychain/grants/${encodeURIComponent(id)}/resume`, {
+    method: "POST",
+    label: "Couldn't allow it again",
   });
 }
 

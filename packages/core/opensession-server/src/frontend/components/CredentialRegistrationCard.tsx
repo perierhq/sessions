@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ASK_CARD_SHELL } from "../lib/ask-card-classes";
 import { BASE_PATH } from "../lib/base";
 import { AGENT_NAME } from "../lib/brand";
+import { ceilingWidening } from "../../shared/keychain-ceiling";
 import type { CredentialRequest } from "../lib/credential-registration-store";
 import { useCredentialRegistration } from "../hooks/useCredentialRegistration";
 import { Button } from "../ui/button";
@@ -40,6 +41,8 @@ const FIELD_LABELS: Record<Changeable, string> = {
   allowedPathPrefixes: "Paths",
   statusOnly: "Responses",
   scope: "Who can use it",
+  expiresOn: "Expires",
+  testPath: "Test path",
 };
 
 type FieldValues = NonNullable<CredentialRequest["previous"]>;
@@ -52,7 +55,9 @@ function fieldValue(
   switch (field) {
     case "injection": {
       const header = values?.injection?.header ?? "Authorization";
-      const scheme = values?.injection?.scheme ?? "Bearer";
+      const scheme =
+        values?.injection?.scheme ??
+        (header.toLowerCase() === "authorization" ? "Bearer" : "");
       return scheme ? `${header}: ${scheme}` : header;
     }
     case "statusOnly":
@@ -67,6 +72,27 @@ function fieldValue(
     default:
       return values?.[field] || "None";
   }
+}
+
+/** How an update widens the limits its grants were approved under. */
+function widening(request: CredentialRequest): string[] {
+  const changed = (field: Changeable) =>
+    request.changed?.includes(field) ?? false;
+  const previous = request.previous;
+  return ceilingWidening(
+    {
+      allowedMethods: changed("allowedMethods")
+        ? previous?.allowedMethods
+        : request.allowedMethods,
+      allowedPathPrefixes: changed("allowedPathPrefixes")
+        ? previous?.allowedPathPrefixes
+        : request.allowedPathPrefixes,
+      statusOnly: changed("statusOnly")
+        ? previous?.statusOnly
+        : request.statusOnly,
+    },
+    request,
+  );
 }
 
 function headline(request: CredentialRequest): string {
@@ -234,11 +260,13 @@ function RequestCard({
                 ? request.changed?.includes("host") ||
                   request.changed?.includes("loginUrl")
                   ? `Its active grants are revoked: they were approved for the old ${login ? "sign-in page" : "host"}.`
-                  : request.changed?.includes("scope")
-                    ? request.scope === "workspace"
-                      ? `Every session in the workspace can use it without asking you. Calls are audited, and ${AGENT_NAME} never sees the ${word}.`
-                      : "Sessions must ask you again. Access they got without asking ends now."
-                    : `Its active grants keep working. ${AGENT_NAME} never sees the ${word}.`
+                  : updating && widening(request).length
+                    ? `Wider limits (${widening(request).join("; ")}): grants approved under the old ones pause until you allow them again in Settings.`
+                    : request.changed?.includes("scope")
+                      ? request.scope === "workspace"
+                        ? `Every session in the workspace can use it without asking you. Calls are audited, and ${AGENT_NAME} never sees the ${word}.`
+                        : "Sessions must ask you again. Access they got without asking ends now."
+                      : `Its active grants keep working. ${AGENT_NAME} never sees the ${word}.`
                 : login
                   ? `Owned by you. Each time a session asks, you decide whether to release the password to it, and ${AGENT_NAME} can read it then. Use a test account.`
                   : request.scope === "workspace"

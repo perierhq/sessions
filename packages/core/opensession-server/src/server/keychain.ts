@@ -79,6 +79,11 @@ import { writeJsonAtomic, writeJsonAtomicAsync } from "./shared/atomic-write";
 import { audit, auditAsync } from "./audit";
 import { isPrivateHostName } from "./shared/network-address";
 import {
+  ceilingSummary,
+  ceilingWidening,
+  pathWithinPrefix,
+} from "../shared/keychain-ceiling";
+import {
   resolveTeammate,
   teammateByGithubLogin,
   teammatesNamed,
@@ -191,9 +196,25 @@ export interface KeychainCredential {
    *  ask; absent: personal, every use needs the owner's approval. Never
    *  set on a login. */
   scope?: "workspace";
+  /** The last day (YYYY-MM-DD, UTC) it may be used. Absent: no expiry. */
+  expiresOn?: string;
+  /** The path (and query) the owner's status-only test calls with GET. */
+  testPath?: string;
+  /** The last call that went out with it, for "Last used" in Settings. */
+  lastUsed?: CredentialUse;
   secret: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** One call made with a credential: when, from which session, by whom,
+ *  and what came back (a status, or why it failed on the way). */
+export interface CredentialUse {
+  at: string;
+  sessionId: string;
+  by?: string;
+  status?: number;
+  error?: string;
 }
 
 /** Everything about a credential except the secret — the only shape any
@@ -210,11 +231,14 @@ export interface KeychainGrant {
   requestedBy: string;
   purpose: string;
   mode: GrantMode;
-  status: "active" | "used" | "revoked" | "expired";
+  /** "suspended": its credential's limits were widened after it was
+   *  approved; unusable until the owner allows it again. */
+  status: "active" | "used" | "revoked" | "expired" | "suspended";
   createdAt: string;
   expiresAt: string;
   usedAt?: string;
   revokedAt?: string;
+  suspendedAt?: string;
   askId?: string;
   /** Set for mode "run": the script the owner approved. */
   run?: KeychainScriptedRun;
@@ -398,7 +422,10 @@ function meta(c: KeychainCredential): KeychainCredentialMeta {
 
 /** Lazy expiry — checked on every read/use, no sweeper to keep alive. */
 function settleExpiry(gr: KeychainGrant): KeychainGrant {
-  if (gr.status === "active" && Date.now() > new Date(gr.expiresAt).getTime()) {
+  if (
+    (gr.status === "active" || gr.status === "suspended") &&
+    Date.now() > new Date(gr.expiresAt).getTime()
+  ) {
     gr.status = "expired";
     grants.set(gr.id, gr);
     persist();
@@ -457,6 +484,10 @@ export interface AddCredentialInput {
   allowedPathPrefixes?: string[];
   statusOnly?: boolean;
   scope?: CredentialScope;
+  /** YYYY-MM-DD; null or absent: no expiry. */
+  expiresOn?: string | null;
+  /** Null or absent: the test calls the first path prefix, or /. */
+  testPath?: string | null;
 }
 
 export type CredentialSpec = Omit<AddCredentialInput, "owner" | "secret">;
@@ -473,6 +504,8 @@ export interface NormalizedCredentialSpec {
   allowedPathPrefixes?: string[];
   statusOnly?: boolean;
   scope?: "workspace";
+  expiresOn?: string;
+  testPath?: string;
 }
 
 const HTTP_METHODS = new Set([
@@ -553,9 +586,12 @@ export function normalizeCredentialSpec(
   input: CredentialSpec,
   /** The credential being updated: its own slug is not "taken". */
   replacing?: string,
+  /** A draft that is only tested, never saved: its slug may be taken. */
+  opts: { draft?: boolean } = {},
 ): NormalizedCredentialSpec {
   load();
   const taken = (service: string) =>
+    !opts.draft &&
     [...credentials.values()].some(
       (c) => c.service === service && c.id !== replacing,
     );
@@ -603,6 +639,8 @@ export function normalizeCredentialSpec(
     .map((p) => p.trim())
     .filter(Boolean)
     .map(normalizePathPrefix);
+  const expiresOn = normalizeExpiry(input.expiresOn);
+  const testPath = normalizeTestPath(input.testPath, prefixes);
   let injection: NormalizedCredentialSpec["injection"];
   if (input.injection) {
     const { header, scheme } = input.injection;
@@ -625,7 +663,74 @@ export function normalizeCredentialSpec(
     ...(prefixes.length ? { allowedPathPrefixes: prefixes } : {}),
     ...(input.statusOnly === true ? { statusOnly: true } : {}),
     ...(input.scope === "workspace" ? { scope: "workspace" as const } : {}),
+    ...(expiresOn ? { expiresOn } : {}),
+    ...(testPath ? { testPath } : {}),
   };
+}
+
+/** An expiry day as stored: YYYY-MM-DD, a real date. Absent, null or empty
+ *  means none. */
+function normalizeExpiry(raw: string | null | undefined): string | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const day = typeof raw === "string" ? raw.trim() : "";
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(day)
+    ? new Date(`${day}T00:00:00.000Z`)
+    : null;
+  if (!parsed || Number.isNaN(parsed.getTime()) || isoDay(parsed) !== day)
+    throw new Error("expiry must be a date, as YYYY-MM-DD");
+  return day;
+}
+
+function isoDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/** Whether a credential is past its last day (UTC). */
+export function credentialExpired(
+  cred: Pick<KeychainCredentialMeta, "expiresOn">,
+  now = Date.now(),
+): boolean {
+  return !!cred.expiresOn && isoDay(new Date(now)) > cred.expiresOn;
+}
+
+/** Why an expired credential can't be used, or null. */
+function expiredProblem(cred: KeychainCredential): string | null {
+  return credentialExpired(cred)
+    ? `${cred.service} expired on ${cred.expiresOn}. Its owner can rotate it and change the date in Settings → Account`
+    : null;
+}
+
+const MAX_TEST_PATH_CHARS = 300;
+
+/** The test path as stored: a path, optionally with a query, inside the
+ *  credential's path prefixes when it has any. */
+function normalizeTestPath(
+  raw: string | null | undefined,
+  prefixes: string[],
+): string | undefined {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) return undefined;
+  const pathname = testPathname(text);
+  if (!pathname || text.length > MAX_TEST_PATH_CHARS)
+    throw new Error(
+      "test path must be a path on the host, like /v1/me, without # or \\",
+    );
+  if (prefixes.length && !prefixes.some((p) => pathWithinPrefix(pathname, p)))
+    throw new Error(
+      `test path must sit inside the allowed path prefixes (${prefixes.join(", ")})`,
+    );
+  return text;
+}
+
+/** The normalized pathname of a test path, or null when it isn't one. */
+function testPathname(path: string): string | null {
+  if (!path.startsWith("/") || path.startsWith("//") || /[#\\\s]/.test(path))
+    return null;
+  try {
+    return new URL(`https://host.invalid${path}`).pathname;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeLoginSpec(
@@ -637,7 +742,8 @@ function normalizeLoginSpec(
     input.injection ||
     input.allowedMethods?.length ||
     input.allowedPathPrefixes?.length ||
-    input.statusOnly
+    input.statusOnly ||
+    input.testPath
   )
     throw new Error(
       "a login has no header, method, path or status-only settings: it is typed into its sign-in page",
@@ -660,6 +766,7 @@ function normalizeLoginSpec(
   if (taken)
     throw new Error(`a credential for service "${service}" already exists`);
   const description = displaySafe(input.description);
+  const expiresOn = normalizeExpiry(input.expiresOn);
   return {
     service,
     host: url.hostname,
@@ -667,6 +774,7 @@ function normalizeLoginSpec(
     loginUrl: url.toString(),
     username,
     ...(description ? { description } : {}),
+    ...(expiresOn ? { expiresOn } : {}),
   };
 }
 
@@ -743,27 +851,37 @@ interface RevokedGrant {
   id: string;
   /** The grant as it was before. */
   before: KeychainGrant;
-  /** The object revoked in place, to tell whether anything touched it since. */
+  /** The object changed in place, to tell whether anything touched it since. */
   revoked: KeychainGrant;
+  /** What it was changed to, and when. */
+  status: "revoked" | "suspended";
   revokedAt: string;
 }
 
 function revokeGrantsOf(
   id: string,
   which: (gr: KeychainGrant) => boolean = () => true,
+  to: "revoked" | "suspended" = "revoked",
 ): RevokedGrant[] {
   const revoked: RevokedGrant[] = [];
   const now = new Date().toISOString();
   for (const gr of grants.values()) {
-    if (gr.credentialId === id && gr.status === "active" && which(gr)) {
+    if (
+      gr.credentialId === id &&
+      (gr.status === "active" ||
+        (to === "revoked" && gr.status === "suspended")) &&
+      which(gr)
+    ) {
       revoked.push({
         id: gr.id,
         before: { ...gr },
         revoked: gr,
+        status: to,
         revokedAt: now,
       });
-      gr.status = "revoked";
-      gr.revokedAt = now;
+      gr.status = to;
+      if (to === "revoked") gr.revokedAt = now;
+      else gr.suspendedAt = now;
     }
   }
   return revoked;
@@ -776,8 +894,8 @@ function restoreGrants(previous: RevokedGrant[]): void {
     const now = grants.get(r.id);
     if (
       now === r.revoked &&
-      now.status === "revoked" &&
-      now.revokedAt === r.revokedAt
+      now.status === r.status &&
+      (r.status === "revoked" ? now.revokedAt : now.suspendedAt) === r.revokedAt
     )
       grants.set(r.id, r.before);
   }
@@ -864,6 +982,8 @@ export const UPDATABLE_CREDENTIAL_FIELDS = [
   "allowedPathPrefixes",
   "statusOnly",
   "scope",
+  "expiresOn",
+  "testPath",
 ] as const;
 
 export type UpdatableCredentialField =
@@ -906,6 +1026,11 @@ export interface UpdateCredentialResult {
    *  host or sign-in page than the one they were approved for, or because
    *  it is personal again and they were never approved. */
   grantsRevoked: number;
+  /** Grants paused because the update widened the limits they were
+   *  approved under; each works again once the owner allows it. */
+  grantsSuspended: number;
+  /** How the update widened the limits (ceilingWidening), if it did. */
+  widened: string[];
 }
 
 /**
@@ -984,10 +1109,15 @@ export async function updateCredentialAsync(
     credentials.set(id, next);
     const moved = changed.includes("host") || changed.includes("loginUrl");
     const unshared = changed.includes("scope") && next.scope !== "workspace";
+    // Wider limits than a grant was approved under: the owner approved
+    // what the credential allowed then, not what it allows now.
+    const widened = moved ? [] : ceilingWidening(before, spec);
     // An incident grant was minted for the credential as the project's
-    // access settings saw it: unsharing it or changing how its secret rides
-    // the request ends it, and the agent's next call re-resolves its access.
-    const incidentStale = unshared || changed.includes("injection");
+    // access settings saw it: unsharing it, widening it or changing how its
+    // secret rides the request ends it, and the agent's next call
+    // re-resolves its access from the project's lending row.
+    const incidentStale =
+      unshared || changed.includes("injection") || widened.length > 0;
     const revoked = moved
       ? revokeGrantsOf(id)
       : unshared || incidentStale
@@ -997,12 +1127,21 @@ export async function updateCredentialAsync(
               (unshared && !!gr.implicit) || (incidentStale && !!gr.incident),
           )
         : [];
+    // Approved grants pause until the owner allows them again. Implicit
+    // grants were never approved, and incident grants were revoked above.
+    const suspended = widened.length
+      ? revokeGrantsOf(
+          id,
+          (gr) => !gr.implicit && !gr.incident && gr.mode !== "release",
+          "suspended",
+        )
+      : [];
     try {
       await persistAsync();
     } catch (error) {
       // Only if nothing synchronous replaced or deleted it meanwhile.
       if (credentials.get(id) === next) credentials.set(id, cred);
-      restoreGrants(revoked);
+      restoreGrants([...revoked, ...suspended]);
       await persistAsync().catch(() => {});
       console.error("[keychain] failed to update credential:", error);
       throw new Error("couldn't write the keychain store");
@@ -1025,6 +1164,8 @@ export async function updateCredentialAsync(
       secret_rotated: secret !== undefined,
       grants_kept: grantsKept,
       grants_revoked: revoked.length,
+      ...(suspended.length ? { grants_suspended: suspended.length } : {}),
+      ...(widened.length ? { widened } : {}),
     });
     return {
       credential: meta(next),
@@ -1032,6 +1173,8 @@ export async function updateCredentialAsync(
       secretRotated: secret !== undefined,
       grantsKept,
       grantsRevoked: revoked.length,
+      grantsSuspended: suspended.length,
+      widened,
     };
   });
 }
@@ -1053,6 +1196,153 @@ export async function setCredentialScopeAsync(
     spec: { ...credentialSpecOf(meta(cred)), scope },
     expectedUpdatedAt: cred.updatedAt,
   });
+}
+
+/** A Settings edit: the updatable fields it names (null or empty clears
+ *  one), and a new secret when it is non-empty. */
+export type CredentialPatch = {
+  [F in UpdatableCredentialField]?: unknown;
+} & {
+  secret?: unknown;
+  /** The credential's updatedAt when the dialog opened. */
+  expectedUpdatedAt?: unknown;
+};
+
+export const STALE_CREDENTIAL_ERROR =
+  "This credential changed since you opened it. Close the dialog and edit it again";
+
+/**
+ * Edit a credential as its owner from Settings: every field the patch
+ * names replaces the current one, the rest stay. A non-empty `secret`
+ * rotates it. Validated, persisted and audited like any update.
+ */
+export async function patchCredentialAsync(
+  id: string,
+  by: string,
+  patch: CredentialPatch,
+): Promise<UpdateCredentialResult> {
+  await ensureKeychainLoaded();
+  const cred = credentials.get(id);
+  if (!cred) throw new Error("that credential no longer exists");
+  const spec: Record<string, unknown> = { ...credentialSpecOf(meta(cred)) };
+  for (const field of UPDATABLE_CREDENTIAL_FIELDS) {
+    if (!(field in patch)) continue;
+    const value = patch[field];
+    if (value === null) delete spec[field];
+    else spec[field] = value;
+  }
+  const secret =
+    typeof patch.secret === "string" && patch.secret.length
+      ? patch.secret
+      : undefined;
+  const expected =
+    typeof patch.expectedUpdatedAt === "string"
+      ? patch.expectedUpdatedAt
+      : undefined;
+  try {
+    return await updateCredentialAsync(id, by, {
+      spec: spec as CredentialSpec,
+      ...(secret !== undefined ? { secret } : {}),
+      ...(expected !== undefined ? { expectedUpdatedAt: expected } : {}),
+    });
+  } catch (error) {
+    if (expected !== undefined && /changed since/.test(String(error)))
+      throw new Error(STALE_CREDENTIAL_ERROR);
+    throw error;
+  }
+}
+
+/**
+ * What a status-only test call sends: the credential as the owner is
+ * editing it (a saved one with unsaved changes, or a draft), and the path.
+ * Nothing is saved. Throws with a message safe to show the caller.
+ */
+export function prepareCredentialTest(input: {
+  by: string;
+  /** A saved credential the caller owns; its stored secret is used when
+   *  `secret` is empty. */
+  credentialId?: string;
+  /** Unsaved values, over the saved credential's when there is one. */
+  spec?: Partial<CredentialSpec>;
+  secret?: string;
+  path?: string;
+}): { credential: KeychainCredential; path: string } {
+  load();
+  const saved = input.credentialId
+    ? ownedCredential(input.credentialId, input.by, "test")
+    : undefined;
+  const merged: CredentialSpec = {
+    ...(saved ? credentialSpecOf(meta(saved)) : {}),
+    ...(input.spec ?? {}),
+    service: saved?.service ?? (input.spec?.service?.trim() || "draft"),
+    ...(saved?.kind ? { kind: saved.kind } : {}),
+  } as CredentialSpec;
+  if (merged.kind === "login")
+    throw new Error(
+      "a login can't be tested: it is typed into its sign-in page",
+    );
+  const spec = normalizeCredentialSpec(merged, saved?.id, { draft: !saved });
+  if (spec.allowedMethods?.length && !spec.allowedMethods.includes("GET"))
+    throw new Error(
+      "the test sends one GET, and this credential doesn't allow GET",
+    );
+  const typed = input.secret?.trim() ? input.secret : undefined;
+  if (!typed && !saved) throw new Error("paste the secret to test it");
+  if (typed) assertSecretChars(typed.trim());
+  const now = new Date().toISOString();
+  const credential: KeychainCredential = {
+    id: saved?.id ?? "draft",
+    owner: ownerName(input.by),
+    ...spec,
+    secret: typed ? apiSecret(typed, spec.injection) : saved!.secret,
+    createdAt: saved?.createdAt ?? now,
+    updatedAt: saved?.updatedAt ?? now,
+  };
+  const path =
+    input.path?.trim() || spec.testPath || spec.allowedPathPrefixes?.[0] || "/";
+  if (!testPathname(path))
+    throw new Error("test path must be a path on the host, like /v1/me");
+  const unsendable = injectedHeaderProblem(credential);
+  if (unsendable) throw new Error(unsendable);
+  return { credential, path };
+}
+
+/** Why the credential's limits refuse a GET of `pathname`, or null. */
+export function testRefusal(
+  credential: KeychainCredential,
+  pathname: string,
+): string | null {
+  return ceilingRefusal(credential, "GET", pathname);
+}
+
+/** How often a credential's last use is written: more often rides along
+ *  with the next write instead, so a busy credential doesn't rewrite the
+ *  store on every call. */
+const USE_WRITE_INTERVAL_MS = 60_000;
+
+/** When each credential's last use was last written, by credential id. */
+const useSavedAt: Map<string, number> = (g.__keychainUseSavedAt ??= new Map());
+
+/**
+ * Note a call that went out with a credential: kept on the credential as
+ * `lastUsed`. Never blocks: the store is written asynchronously, at most
+ * once a minute per credential, and a failed write only loses the note.
+ */
+export function recordCredentialUse(
+  credentialId: string,
+  use: Omit<CredentialUse, "at">,
+): void {
+  const cred = credentials.get(credentialId);
+  if (!cred) return;
+  const now = Date.now();
+  cred.lastUsed = { at: new Date(now).toISOString(), ...use };
+  // Measured from the last save, not the last use: a credential called
+  // every few seconds still saves once a minute.
+  if (now - (useSavedAt.get(credentialId) ?? 0) < USE_WRITE_INTERVAL_MS) return;
+  useSavedAt.set(credentialId, now);
+  persistAsync().catch((error) =>
+    console.error("[keychain] failed to save a credential's last use:", error),
+  );
 }
 
 export function listCredentials(): KeychainCredentialMeta[] {
@@ -1115,7 +1405,8 @@ export function revokeGrant(
   const gr = grants.get(id);
   if (!gr) return { error: "no such grant" };
   settleExpiry(gr);
-  if (gr.status !== "active") return { error: `grant is already ${gr.status}` };
+  if (gr.status !== "active" && gr.status !== "suspended")
+    return { error: `grant is already ${gr.status}` };
   // The owner lent it, the requester borrowed it — either may end it.
   if (!sameOwner(gr.owner, by) && norm(gr.requestedBy) !== norm(by)) {
     return { error: "only the grant's owner or requester can revoke it" };
@@ -1132,6 +1423,63 @@ export function revokeGrant(
   });
   notifyRevoked(id);
   return { ok: true };
+}
+
+/** What a session is told when its grant is paused. */
+export const SUSPENDED_GRANT_ERROR =
+  "this grant is paused: its owner widened the credential's limits after approving it. They can allow it again in Settings → Account, or ask again with request_credential";
+
+/** This session's paused grant for a credential, if it has one. */
+export function suspendedGrantFor(
+  sessionId: string,
+  credentialId: string,
+): KeychainGrant | undefined {
+  load();
+  return [...grants.values()].find(
+    (gr) =>
+      gr.sessionId === sessionId &&
+      gr.credentialId === credentialId &&
+      settleExpiry(gr).status === "suspended",
+  );
+}
+
+/**
+ * The owner allows a paused grant again (Settings → Account): it works under
+ * the credential's current limits until its original expiry. `by` must be a
+ * verified identity. Throws with a message safe to show the caller.
+ */
+export async function resumeGrantAsync(
+  id: string,
+  by: string,
+): Promise<KeychainGrant> {
+  await ensureKeychainLoaded();
+  const gr = grants.get(id);
+  if (!gr) throw new Error("that grant no longer exists");
+  if (!sameOwner(gr.owner, by))
+    throw new Error("only the credential's owner can allow it again");
+  settleExpiry(gr);
+  if (gr.mode === "run" && gr.runId && gr.status === "used")
+    throw new Error("that grant's run has ended, so there is nothing to allow");
+  if (gr.status !== "suspended")
+    throw new Error(`that grant is ${gr.status}, not paused`);
+  const before = { ...gr };
+  gr.status = "active";
+  delete gr.suspendedAt;
+  try {
+    await persistAsync();
+  } catch (error) {
+    if (grants.get(id) === gr && gr.status === "active") grants.set(id, before);
+    console.error("[keychain] failed to resume a grant:", error);
+    throw new Error("couldn't write the keychain store");
+  }
+  auditAsync({
+    kind: "keychain_grant_resumed",
+    grant_id: id,
+    credential_id: gr.credentialId,
+    session_id: gr.sessionId,
+    by,
+  });
+  return gr;
 }
 
 function mintGrant(ask: KeychainAskRecord, mode: GrantMode): KeychainGrant {
@@ -1339,6 +1687,8 @@ export function consumeGrantForBroker(
   if (!gr.incident && incidentId !== undefined)
     return { error: "unknown grant", status: 404 };
   settleExpiry(gr);
+  if (gr.status === "suspended")
+    return { error: SUSPENDED_GRANT_ERROR, status: 403 };
   if (gr.status !== "active")
     return { error: `grant is ${gr.status}`, status: 403 };
   // A run grant is used only through its run's proxy (useRunGrant).
@@ -1364,6 +1714,8 @@ export function consumeGrantForBroker(
       error: "this credential is a login; use it with use_login",
       status: 403,
     };
+  const expired = expiredProblem(cred);
+  if (expired) return { error: expired, status: 403 };
   const refusal = ceilingRefusal(cred, method, path);
   if (refusal) return { error: refusal, status: 403 };
   const unsendable = injectedHeaderProblem(cred);
@@ -1396,12 +1748,7 @@ function normalizePathPrefix(raw: string): string {
  *  routes the request somewhere a prefix check never saw. */
 const ENCODED_SEPARATOR = /%(?:25)*(?:2f|5c|2e)/i;
 
-/** Whether a normalized path is the prefix or sits under it, on a segment
- *  boundary: `/v1/items` covers `/v1/items/1`, never `/v1/items-admin`. */
-export function pathWithinPrefix(path: string, prefix: string): boolean {
-  const base = prefix.endsWith("/") ? prefix : `${prefix}/`;
-  return path === prefix || path.startsWith(base);
-}
+export { pathWithinPrefix };
 
 /** Why the credential's method/path ceiling refuses a call, or null. `path`
  *  is the parsed, normalized path without its query; a query never affects
@@ -1655,6 +2002,8 @@ export function incidentGrantHeaders(input: {
     return {
       error: `${cred.service} returns only statuses and cannot carry a request`,
     };
+  const expired = expiredProblem(cred);
+  if (expired) return { error: expired };
   const refusal = ceilingRefusal(cred, input.method, input.path);
   if (refusal) return { error: refusal };
   const unsendable = injectedHeaderProblem(cred);
@@ -1666,6 +2015,10 @@ export function incidentGrantHeaders(input: {
       console.error("[keychain] failed to save a spent grant:", error),
     );
   }
+  recordCredentialUse(cred.id, {
+    sessionId: input.sessionId,
+    by: gr.requestedBy,
+  });
   return brokerHeaders(cred);
 }
 
@@ -1933,6 +2286,8 @@ export function useRunGrant(
     return { error: "credential no longer exists", status: 403 };
   if (gr.implicit && !isWorkspaceCredential(cred))
     return { error: "the run's grant is revoked", status: 403 };
+  const expired = expiredProblem(cred);
+  if (expired) return { error: expired, status: 403 };
   const refusal = ceilingRefusal(cred, method, path);
   if (refusal) return { error: refusal, status: 403 };
   const unsendable = injectedHeaderProblem(cred);
@@ -1979,6 +2334,8 @@ export async function claimLoginRelease(input: {
       error: `this session holds no approved release for ${credMeta.service}. Ask its owner with request_credential({ credential: "${credMeta.service}", purpose }) first`,
     };
   const cred = credentials.get(gr.credentialId)!;
+  const expired = expiredProblem(cred);
+  if (expired) return { error: expired };
   gr.status = "used";
   gr.usedAt = new Date().toISOString();
   grants.set(gr.id, gr);
@@ -2019,7 +2376,9 @@ export async function settleRunGrants(
     const gr = grants.get(grantId);
     if (!gr || gr.runId !== runId) continue;
     gr.runCalls = made;
-    if (gr.status === "active") {
+    // A grant paused mid-run (its credential widened) ends with its run too,
+    // so it can't be allowed again for a run that is over.
+    if (gr.status === "active" || gr.status === "suspended") {
       gr.status = "used";
       gr.usedAt = new Date().toISOString();
       if (opts.interrupted) gr.interrupted = true;
@@ -2041,7 +2400,12 @@ export async function settleOrphanRunGrants(
   await ensureKeychainLoaded();
   let settled = 0;
   for (const gr of grants.values()) {
-    if (gr.mode !== "run" || !gr.runId || gr.status !== "active") continue;
+    if (
+      gr.mode !== "run" ||
+      !gr.runId ||
+      (gr.status !== "active" && gr.status !== "suspended")
+    )
+      continue;
     if (isLive(gr.runId)) continue;
     gr.status = "used";
     gr.usedAt ??= new Date().toISOString();
@@ -2111,7 +2475,14 @@ export function brokerHeaders(
   cred: KeychainCredential,
 ): Record<string, string> {
   const { header, scheme } = credentialInjection(cred.injection);
-  return { [header]: scheme ? `${scheme} ${cred.secret}` : cred.secret };
+  // Basic takes base64(user:password). A secret stored as user:password is
+  // encoded here; an encoded one has no colon (base64 never does) and is
+  // sent as it is. scrubSecret already covers the encoded form.
+  const value =
+    scheme.toLowerCase() === "basic" && cred.secret.includes(":")
+      ? Buffer.from(cred.secret).toString("base64")
+      : cred.secret;
+  return { [header]: scheme ? `${scheme} ${value}` : value };
 }
 
 /** What no header value may carry: CR, LF, NUL and the other controls. A
@@ -2296,6 +2667,9 @@ export function requestCredential(
     return {
       error: "a purpose is required — the owner approves that, not the tool",
     };
+  const stored = credentials.get(credMeta.id);
+  const expired = stored && expiredProblem(stored);
+  if (expired) return { error: expired };
   const isLogin = credMeta.kind === "login";
   if (isWorkspaceCredential(credMeta))
     return workspaceAnswer(credMeta, { ...input, purpose });
@@ -2423,11 +2797,13 @@ export function requestCredential(
         ? `May this session run a script with your **${credMeta.service}** credential ` +
           `(${credMeta.host})? This is a scripted run: bulk API use, not a single call.\n` +
           `Purpose: ${purpose}\nCommand: \`${run.command}\`\n` +
-          `Expected volume: up to ${run.maxCalls.toLocaleString("en-US")} API calls, refused beyond that.` +
+          `Expected volume: up to ${run.maxCalls.toLocaleString("en-US")} API calls, refused beyond that.\n` +
+          `Allows: ${ceilingSummary(credMeta).text}` +
           interruptedNote(input.sessionId, run.command, [credMeta.id])
         : `May this session borrow your **${credMeta.service}** credential ` +
           `(${credMeta.host})?\nPurpose: ${purpose}\nRequested: ${record.requestedMode} ` +
-          `(once = a single API call through the broker; standing = 7 days, revocable).`,
+          `(once = a single API call through the broker; standing = 7 days, revocable).\n` +
+          `Allows: ${ceilingSummary(credMeta).text}`,
     context: isLogin
       ? "_Releasing writes the password to a short-lived file in that session's workspace, " +
         "once. It never appears in the transcript, but the agent can read it, so treat it as " +
@@ -2618,6 +2994,9 @@ export function requestCredentialRun(
       return {
         error: `${credMeta.service} is a login: it can't be used by a scripted run`,
       };
+    const stored = credentials.get(credMeta.id);
+    const expired = stored && expiredProblem(stored);
+    if (expired) return { error: expired };
     if (!isWorkspaceCredential(credMeta) && !resolveTeammate(credMeta.owner))
       return {
         error: `credential owner "${credMeta.owner}" is not in the identity roster`,
@@ -3100,6 +3479,11 @@ export interface SessionKeychainAsk {
     kind?: CredentialKind;
     username?: string;
     loginUrl?: string;
+    description?: string;
+    /** The ceiling the grant inherits: what the owner approves. */
+    allowedMethods?: string[];
+    allowedPathPrefixes?: string[];
+    statusOnly?: boolean;
   }>;
   createdAt: string;
 }
@@ -3131,6 +3515,14 @@ export function keychainAsksInSession(
       ...(cred?.kind ? { kind: cred.kind } : {}),
       ...(cred?.username ? { username: cred.username } : {}),
       ...(cred?.loginUrl ? { loginUrl: cred.loginUrl } : {}),
+      ...(cred?.description ? { description: cred.description } : {}),
+      ...(cred?.allowedMethods?.length
+        ? { allowedMethods: cred.allowedMethods }
+        : {}),
+      ...(cred?.allowedPathPrefixes?.length
+        ? { allowedPathPrefixes: cred.allowedPathPrefixes }
+        : {}),
+      ...(cred?.statusOnly ? { statusOnly: true } : {}),
     };
     const seen = byTransport.get(a.humanAskId!);
     if (seen) {

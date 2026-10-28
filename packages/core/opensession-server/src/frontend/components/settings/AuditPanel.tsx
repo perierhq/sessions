@@ -1,47 +1,13 @@
-import { AgentName } from "../AgentIdentity";
 import { useEffect, useState } from "react";
-import { z } from "zod";
 import { fetchAudit } from "../../lib/api";
-import { BASE_PATH } from "../../lib/base";
+import { auditEventsSchema, type AuditEvent } from "../../lib/audit-events";
 import { Input } from "../../ui/input";
 import { Button } from "../../ui/button";
 import { SettingCard, SettingsHeader, SettingsPanel } from "../../ui/settings";
 import { EmptyState } from "../../ui/state";
 import { Switch } from "../../ui/switch";
+import { AuditEventList } from "./AuditEventList";
 import { Select } from "./shared";
-
-const auditEventSchema = z.looseObject({
-  tool_name: z.json().optional(),
-  action: z.json().optional(),
-  context: z.json().optional(),
-  decision: z.json().optional(),
-  account: z.json().optional(),
-  model: z.json().optional(),
-  ok: z.boolean().optional().catch(undefined),
-  error: z.json().optional(),
-  text_snippet: z.json().optional(),
-  time: z.json().optional(),
-  kind: z.json().optional(),
-  msg: z.json().optional(),
-  bks_session_id: z.string().optional().catch(undefined),
-  run_kind: z.json().optional(),
-});
-const auditEventsSchema = z.array(auditEventSchema);
-type AuditEvent = z.infer<typeof auditEventSchema>;
-
-/** Summarize one audit event for its row (the details live in the expand). */
-function auditSummary(e: AuditEvent): string {
-  const parts: string[] = [];
-  if (e.tool_name) parts.push(String(e.tool_name));
-  if (e.action) parts.push(`${e.context ? `${e.context}.` : ""}${e.action}`);
-  if (e.decision) parts.push(`decision: ${e.decision}`);
-  if (e.account) parts.push(`account: ${e.account}`);
-  if (e.model) parts.push(String(e.model));
-  if (e.ok !== undefined) parts.push(e.ok ? "ok" : "failed");
-  if (e.error) parts.push(`error: ${String(e.error).slice(0, 80)}`);
-  if (e.text_snippet) parts.push(`“${String(e.text_snippet).slice(0, 100)}”`);
-  return parts.join(" · ");
-}
 
 /** Read-only viewer over ~/.opensession-audit daily JSONL (agent flight recorder). */
 export function AuditPanel() {
@@ -139,42 +105,11 @@ export function AuditPanel() {
       </div>
 
       <SettingCard>
-        {events.map((e, i) => {
-          const time = String(e.time || "").slice(11, 19);
-          const t = String(e.kind || e.msg || "event");
-          const sid = e.bks_session_id ?? "";
-          return (
-            <div key={i} className={expanded === i ? "bg-pressed" : ""}>
-              <button
-                className="flex w-full min-w-0 cursor-pointer items-baseline gap-2 px-5 py-1.5 text-left text-label hover:bg-hover"
-                onClick={() => setExpanded(expanded === i ? null : i)}
-              >
-                <span className="text-faint shrink-0">{time}</span>
-                <span className="text-fg font-medium shrink-0">{t}</span>
-                {e.run_kind ? (
-                  <span className="text-faint shrink-0">
-                    {String(e.run_kind)}
-                  </span>
-                ) : null}
-                <span className="text-dim truncate">{auditSummary(e)}</span>
-                {sid && (
-                  <a
-                    className="ml-auto min-w-0 max-w-48 shrink truncate text-meta text-faint underline phone:max-w-32"
-                    href={`${BASE_PATH}/session/${sid}`}
-                    onClick={(ev) => ev.stopPropagation()}
-                  >
-                    <AgentName sessionId={sid} />
-                  </a>
-                )}
-              </button>
-              {expanded === i && (
-                <pre className="m-0 overflow-x-auto border-t border-line px-5 py-2.5 text-meta leading-relaxed text-dim">
-                  {JSON.stringify(e, null, 2)}
-                </pre>
-              )}
-            </div>
-          );
-        })}
+        <AuditEventList
+          events={events}
+          expanded={expanded}
+          onToggle={setExpanded}
+        />
         {!loading && events.length === 0 && (
           <EmptyState placement="row">No events match.</EmptyState>
         )}

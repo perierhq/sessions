@@ -25,7 +25,8 @@
  * workspace grant, and it never falls back to an interactive grant.
  */
 
-import { audit } from "./audit";
+import { STATUS_CODES } from "node:http";
+import { audit, auditAsync } from "./audit";
 import {
   BlockedAddressError,
   DECODABLE_ACCEPT_ENCODING,
@@ -46,7 +47,12 @@ import {
   headerProblem,
   findCredential,
   isWorkspaceCredential,
+  prepareCredentialTest,
+  recordCredentialUse,
   scrubSecret,
+  suspendedGrantFor,
+  SUSPENDED_GRANT_ERROR,
+  testRefusal,
   workspaceGrantFor,
 } from "./keychain";
 
@@ -140,11 +146,30 @@ export async function brokerCall(
   const incidentFields = incident
     ? { incident_id: incident.incidentId, incident_role: incident.role }
     : {};
+  const who = {
+    credential_id: meta.id,
+    service: meta.service,
+    session_id: input.sessionId,
+    method: input.method,
+    path: target.pathname,
+    ...(input.requestedBy ? { requested_by: input.requestedBy } : {}),
+    ...incidentFields,
+  };
+  /** A refused call, on the record with the credential it named. */
+  const deny = (error: string, grantId?: string): { error: string } => {
+    audit({
+      kind: "keychain_broker_denied",
+      ...who,
+      ...(grantId ? { grant_id: grantId } : {}),
+      reason: error,
+    });
+    return { error };
+  };
   let grant = incident
     ? activeIncidentGrantFor(input.sessionId, meta.id, incident.incidentId)
     : activeGrantFor(input.sessionId, meta.id);
   if (incident && !grant)
-    return { error: `This agent holds no grant for ${meta.service}` };
+    return deny(`This agent holds no grant for ${meta.service}`);
   const workspace = !incident && isWorkspaceCredential(meta);
   if (workspace && !purpose && (!grant || grant.mode === "workspace"))
     return {
@@ -160,10 +185,12 @@ export async function brokerCall(
     if ("error" in minted) return minted;
     grant = minted;
   }
+  if (!grant && suspendedGrantFor(input.sessionId, meta.id))
+    return deny(`${meta.service}: ${SUSPENDED_GRANT_ERROR}`);
   if (!grant)
-    return {
-      error: `this session holds no live grant for ${meta.service}. Ask its owner with request_credential first.`,
-    };
+    return deny(
+      `this session holds no live grant for ${meta.service}. Ask its owner with request_credential first.`,
+    );
   // Checked before the grant is spent: a header that can't be sent would
   // fail the request after a once grant was already used.
   const forwarded: Record<string, string> = {};
@@ -178,39 +205,38 @@ export async function brokerCall(
     target.pathname,
     incident?.incidentId,
   );
-  if ("error" in use) {
-    audit({
-      kind: "keychain_broker_denied",
-      grant_id: grant.id,
-      session_id: input.sessionId,
-      method: input.method,
-      path: target.pathname,
-      reason: use.error,
-      ...incidentFields,
-    });
-    return { error: use.error };
-  }
+  if ("error" in use) return deny(use.error, grant.id);
   const { credential } = use;
 
   const headers = new Headers(forwarded);
   for (const [k, v] of Object.entries(brokerHeaders(credential)))
     headers.set(k, v);
 
-  audit({
-    kind: "keychain_broker_call",
-    grant_id: grant.id,
-    credential_id: credential.id,
-    session_id: input.sessionId,
-    owner: grant.owner,
-    service: credential.service,
-    method: input.method,
-    host: credential.host,
-    path: target.pathname,
-    mode: grant.mode,
-    ...(input.requestedBy ? { requested_by: input.requestedBy } : {}),
-    ...(purpose ? { purpose } : {}),
-    ...incidentFields,
-  });
+  // One line per call, written once its outcome is known.
+  const started = Date.now();
+  const called = grant;
+  const settle = (
+    outcome: { status: number; bytes: number } | { error: string },
+  ) => {
+    audit({
+      kind: "keychain_broker_call",
+      ...who,
+      grant_id: called.id,
+      owner: called.owner,
+      host: credential.host,
+      mode: called.mode,
+      ...(purpose ? { purpose } : {}),
+      ...outcome,
+      duration_ms: Date.now() - started,
+    });
+    recordCredentialUse(credential.id, {
+      sessionId: input.sessionId,
+      ...(input.requestedBy ? { by: input.requestedBy } : {}),
+      ...("status" in outcome
+        ? { status: outcome.status }
+        : { error: outcome.error }),
+    });
+  };
 
   const signal = input.signal
     ? AbortSignal.any([input.signal, AbortSignal.timeout(BROKER_TIMEOUT_MS)])
@@ -232,8 +258,11 @@ export async function brokerCall(
       input.net,
     );
   } catch (e: any) {
-    return { error: credentialRequestError(credential.host, e) };
+    const error = credentialRequestError(credential.host, e);
+    settle({ error });
+    return { error };
   }
+  settle({ status: res.status, bytes: res.body.length });
 
   if (credential.statusOnly) return { status: res.status, statusOnly: true };
 
@@ -272,6 +301,73 @@ export async function brokerCall(
     body,
     ...(truncated ? { truncated: true as const } : {}),
   };
+}
+
+const TEST_TIMEOUT_MS = 15_000;
+
+export type CredentialTestResult =
+  | { status: number; reason: string }
+  | { error: string };
+
+/**
+ * The owner's status-only test: one GET with the credential as they are
+ * editing it (saved, saved with unsaved changes, or a draft), to its test
+ * path or the one given, within its limits and through the same address
+ * policy as every call. Only the status comes back: the body is never read.
+ * Nothing is saved, no grant is involved, and the attempt is audited as
+ * keychain_test without the secret.
+ */
+export async function testCredential(input: {
+  /** The verified person testing; must own a saved credential. */
+  by: string;
+  credentialId?: string;
+  spec?: Parameters<typeof prepareCredentialTest>[0]["spec"];
+  secret?: string;
+  path?: string;
+  net?: Partial<PinnedFetchDeps>;
+}): Promise<CredentialTestResult> {
+  await ensureKeychainLoaded();
+  let prepared: ReturnType<typeof prepareCredentialTest>;
+  try {
+    prepared = prepareCredentialTest(input);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  const { credential, path } = prepared;
+  const target = new URL(`https://${credential.host}${path}`);
+  const result: CredentialTestResult = await (async () => {
+    if (target.hostname !== credential.host || target.port || target.username)
+      return { error: `the test path must stay on https://${credential.host}` };
+    const refusal = testRefusal(credential, target.pathname);
+    if (refusal) return { error: refusal };
+    try {
+      const res = await credentialRequest(
+        target,
+        {
+          method: "GET",
+          headers: brokerHeaders(credential),
+          signal: AbortSignal.timeout(TEST_TIMEOUT_MS),
+          maxBodyBytes: 1,
+        },
+        input.net,
+      );
+      return { status: res.status, reason: STATUS_CODES[res.status] ?? "" };
+    } catch (e) {
+      return { error: credentialRequestError(credential.host, e) };
+    }
+  })();
+  auditAsync({
+    kind: "keychain_test",
+    ...(input.credentialId ? { credential_id: input.credentialId } : {}),
+    service: credential.service,
+    host: credential.host,
+    path: target.pathname,
+    by: input.by,
+    ...("status" in result
+      ? { status: result.status }
+      : { error: result.error }),
+  });
+  return result;
 }
 
 /**
