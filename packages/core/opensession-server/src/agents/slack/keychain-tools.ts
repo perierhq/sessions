@@ -633,7 +633,8 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
           ...(args.body !== undefined ? { body: args.body } : {}),
           ...(extra?.signal ? { signal: extra.signal } : {}),
         });
-        if ("error" in result) return text(`Couldn't call: ${result.error}.`);
+        if ("error" in result)
+          return text(`Couldn't call: ${result.error.replace(/\.*$/, ".")}`);
         return text(JSON.stringify(result));
       },
     ),

@@ -505,5 +505,7 @@ describe("what an agent learns before it calls", () => {
       ),
     );
     expect(out).toContain("request_credential");
+    // One full stop, whether or not the reason brought its own.
+    expect(out).toMatch(/[^.]\.$/);
   });
 });
