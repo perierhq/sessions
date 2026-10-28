@@ -53,6 +53,8 @@ const RECENT_LINES = 20;
  *  one-minute signal at most (the observation ring holds less). */
 const RING_FOR_FAILURES = 1_440;
 const DETAIL_MAX = 300;
+const BUILD_ON_IT =
+  "Build on your last round: keep what you found and your pull request, and change only what this asks for. Don't repeat the investigation.";
 const SEND_BACK_TAIL =
   "Update the PR and the note, then end with a new incident-report block.";
 
@@ -302,6 +304,41 @@ export interface InvestigatorPromptInput {
   connections?: ConnectionsBrief;
   /** The previous round's set this investigator's blocks start from. */
   findings?: { previous?: FindingsSet };
+  /** Earlier incidents on this incident's signals, newest first, at most
+   *  EARLIER_INCIDENTS_MAX: facts from Sessions' own record. */
+  earlierIncidents?: EarlierIncident[];
+}
+
+/** One earlier incident on the same signals, as the brief states it: no
+ *  title, summary or pull request contents, only Sessions' facts. */
+export interface EarlierIncident {
+  id: string;
+  openedAt: string;
+  /** Its state now (`resolved`, `closed-without-action`, `needs-you`...). */
+  outcome: string;
+  /** Its agents' pull requests, with their state when the PR cache knows. */
+  prs: Array<{ number: number; state?: "OPEN" | "MERGED" | "CLOSED" }>;
+}
+
+export const EARLIER_INCIDENTS_MAX = 5;
+
+function earlierIncidentsLine(list: readonly EarlierIncident[]): string[] {
+  if (!list.length) return [];
+  const one = (e: EarlierIncident) => {
+    const prs = e.prs.map(
+      (pr) => `PR #${pr.number}${pr.state ? ` ${pr.state.toLowerCase()}` : ""}`,
+    );
+    return [
+      `${dataText(e.id, 60)} ${dateOf(e.openedAt)} ${e.outcome.replace(/-/g, " ")}`,
+      ...prs,
+    ].join(", ");
+  };
+  return [
+    `- Earlier incidents on this incident's signals (Sessions' record, newest first): ${list
+      .slice(0, EARLIER_INCIDENTS_MAX)
+      .map(one)
+      .join("; ")}.`,
+  ];
 }
 
 /** The connections an agent's access names, and the ones among them it
@@ -508,6 +545,8 @@ export function buildInvestigatorPrompt(
   for (const path of runbooks) out.push(`- ${path}`);
   out.push(
     `- Earlier incident notes: every docs/incidents/*.md whose front matter lists ${signal.id} under signals, newest first, at most 10.`,
+    "- Before you start, check this repo's open pull requests for earlier incident notes and fixes (docs/incidents/); build on an open one instead of opening a new one.",
+    ...earlierIncidentsLine(input.earlierIncidents ?? []),
     "",
   );
 
@@ -709,9 +748,19 @@ function sendBackHead(
       );
       break;
     case "owner":
-      head = block(`${dataText(why.by, 120)} sent this back. Their note`, [
-        dataText(why.note, 2000),
-      ]);
+      head = why.answering
+        ? [
+            block(
+              `${dataText(why.by, 120)} sent this back. Why it came back to them`,
+              [dataText(why.answering, 2000)],
+            ),
+            block("Their note", [dataText(why.note, 2000)]),
+            "",
+            BUILD_ON_IT,
+          ].join("\n")
+        : block(`${dataText(why.by, 120)} sent this back. Their note`, [
+            dataText(why.note, 2000),
+          ]);
       break;
     case "rolled-back":
       head = block("Your fix was released and rolled back. What Sessions saw", [

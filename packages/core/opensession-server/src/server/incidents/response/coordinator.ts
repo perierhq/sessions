@@ -38,6 +38,7 @@ import {
   isOpenIncident,
 } from "../../../shared/incidents";
 import type { Automation } from "../../automations";
+import { getPrsByRepo } from "../../pr-cache";
 import { serviceReadiness } from "../../service-readiness";
 import { onSessionStateChange } from "../../session-state-events";
 import { isShuttingDown } from "../../shutdown-state";
@@ -107,6 +108,9 @@ import {
 } from "./project-settings";
 import { runProof } from "./proof";
 import {
+  type CarriedWork,
+  EARLIER_INCIDENTS_MAX,
+  type EarlierIncident,
   INCIDENT_DOCS_DIR,
   buildInvestigatorPrompt,
   buildReminder,
@@ -115,7 +119,6 @@ import {
   notePathFor,
   runbookPathsFor,
 } from "./prompts";
-import type { CarriedWork } from "./prompts";
 import { plainReportProblem } from "./reports";
 import { productionRunOnProblem, runnerLabel } from "./runners";
 import {
@@ -164,6 +167,12 @@ export interface CoordinatorDeps {
   /** The service finished recovery and is not shutting down. Until then
    *  the tick and wake-ups do nothing. */
   ready: () => boolean;
+  /** A pull request's state as the PR cache has it; undefined when it
+   *  doesn't know the pull request. Cheap: no GitHub call. */
+  prState: (
+    project: string,
+    url: string,
+  ) => "OPEN" | "MERGED" | "CLOSED" | undefined;
   /** Saves the findings an accepted report carries, unless the run already
    *  showed some with `show_findings` this round. Never throws. */
   applyReportFindings: (req: {
@@ -205,6 +214,11 @@ function defaultDeps(): CoordinatorDeps {
     },
     runAction: runIncidentAction,
     recordRelease,
+    prState: (project, url) => {
+      for (const pr of getPrsByRepo().get(project)?.values() ?? [])
+        if (pr.url === url) return pr.state;
+      return undefined;
+    },
     agentsPaused: (project) =>
       peekProjectSettings(project)?.agentsPaused === true,
     ready: () => serviceReadiness().phase === "ready" && !isShuttingDown(),
@@ -1087,6 +1101,7 @@ async function startAgent(
       actions: settings.actions,
       baseBranch: d.defaultBranch(incident.project),
       notePath: await incidentNotePath(incident, d),
+      earlierIncidents: await earlierIncidentsOf(incident, d),
       round,
       maxRounds: r.maxRounds,
       connections,
@@ -1333,6 +1348,46 @@ async function sharedBranch(
 }
 
 /** The incident's note path, next to the project's other incidents. */
+/** Earlier incidents of the project on any of this incident's signals,
+ *  newest first, as facts for the investigator's brief: when, how it
+ *  ended up, and its agents' pull requests with their state when the PR
+ *  cache knows it. Empty when they can't be read. */
+async function earlierIncidentsOf(
+  incident: Incident,
+  d: CoordinatorDeps,
+): Promise<EarlierIncident[]> {
+  let all: Incident[];
+  try {
+    all = await d.listIncidents({ project: incident.project });
+  } catch {
+    return [];
+  }
+  const signals = new Set(incident.signalIds);
+  return all
+    .filter(
+      (i) =>
+        i.id !== incident.id &&
+        i.openedAt <= incident.openedAt &&
+        i.signalIds.some((id) => signals.has(id)),
+    )
+    .sort((a, b) => (a.openedAt < b.openedAt ? 1 : -1))
+    .slice(0, EARLIER_INCIDENTS_MAX)
+    .map((i) => ({
+      id: i.id,
+      openedAt: i.openedAt,
+      outcome: i.state,
+      prs: openAgentPrs(i, d, { keepClosed: true }).map((pr) => {
+        let state: ReturnType<CoordinatorDeps["prState"]>;
+        try {
+          state = d.prState(i.project, pr.url);
+        } catch {
+          state = undefined;
+        }
+        return { number: pr.number, ...(state ? { state } : {}) };
+      }),
+    }));
+}
+
 async function incidentNotePath(
   incident: Incident,
   d: CoordinatorDeps,
@@ -2000,6 +2055,36 @@ async function applyTransition(
   return next !== null;
 }
 
+/** The pull requests the incident's agents opened that the PR cache does
+ *  not know as merged or closed (with `keepClosed`, all of them), oldest
+ *  first. */
+function openAgentPrs(
+  incident: Incident,
+  d: CoordinatorDeps,
+  opts: { keepClosed?: boolean } = {},
+): AgentPullRequest[] {
+  const out: AgentPullRequest[] = [];
+  const seen = new Set<string>();
+  for (const run of incident.response?.agents ?? []) {
+    const url = run.prUrl;
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const pr = parsePrUrl(url);
+    if (!pr) continue;
+    if (!opts.keepClosed) {
+      let state: ReturnType<CoordinatorDeps["prState"]>;
+      try {
+        state = d.prState(incident.project, url);
+      } catch {
+        state = undefined;
+      }
+      if (state === "MERGED" || state === "CLOSED") continue;
+    }
+    out.push({ url, number: pr.number, sessionId: run.sessionId });
+  }
+  return out;
+}
+
 async function needsYou(
   view: ResponseView,
   step: Extract<ResponseStep, { step: "needs-you" }>,
@@ -2007,6 +2092,7 @@ async function needsYou(
 ): Promise<boolean> {
   const { incident, settings } = view;
   await write(incident.id, d, settings, guardOf(view), (c, base, at) => {
+    const prs = openAgentPrs(c, d);
     const b = patched(base, step.patch);
     const resumePhase =
       b.phase === "needs-you"
@@ -2024,6 +2110,7 @@ async function needsYou(
             resumePhase,
             ...(step.retryable === false ? { retryable: false } : {}),
             ...(step.fix ? { fix: step.fix } : {}),
+            ...(prs.length ? { prs } : {}),
           },
         },
         { retryRequested: undefined },
@@ -2923,7 +3010,15 @@ function decisionMove(
           // A round no investigator worked in is not used up: it is the
           // one sent back.
           round: roundRan(base) ? base.round + 1 : base.round,
-          sendBack: { kind: "owner", by, note: input.note },
+          sendBack: {
+            kind: "owner",
+            by,
+            note: input.note,
+            // What the card said, so the agent knows why it came back.
+            ...(c.state === "needs-you" && base.needsYou?.reason
+              ? { answering: base.needsYou.reason }
+              : {}),
+          },
           candidate: undefined,
           proof: undefined,
           verdict: undefined,

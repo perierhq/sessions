@@ -691,7 +691,7 @@ test("a certain verdict moves to deciding with the verified SHA", async () => {
   expect(i?.response?.next).toEqual({
     kind: "needs-you",
     needsYou: "policy",
-    reason: "Verified and ready. Waiting for you",
+    reason: "Verified and ready. Waiting for you. Open pull request: #12.",
     rule: "Propose, from the project settings",
     options: ["approve", "send-back", "close"],
   });
@@ -765,7 +765,7 @@ test("a missing block gets one reminder, then needs you with Retry", async () =>
     kind: "needs-you",
     needsYou: "no-report",
     reason:
-      "The investigator finished without writing its report. Try again so it writes one.",
+      "The investigator finished without writing its report. Try again so it writes one. Open pull request: #12.",
     options: ["retry", "resolve", "close"],
   });
   expect(i?.response?.needsYou).toMatchObject({
@@ -792,7 +792,7 @@ test("a refused report: the agent gets the detail, the owner plain words", async
     "The investigator's report was missing its conclusion. Try again so it finishes the report.";
   expect(i?.response?.next).toMatchObject({
     needsYou: "no-report",
-    reason: plain,
+    reason: `${plain} Open pull request: #12.`,
   });
   const run = i?.response?.agents.find((a) => a.sessionId === "child-1");
   expect(run?.reportProblem).toBe("conclusion");
@@ -3632,5 +3632,109 @@ test("a proof that stopped is measured again when the signal fails again, instea
   expect(i?.response?.proof?.baseline.verdict).toBe("fails");
   expect(i?.events.map((e) => e.detail)).toContainEqual(
     "Search failed again at 12:10 UTC: measuring the fix again",
+  );
+});
+
+test("the card names the open pull requests, and a send-back tells the agent why it came back", async () => {
+  const w = await world();
+  w.evaluate("sig-a", "ok");
+  w.deps.proof = async (input) => ({
+    round: input.round,
+    at: new Date(w.clock).toISOString(),
+    baseline: { samples: [], verdict: "passes" },
+    candidate: { kind: "request", samples: [], verdict: "passes" },
+  });
+  await w.runToVerifier();
+  let i = await getIncident(w.incident.id);
+  expect(i?.response?.needsYou).toMatchObject({
+    kind: "proof-stopped",
+    prs: [{ number: 12, url: "https://github.com/acme/web/pull/12" }],
+  });
+  expect(i?.response?.next).toMatchObject({
+    reason: expect.stringContaining("Open pull request: #12."),
+  });
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "send-back",
+      "Bo",
+      "continue",
+      w.deps,
+    ),
+  ).toMatchObject({ state: "investigating" });
+  await advanceIncident(w.incident.id, w.deps);
+  const message = w.sends.at(-1)?.message ?? "";
+  expect(message).toContain("Why it came back to them");
+  expect(message).toContain(
+    "The problem stopped before the fix could be proven",
+  );
+  expect(message).toContain("continue");
+});
+
+test("a pull request the PR cache knows is merged or closed is not named on the card", async () => {
+  const w = await world();
+  w.evaluate("sig-a", "ok");
+  w.deps.prState = () => "MERGED";
+  w.deps.proof = async (input) => ({
+    round: input.round,
+    at: new Date(w.clock).toISOString(),
+    baseline: { samples: [], verdict: "passes" },
+    candidate: { kind: "request", samples: [], verdict: "passes" },
+  });
+  await w.runToVerifier();
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.needsYou?.kind).toBe("proof-stopped");
+  expect(i?.response?.needsYou?.prs).toBeUndefined();
+});
+
+test("the investigator's brief lists earlier incidents on its signals with their pull requests", async () => {
+  const w = await world();
+  const older = await createIncident({
+    project: "acme",
+    title: "Search",
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: { kind: "rule" },
+    signalIds: ["sig-a"],
+    primarySignalId: "sig-a",
+    at: new Date(START - 86_400_000).toISOString(),
+    detail: "Search failing",
+  });
+  await updateIncident(older.id, (c) => ({
+    ...c,
+    state: "closed-without-action",
+    response: {
+      ...emptyResponse({
+        now: new Date(START - 86_400_000).toISOString(),
+        maxRounds: 2,
+        phase: "done",
+      }),
+      agents: [
+        {
+          role: "investigator",
+          round: 1,
+          attempt: 1,
+          sessionId: "old-1",
+          model: "pi/anthropic/claude-opus-5-5",
+          provider: "anthropic",
+          workspace: { kind: "sandbox", provider: "daytona" },
+          accessSummary: "x",
+          accessRevision: "r1",
+          status: "done",
+          startedAt: new Date(START - 86_400_000).toISOString(),
+          turnSentAt: new Date(START - 86_400_000).toISOString(),
+          costUsd: 0,
+          tokens: 0,
+          reminded: false,
+          prUrl: "https://github.com/acme/web/pull/9",
+        },
+      ],
+    },
+  }));
+  w.deps.prState = (_project, url) => (url.endsWith("/9") ? "OPEN" : undefined);
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.spawns[0]?.prompt).toContain(
+    `- Earlier incidents on this incident's signals (Sessions' record, newest first): ${older.id} 2026-10-19 closed without action, PR #9 open.`,
   );
 });

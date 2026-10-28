@@ -635,7 +635,13 @@ export type ResponsePhase = (typeof RESPONSE_PHASES)[number];
 
 export type SendBackReason =
   | { kind: "not-certain"; reasons: string[] }
-  | { kind: "owner"; by: string; note: string }
+  | {
+      kind: "owner";
+      by: string;
+      note: string;
+      /** The needs-you reason the owner answered by sending it back. */
+      answering?: string;
+    }
   | { kind: "rolled-back"; detail: string }
   | { kind: "reopened"; detail: string }
   | { kind: "check-failed"; detail: string };
@@ -689,6 +695,9 @@ export interface IncidentResponse {
     retryable?: boolean;
     /** A setup problem: where it is fixed. */
     fix?: SetupFix;
+    /** The incident's agents' pull requests still open when the card
+     *  appeared, named on the card. */
+    prs?: AgentPullRequest[];
   };
   note?: { prUrl?: string; pr?: PrSnapshot; merged: boolean; detail?: string };
   /** Closed without action: pull requests the incident's agents opened that

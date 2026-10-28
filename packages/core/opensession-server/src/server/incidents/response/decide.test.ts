@@ -3134,3 +3134,43 @@ test("an unproven fix whose signal failed again says so, once per return", () =>
       "The fix can only be proven after release: Only the release can show it (Search failed again at 11:59 UTC)",
   });
 });
+
+test("the needs-you card names the incident's open pull requests", () => {
+  const r = response({
+    phase: "needs-you",
+    candidate: candidate({ pr: prSnapshot() }),
+    needsYou: {
+      kind: "no-candidate",
+      reason: "No fix found: the logs are out of reach",
+      since: iso(0),
+      resumePhase: "investigating",
+      prs: [
+        {
+          url: "https://github.com/acme/web/pull/12",
+          number: 12,
+          sessionId: "child-1",
+        },
+        {
+          url: "https://github.com/acme/web/pull/14",
+          number: 14,
+          sessionId: "child-3",
+        },
+      ],
+    },
+  });
+  expect(
+    nextActionFor(incident("needs-you", r), defaultProjectSettings("acme")),
+  ).toMatchObject({
+    reason:
+      "No fix found: the logs are out of reach. Open pull requests: #12, #14.",
+  });
+  const one = {
+    ...r,
+    needsYou: { ...r.needsYou!, prs: r.needsYou!.prs!.slice(0, 1) },
+  };
+  expect(
+    nextActionFor(incident("needs-you", one), defaultProjectSettings("acme")),
+  ).toMatchObject({
+    reason: "No fix found: the logs are out of reach. Open pull request: #12.",
+  });
+});

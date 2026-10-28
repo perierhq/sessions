@@ -704,6 +704,16 @@ describe("automation descendant publication policy", () => {
     ).toBeUndefined();
   });
 
+  test("allows reading the repository's pull requests (incident agents look for earlier notes and fixes)", () => {
+    for (const command of [
+      "gh pr list --state open --search docs/incidents",
+      "gh pr list --repo tellahq/renderer --json number,title,files",
+      "gh pr view 12 --json files,headRefOid",
+      "gh pr diff 12 -- docs/incidents/runbook.md",
+    ])
+      expect(publicationPolicyDenyReason(command, policy)).toBeUndefined();
+  });
+
   test("denies merge, protected-base push, and external repository writes", () => {
     expect(
       publicationPolicyDenyReason("gh pr merge 12 --squash", policy),

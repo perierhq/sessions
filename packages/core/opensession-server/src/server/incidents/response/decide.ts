@@ -230,12 +230,18 @@ function sendBackLeavesARound(r: IncidentResponse): boolean {
   return r.round + 1 < r.maxRounds;
 }
 
-/** What the card says beyond the stored reason. */
+/** What the card says beyond the stored reason: why Send it back is not
+ *  offered, and the incident's open pull requests. */
 function needsYouReason(r: IncidentResponse): string {
   const ny = r.needsYou!;
+  let reason = ny.reason;
   if (ny.kind === "proof-stopped" && !sendBackLeavesARound(r))
-    return `${ny.reason}. Sending it back would spend the last round and stop here again while the problem is away; Sessions measures again if it fails again.`;
-  return ny.reason;
+    reason +=
+      ". Sending it back would spend the last round and stop here again while the problem is away; Sessions measures again if it fails again";
+  const prs = ny.prs ?? [];
+  if (!prs.length) return reason;
+  const numbers = prs.map((p) => `#${p.number}`).join(", ");
+  return `${reason.replace(/\.$/, "")}. Open pull ${prs.length === 1 ? "request" : "requests"}: ${numbers}.`;
 }
 
 function runningActionLabel(r: IncidentResponse): string {
