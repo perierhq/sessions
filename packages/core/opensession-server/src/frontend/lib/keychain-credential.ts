@@ -188,3 +188,23 @@ function ceilingOf(form: CredentialFormState) {
 function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
+
+/** Whether the signed-in person can lend a credential to incident agents:
+ *  their own, or a workspace one; never a login (the server checks again). */
+export function canLend(c: KeychainCredentialDto): boolean {
+  return c.kind !== "login" && (c.mine === true || c.scope === "workspace");
+}
+
+/** A project's lending in the access table's words: "investigator always,
+ *  verifier ask once". */
+export function lendingRoles(
+  roles: NonNullable<KeychainCredentialDto["lentIn"]>[number]["roles"],
+): string {
+  return Object.entries(roles)
+    .filter(([, mode]) => mode)
+    .map(
+      ([role, mode]) =>
+        `${role} ${mode === "standing" ? "always" : "ask once"}`,
+    )
+    .join(", ");
+}

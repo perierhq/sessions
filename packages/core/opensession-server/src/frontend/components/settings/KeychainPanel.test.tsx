@@ -77,7 +77,15 @@ const keychain = {
         status: 200,
       },
     }),
-    credentialFixture("kc-2", "acme-unused"),
+    credentialFixture("kc-2", "acme-unused", {
+      lentIn: [{ project: "acme-todo", roles: { investigator: "standing" } }],
+    }),
+    credentialFixture("kc-5", "bea-shared", {
+      owner: "Bea",
+      mine: false,
+      scope: "workspace",
+    }),
+    credentialFixture("kc-6", "bea-personal", { owner: "Bea", mine: false }),
     credentialFixture("kc-3", "acme-old", { expiresOn: isoDay(-3) }),
     credentialFixture("kc-4", "acme-soon", { expiresOn: isoDay(5) }),
   ],
@@ -133,6 +141,7 @@ const { Badge } = await import("../../ui/badge");
 const { InlineAlert } = await import("../../ui/state");
 const { AgentName } = await import("../AgentIdentity");
 const { CredentialHistoryDialog } = await import("./CredentialHistoryDialog");
+const { UseInIncidentsDialog } = await import("./UseInIncidentsDialog");
 
 beforeEach(() => {
   added.length = 0;
@@ -551,5 +560,40 @@ test("a row shows the ceiling its grants inherit", async () => {
   const tree = await section();
   expect(JSON.stringify(row(tree, "acme-api").props.desc)).toContain(
     "allows any method, any path",
+  );
+});
+
+test("a lent credential links to each project's access settings", async () => {
+  const tree = await section();
+  const desc = row(tree, "acme-unused").props.desc;
+  expect(JSON.stringify(desc)).toContain("Lent to incident agents in");
+  expect(JSON.stringify(desc)).toContain("investigator always");
+  expect(find<React.ComponentProps<"a">>(desc, "a")?.props.href).toContain(
+    "/settings/projects/acme-todo/access",
+  );
+});
+
+test("Use in incidents is offered for what you can lend", async () => {
+  const tree = await section();
+  const mine = find(
+    row(tree, "acme-api").props.control,
+    Menu.Item,
+    (p) => p.children === "Use in incidents",
+  );
+  expect(mine).toBeDefined();
+  // A teammate's workspace credential: anyone may lend it.
+  const shared = find(
+    row(tree, "bea-shared").props.control,
+    Button,
+    (p) => p.children === "Use in incidents",
+  );
+  expect(shared).toBeDefined();
+  // A teammate's personal one: only its owner lends it.
+  expect(row(tree, "bea-personal").props.control).toBeNull();
+  // SAFETY: the handler ignores the click event.
+  shared!.props.onClick!(undefined as never);
+  await settle();
+  expect(find(tree.output(), UseInIncidentsDialog)?.props.credential.id).toBe(
+    "kc-5",
   );
 });

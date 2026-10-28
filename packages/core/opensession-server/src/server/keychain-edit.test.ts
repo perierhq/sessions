@@ -13,7 +13,11 @@ process.env.OPENSESSION_KEYCHAIN_STORE = STORE;
 
 const kc = await import("./keychain");
 const { brokerCall, testCredential } = await import("./keychain-broker");
-const { handleKeychainRoutes } = await import("./routes/keychain");
+const {
+  handleKeychainRoutes,
+  lendingByCredential,
+  __setKeychainProjectsForTest,
+} = await import("./routes/keychain");
 const { fetchBackedNet } = await import("./testing/pinned-fetch-double");
 
 const SECRET = "sk-edit-secret-1234";
@@ -465,5 +469,67 @@ describe("widening the limits", () => {
     await Bun.sleep(60);
     expect(status(b.id)).toBe("expired");
     expect(kc.resumeGrantAsync(b.id, "Alex")).rejects.toThrow(/expired/);
+  });
+});
+
+describe("where a credential is lent", () => {
+  test("each project whose access lends it to an incident role", () => {
+    const lent = lendingByCredential([
+      {
+        project: "acme-todo",
+        access: {
+          credentials: [
+            { credential: "kc-1", roles: { investigator: "standing" } },
+            { credential: "kc-2", roles: {} },
+          ],
+        },
+      },
+      {
+        project: "acme-web",
+        access: {
+          credentials: [{ credential: "kc-1", roles: { verifier: "once" } }],
+        },
+      },
+    ]);
+    expect(lent.get("kc-1")).toEqual([
+      { project: "acme-todo", roles: { investigator: "standing" } },
+      { project: "acme-web", roles: { verifier: "once" } },
+    ]);
+    // Listed but lent to no role: not lent.
+    expect(lent.get("kc-2")).toBeUndefined();
+  });
+
+  test("GET /api/keychain carries it, and still answers without projects", async () => {
+    const meta = add();
+    __setKeychainProjectsForTest(async () => [
+      {
+        project: "acme-todo",
+        access: {
+          credentials: [
+            { credential: meta.id, roles: { investigator: "once" } },
+          ],
+        },
+      },
+    ]);
+    const url = new URL("/api/keychain", "https://os.example.test");
+    const get = () =>
+      handleKeychainRoutes({
+        path: url.pathname,
+        url,
+        publicPrefix: "",
+        authUser: alex,
+        req: new Request(url),
+      }) as Promise<Response>;
+    const body = await (await get()).json();
+    expect(body.credentials[0].lentIn).toEqual([
+      { project: "acme-todo", roles: { investigator: "once" } },
+    ]);
+    __setKeychainProjectsForTest(async () => {
+      throw new Error("catalog unavailable");
+    });
+    const fallback = await get();
+    expect(fallback.status).toBe(200);
+    expect((await fallback.json()).credentials[0].lentIn).toBeUndefined();
+    __setKeychainProjectsForTest(undefined);
   });
 });

@@ -23,6 +23,12 @@ import {
   STALE_CREDENTIAL_ERROR,
 } from "../keychain";
 import { testCredential } from "../keychain-broker";
+import { listProjectDocuments } from "../projects/store";
+import type { CredentialGrantMode } from "../../shared/incident-access";
+import type {
+  IncidentRole,
+  ProjectCredentialRow,
+} from "../../shared/project-settings";
 import { readRequestTextWithinLimit } from "../shared/bounded-body";
 import {
   CredentialRegistrationError,
@@ -59,6 +65,55 @@ export function retiredKeychainBrokerResponse(): Response {
   );
 }
 
+/** What lending reads of a project's settings. */
+type ProjectLending = {
+  project: string;
+  access: {
+    credentials: Array<Pick<ProjectCredentialRow, "credential" | "roles">>;
+  };
+};
+
+export interface CredentialLending {
+  project: string;
+  roles: Partial<Record<IncidentRole, CredentialGrantMode>>;
+}
+
+/** Each credential's projects that lend it to an incident role (a row
+ *  with no role ticked lends nothing). */
+export function lendingByCredential(
+  docs: ProjectLending[],
+): Map<string, CredentialLending[]> {
+  const out = new Map<string, CredentialLending[]>();
+  for (const doc of docs)
+    for (const row of doc.access.credentials) {
+      if (!Object.values(row.roles).some(Boolean)) continue;
+      const list = out.get(row.credential) ?? [];
+      list.push({ project: doc.project, roles: { ...row.roles } });
+      out.set(row.credential, list);
+    }
+  return out;
+}
+
+let projectsForLending: () => Promise<ProjectLending[]> = listProjectDocuments;
+
+/** Replace where lending is read from (undefined restores the catalog). */
+export function __setKeychainProjectsForTest(
+  read?: () => Promise<ProjectLending[]>,
+): void {
+  projectsForLending = read ?? listProjectDocuments;
+}
+
+/** Lending per credential, or an empty map when the project catalog can't
+ *  answer: the Keychain still loads, without the links. */
+async function currentLending(): Promise<Map<string, CredentialLending[]>> {
+  try {
+    return lendingByCredential(await projectsForLending());
+  } catch (error) {
+    console.error("[keychain] couldn't read project lending:", error);
+    return new Map();
+  }
+}
+
 export async function handleKeychainRoutes(
   ctx: RouteContext,
 ): Promise<Response | undefined> {
@@ -76,9 +131,20 @@ export async function handleKeychainRoutes(
   // ── Management ────────────────────────────────────────────────────────────
   if (path === "/api/keychain" && req.method === "GET") {
     await ensureKeychainLoaded();
-    return Response.json(keychainViewFor(verifiedPerson(ctx)), {
-      headers: { "Cache-Control": "no-store" },
-    });
+    const view = keychainViewFor(verifiedPerson(ctx));
+    // Which projects lend each credential to incident agents, so a row
+    // links to that project's access settings.
+    const lending = await currentLending();
+    return Response.json(
+      {
+        ...view,
+        credentials: view.credentials.map((c) => {
+          const lentIn = lending.get(c.id);
+          return lentIn ? { ...c, lentIn } : c;
+        }),
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   // The card in the requesting session. Only the credential's owner, by

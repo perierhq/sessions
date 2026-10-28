@@ -7,6 +7,8 @@ import type {
 import { parseAutomationEgressDomain } from "../../../../server/sandbox/automation-egress";
 import { fetchConnections } from "../../../lib/api/automations";
 import { fetchKeychain } from "../../../lib/api/settings";
+import { routePath } from "../../../lib/app-route";
+import { canLend } from "../../../lib/keychain-credential";
 import { errorMessage } from "../../../lib/error-message";
 import {
   DIALOG_INPUT,
@@ -107,7 +109,9 @@ export function AddAccessRowDialog({
   else if (kind === "credential")
     choices = keychain.data
       ? keychain.data.credentials
-          .filter((c) => c.kind !== "login")
+          // Only what the viewer can lend: their own credentials and
+          // workspace ones. Anyone else's would be refused on save.
+          .filter(canLend)
           .filter((c) => !has({ kind: "credential", credential: c.id }))
           .map((c) => ({ value: c.id, label: c.service }))
       : null;
@@ -223,22 +227,49 @@ export function AddAccessRowDialog({
       ) : choices === null ? (
         <SkeletonBar className="w-[52%]" />
       ) : choices.length ? (
-        <Field label={KINDS.find((k) => k.kind === kind)!.title}>
-          <OptionSelect
-            label={KINDS.find((k) => k.kind === kind)!.title}
-            value={chosen}
-            options={choices}
-            onChange={setPick}
-            className="w-full justify-between phone:min-h-11"
-          />
-        </Field>
+        <div className="flex flex-col gap-1.5">
+          <Field label={KINDS.find((k) => k.kind === kind)!.title}>
+            <OptionSelect
+              label={KINDS.find((k) => k.kind === kind)!.title}
+              value={chosen}
+              options={choices}
+              onChange={setPick}
+              className="w-full justify-between phone:min-h-11"
+            />
+          </Field>
+          {kind === "credential" && (
+            <p className={FIELD_HINT}>
+              Your own credentials and workspace ones. {keychainLink("Add one")}
+            </p>
+          )}
+        </div>
       ) : (
         <p className={FIELD_HINT}>
-          {kind === "host"
-            ? "Every paired Runner is already listed. Pair a new one under Production"
-            : "Everything there is already listed"}
+          {kind === "host" ? (
+            "Every paired Runner is already listed. Pair a new one under Production"
+          ) : kind === "credential" ? (
+            <>
+              No credential you can lend that isn't listed already.{" "}
+              {keychainLink("Add one")}
+            </>
+          ) : (
+            "Everything there is already listed"
+          )}
         </p>
       )}
     </SettingsDialog>
+  );
+}
+
+/** A link to the Keychain in Settings → Account, where credentials are
+ *  added. */
+function keychainLink(label: string) {
+  return (
+    <a
+      className="relative text-dim underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
+      href={`${routePath({ view: "settings", section: "myAccounts" })}#keychain`}
+    >
+      {label} in Keychain
+    </a>
   );
 }

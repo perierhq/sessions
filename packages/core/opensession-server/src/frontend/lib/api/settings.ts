@@ -186,6 +186,11 @@ export interface KeychainCredentialDto {
   expiresOn?: string;
   /** The path the owner's status-only test calls. */
   testPath?: string;
+  /** Projects whose access settings lend it to incident agents. */
+  lentIn?: Array<{
+    project: string;
+    roles: Partial<Record<"investigator" | "verifier", "once" | "standing">>;
+  }>;
   /** The last call that went out with it. */
   lastUsed?: {
     at: string;

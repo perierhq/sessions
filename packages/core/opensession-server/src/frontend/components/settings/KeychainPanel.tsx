@@ -14,7 +14,13 @@ import {
 } from "../../lib/api";
 import { errorMessage } from "../../lib/error-message";
 import { ceilingSummary } from "../../../shared/keychain-ceiling";
-import { expiryNote, testOutcome } from "../../lib/keychain-credential";
+import { routePath } from "../../lib/app-route";
+import {
+  canLend,
+  expiryNote,
+  lendingRoles,
+  testOutcome,
+} from "../../lib/keychain-credential";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { useConfirm } from "../../ui/confirm";
@@ -33,6 +39,7 @@ import { BASE_PATH } from "../../lib/base";
 import { AgentName } from "../AgentIdentity";
 import { CredentialHistoryDialog } from "./CredentialHistoryDialog";
 import { CredentialDialog, LoginDialog } from "./KeychainDialogs";
+import { UseInIncidentsDialog } from "./UseInIncidentsDialog";
 import { SettingRow } from "./shared";
 
 // ── Keychain: per-person credentials sessions can BORROW with your approval
@@ -58,6 +65,7 @@ export function KeychainSection() {
     credential?: KeychainCredentialDto;
   } | null>(null);
   const [history, setHistory] = useState<KeychainCredentialDto | null>(null);
+  const [lending, setLending] = useState<KeychainCredentialDto | null>(null);
   const [confirm, confirmDialog] = useConfirm();
 
   const reload = () => {
@@ -66,6 +74,17 @@ export function KeychainSection() {
       .catch((e) => setError(e.message));
   };
   useEffect(reload, [reload]);
+  // Links from a project's access settings land here with #keychain: the
+  // section sits under others on the page, so bring it into view once the
+  // list has its height.
+  const loaded = data !== null;
+  useEffect(() => {
+    // Through globalThis: the panel's tests run without a DOM.
+    if (loaded && globalThis.location?.hash === "#keychain")
+      globalThis.document
+        ?.getElementById("keychain")
+        ?.scrollIntoView({ block: "start" });
+  }, [loaded]);
 
   // The label, its action and the hint below the card are all static, so they
   // stay while the credentials are in flight — only the list is unknown, and
@@ -73,6 +92,8 @@ export function KeychainSection() {
   // answer lands.
   const label = (
     <SettingsGroupLabel
+      id="keychain"
+      className="scroll-mt-6"
       actions={
         <>
           <Button
@@ -242,6 +263,12 @@ export function KeychainSection() {
           />
         ))}
 
+      {lending && (
+        <UseInIncidentsDialog
+          credential={lending}
+          onClose={() => setLending(null)}
+        />
+      )}
       {history && (
         <CredentialHistoryDialog
           credential={history}
@@ -291,6 +318,7 @@ export function KeychainSection() {
                       .filter(Boolean)
                       .join(" · ")}
                     {c.lastUsed && lastUsedLine(c.lastUsed)}
+                    {c.lentIn?.length ? lentInLine(c.lentIn) : null}
                   </>
                 }
                 control={
@@ -323,6 +351,11 @@ export function KeychainSection() {
                           <Menu.Item onClick={() => setHistory(c)}>
                             History
                           </Menu.Item>
+                          {canLend(c) && (
+                            <Menu.Item onClick={() => setLending(c)}>
+                              Use in incidents
+                            </Menu.Item>
+                          )}
                           {c.kind !== "login" && (
                             <Menu.Item onClick={() => setScope(c)}>
                               {c.scope === "workspace"
@@ -339,6 +372,16 @@ export function KeychainSection() {
                         </Menu.Popup>
                       </Menu.Root>
                     </div>
+                  ) : canLend(c) ? (
+                    // A teammate's workspace credential: anyone signed in may lend it.
+                    <Button
+                      size="sm"
+                      className="phone:min-h-11"
+                      variant="ghost"
+                      onClick={() => setLending(c)}
+                    >
+                      Use in incidents
+                    </Button>
                   ) : null
                 }
               />
@@ -543,13 +586,18 @@ export function KeychainSection() {
   );
 }
 
+/** A link inside a row's description: underlined in the text's colour,
+ *  with a hit area taller than the line (TextLink's recipe, as an anchor). */
+const INLINE_LINK =
+  "relative underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg";
+
 /** "Last used 2h ago by <agent>": the session links to its transcript. */
 function lastUsedLine(use: NonNullable<KeychainCredentialDto["lastUsed"]>) {
   return (
     <span className="block">
       Last used {relativeTime(use.at)} by{" "}
       <a
-        className="relative underline decoration-line-strong underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:text-fg"
+        className={INLINE_LINK}
         href={`${BASE_PATH}/session/${encodeURIComponent(use.sessionId)}`}
       >
         <AgentName sessionId={use.sessionId} />
@@ -559,6 +607,32 @@ function lastUsedLine(use: NonNullable<KeychainCredentialDto["lastUsed"]>) {
         : use.error
           ? " · failed"
           : ""}
+    </span>
+  );
+}
+
+/** "Lent to incident agents in acme-todo (investigator always)": each
+ *  project links to its access settings, where the lending is changed. */
+function lentInLine(lentIn: NonNullable<KeychainCredentialDto["lentIn"]>) {
+  return (
+    <span className="block">
+      Lent to incident agents in{" "}
+      {lentIn.map((l, i) => (
+        <span key={l.project}>
+          {i > 0 && ", "}
+          <a
+            className={INLINE_LINK}
+            href={routePath({
+              view: "projectSettings",
+              project: l.project,
+              section: "access",
+            })}
+          >
+            {l.project}
+          </a>{" "}
+          ({lendingRoles(l.roles)})
+        </span>
+      ))}
     </span>
   );
 }

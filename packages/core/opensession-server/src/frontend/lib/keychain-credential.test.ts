@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import {
+  canLend,
   credentialForm,
   credentialSpec,
   editEffect,
   expiryNote,
   formChanged,
+  lendingRoles,
   testOutcome,
 } from "./keychain-credential";
 
@@ -138,4 +140,25 @@ test("an edit that widens the limits names how, and counts approved grants", () 
     kind: "moved",
     text: "Saving moves it to a new host, so its 4 active grants end",
   });
+});
+
+test("only your own credentials and workspace ones can be lent, never a login", () => {
+  const base = {
+    id: "kc",
+    owner: "Alex",
+    service: "acme",
+    host: "api.example.test",
+    createdAt: "",
+    updatedAt: "",
+  };
+  expect(canLend({ ...base, mine: true })).toBe(true);
+  expect(canLend({ ...base, mine: false, scope: "workspace" })).toBe(true);
+  expect(canLend({ ...base, mine: false })).toBe(false);
+  expect(canLend({ ...base, mine: true, kind: "login" })).toBe(false);
+});
+
+test("a lending says which roles, and how", () => {
+  expect(lendingRoles({ investigator: "standing", verifier: "once" })).toBe(
+    "investigator always, verifier ask once",
+  );
 });
