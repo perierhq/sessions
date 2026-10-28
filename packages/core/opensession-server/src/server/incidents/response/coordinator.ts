@@ -122,6 +122,7 @@ import {
 import { plainReportProblem } from "./reports";
 import { productionRunOnProblem, runnerLabel } from "./runners";
 import {
+  FINAL_TEXT_GRACE_MS,
   PARALLEL_INVESTIGATOR_RETRY_MS,
   type ResponseStep,
   type ResponseView,
@@ -425,6 +426,24 @@ function liveRunStatus(live: AgentLive): AgentRun["status"] {
   }
 }
 
+/**
+ * Whether a working run's live `done` is still its previous turn's: a turn
+ * just sent (a send-back or a reminder) that the session has not started
+ * yet reads as idle for a moment. Nothing it wrote after the turn was sent,
+ * within FINAL_TEXT_GRACE_MS of sending it: the run is still working. Past
+ * that, a turn that ended without a word is the report rules' to handle.
+ */
+async function turnNotStarted(
+  run: AgentRun,
+  live: AgentLive,
+  now: number,
+  finalText: () => Promise<string | undefined>,
+): Promise<boolean> {
+  if (run.status !== "running" || liveRunStatus(live) !== "done") return false;
+  if (!(now - Date.parse(run.turnSentAt) < FINAL_TEXT_GRACE_MS)) return false;
+  return (await finalText().catch(() => undefined)) === undefined;
+}
+
 /** Runs whose live status matters: working, or finished without a report. */
 function watchedRun(run: AgentRun): boolean {
   return (
@@ -517,9 +536,16 @@ async function syncAgents(
   const usages = new Map<string, { costUsd: number; tokens: number }>();
   for (const run of r.agents) {
     try {
-      if (watchedRun(run))
-        lives.set(run.sessionId, await agents.status(run.sessionId));
-      else {
+      if (watchedRun(run)) {
+        const live = await agents.status(run.sessionId);
+        const pending = await turnNotStarted(run, live, d.now(), () =>
+          agents.finalText(run.sessionId, run.turnSentAt),
+        );
+        lives.set(
+          run.sessionId,
+          pending ? { ...live, status: "running" } : live,
+        );
+      } else {
         const usage = await agents.usage(run.sessionId);
         if (usage) usages.set(run.sessionId, usage);
       }
@@ -691,8 +717,14 @@ export async function buildResponseView(
           (!run.reportError || (reread(run) && live.prUrl))
             ? await handle.finalText(run.sessionId, run.turnSentAt)
             : undefined;
+        const pending = await turnNotStarted(run, live, now, async () =>
+          finalText !== undefined
+            ? finalText
+            : handle.finalText(run.sessionId, run.turnSentAt),
+        );
         agents.set(run.sessionId, {
           ...live,
+          ...(pending ? { status: "running" as const } : {}),
           ...(finalText !== undefined ? { finalText } : {}),
         });
       } catch (error) {

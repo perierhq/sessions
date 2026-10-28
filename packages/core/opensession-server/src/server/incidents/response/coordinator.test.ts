@@ -3738,3 +3738,41 @@ test("the investigator's brief lists earlier incidents on its signals with their
     `- Earlier incidents on this incident's signals (Sessions' record, newest first): ${older.id} 2026-10-19 closed without action, PR #9 open.`,
   );
 });
+
+test("a send-back is not logged as finished before the agent's new turn has run", async () => {
+  const w = await world();
+  w.evaluate("sig-a", "ok");
+  w.deps.proof = async (input) => ({
+    round: input.round,
+    at: new Date(w.clock).toISOString(),
+    baseline: { samples: [], verdict: "passes" },
+    candidate: { kind: "request", samples: [], verdict: "passes" },
+  });
+  await w.runToVerifier();
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "continue",
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.sends.at(-1)?.id).toBe("child-1");
+  // The session still reports its last turn's idle state for a moment.
+  w.clock += 1_000;
+  w.live("child-1", { status: "done" });
+  await advanceIncident(w.incident.id, w.deps);
+  const finished = async () =>
+    ((await getIncident(w.incident.id))?.response?.ledger ?? [])
+      .map((e) => e.detail)
+      .filter((d) => d === "Investigator finished round 2");
+  expect(await finished()).toEqual([]);
+  expect((await getIncident(w.incident.id))?.response?.agents[0]?.status).toBe(
+    "running",
+  );
+  // Its new turn ends with a report: one entry.
+  w.clock += 60_000;
+  w.finish("child-1", fence(investigatorReport));
+  await advanceIncident(w.incident.id, w.deps);
+  expect(await finished()).toEqual(["Investigator finished round 2"]);
+});
