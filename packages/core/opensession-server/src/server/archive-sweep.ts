@@ -208,6 +208,13 @@ export function startArchiveSweep(): void {
   started = true;
   const run = () => void runArchiveSweep();
   const interval = archiveSweepIntervalMs();
-  setTimeout(run, Math.min(ARCHIVE_SWEEP_FIRST_DELAY_MS, interval)).unref?.();
-  setInterval(run, interval).unref?.();
+  // The interval starts with the first pass, so a short one (a test
+  // instance) never runs two passes at the same moment.
+  setTimeout(
+    () => {
+      run();
+      setInterval(run, interval).unref?.();
+    },
+    Math.min(ARCHIVE_SWEEP_FIRST_DELAY_MS, interval),
+  ).unref?.();
 }

@@ -4,6 +4,7 @@ import { join } from "path";
 import {
   archiveRetentionDays,
   runArchiveSweep,
+  startArchiveSweep,
   type ArchiveSweepDeps,
 } from "./archive-sweep";
 import {
@@ -249,6 +250,31 @@ describe("archive sweep", () => {
     expect(
       lines.some((l) => l.includes("[housekeeping] worktree-sweep recovered")),
     ).toBe(true);
+  });
+
+  test("a short interval never runs two passes at once: the interval starts with the first pass", () => {
+    process.env.OPENSESSION_ARCHIVE_SWEEP_MINUTES = "2";
+    const timeouts: number[] = [];
+    const timer = { unref() {} } as unknown as ReturnType<typeof setTimeout>;
+    const timeout = spyOn(globalThis, "setTimeout").mockImplementation(((
+      _fn: () => void,
+      ms?: number,
+    ) => {
+      timeouts.push(ms ?? 0);
+      return timer;
+    }) as unknown as typeof setTimeout);
+    const interval = spyOn(globalThis, "setInterval").mockImplementation(
+      (() => timer) as unknown as typeof setInterval,
+    );
+    try {
+      startArchiveSweep();
+      expect(timeouts).toEqual([120_000]);
+      expect(interval).not.toHaveBeenCalled();
+    } finally {
+      timeout.mockRestore();
+      interval.mockRestore();
+      delete process.env.OPENSESSION_ARCHIVE_SWEEP_MINUTES;
+    }
   });
 
   test("the gateway starts the sweep instead of scanning session files", () => {
