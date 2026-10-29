@@ -82,6 +82,8 @@ export interface FakeOptions {
   info?: string;
   /** The workload's `{{.State.CgroupPath}}`. */
   cgroup?: string;
+  /** Package cache volumes that already exist. */
+  volumes?: string[];
 }
 
 /** An nft listing of a namespace with no ruleset loaded. */
@@ -101,6 +103,7 @@ const EMPTY_LISTING =
  */
 export function fakePodman(o: FakeOptions = {}) {
   const calls: { argv: string[]; opts?: PodmanRunOpts }[] = [];
+  const cacheVolumes = new Set(o.volumes ?? []);
   const state = {
     podExists: o.podExists ?? false,
     workloadExists: o.podExists ?? false,
@@ -208,6 +211,12 @@ export function fakePodman(o: FakeOptions = {}) {
       return ok("");
     if (a === "image" && b === "exists")
       return o.imageExists === false ? fail("") : ok();
+    if (a === "volume" && b === "exists" && last.endsWith("-pkgcache"))
+      return cacheVolumes.has(last) ? ok() : fail("");
+    if (a === "volume" && b === "create" && last.endsWith("-pkgcache")) {
+      cacheVolumes.add(last);
+      return ok();
+    }
     if (a === "volume" && b === "exists")
       return state.volumeExists ? ok() : fail("");
     if (a === "volume" && b === "create") {

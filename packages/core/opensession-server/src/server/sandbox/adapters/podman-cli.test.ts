@@ -24,6 +24,8 @@ import {
   podCreateArgs,
   podmanEnv,
   podmanNames,
+  packageCacheVolumeCreateArgs,
+  podmanPackageCacheVolume,
   volumeCreateArgs,
   workloadCreateArgs,
 } from "./podman-cli";
@@ -235,6 +237,68 @@ describe("podman argv", () => {
       "sleep",
       "infinity",
     ]);
+  });
+
+  test("a project's package cache is one labelled volume per repository", () => {
+    expect(podmanPackageCacheVolume("acme")).toBe(
+      "opensession-sbx-acme-pkgcache",
+    );
+    // Folded like a session key, with a hash when the id had to change, so
+    // two repositories never share one.
+    expect(podmanPackageCacheVolume("Acme/Web")).toMatch(
+      /^opensession-sbx-acme-web-[0-9a-f]{8}-pkgcache$/,
+    );
+    expect(podmanPackageCacheVolume("Acme/Web")).not.toBe(
+      podmanPackageCacheVolume("acme-web"),
+    );
+    // Never a session's home volume, whatever the repository is called.
+    expect(podmanPackageCacheVolume("x-home").endsWith("-home")).toBe(false);
+    expect(() => podmanPackageCacheVolume("")).toThrow();
+    expect(packageCacheVolumeCreateArgs("acme")).toEqual([
+      "volume",
+      "create",
+      "--label",
+      "opensession.sandbox.package-cache=1",
+      "--label",
+      "opensession.sandbox.package-cache.repo=acme",
+      "opensession-sbx-acme-pkgcache",
+    ]);
+  });
+
+  test("workload create mounts the project's package cache and points the package managers at it", () => {
+    const argv = workloadCreateArgs({
+      names,
+      image: "localhost/opensession-sandbox:0123456789abcdef",
+      memoryMb: 4096,
+      pidsLimit: 4096,
+      packageCache: "opensession-sbx-acme-pkgcache",
+    });
+    // Shared between this project's sandboxes, so the shared SELinux label
+    // (z), not the private one the home volume gets (Z).
+    expect(operands(argv, "-v")).toEqual([
+      `${names.volume}:/home/ubuntu:Z,nosuid,nodev`,
+      "opensession-sbx-acme-pkgcache:/home/ubuntu/.cache/opensession-packages:z,nosuid,nodev",
+    ]);
+    expect(operands(argv, "--env")).toEqual([
+      "BUN_INSTALL_CACHE_DIR=/home/ubuntu/.cache/opensession-packages/bun",
+      "npm_config_cache=/home/ubuntu/.cache/opensession-packages/npm",
+      "npm_config_store_dir=/home/ubuntu/.cache/opensession-packages/pnpm-store",
+      "pnpm_config_store_dir=/home/ubuntu/.cache/opensession-packages/pnpm-store",
+    ]);
+    expect(argv.slice(-3)).toEqual([
+      "localhost/opensession-sandbox:0123456789abcdef",
+      "sleep",
+      "infinity",
+    ]);
+    expect(() =>
+      workloadCreateArgs({
+        names,
+        image: "localhost/opensession-sandbox:0123456789abcdef",
+        memoryMb: 4096,
+        pidsLimit: 4096,
+        packageCache: "acme-pkgcache",
+      }),
+    ).toThrow();
   });
 
   test("workload create adds --cpus only when a CPU limit is given", () => {

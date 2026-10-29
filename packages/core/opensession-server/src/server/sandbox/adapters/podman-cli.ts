@@ -342,15 +342,7 @@ export interface PodmanNames {
  */
 export function podmanNames(sessionId: string): PodmanNames {
   if (!sessionId) throw new Error("podman sandbox needs a session id");
-  const folded = sessionId
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]/g, "-")
-    .replace(/\.{2,}/g, "-");
-  let key = folded;
-  if (folded !== sessionId || folded.length > MAX_KEY) {
-    const hash = createHash("sha256").update(sessionId).digest("hex");
-    key = `${folded.slice(0, MAX_KEY - 9)}-${hash.slice(0, 8)}`;
-  }
+  const key = foldKey(sessionId);
   const pod = `${PODMAN_NAME_PREFIX}${key}`;
   return {
     key,
@@ -359,6 +351,76 @@ export function podmanNames(sessionId: string): PodmanNames {
     volume: `${pod}-home`,
     workload: `${pod}-ws`,
   };
+}
+
+/** `id` folded to `[a-z0-9_.-]`, at most MAX_KEY chars, no `..`; a hash of
+ *  the original is appended when it had to change. */
+function foldKey(id: string): string {
+  const folded = id
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]/g, "-")
+    .replace(/\.{2,}/g, "-");
+  if (folded === id && folded.length <= MAX_KEY) return folded;
+  const hash = createHash("sha256").update(id).digest("hex");
+  return `${folded.slice(0, MAX_KEY - 9)}-${hash.slice(0, 8)}`;
+}
+
+// ── Package cache ────────────────────────────────────────────────────────────
+//
+// A sandbox's home grew its own bun cache, pnpm store and npm cache, for
+// every session, often over a gigabyte each. The package managers' caches
+// live on one volume per project instead, mounted read-write at a fixed path
+// in each of that project's sandboxes. They are content-addressed (bun and
+// npm by integrity hash, pnpm's store by file hash), built for concurrent
+// installs, and hold only what the project's own dependency installs fetch.
+// Per project, not per instance: a sandbox can write the cache other
+// sandboxes install from, so it is shared only by sessions that already run
+// the same repository's code. Nothing else is shared; the home stays the
+// session's own.
+
+/** Where the shared caches are mounted. Inside the home, which is writable,
+ *  so the mountpoint needs nothing from the read-only image. */
+export const PODMAN_PACKAGE_CACHE_DIR = `${PODMAN_WORKLOAD_HOME}/.cache/opensession-packages`;
+export const PODMAN_PACKAGE_CACHE_LABEL = "opensession.sandbox.package-cache=1";
+export const PODMAN_PACKAGE_CACHE_REPO_LABEL_KEY =
+  "opensession.sandbox.package-cache.repo";
+const PACKAGE_CACHE_SUFFIX = "-pkgcache";
+
+/** The package managers' cache settings, set on the workload container so
+ *  they hold whatever HOME a command runs with. pnpm 10 reads `npm_config_*`
+ *  and pnpm 11 `pnpm_config_*`. */
+export function podmanPackageCacheEnv(): Record<string, string> {
+  return {
+    BUN_INSTALL_CACHE_DIR: `${PODMAN_PACKAGE_CACHE_DIR}/bun`,
+    npm_config_cache: `${PODMAN_PACKAGE_CACHE_DIR}/npm`,
+    npm_config_store_dir: `${PODMAN_PACKAGE_CACHE_DIR}/pnpm-store`,
+    pnpm_config_store_dir: `${PODMAN_PACKAGE_CACHE_DIR}/pnpm-store`,
+  };
+}
+
+/** The package cache volume of repository `repoId`. Ends in `-pkgcache`, so
+ *  it is never a session's `-home` volume. */
+export function podmanPackageCacheVolume(repoId: string): string {
+  if (!repoId) throw new Error("a package cache needs a repository id");
+  return `${PODMAN_NAME_PREFIX}${foldKey(repoId)}${PACKAGE_CACHE_SUFFIX}`;
+}
+
+/** `podman volume create` for a project's package cache. It carries the
+ *  package-cache label, not the sandbox label: it belongs to no session,
+ *  so no session teardown or sandbox sweep removes it. */
+export function packageCacheVolumeCreateArgs(repoId: string): string[] {
+  const name = podmanPackageCacheVolume(repoId);
+  if (/[\0\r\n]/.test(repoId))
+    throw new Error("invalid repository id for a podman label");
+  return [
+    "volume",
+    "create",
+    "--label",
+    PODMAN_PACKAGE_CACHE_LABEL,
+    "--label",
+    `${PODMAN_PACKAGE_CACHE_REPO_LABEL_KEY}=${repoId}`,
+    name,
+  ];
 }
 
 function assertOwnName(name: string): void {
@@ -444,7 +506,8 @@ function positiveInt(value: number, what: string): string {
  * `podman create` for the workload (never `run`: the firewall goes in before
  * it starts). No host mounts, no capabilities, no new privileges, the
  * default seccomp profile and SELinux type, a read-only rootfs and the
- * session volume (nosuid, nodev) as the only writable disk. No restart policy: a restart
+ * session volume (nosuid, nodev) as the only writable disk, plus the
+ * project's package cache volume when there is one. No restart policy: a restart
  * outside the firewall sequence would start it unfiltered. `--memory-swap`
  * (memory plus swap) equals `--memory`, so the limit grants no swap.
  */
@@ -454,10 +517,28 @@ export function workloadCreateArgs(o: {
   memoryMb: number;
   pidsLimit: number;
   cpu?: number;
+  /** The project's package cache volume (podmanPackageCacheVolume). */
+  packageCache?: string;
 }): string[] {
   assertOwnName(o.names.pod);
   assertOwnName(o.names.workload);
   assertOwnName(o.names.volume);
+  const cache: string[] = [];
+  if (o.packageCache !== undefined) {
+    assertOwnName(o.packageCache);
+    if (!o.packageCache.endsWith(PACKAGE_CACHE_SUFFIX))
+      throw new Error(`not a package cache volume: ${o.packageCache}`);
+    cache.push(
+      "-v",
+      // z, not Z: the volume is shared by this project's sandboxes, and a
+      // private label would lock out every one but the last to start.
+      `${o.packageCache}:${PODMAN_PACKAGE_CACHE_DIR}:z,nosuid,nodev`,
+      ...Object.entries(podmanPackageCacheEnv()).flatMap(([key, value]) => [
+        "--env",
+        `${key}=${value}`,
+      ]),
+    );
+  }
   if (!/^[a-z0-9][a-z0-9._/:@-]*$/i.test(o.image))
     throw new Error(`invalid image reference: ${o.image}`);
   const memory = `${positiveInt(o.memoryMb, "memoryMb")}m`;
@@ -499,6 +580,7 @@ export function workloadCreateArgs(o: {
     "nofile=65536:65536",
     "-v",
     `${o.names.volume}:${PODMAN_WORKLOAD_HOME}:Z,nosuid,nodev`,
+    ...cache,
     o.image,
     "sleep",
     "infinity",

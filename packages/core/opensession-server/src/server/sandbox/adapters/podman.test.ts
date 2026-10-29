@@ -251,6 +251,57 @@ describe("podman provider ensure", () => {
     expect(argv[argv.indexOf("--cpus") + 1]).toBe("2");
   });
 
+  test("a session with a repository mounts its project's package cache, created once", async () => {
+    const fake = fakePodman();
+    const provider = new PodmanProvider(deps(fake));
+    await provider.ensure({ sessionId: sessionId() });
+    const creates = fake.calls.filter(
+      ({ argv }) => argv[0] === "volume" && argv[1] === "create",
+    );
+    expect(creates.map(({ argv }) => argv.at(-1))).toContain(
+      "opensession-sbx-acme-pkgcache",
+    );
+    const { argv } = fake.calls.find(({ argv }) => argv[0] === "create")!;
+    expect(argv).toContain(
+      "opensession-sbx-acme-pkgcache:/home/ubuntu/.cache/opensession-packages:z,nosuid,nodev",
+    );
+
+    // A second session of the project reuses the volume.
+    const second = fakePodman({ volumes: ["opensession-sbx-acme-pkgcache"] });
+    await new PodmanProvider(deps(second)).ensure({ sessionId: sessionId() });
+    expect(
+      second.calls.some(
+        ({ argv }) =>
+          argv[0] === "volume" &&
+          argv[1] === "create" &&
+          argv.at(-1) === "opensession-sbx-acme-pkgcache",
+      ),
+    ).toBe(false);
+    expect(
+      second.calls.find(({ argv }) => argv[0] === "create")!.argv,
+    ).toContain(
+      "opensession-sbx-acme-pkgcache:/home/ubuntu/.cache/opensession-packages:z,nosuid,nodev",
+    );
+  });
+
+  test("a sandbox with no repository gets no shared cache", async () => {
+    const fake = fakePodman();
+    const provider = new PodmanProvider(
+      deps(fake, {
+        workspacePlan: async () => ({
+          repoId: "",
+          branch: "main",
+          defaultBranch: "main",
+          cwd: "/home/ubuntu",
+        }),
+      }),
+    );
+    await provider.ensure({ sessionId: sessionId() });
+    const { argv } = fake.calls.find(({ argv }) => argv[0] === "create")!;
+    expect(argv.filter((word) => word === "-v")).toHaveLength(1);
+    expect(argv).not.toContain("--env");
+  });
+
   test("a running pod is reverified, not restarted", async () => {
     const fake = fakePodman();
     const provider = new PodmanProvider(deps(fake));

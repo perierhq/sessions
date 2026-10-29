@@ -692,6 +692,23 @@ is `podman pod stop` after `idleStopMinutes` (the home volume is kept), and
 every wake goes through the firewalled start again. A Terminal tab is
 `podman exec -it` as uid 1000. Portals ride the outbound relay.
 
+**Package caches.** The package managers' caches (bun's install cache,
+pnpm's store and npm's cache) live on one volume per project,
+`opensession-sbx-<repo>-pkgcache`, mounted read-write at
+`/home/ubuntu/.cache/opensession-packages` in each of that project's
+sandboxes (`BUN_INSTALL_CACHE_DIR`, `npm_config_cache` and the pnpm store
+dir point there), so a session's home holds its checkout and
+`node_modules`, not its own copy of every package. The caches are
+content-addressed and safe to install from concurrently. A sandbox can write
+to the cache the project's other sandboxes install from, so it is shared only
+between sessions of the same repository, which already run that
+repository's code; sandboxes of different projects never share one. The
+volume belongs to no session: deleting a session or its sandbox leaves it,
+and the disk check does not count it against a sandbox's limit. Remove it
+with `podman volume rm` while no sandbox of the project runs; the next
+sandbox starts with an empty cache. npm prints a warning about the unknown
+`store-dir` setting, which is pnpm's.
+
 **Retention.** Archiving a session only puts its sandbox to sleep, which
 keeps the pod, its containers and its home volume on disk. Seven days after
 the archive, the archive sweep destroys them the way deleting the session

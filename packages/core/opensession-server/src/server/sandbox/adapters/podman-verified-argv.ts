@@ -40,7 +40,7 @@ const SHAPES: RegExp[] = [
   `container\x00inspect\x00--format\x00(${FORMAT_FIELDS.map(escape).join("|")})\x00${NAME}`,
   `volume\x00create\x00--label\x00[^\x00]+\x00--label\x00[^\x00]+\x00${NAME}`,
   `pod\x00create\x00--name\x00${NAME}\x00--infra-name\x00${NAME}\x00--network\x00pasta:[^\x00]+(\x00--dns\x00[0-9.]+)+\x00--dns-search\x00\\.\x00--no-hosts\x00--hostname\x00sandbox\x00--share\x00net,uts,ipc\x00--label\x00[^\x00]+\x00--label\x00[^\x00]+`,
-  `create\x00--pod\x00${NAME}\x00--name\x00${NAME}\x00--label\x00[^\x00]+\x00--user\x001000:1000\x00--cap-drop\x00ALL\x00--security-opt\x00no-new-privileges\x00--security-opt\x00label=type:container_t\x00--read-only\x00--read-only-tmpfs=true\x00--tmpfs\x00/tmp:rw,nosuid,nodev,size=1g\x00--init\x00--pids-limit\x00\\d+\x00--memory\x00(\\d+)m\x00--memory-swap\x00\\1m(\x00--cpus\x00\\d+(\\.\\d+)?)?\x00--ulimit\x00nofile=65536:65536\x00-v\x00${NAME}:/home/ubuntu:Z,nosuid,nodev\x00[^\x00]+\x00sleep\x00infinity`,
+  `create\x00--pod\x00${NAME}\x00--name\x00${NAME}\x00--label\x00[^\x00]+\x00--user\x001000:1000\x00--cap-drop\x00ALL\x00--security-opt\x00no-new-privileges\x00--security-opt\x00label=type:container_t\x00--read-only\x00--read-only-tmpfs=true\x00--tmpfs\x00/tmp:rw,nosuid,nodev,size=1g\x00--init\x00--pids-limit\x00\\d+\x00--memory\x00(\\d+)m\x00--memory-swap\x00\\1m(\x00--cpus\x00\\d+(\\.\\d+)?)?\x00--ulimit\x00nofile=65536:65536\x00-v\x00${NAME}:/home/ubuntu:Z,nosuid,nodev(\x00-v\x00${NAME}-pkgcache:/home/ubuntu/\.cache/opensession-packages:z,nosuid,nodev(\x00--env\x00[A-Za-z_]+=${PATH})+)?\x00[^\x00]+\x00sleep\x00infinity`,
   `start\x00${NAME}`,
   `pod\x00stop(\x00-t\x00\\d+)?\x00${NAME}`,
   `pod\x00kill\x00${NAME}`,

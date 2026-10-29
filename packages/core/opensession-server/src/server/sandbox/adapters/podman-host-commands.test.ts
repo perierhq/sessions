@@ -5,6 +5,7 @@ import {
   execArgs,
   podCreateArgs,
   podmanNames,
+  packageCacheVolumeCreateArgs,
   volumeCreateArgs,
   workloadCreateArgs,
   type PodmanRunOpts,
@@ -112,6 +113,7 @@ describe("podman argv checked on a host", () => {
   test("the builders' argv are all verified shapes", () => {
     const argvs = [
       volumeCreateArgs({ names, sessionId: "sess-1" }),
+      packageCacheVolumeCreateArgs("acme"),
       podCreateArgs({
         names,
         sessionId: "sess-1",
@@ -129,6 +131,15 @@ describe("podman argv checked on a host", () => {
         memoryMb: 512,
         pidsLimit: 256,
         cpu: 1.5,
+      }),
+      // A project's sandbox, with its shared package cache.
+      workloadCreateArgs({
+        names,
+        image: "localhost/opensession-sandbox:0123456789abcdef",
+        memoryMb: 4096,
+        pidsLimit: 4096,
+        cpu: 2,
+        packageCache: "opensession-sbx-acme-pkgcache",
       }),
       // The default CPU limit on a host that delegates `cpu`.
       workloadCreateArgs({
