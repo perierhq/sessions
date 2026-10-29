@@ -2,13 +2,28 @@
  * Archive sweep: worktrees and Sandboxes of sessions archived long ago.
  *
  * - Worktrees of sessions archived more than ARCHIVE_SWEEP_DAYS ago with no
- *   WIP are removed (sweepArchivedWorktrees, worktree.ts).
- * - Sandboxes of long-idle archived sessions are torn down: containers and
- *   engine-state volumes are provider-owned and safe to drop (bind-mode
- *   worktrees belong to the worktree sweep and are untouched). Volume-mode
- *   workspaces die with the Sandbox, the documented contract of that mode
- *   (push your work). A revived session re-ensures a fresh one on its next
- *   prompt.
+ *   WIP are removed (sweepArchivedWorktrees, worktree.ts). The hourly
+ *   worktree reaper parks them sooner, banking any WIP first.
+ * - Sandboxes are torn down through the same path a session delete uses
+ *   (destroySessionSandbox): for This machine (container) that is the pod,
+ *   its containers and its home volume. Archiving only puts a Sandbox to
+ *   sleep, which keeps all of it on disk, so this is what frees the space:
+ *   - an archived session's, once it has been archived and idle for
+ *     archiveRetentionDays() (default 7, `OPENSESSION_ARCHIVE_RETENTION_DAYS`),
+ *     counted from the archive (archive registry), or from its last activity
+ *     when the registry has no time for it. Unarchiving it stops the clock.
+ *   - an automation session's (incident agents and the like), once it has
+ *     been idle that long. Nobody archives those by hand, so without this
+ *     their sleeping pods and volumes stayed forever. Like the worktree
+ *     reaper's shorter automation horizon.
+ *   Every remote Sandbox holds the session's working copy in its own disk
+ *   (volume mode), so none is destroyed with work in it: uncommitted changes
+ *   and unpushed commits are checkpointed to origin first, and a Sandbox
+ *   whose work cannot be banked that way is kept (sandbox-work-bank.ts). A
+ *   revived session re-ensures a fresh Sandbox on its next prompt, restored
+ *   from the checkpoint. What was removed, its size where the provider
+ *   measured it, and what was kept and why show under `housekeeping` in
+ *   `/api/health`.
  *
  * The session list comes from the list index / catalogs
  * (getSessionListSnapshotAsync), never from the offline directory scanner:
@@ -17,15 +32,47 @@
  * housekeeping-health.ts so a repeat failure shows in `/api/health`.
  */
 
-import { runHousekeeping } from "./housekeeping-health";
+import {
+  noteHousekeepingKept,
+  noteHousekeepingReclaimed,
+  runHousekeeping,
+} from "./housekeeping-health";
+import type { SandboxWorkVerdict } from "./sandbox-work-bank";
 import type { UnifiedSession } from "./types";
 
 export const ARCHIVE_SWEEP_DAYS = 14;
-const ARCHIVE_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export const DEFAULT_ARCHIVE_RETENTION_DAYS = 7;
+const DAY_MS = 86_400_000;
+const DEFAULT_ARCHIVE_SWEEP_MINUTES = 6 * 60;
 /** After boot, staggered behind the worktree reaper's first pass (10 min).
  *  The gateway restarts on every deploy, often more than once in 6 hours, so
  *  an interval with no first run hardly ever ran. */
 const ARCHIVE_SWEEP_FIRST_DELAY_MS = 15 * 60 * 1000;
+
+function positiveNumber(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return raw?.trim() && Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** Days a Sandbox outlives its session's archive (or an automation
+ *  session's last activity): `OPENSESSION_ARCHIVE_RETENTION_DAYS`, read on
+ *  every pass. Fractions are allowed, for a test instance. */
+export function archiveRetentionDays(
+  raw: string | undefined = process.env.OPENSESSION_ARCHIVE_RETENTION_DAYS,
+): number {
+  return positiveNumber(raw, DEFAULT_ARCHIVE_RETENTION_DAYS);
+}
+
+/** Minutes between passes: `OPENSESSION_ARCHIVE_SWEEP_MINUTES` (default 6
+ *  hours). A test instance sets it low together with the retention. */
+function archiveSweepIntervalMs(): number {
+  return (
+    positiveNumber(
+      process.env.OPENSESSION_ARCHIVE_SWEEP_MINUTES,
+      DEFAULT_ARCHIVE_SWEEP_MINUTES,
+    ) * 60_000
+  );
+}
 
 export type ArchiveSweepDeps = {
   /** Sessions with live run state, from the list index. */
@@ -39,17 +86,29 @@ export type ArchiveSweepDeps = {
     why: string,
     clearSandboxId: boolean,
   ) => void;
+  /** Whether the Sandbox may go: its working copy is clean, or its work
+   *  was banked to origin first (sandbox-work-bank.ts). */
+  bankWork: (session: UnifiedSession) => Promise<SandboxWorkVerdict>;
+  /** When the session was archived (ms), or null when unknown. */
+  archivedAt?: (session: UnifiedSession) => number | null;
+  /** The Sandbox's disk use as last measured, or null when unknown. */
+  sandboxBytes?: (session: UnifiedSession) => number | null;
   /** Called after worktrees were removed so the list drops their paths. */
   invalidate: () => void;
   now?: () => number;
 };
 
 async function defaultDeps(): Promise<ArchiveSweepDeps> {
-  const [cache, worktree, sandbox] = await Promise.all([
-    import("./session-cache"),
-    import("./worktree"),
-    import("./session-sandbox"),
-  ]);
+  const [cache, worktree, sandbox, archive, podmanDisk, bank, lane] =
+    await Promise.all([
+      import("./session-cache"),
+      import("./worktree"),
+      import("./session-sandbox"),
+      import("./archive"),
+      import("./sandbox/adapters/podman-disk"),
+      import("./sandbox-work-bank"),
+      import("./sandbox/lifecycle-lane"),
+    ]);
   return {
     sessions: async () =>
       cache.enrichSessionRuntime(
@@ -57,6 +116,22 @@ async function defaultDeps(): Promise<ArchiveSweepDeps> {
       ),
     sweepWorktrees: worktree.sweepArchivedWorktrees,
     destroySandbox: sandbox.destroySessionSandbox,
+    // On the session's lifecycle lane, where checkpoints run and run
+    // admission waits: no turn starts while the working copy is checked.
+    bankWork: (s) =>
+      lane.withSessionLifecycleLane(s.id, () => bank.bankSandboxWork(s)),
+    // The latest archive among the row and its aliases: the window starts
+    // from the most recent one.
+    archivedAt: (s) => {
+      const times = [s.id, ...(s.aliasIds ?? [])]
+        .map(archive.getArchivedAt)
+        .filter((at): at is number => at !== null);
+      return times.length ? Math.max(...times) : null;
+    },
+    sandboxBytes: (s) =>
+      s.sandbox?.provider === "podman" && s.sandbox.sandboxId
+        ? podmanDisk.podmanSandboxHomeBytes(s.sandbox.sandboxId)
+        : null,
     invalidate: cache.invalidateSessionsCache,
   };
 }
@@ -93,25 +168,79 @@ export async function runArchiveSweep(
     }
     removed.push(...swept);
   });
-  await runHousekeeping("sandbox-sweep", () => {
-    const cutoff = now() - ARCHIVE_SWEEP_DAYS * 86_400_000;
+  await runHousekeeping("sandbox-sweep", async () => {
+    const days = archiveRetentionDays();
+    const cutoff = now() - days * DAY_MS;
+    let bytes = 0;
+    const kept: { id: string; reason: string }[] = [];
     for (const s of list()) {
-      if (!s.sandbox?.sandboxId || !s.archived || s.isRunning) continue;
-      if (new Date(s.lastActivity).getTime() >= cutoff) continue;
-      d.destroySandbox(s, "archive-sweep", true);
+      if (!s.sandbox?.sandboxId || s.isRunning) continue;
+      const since = retentionClock(s, d.archivedAt);
+      if (since === null || since >= cutoff) continue;
+      const verdict = await d.bankWork(s);
+      if (!verdict.retire) {
+        kept.push({ id: s.id, reason: verdict.reason });
+        continue;
+      }
+      bytes += d.sandboxBytes?.(s) ?? 0;
+      d.destroySandbox(
+        s,
+        s.archived ? "archive-retention" : "automation-retention",
+        true,
+      );
       retired.push(s.id);
     }
+    if (retired.length)
+      console.log(
+        `[sandbox-sweep] Retired ${retired.length} Sandbox(es) idle >${days}d: ${retired.join(", ")}`,
+      );
+    if (kept.length)
+      console.warn(
+        `[sandbox-sweep] Kept ${kept.length} Sandbox(es) holding work that could not be banked: ${kept.map((k) => k.id).join(", ")}`,
+      );
+    noteHousekeepingReclaimed("sandbox-sweep", {
+      count: retired.length,
+      bytes,
+    });
+    noteHousekeepingKept("sandbox-sweep", kept);
   });
   return { worktrees: removed, sandboxes: retired };
 }
 
+/** When a Sandbox's retention window started, or null when it has none:
+ *  an open session's Sandbox is kept however old. Archived: the later of
+ *  the archive and the last activity. Automation (never archived by hand):
+ *  the last activity. */
+function retentionClock(
+  s: UnifiedSession,
+  archivedAt: ArchiveSweepDeps["archivedAt"],
+): number | null {
+  const last = Date.parse(s.lastActivity);
+  if (s.archived) {
+    const at = archivedAt?.(s) ?? null;
+    const since = Math.max(at ?? -Infinity, last);
+    return Number.isFinite(since) ? since : null;
+  }
+  if (s.automation) return Number.isFinite(last) ? last : null;
+  return null;
+}
+
 let started = false;
 
-/** Start the archive sweep: once shortly after boot, then every 6 hours. */
+/** Start the archive sweep: once shortly after boot, then every 6 hours
+ *  (`OPENSESSION_ARCHIVE_SWEEP_MINUTES`). */
 export function startArchiveSweep(): void {
   if (started) return;
   started = true;
   const run = () => void runArchiveSweep();
-  setTimeout(run, ARCHIVE_SWEEP_FIRST_DELAY_MS).unref?.();
-  setInterval(run, ARCHIVE_SWEEP_INTERVAL_MS).unref?.();
+  const interval = archiveSweepIntervalMs();
+  // The interval starts with the first pass, so a short one (a test
+  // instance) never runs two passes at the same moment.
+  setTimeout(
+    () => {
+      run();
+      setInterval(run, interval).unref?.();
+    },
+    Math.min(ARCHIVE_SWEEP_FIRST_DELAY_MS, interval),
+  ).unref?.();
 }

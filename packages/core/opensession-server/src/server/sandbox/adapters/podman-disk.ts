@@ -152,6 +152,21 @@ export async function forgetPodmanDiskState(): Promise<void> {
   lastCheckError = undefined;
   overQuota = undefined;
   overQuotaLoad = undefined;
+  lastVolumeBytes = new Map();
+}
+
+/** Home volume name -> bytes, from the last successful check. */
+let lastVolumeBytes = new Map<string, number>();
+
+export function recordPodmanVolumeUsage(usage: Map<string, number>): void {
+  lastVolumeBytes = new Map(usage);
+}
+
+/** The home volume size of `sandboxId` (its pod name) as last measured, or
+ *  null when no check has measured it. Process-local, no podman call: the
+ *  archive sweep reports what it reclaimed with it. */
+export function podmanSandboxHomeBytes(sandboxId: string): number | null {
+  return lastVolumeBytes.get(`${sandboxId}-home`) ?? null;
 }
 
 export function recordPodmanDiskReport(

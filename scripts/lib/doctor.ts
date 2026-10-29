@@ -308,11 +308,25 @@ async function checkService(
             failing?: boolean;
             consecutiveFailures?: number;
             lastError?: string;
+            reclaimedSinceBoot?: { count?: number; bytes?: number };
+            lastKept?: { count?: number; items?: { id?: string }[] };
           }
         >;
         sandboxImage?: unknown;
       } | null;
       for (const [job, health] of Object.entries(body?.housekeeping ?? {})) {
+        const freed = health?.reclaimedSinceBoot;
+        if (freed?.count)
+          info(
+            dim(
+              `${job} removed ${freed.count} since start${freed.bytes ? ` (${(freed.bytes / 1024 ** 3).toFixed(1)} GiB)` : ""}`,
+            ),
+          );
+        const held = health?.lastKept;
+        if (held?.count)
+          info(
+            `${job} kept ${held.count} holding work it could not bank: ${(held.items ?? []).map((item) => item.id).join(", ")} (reasons in /api/health)`,
+          );
         if (!health?.failing) continue;
         warn(
           `${job} failed ${health.consecutiveFailures} runs in a row`,

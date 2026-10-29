@@ -692,6 +692,51 @@ is `podman pod stop` after `idleStopMinutes` (the home volume is kept), and
 every wake goes through the firewalled start again. A Terminal tab is
 `podman exec -it` as uid 1000. Portals ride the outbound relay.
 
+**Package caches.** pnpm's store and npm's cache live on one volume per
+project, `opensession-sbx-<repo>-pkgcache`, mounted read-write at
+`/var/cache/opensession-packages` in each of that project's sandboxes
+(`npm_config_cache` and the pnpm store dir point there), so a session's home
+holds its checkout and `node_modules`, not another copy of every package for
+each turn. bun's install cache stays in the home: bun hardlinks
+`node_modules` to it, which costs next to nothing on one filesystem, and
+would copy every file from a cache on another volume. The caches are
+content-addressed and safe to install from concurrently. A sandbox can write
+to the cache the project's other sandboxes install from, so it is shared only
+between sessions of the same repository, which already run that
+repository's code; sandboxes of different projects never share one. The
+volume belongs to no session: deleting a session or its sandbox leaves it,
+and the disk check does not count it against a sandbox's limit. Remove it
+with `podman volume rm` while no sandbox of the project runs; the next
+sandbox starts with an empty cache. npm prints a warning about the unknown
+`store-dir` setting, which is pnpm's.
+
+**Retention.** Archiving a session only puts its sandbox to sleep, which
+keeps the pod, its containers and its home volume on disk. Seven days after
+the archive, the archive sweep destroys them the way deleting the session
+does; unarchiving the session before then keeps them. An automation
+session's sandbox (an incident agent's, for example) goes once the session
+has been idle for those seven days, since nobody archives those by hand. Set
+the window in days with `OPENSESSION_ARCHIVE_RETENTION_DAYS` (process or
+service env). The sweep runs 15 minutes after the server starts and then
+every six hours (`OPENSESSION_ARCHIVE_SWEEP_MINUTES`); `/api/health` shows
+how many sandboxes it removed and their measured size under
+`housekeeping.sandbox-sweep`, and `opensession doctor` prints the total. The
+session's checkpoint is restored into the fresh sandbox its next prompt
+creates.
+
+The sandbox holds the session's working copy in its home volume, with no
+copy on the host, so the sweep checks it before destroying anything. It
+wakes a sleeping sandbox for the check. Uncommitted changes and unpushed
+commits on the checked-out branch are first pushed as the session's
+checkpoint, and the session keeps its branch. A sandbox whose work cannot be
+checkpointed stays, and goes back to sleep: work on the default branch or a
+detached HEAD, a repository not on GitHub, a missing credential, a failed
+push, or unpushed commits on another local branch. A sandbox that cannot be
+woken or checked also stays. `/api/health` lists each kept sandbox and the
+reason under `housekeeping.sandbox-sweep.lastKept`, and `opensession doctor`
+prints them. A kept sandbox is checked again once its session has new
+activity.
+
 **Host prerequisites.** Qualification checks each of these and names the
 fix when one is missing:
 
@@ -733,7 +778,11 @@ update", for up to 15 minutes) instead of failing, and incident agents that
 ran out of that wait start again on their own. Only a failed build refuses,
 with "Requalify This machine (container)"; the next start a minute later
 tries the build again. `opensession update` and `opensession doctor` report
-where the build stands.
+where the build stands. After a build, and at each start of the server once the
+current image is there, the images of earlier releases are removed: the
+current image and the one before it stay, as does any image a container (a
+sleeping sandbox, say) still uses. `/api/health` reports what was removed
+under `housekeeping.sandbox-image-prune`.
 
 **Limits.** Each sandbox gets a memory limit (default 4096 MB), a process
 limit (default 4096) and a CPU limit (default 2 CPUs, or every CPU on a

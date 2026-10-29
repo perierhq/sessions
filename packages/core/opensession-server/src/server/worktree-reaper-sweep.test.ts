@@ -1,5 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  utimesSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { $ } from "bun";
@@ -10,7 +17,11 @@ import { getConfigAsync } from "./config";
 // Regression for 2026-09-24, when a session whose PR had closed was reaped 6h
 // after its last turn and its revived checkout had lost every gitignored file.
 
-const ENV_KEYS = ["OPENSESSION_CONFIG", "OPENSESSION_WORKTREES_DIR"] as const;
+const ENV_KEYS = [
+  "OPENSESSION_CONFIG",
+  "OPENSESSION_WORKTREES_DIR",
+  "OPENSESSION_STATE_DIR",
+] as const;
 const saved = Object.fromEntries(
   ENV_KEYS.map((key) => [key, process.env[key]]),
 ) as Record<(typeof ENV_KEYS)[number], string | undefined>;
@@ -59,6 +70,8 @@ beforeAll(async () => {
   );
   process.env.OPENSESSION_CONFIG = join(root, "config.json");
   process.env.OPENSESSION_WORKTREES_DIR = worktrees;
+  // Banked work lands under the state dir, never the real one.
+  process.env.OPENSESSION_STATE_DIR = join(root, "state");
   await getConfigAsync();
 });
 
@@ -310,5 +323,63 @@ describe("sweepWorktreeReaper", () => {
       "acme-idle-open-session",
       "acme-idle-renamed-branch",
     ]);
+  });
+
+  it("banks and parks an archived session's unfinished checkout past the idle horizon", async () => {
+    // Retention for archived sessions' worktrees: the work is neither merged
+    // nor pushed, so no done-signal fires, and the checkout must not stay on
+    // disk forever. It goes after the idle horizon, its work banked first.
+    const { sweepWorktreeReaper } = await import("./worktree-reaper");
+    const branch = "archived-wip";
+    const dir = join(worktrees, `acme-${branch}`);
+    await $`git -C ${repoDir} worktree add -q -b ${branch} ${dir} origin/main`.quiet();
+    await Bun.write(join(dir, "feature.txt"), "committed, never pushed\n");
+    await $`git -C ${dir} add feature.txt`.quiet();
+    await $`git -C ${dir} -c user.email=test@example.test -c user.name=Test commit -q -m wip`.quiet();
+    await Bun.write(join(dir, "notes.txt"), "uncommitted\n");
+    const old = new Date(NOW - 30 * 24 * HOUR);
+    utimesSync(join(dir, ".git"), old, old);
+    const session = {
+      worktreeDir: dir,
+      branch,
+      repo: "acme",
+      isRunning: false,
+      archived: true,
+    };
+
+    // Archived but idle under the horizon: kept.
+    const recent = await sweepWorktreeReaper({
+      nowMs: NOW,
+      sessions: [
+        {
+          ...session,
+          lastActivity: new Date(NOW - 2 * 24 * HOUR).toISOString(),
+        },
+      ],
+    });
+    expect(recent.removed).not.toContain(`acme-${branch}`);
+    expect(existsSync(dir)).toBe(true);
+
+    const result = await sweepWorktreeReaper({
+      nowMs: NOW,
+      sessions: [
+        {
+          ...session,
+          lastActivity: new Date(NOW - 8 * 24 * HOUR).toISOString(),
+        },
+      ],
+    });
+    expect(result.parked).toContain(`acme-${branch}`);
+    expect(result.banked).toContain(`acme-${branch}`);
+    expect(existsSync(dir)).toBe(false);
+    // The branch, with its unpushed commit, stays; the uncommitted file is
+    // in the bank.
+    const kept =
+      await $`git -C ${repoDir} rev-parse --verify --quiet refs/heads/${branch}`
+        .quiet()
+        .nothrow();
+    expect(kept.exitCode).toBe(0);
+    const banks = readdirSync(join(root, "state", ".opensession-parked-work"));
+    expect(banks.length).toBeGreaterThan(0);
   });
 });

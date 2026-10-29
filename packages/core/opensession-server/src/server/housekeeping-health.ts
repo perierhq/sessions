@@ -26,7 +26,28 @@ export type HousekeepingJobHealth = {
   failing: boolean;
 };
 
+export type HousekeepingReclaimed = {
+  /** Things the job removed (Sandboxes, images, worktrees). */
+  count: number;
+  /** Bytes they held, where known; things of unknown size add nothing. */
+  bytes: number;
+};
+
+export type HousekeepingKept = {
+  /** Things the job left in place although they were due for removal. */
+  count: number;
+  /** Which, and why; the first KEPT_ITEMS_SHOWN. */
+  items: { id: string; reason: string }[];
+};
+
+const KEPT_ITEMS_SHOWN = 20;
+
 const jobs = new Map<string, HousekeepingJobHealth>();
+const kept = new Map<string, HousekeepingKept>();
+const reclaimed = new Map<
+  string,
+  { last: HousekeepingReclaimed; sinceBoot: HousekeepingReclaimed }
+>();
 
 function message(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
@@ -93,9 +114,66 @@ export async function runHousekeeping<T>(
   }
 }
 
+/** What one pass of `job` removed. Kept beside the run record and shown
+ *  with it, so `/api/health` says how much a cleanup job is reclaiming, not
+ *  only that it runs. */
+export function noteHousekeepingReclaimed(
+  job: string,
+  pass: HousekeepingReclaimed,
+): void {
+  const before = reclaimed.get(job)?.sinceBoot ?? { count: 0, bytes: 0 };
+  reclaimed.set(job, {
+    last: { ...pass },
+    sinceBoot: {
+      count: before.count + pass.count,
+      bytes: before.bytes + pass.bytes,
+    },
+  });
+}
+
+/** What one pass of `job` was due to remove but kept, with the reason: a
+ *  Sandbox holding work it could not bank first (archive-sweep.ts). Replaced
+ *  every pass, so it lists what is kept now. */
+export function noteHousekeepingKept(
+  job: string,
+  items: { id: string; reason: string }[],
+): void {
+  kept.set(job, {
+    count: items.length,
+    items: items.slice(0, KEPT_ITEMS_SHOWN).map((item) => ({ ...item })),
+  });
+}
+
+export type HousekeepingJobReport = HousekeepingJobHealth & {
+  /** The last pass's keeps, for jobs that report them. */
+  lastKept?: HousekeepingKept;
+  /** The last pass's removals, for jobs that report them. */
+  lastReclaimed?: HousekeepingReclaimed;
+  /** Everything removed since this process started. */
+  reclaimedSinceBoot?: HousekeepingReclaimed;
+};
+
 /** Every job that has run in this process, for `/api/health`. */
-export function housekeepingHealth(): Record<string, HousekeepingJobHealth> {
-  return Object.fromEntries(jobs);
+export function housekeepingHealth(): Record<string, HousekeepingJobReport> {
+  return Object.fromEntries(
+    [...jobs].map(([job, health]) => {
+      const counts = reclaimed.get(job);
+      const held = kept.get(job);
+      return [
+        job,
+        {
+          ...health,
+          ...(counts
+            ? {
+                lastReclaimed: counts.last,
+                reclaimedSinceBoot: counts.sinceBoot,
+              }
+            : {}),
+          ...(held ? { lastKept: held } : {}),
+        },
+      ];
+    }),
+  );
 }
 
 /** Names of the jobs currently failing. */
@@ -114,4 +192,6 @@ export function failingHousekeepingJobs(
 /** Test seam. */
 export function resetHousekeepingHealthForTest(): void {
   jobs.clear();
+  kept.clear();
+  reclaimed.clear();
 }

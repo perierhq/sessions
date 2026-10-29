@@ -7,8 +7,9 @@
  * Resources per session (podman-cli.ts names them): a pod whose infra
  * container owns a private pasta network namespace, a workload container
  * (uid 1000, no capabilities, read-only rootfs), and a volume holding
- * `/home/ubuntu` with the repository cloned inside it. Nothing from the host
- * is mounted.
+ * `/home/ubuntu` with the repository cloned inside it, plus the project's
+ * package cache volume, shared by that repository's sandboxes (podman-cli.ts).
+ * Nothing from the host is mounted.
  *
  * The network namespace is destroyed whenever the pod stops, and with it the
  * egress table. So every start, on create and on every wake, runs the same
@@ -75,6 +76,8 @@ import {
   podmanEnv,
   podmanExec,
   podmanNames,
+  packageCacheVolumeCreateArgs,
+  podmanPackageCacheVolume,
   runPodman,
   volumeCreateArgs,
   workloadCreateArgs,
@@ -98,6 +101,7 @@ import {
   parseDuTotals,
   parseVolumeMountpoints,
   PODMAN_MIN_FREE_BYTES,
+  recordPodmanVolumeUsage,
   PODMAN_VOLUME_QUOTA_BYTES,
   PODMAN_VOLUME_WARN_BYTES,
   podmanDiskCheckedSinceBoot,
@@ -700,22 +704,37 @@ function namesForPod(pod: string): PodmanNames {
   };
 }
 
-/** Starts per pod are serialized: two wakes must not interleave. */
-const startChains = new Map<string, Promise<unknown>>();
-
-function withStartLock<T>(pod: string, fn: () => Promise<T>): Promise<T> {
-  const prev = startChains.get(pod) ?? Promise.resolve();
+/** Run `fn` after everything queued under `key` in `chains`, one at a time. */
+function withKeyedLock<T>(
+  chains: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = chains.get(key) ?? Promise.resolve();
   const next = prev.then(fn, fn);
   const tail = next.then(
     () => {},
     () => {},
   );
-  startChains.set(pod, tail);
+  chains.set(key, tail);
   void tail.finally(() => {
-    if (startChains.get(pod) === tail) startChains.delete(pod);
+    if (chains.get(key) === tail) chains.delete(key);
   });
   return next;
 }
+
+/** Starts per pod are serialized: two wakes must not interleave. */
+const startChains = new Map<string, Promise<unknown>>();
+
+function withStartLock<T>(pod: string, fn: () => Promise<T>): Promise<T> {
+  return withKeyedLock(startChains, pod, fn);
+}
+
+/** Creates of a shared volume are serialized per volume name. A project's
+ *  package cache is shared by all its sandboxes, and the per-pod start lock
+ *  does not stop two first sandboxes of one project from both seeing it
+ *  missing and both creating it. */
+const volumeChains = new Map<string, Promise<unknown>>();
 
 export class PodmanProvider implements SandboxProvider {
   readonly id = "podman" as const;
@@ -805,11 +824,17 @@ export class PodmanProvider implements SandboxProvider {
     if (exists !== 0 && exists !== 1)
       throw new Error(`podman pod exists ${names.pod} failed (exit ${exists})`);
     const fresh = exists === 1;
-    if (fresh) await this.create(spec, names);
+    // The project's shared package caches (podman-cli.ts); none for a
+    // sandbox with no repository (qualification).
+    if (fresh) await this.create(spec, names, plan.repoId);
     else if (
       (await this.run(["container", "exists", names.workload])).exitCode !== 0
     )
-      await this.createWorkload(names, await this.requireImage());
+      await this.createWorkload(
+        names,
+        await this.requireImage(),
+        plan.repoId || undefined,
+      );
     mark(fresh ? "pod created" : "pod found");
     writeRemoteState({
       sandboxId: names.pod,
@@ -870,6 +895,7 @@ export class PodmanProvider implements SandboxProvider {
   private async create(
     spec: SandboxSessionSpec,
     names: PodmanNames,
+    repoId: string,
   ): Promise<void> {
     const image = await this.requireImage();
     const { dns } = this.d.settings();
@@ -884,14 +910,21 @@ export class PodmanProvider implements SandboxProvider {
       podCreateArgs({ names, sessionId: spec.sessionId, dns }),
       `create ${names.pod}`,
     );
-    await this.createWorkload(names, image);
+    await this.createWorkload(names, image, repoId || undefined);
   }
 
+  /** The workload container. With a repository, it mounts the project's
+   *  package cache, created here on first use. A workload only ever gets
+   *  the mounts it was created with: an existing one keeps its own. */
   private async createWorkload(
     names: PodmanNames,
     image = this.d.imageTag(),
+    repoId?: string,
   ): Promise<void> {
     const settings = this.d.settings();
+    const packageCache = repoId
+      ? await this.ensurePackageCache(repoId)
+      : undefined;
     await must(
       this.run,
       workloadCreateArgs({
@@ -900,9 +933,27 @@ export class PodmanProvider implements SandboxProvider {
         memoryMb: settings.memoryMb,
         pidsLimit: settings.pidsLimit,
         ...(this.d.cpuDelegated() ? { cpu: settings.cpu } : {}),
+        ...(packageCache ? { packageCache } : {}),
       }),
       `create ${names.workload}`,
     );
+  }
+
+  /** The project's package cache volume, created when missing. Idempotent:
+   *  creates are serialized per volume in this process, and a create that
+   *  podman refuses because the volume appeared meanwhile (another process
+   *  on the host made it) counts as done once the volume is there. */
+  private ensurePackageCache(repoId: string): Promise<string> {
+    const volume = podmanPackageCacheVolume(repoId);
+    const exists = async () =>
+      (await this.run(["volume", "exists", volume])).exitCode === 0;
+    return withKeyedLock(volumeChains, volume, async () => {
+      if (await exists()) return volume;
+      const created = await this.run(packageCacheVolumeCreateArgs(repoId));
+      if (created.exitCode !== 0 && !(await exists()))
+        throw failure(`create ${volume}`, created);
+      return volume;
+    });
   }
 
   private egressInput(callbackBaseUrl: string): Promise<EgressInput> {
@@ -1016,6 +1067,7 @@ export class PodmanProvider implements SandboxProvider {
     }
     const over: string[] = [];
     if (usage) {
+      recordPodmanVolumeUsage(usage);
       const unknown: string[] = [];
       for (const state of listRemoteStates(this.id)) {
         const names = podmanNames(state.sessionId);

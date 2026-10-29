@@ -295,3 +295,74 @@ async function buildPodmanImage(
   log(`built ${tag}`);
   return tag;
 }
+
+/** One `podman image ls --format json` entry, as far as pruning reads it. */
+interface ImageListEntry {
+  Names?: string[];
+  Created?: number;
+  Size?: number;
+  Containers?: number;
+}
+
+/**
+ * Remove old sandbox images after a rollout. Every release that changes the
+ * Containerfile builds a new `localhost/opensession-sandbox:<tag>` beside
+ * the old ones, and nothing removed them (about 1.2 GB each). Keeps the
+ * current image, the newest other one (what a rollback would start), and
+ * any image a container still uses, sleeping sandboxes included; podman
+ * itself also refuses to remove an image in use, and such a refusal is
+ * skipped. Removes by name, so an image with another name only loses this
+ * one. Only names in this provider's image repository are touched. Does
+ * nothing while the current image is missing (a build has not finished).
+ * Throws when the listing fails. `bytes` is the removed images' reported
+ * size; layers they shared with a kept image are not freed.
+ */
+export async function prunePodmanImages(
+  run: PodmanRunner,
+  current: string,
+): Promise<{ removed: string[]; bytes: number }> {
+  const listed = await run([
+    "image",
+    "ls",
+    "--filter",
+    `reference=${PODMAN_IMAGE_REPO}`,
+    "--format",
+    "json",
+  ]);
+  if (listed.exitCode !== 0)
+    throw new Error(
+      `podman image ls failed (exit ${listed.exitCode}): ${tail(listed.stderr || listed.stdout)}`,
+    );
+  const parsed: unknown = JSON.parse(listed.stdout.trim() || "[]");
+  if (!Array.isArray(parsed))
+    throw new Error("podman image ls did not return a list");
+  const ours = /^localhost\/opensession-sandbox:[0-9a-f]{16}$/;
+  const images = (parsed as ImageListEntry[])
+    .map((entry) => ({
+      name: (entry.Names ?? []).find((name) => ours.test(name)),
+      created: Number(entry.Created) || 0,
+      size: Number(entry.Size) || 0,
+      inUse: (Number(entry.Containers) || 0) > 0,
+    }))
+    .filter((image): image is typeof image & { name: string } => !!image.name);
+  if (!images.some((image) => image.name === current))
+    return { removed: [], bytes: 0 };
+  const older = images
+    .filter((image) => image.name !== current)
+    .sort((a, b) => b.created - a.created);
+  const removed: string[] = [];
+  let bytes = 0;
+  for (const image of older.slice(1)) {
+    if (image.inUse) continue;
+    const result = await run(["image", "rm", image.name]);
+    if (result.exitCode !== 0) {
+      console.warn(
+        `[sandbox:podman-image] kept ${image.name}: ${tail(result.stderr || result.stdout)}`,
+      );
+      continue;
+    }
+    removed.push(image.name);
+    bytes += image.size;
+  }
+  return { removed, bytes };
+}

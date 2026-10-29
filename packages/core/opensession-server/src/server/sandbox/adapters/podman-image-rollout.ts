@@ -16,6 +16,12 @@
  *   and only for PODMAN_IMAGE_RETRY_AFTER_MS: the next start after that
  *   tries again.
  *
+ * After a build, and at boot when the current image is already there, the
+ * images of earlier releases are removed (prunePodmanImages: the current
+ * and the previous one stay, and any image a container still uses). The
+ * pass is recorded as the `sandbox-image-prune` housekeeping job, with what
+ * it removed, in `/api/health`. It never fails the build.
+ *
  * Each build is a Sandboxes-page operation (kind "repair", as it repairs a
  * qualified connection) through the same startSandboxOperation a
  * qualification uses, and `podman build` itself runs once per tag
@@ -24,6 +30,10 @@
  * moves.
  */
 
+import {
+  noteHousekeepingReclaimed,
+  runHousekeeping,
+} from "../../housekeeping-health";
 import { RunSetupRefusedError } from "../../run-setup-refusal";
 import {
   getSandboxConnection,
@@ -37,7 +47,11 @@ import {
   runPodman,
   type PodmanRunner,
 } from "./podman-cli";
-import { ensurePodmanImage, podmanImageTag } from "./podman-image";
+import {
+  ensurePodmanImage,
+  podmanImageTag,
+  prunePodmanImages,
+} from "./podman-image";
 
 const LOG = "[sandbox:podman-image]";
 
@@ -72,6 +86,11 @@ export interface PodmanImageRolloutDeps {
   ) => unknown;
   /** Record the built tag on the connection's qualification facts. */
   recordTag: (tag: string) => void;
+  /** Remove earlier releases' images, keeping `current` and the previous. */
+  prune: (
+    run: PodmanRunner,
+    current: string,
+  ) => Promise<{ removed: string[]; bytes: number }>;
   now: () => number;
   platform: string;
 }
@@ -104,6 +123,21 @@ export function createPodmanImageRollout(
   let health: PodmanImageHealth | undefined;
   const iso = () => new Date(deps.now()).toISOString();
 
+  /** One prune pass, recorded; never throws. */
+  function prune(current: string): Promise<void> {
+    return runHousekeeping("sandbox-image-prune", async () => {
+      const { removed, bytes } = await deps.prune(deps.run, current);
+      if (removed.length)
+        console.log(
+          `${LOG} removed ${removed.length} old image(s): ${removed.join(", ")}`,
+        );
+      noteHousekeepingReclaimed("sandbox-image-prune", {
+        count: removed.length,
+        bytes,
+      });
+    }).then(() => {});
+  }
+
   function build(tag: string): Promise<string> {
     if (building?.tag === tag) return building.done;
     let settle!: {
@@ -129,6 +163,7 @@ export function createPodmanImageRollout(
         health = { tag: built, state: "current", at: iso() };
         console.log(`${LOG} built ${built}`);
         settle.resolve(built);
+        void prune(built);
       } catch (error) {
         const text = errorText(error);
         failed = { tag, at: deps.now(), error: text };
@@ -171,6 +206,7 @@ export function createPodmanImageRollout(
         const exists = await deps.run(["image", "exists", tag]);
         if (exists.exitCode === 0) {
           health = { tag, state: "current", at: iso() };
+          await prune(tag);
           return;
         }
         if (exists.exitCode !== 1)
@@ -206,6 +242,7 @@ export function podmanImageRollout(): PodmanImageRollout {
     build: ensurePodmanImage,
     startOperation: startSandboxOperation,
     recordTag,
+    prune: prunePodmanImages,
     now: Date.now,
     platform: process.platform,
   });

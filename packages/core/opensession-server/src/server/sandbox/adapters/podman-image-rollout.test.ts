@@ -2,7 +2,11 @@
 // qualified This machine (container) builds the new image on its own, once,
 // with its progress on the Sandboxes page, and a start that finds it missing
 // waits for that build instead of refusing.
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import {
+  housekeepingHealth,
+  resetHousekeepingHealthForTest,
+} from "../../housekeeping-health";
 import { isRunSetupRefusal } from "../../run-setup-refusal";
 import {
   isSandboxImageBuildingError,
@@ -27,6 +31,7 @@ function harness(over: Partial<PodmanImageRolloutDeps> = {}) {
     result?: "succeeded" | "failed";
   }> = [];
   const recorded: string[] = [];
+  const pruned: string[] = [];
   const run: PodmanRunner = async (argv) => ({
     exitCode: argv[0] === "image" && argv[1] === "exists" && exists ? 0 : 1,
     stdout: "",
@@ -59,6 +64,10 @@ function harness(over: Partial<PodmanImageRolloutDeps> = {}) {
       return op;
     },
     recordTag: (tag) => recorded.push(tag),
+    prune: async (_run, current) => {
+      pruned.push(current);
+      return { removed: [], bytes: 0 };
+    },
     ...over,
   };
   return {
@@ -66,12 +75,15 @@ function harness(over: Partial<PodmanImageRolloutDeps> = {}) {
     builds,
     operations,
     recorded,
+    pruned,
     setExists: (value: boolean) => (exists = value),
     advance: (ms: number) => (now += ms),
   };
 }
 
 const settle = () => Bun.sleep(1);
+
+afterEach(() => resetHousekeepingHealthForTest());
 
 describe("podman image rollout", () => {
   test("a qualified connection builds a missing image once and every start waits on it", async () => {
@@ -183,5 +195,53 @@ describe("podman image rollout", () => {
       state: "failed",
       error: expect.stringContaining("no podman"),
     });
+  });
+
+  test("old images go after a build, and at boot when the image is current", async () => {
+    const h = harness({
+      prune: async (_run, current) => {
+        expect(current).toBe(TAG);
+        return {
+          removed: ["localhost/opensession-sandbox:00000000000000aa"],
+          bytes: 1_200_000_000,
+        };
+      },
+    });
+    const waiting = h.rollout.missingImageError(TAG);
+    expect(isSandboxImageBuildingError(waiting)).toBe(true);
+    h.builds[0]!.finish();
+    await (waiting as SandboxImageBuildingError).ready;
+    await settle();
+    expect(housekeepingHealth()["sandbox-image-prune"]?.lastReclaimed).toEqual({
+      count: 1,
+      bytes: 1_200_000_000,
+    });
+
+    await h.rollout.check();
+    await settle();
+    expect(
+      housekeepingHealth()["sandbox-image-prune"]?.reclaimedSinceBoot,
+    ).toEqual({ count: 2, bytes: 2_400_000_000 });
+  });
+
+  test("a failed prune is recorded and never fails the build", async () => {
+    const h = harness({
+      prune: async () => {
+        throw new Error("podman image ls: database is locked");
+      },
+    });
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const waiting = h.rollout.missingImageError(TAG);
+      h.builds[0]!.finish();
+      expect(await (waiting as SandboxImageBuildingError).ready).toBe(TAG);
+      await settle();
+    } finally {
+      errors.mockRestore();
+    }
+    expect(h.rollout.health()?.state).toBe("current");
+    expect(housekeepingHealth()["sandbox-image-prune"]?.lastError).toContain(
+      "database is locked",
+    );
   });
 });

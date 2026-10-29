@@ -156,6 +156,15 @@ export async function unpinArchivedSessions(
   await clearEmptiedWorkspaceDrafts(emptied);
 }
 
+/** When `id` was archived (ms), or null when it is not in the registry or
+ *  its time does not parse. The registry is read once and cached. */
+export function getArchivedAt(id: string): number | null {
+  const raw = load()[id];
+  if (!raw) return null;
+  const at = Date.parse(toEntry(raw).at);
+  return Number.isFinite(at) ? at : null;
+}
+
 export function getArchiveReason(id: string): ArchiveReason | null {
   const raw = load()[id];
   return raw ? toEntry(raw).reason : null;

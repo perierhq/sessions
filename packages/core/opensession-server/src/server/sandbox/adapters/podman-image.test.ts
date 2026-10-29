@@ -23,6 +23,7 @@ import {
   podmanImageSignature,
   podmanContainerfile,
   podmanImageTag,
+  prunePodmanImages,
 } from "./podman-image";
 
 function fakeRunner(reply: (argv: string[], call: number) => ExecResult) {
@@ -255,5 +256,106 @@ describe("ensure podman image", () => {
     // Settled: the next caller checks again rather than reusing it.
     expect(await ensurePodmanImage(slow)).toBe(podmanImageTag());
     expect(calls.filter((c) => c.argv[0] === "build")).toHaveLength(1);
+  });
+});
+
+describe("old sandbox images", () => {
+  const REPO = "localhost/opensession-sandbox";
+  const image = (
+    tag: string,
+    created: number,
+    containers = 0,
+    size = 1_000_000_000,
+  ) => ({
+    Id: `${tag}${"0".repeat(48)}`,
+    Names: [`${REPO}:${tag}`],
+    Created: created,
+    Size: size,
+    Containers: containers,
+  });
+
+  test("keep the current and the previous image, and any a container uses", async () => {
+    const listing = [
+      image("0000000000000004", 400), // current
+      image("0000000000000003", 300), // previous: kept for a rollback
+      image("0000000000000002", 200, 2), // a sleeping sandbox still uses it
+      image("0000000000000001", 100, 0, 800_000_000),
+      image("0000000000000000", 50, 0, 700_000_000),
+    ];
+    const { run, calls } = fakeRunner((argv) =>
+      argv[0] === "image" && argv[1] === "ls"
+        ? { exitCode: 0, stdout: JSON.stringify(listing), stderr: "" }
+        : ok,
+    );
+    const result = await prunePodmanImages(run, `${REPO}:0000000000000004`);
+    expect(result).toEqual({
+      removed: [`${REPO}:0000000000000001`, `${REPO}:0000000000000000`],
+      bytes: 1_500_000_000,
+    });
+    expect(calls.map(({ argv }) => argv)).toEqual([
+      ["image", "ls", "--filter", `reference=${REPO}`, "--format", "json"],
+      ["image", "rm", `${REPO}:0000000000000001`],
+      ["image", "rm", `${REPO}:0000000000000000`],
+    ]);
+  });
+
+  test("a refused removal (in use after all) is skipped, not counted", async () => {
+    const listing = [
+      image("0000000000000004", 400),
+      image("0000000000000003", 300),
+      image("0000000000000001", 100),
+    ];
+    const { run } = fakeRunner((argv) =>
+      argv[1] === "ls"
+        ? { exitCode: 0, stdout: JSON.stringify(listing), stderr: "" }
+        : {
+            exitCode: 2,
+            stdout: "",
+            stderr: "image is in use by a container",
+          },
+    );
+    expect(await prunePodmanImages(run, `${REPO}:0000000000000004`)).toEqual({
+      removed: [],
+      bytes: 0,
+    });
+  });
+
+  test("nothing is removed when the current image is not there, or the list fails", async () => {
+    const listing = [image("0000000000000003", 300), image("01", 100)];
+    const { run, calls } = fakeRunner((argv) =>
+      argv[1] === "ls"
+        ? { exitCode: 0, stdout: JSON.stringify(listing), stderr: "" }
+        : ok,
+    );
+    expect(
+      (await prunePodmanImages(run, `${REPO}:0000000000000004`)).removed,
+    ).toEqual([]);
+    expect(calls).toHaveLength(1);
+    const broken = fakeRunner(() => ({
+      exitCode: 125,
+      stdout: "",
+      stderr: "database is locked",
+    }));
+    await expect(
+      prunePodmanImages(broken.run, `${REPO}:0000000000000004`),
+    ).rejects.toThrow(/database is locked/);
+  });
+
+  test("only this provider's image repository is ever named", async () => {
+    const listing = [
+      image("0000000000000004", 400),
+      image("0000000000000003", 300),
+      {
+        ...image("x", 10),
+        Names: ["docker.io/library/postgres:17-alpine"],
+      },
+    ];
+    const { run, calls } = fakeRunner((argv) =>
+      argv[1] === "ls"
+        ? { exitCode: 0, stdout: JSON.stringify(listing), stderr: "" }
+        : ok,
+    );
+    await prunePodmanImages(run, `${REPO}:0000000000000004`);
+    expect(calls.filter(({ argv }) => argv[1] === "rm")).toEqual([]);
   });
 });
