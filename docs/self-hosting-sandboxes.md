@@ -692,6 +692,20 @@ is `podman pod stop` after `idleStopMinutes` (the home volume is kept), and
 every wake goes through the firewalled start again. A Terminal tab is
 `podman exec -it` as uid 1000. Portals ride the outbound relay.
 
+**Retention.** Archiving a session only puts its sandbox to sleep, which
+keeps the pod, its containers and its home volume on disk. Seven days after
+the archive, the archive sweep destroys them the way deleting the session
+does; unarchiving the session before then keeps them. An automation
+session's sandbox (an incident agent's, for example) goes once the session
+has been idle for those seven days, since nobody archives those by hand. Set
+the window in days with `OPENSESSION_ARCHIVE_RETENTION_DAYS` (process or
+service env). The sweep runs 15 minutes after the server starts and then
+every six hours (`OPENSESSION_ARCHIVE_SWEEP_MINUTES`); `/api/health` shows
+how many sandboxes it removed and their measured size under
+`housekeeping.sandbox-sweep`, and `opensession doctor` prints the total. The
+session's checkpoint is restored into the fresh sandbox its next prompt
+creates.
+
 **Host prerequisites.** Qualification checks each of these and names the
 fix when one is missing:
 

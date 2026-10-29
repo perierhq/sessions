@@ -308,11 +308,19 @@ async function checkService(
             failing?: boolean;
             consecutiveFailures?: number;
             lastError?: string;
+            reclaimedSinceBoot?: { count?: number; bytes?: number };
           }
         >;
         sandboxImage?: unknown;
       } | null;
       for (const [job, health] of Object.entries(body?.housekeeping ?? {})) {
+        const freed = health?.reclaimedSinceBoot;
+        if (freed?.count)
+          info(
+            dim(
+              `${job} removed ${freed.count} since start${freed.bytes ? ` (${(freed.bytes / 1024 ** 3).toFixed(1)} GiB)` : ""}`,
+            ),
+          );
         if (!health?.failing) continue;
         warn(
           `${job} failed ${health.consecutiveFailures} runs in a row`,

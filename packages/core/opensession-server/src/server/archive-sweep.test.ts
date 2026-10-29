@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { runArchiveSweep, type ArchiveSweepDeps } from "./archive-sweep";
+import {
+  archiveRetentionDays,
+  runArchiveSweep,
+  type ArchiveSweepDeps,
+} from "./archive-sweep";
 import {
   failingHousekeepingJobs,
   HOUSEKEEPING_FAILING_AFTER,
@@ -51,7 +55,10 @@ function deps(over: Partial<ArchiveSweepDeps> = {}) {
   return { d, destroyed, swept, invalidated: () => invalidated };
 }
 
-afterEach(() => resetHousekeepingHealthForTest());
+afterEach(() => {
+  resetHousekeepingHealthForTest();
+  delete process.env.OPENSESSION_ARCHIVE_RETENTION_DAYS;
+});
 
 describe("archive sweep", () => {
   test("sweeps worktrees and retires Sandboxes of long-archived sessions", async () => {
@@ -86,6 +93,103 @@ describe("archive sweep", () => {
     const health = housekeepingHealth();
     expect(health["worktree-sweep"]?.consecutiveFailures).toBe(0);
     expect(health["sandbox-sweep"]?.lastOkAt).toBeTruthy();
+  });
+
+  test("retires a Sandbox once its session has been archived for the retention window", async () => {
+    const box = (id: string) =>
+      ({
+        sandbox: { provider: "podman", sandboxId: `sbx-${id}` },
+      }) as Partial<UnifiedSession>;
+    // Archived 8 days ago: past the default 7.
+    const expired = session("expired", box("expired"));
+    // Idle for a month, but archived only yesterday: the window runs from
+    // the archive, so it stays.
+    const justArchived = session("fresh", box("fresh"));
+    // Unarchived again: an open session keeps its Sandbox however old.
+    const unarchived = session("back", { ...box("back"), archived: false });
+    const archivedAt = new Map([
+      ["expired", NOW - 8 * DAY],
+      ["fresh", NOW - 1 * DAY],
+    ]);
+    const t = deps({
+      sessions: async () => [expired, justArchived, unarchived],
+      archivedAt: (s) => archivedAt.get(s.id) ?? null,
+      sandboxBytes: (s) => (s.id === "expired" ? 1_300_000_000 : null),
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect((await runArchiveSweep(t.d)).sandboxes).toEqual(["expired"]);
+      expect(t.destroyed).toEqual(["expired"]);
+
+      // A shorter window (env, like the other housekeeping knobs) takes the
+      // session archived yesterday too.
+      process.env.OPENSESSION_ARCHIVE_RETENTION_DAYS = "0.5";
+      expect(archiveRetentionDays()).toBe(0.5);
+      expect((await runArchiveSweep(t.d)).sandboxes).toEqual([
+        "expired",
+        "fresh",
+      ]);
+    } finally {
+      log.mockRestore();
+    }
+    const health = housekeepingHealth()["sandbox-sweep"];
+    expect(health?.lastReclaimed).toEqual({ count: 2, bytes: 1_300_000_000 });
+    expect(health?.reclaimedSinceBoot).toEqual({
+      count: 3,
+      bytes: 2_600_000_000,
+    });
+  });
+
+  test("an archived session with no archive time falls back to its last activity", async () => {
+    const old = session("old", {
+      sandbox: { provider: "podman", sandboxId: "sbx-old" },
+    } as Partial<UnifiedSession>);
+    const recent = session("recent", {
+      lastActivity: new Date(NOW - 3 * DAY).toISOString(),
+      sandbox: { provider: "podman", sandboxId: "sbx-recent" },
+    } as Partial<UnifiedSession>);
+    const t = deps({
+      sessions: async () => [old, recent],
+      archivedAt: () => null,
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect((await runArchiveSweep(t.d)).sandboxes).toEqual(["old"]);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("an automation session's Sandbox goes once it has been idle for the window, archived or not", async () => {
+    // Incident agents and other automation runs are never archived by a
+    // person, so their sleeping pods and volumes would stay forever.
+    const idleWorker = session("worker", {
+      archived: false,
+      automation: "Incidents · acme",
+      lastActivity: new Date(NOW - 8 * DAY).toISOString(),
+      sandbox: { provider: "podman", sandboxId: "sbx-worker" },
+    } as Partial<UnifiedSession>);
+    const busyWorker = session("busy", {
+      archived: false,
+      automation: "Incidents · acme",
+      lastActivity: new Date(NOW - 2 * DAY).toISOString(),
+      sandbox: { provider: "podman", sandboxId: "sbx-busy" },
+    } as Partial<UnifiedSession>);
+    const runningWorker = session("running", {
+      archived: false,
+      isRunning: true,
+      automation: "Incidents · acme",
+      sandbox: { provider: "podman", sandboxId: "sbx-running" },
+    } as Partial<UnifiedSession>);
+    const t = deps({
+      sessions: async () => [idleWorker, busyWorker, runningWorker],
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect((await runArchiveSweep(t.d)).sandboxes).toEqual(["worker"]);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   test("a failed session listing fails both sweeps, never reads as nothing archived", async () => {

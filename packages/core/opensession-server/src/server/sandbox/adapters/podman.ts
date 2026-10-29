@@ -98,6 +98,7 @@ import {
   parseDuTotals,
   parseVolumeMountpoints,
   PODMAN_MIN_FREE_BYTES,
+  recordPodmanVolumeUsage,
   PODMAN_VOLUME_QUOTA_BYTES,
   PODMAN_VOLUME_WARN_BYTES,
   podmanDiskCheckedSinceBoot,
@@ -1016,6 +1017,7 @@ export class PodmanProvider implements SandboxProvider {
     }
     const over: string[] = [];
     if (usage) {
+      recordPodmanVolumeUsage(usage);
       const unknown: string[] = [];
       for (const state of listRemoteStates(this.id)) {
         const names = podmanNames(state.sessionId);

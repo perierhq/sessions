@@ -26,7 +26,18 @@ export type HousekeepingJobHealth = {
   failing: boolean;
 };
 
+export type HousekeepingReclaimed = {
+  /** Things the job removed (Sandboxes, images, worktrees). */
+  count: number;
+  /** Bytes they held, where known; things of unknown size add nothing. */
+  bytes: number;
+};
+
 const jobs = new Map<string, HousekeepingJobHealth>();
+const reclaimed = new Map<
+  string,
+  { last: HousekeepingReclaimed; sinceBoot: HousekeepingReclaimed }
+>();
 
 function message(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
@@ -93,9 +104,47 @@ export async function runHousekeeping<T>(
   }
 }
 
+/** What one pass of `job` removed. Kept beside the run record and shown
+ *  with it, so `/api/health` says how much a cleanup job is reclaiming, not
+ *  only that it runs. */
+export function noteHousekeepingReclaimed(
+  job: string,
+  pass: HousekeepingReclaimed,
+): void {
+  const before = reclaimed.get(job)?.sinceBoot ?? { count: 0, bytes: 0 };
+  reclaimed.set(job, {
+    last: { ...pass },
+    sinceBoot: {
+      count: before.count + pass.count,
+      bytes: before.bytes + pass.bytes,
+    },
+  });
+}
+
+export type HousekeepingJobReport = HousekeepingJobHealth & {
+  /** The last pass's removals, for jobs that report them. */
+  lastReclaimed?: HousekeepingReclaimed;
+  /** Everything removed since this process started. */
+  reclaimedSinceBoot?: HousekeepingReclaimed;
+};
+
 /** Every job that has run in this process, for `/api/health`. */
-export function housekeepingHealth(): Record<string, HousekeepingJobHealth> {
-  return Object.fromEntries(jobs);
+export function housekeepingHealth(): Record<string, HousekeepingJobReport> {
+  return Object.fromEntries(
+    [...jobs].map(([job, health]) => {
+      const counts = reclaimed.get(job);
+      return [
+        job,
+        counts
+          ? {
+              ...health,
+              lastReclaimed: counts.last,
+              reclaimedSinceBoot: counts.sinceBoot,
+            }
+          : health,
+      ];
+    }),
+  );
 }
 
 /** Names of the jobs currently failing. */
@@ -114,4 +163,5 @@ export function failingHousekeepingJobs(
 /** Test seam. */
 export function resetHousekeepingHealthForTest(): void {
   jobs.clear();
+  reclaimed.clear();
 }
