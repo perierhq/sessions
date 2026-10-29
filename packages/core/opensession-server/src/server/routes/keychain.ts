@@ -228,6 +228,7 @@ export async function handleKeychainRoutes(
         credential: await addCredentialAsync({
           owner,
           service: body.service,
+          ...(typeof body.name === "string" ? { name: body.name } : {}),
           host: String(body.host || ""),
           secret: body.secret,
           // Anything but "api" or "login" is refused by the spec check.

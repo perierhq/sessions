@@ -176,6 +176,13 @@ function registrationRefusal(
 /** Metadata a credential carries, as register_credential and
  *  update_credential take it. */
 const credentialFields = {
+  name: z
+    .string()
+    .max(120)
+    .optional()
+    .describe(
+      "What people call it, in plain words, e.g. 'Acme orders'. Shown to teammates; agents still pass the service slug.",
+    ),
   host: z
     .string()
     .max(253)
@@ -242,6 +249,7 @@ const credentialFields = {
 };
 
 type CredentialFieldArgs = {
+  name?: string;
   host?: string;
   loginUrl?: string;
   username?: string;
@@ -401,7 +409,7 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
     ),
     tool(
       "list_credentials",
-      "List the credentials teammates have registered in the keychain: service, owner, target host, the methods and paths call_credential may use, whether a call returns only the HTTP status (status only), and whether it is a workspace credential. Secrets are never included. A workspace credential can be used right away with call_credential or run_with_credential, no request needed; a personal one needs request_credential and its owner's approval. Use this to find out whether the access you need already exists before asking anyone for a token.",
+      "List the credentials teammates have registered in the keychain: name and ID (the service slug you pass to the other tools), owner, target host, the methods and paths call_credential may use, whether a call returns only the HTTP status (status only), and whether it is a workspace credential. Secrets are never included. A workspace credential can be used right away with call_credential or run_with_credential, no request needed; a personal one needs request_credential and its owner's approval. Use this to find out whether the access you need already exists before asking anyone for a token.",
       {},
       async () => {
         const creds = listCredentials().filter(
@@ -413,6 +421,10 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
           );
         }
         const lines = creds.map((c) => {
+          // People name it; agents pass the ID.
+          const title = c.name
+            ? `**${c.name}** (ID: ${c.service})`
+            : `**${c.service}**`;
           const limits = [
             c.allowedMethods?.length
               ? `methods ${c.allowedMethods.join("/")}`
@@ -429,12 +441,12 @@ export function createKeychainMcpServer(ctx: KeychainToolContext) {
             .join("; ");
           if (c.kind === "login")
             return (
-              `- **${c.service}** (login: ${c.username} on ${c.loginUrl}) — owner ${c.owner}` +
+              `- ${title} (login: ${c.username} on ${c.loginUrl}) — owner ${c.owner}` +
               (c.description ? `: ${c.description}` : "") +
               (c.expiresOn ? ` [${expiryText(c)}]` : "")
             );
           return (
-            `- **${c.service}** (${c.host}) — ` +
+            `- ${title} (${c.host}) — ` +
             (c.scope === "workspace"
               ? `workspace credential, use without asking; owner ${c.owner}`
               : `personal, owner ${c.owner}`) +

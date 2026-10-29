@@ -195,6 +195,67 @@ describe("PATCH /api/keychain/credentials/:id", () => {
   });
 });
 
+describe("name", () => {
+  test("is display text beside the ID, which keeps its slug rule", async () => {
+    const res = await route("POST", "/api/keychain/credentials", alex, {
+      name: "  Betterbahn search\u202e status  ",
+      service: "betterbahn-search-status",
+      host: "api.example.test",
+      secret: SECRET,
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).credential).toMatchObject({
+      name: "Betterbahn search  status",
+      service: "betterbahn-search-status",
+    });
+    const refused = await route("POST", "/api/keychain/credentials", alex, {
+      service: "Betterbahn search status",
+      host: "api.example.test",
+      secret: SECRET,
+    });
+    expect(refused.status).toBe(400);
+  });
+
+  test("is capped in length", () => {
+    const meta = add({ name: "x".repeat(500) });
+    expect(meta.name).toHaveLength(kc.MAX_CREDENTIAL_NAME_CHARS);
+  });
+
+  test("changes and clears through PATCH; the ID stays", async () => {
+    const meta = add({ name: "Acme orders" });
+    const renamed = await route(
+      "PATCH",
+      `/api/keychain/credentials/${meta.id}`,
+      alex,
+      { name: "Acme orders, production" },
+    );
+    expect((await renamed.json()).credential).toMatchObject({
+      name: "Acme orders, production",
+      service: "acme-api",
+    });
+    const cleared = await route(
+      "PATCH",
+      `/api/keychain/credentials/${meta.id}`,
+      alex,
+      { name: "" },
+    );
+    expect((await cleared.json()).credential.name).toBeUndefined();
+    expect(kc.listCredentials()[0]!.name).toBeUndefined();
+  });
+
+  test("a login takes one too", () => {
+    const meta = add({
+      kind: "login",
+      host: undefined,
+      service: "acme-staging",
+      name: "Acme staging",
+      loginUrl: "https://app.example.test/login",
+      username: "qa@example.test",
+    });
+    expect(meta.name).toBe("Acme staging");
+  });
+});
+
 describe("expiry", () => {
   test("adding through the route keeps the expiry and test path", async () => {
     const res = await route("POST", "/api/keychain/credentials", alex, {

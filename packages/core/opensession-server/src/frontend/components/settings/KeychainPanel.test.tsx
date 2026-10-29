@@ -88,6 +88,7 @@ const keychain = {
     credentialFixture("kc-6", "bea-personal", { owner: "Bea", mine: false }),
     credentialFixture("kc-3", "acme-old", { expiresOn: isoDay(-3) }),
     credentialFixture("kc-4", "acme-soon", { expiresOn: isoDay(5) }),
+    credentialFixture("kc-7", "acme-named", { name: "Acme named orders" }),
   ],
   grants: [
     grantFixture("g-1", "kc-1"),
@@ -140,6 +141,7 @@ const { SettingRow } = await import("./shared");
 const { SettingsDialog } = await import("./incidents/SettingsDialog");
 const { Badge } = await import("../../ui/badge");
 const { InlineAlert } = await import("../../ui/state");
+const { TextLink } = await import("../../ui/text-link");
 const { AgentName } = await import("../AgentIdentity");
 const { CredentialHistoryDialog } = await import("./CredentialHistoryDialog");
 const { UseInIncidentsDialog } = await import("./UseInIncidentsDialog");
@@ -220,7 +222,7 @@ test("header and scheme are two fields, with what is sent shown live", async () 
   scheme!.props.onChange("Token");
   await settle();
   expect(text(tree)).toContain("X-Api-Key: Token ••••");
-  await type(tree, placeholder("acme-api"), "acme");
+  await type(tree, placeholder("Acme orders"), "acme");
   await type(tree, placeholder("api.example.test"), "api.example.test");
   await type(tree, secretField, "sk-acme");
   await submit(tree);
@@ -230,7 +232,7 @@ test("header and scheme are two fields, with what is sent shown live", async () 
 test("a failed save shows its error inside the dialog, above its buttons", async () => {
   addError = new Error("host must be a public host name");
   const tree = await mountForm();
-  await type(tree, placeholder("acme-api"), "acme");
+  await type(tree, placeholder("Acme orders"), "acme");
   await type(tree, placeholder("api.example.test"), "localhost");
   await type(tree, secretField, "sk-acme");
   await submit(tree);
@@ -253,7 +255,7 @@ test("a login's failed save shows inside its dialog too", async () => {
     onSaved: () => {},
   });
   await settle();
-  await type(tree, placeholder("acme-staging"), "acme-staging");
+  await type(tree, placeholder("Acme staging"), "Acme staging");
   await type(
     tree,
     placeholder("https://app.example.test/login"),
@@ -263,6 +265,121 @@ test("a login's failed save shows inside its dialog too", async () => {
   await type(tree, secretField, "pw");
   await submit(tree);
   expect(dialog(tree).error).toContain("loginUrl must be a full https:// URL");
+});
+
+const NAME = placeholder("Acme orders");
+const ID = placeholder("acme-orders");
+
+async function fillTheRest(tree: Tree) {
+  await type(tree, placeholder("api.example.test"), "api.example.test");
+  await type(tree, secretField, "sk-acme");
+}
+
+async function editId(tree: Tree) {
+  const link = find(tree.output(), TextLink, (p) => p.children === "Edit");
+  expect(link).toBeDefined();
+  // SAFETY: the Edit handler ignores the click event.
+  link!.props.onClick!(undefined as never);
+  await settle();
+}
+
+test("the name is free text and the ID follows it as a slug", async () => {
+  const tree = await mountForm();
+  await type(tree, NAME, "Betterbahn Search Status");
+  const all = text(tree);
+  expect(all).toContain("ID: ");
+  expect(all).toContain("betterbahn-search-status");
+  expect(all).toContain("Agents ask for it by this ID");
+  // The ID line is read with the name field.
+  const name = find(tree.output(), Input, NAME)!;
+  expect(name.props["aria-describedby"]).toBeTruthy();
+  await type(tree, NAME, "  Betterbahn: search / status!  ");
+  expect(text(tree)).toContain("betterbahn-search-status");
+  await fillTheRest(tree);
+  await submit(tree);
+  expect(added[0]).toMatchObject({
+    name: "Betterbahn: search / status!",
+    service: "betterbahn-search-status",
+  });
+});
+
+test("an ID edited by hand is a slug and stops following the name", async () => {
+  const tree = await mountForm();
+  await type(tree, NAME, "Acme orders");
+  await editId(tree);
+  const id = () => find(tree.output(), Input, ID)!;
+  expect(id().props.value).toBe("acme-orders");
+  // Typed as a person would: lower-cased, spaces and the like become "-".
+  await type(tree, ID, "Acme Orders V2 ");
+  expect(id().props.value).toBe("acme-orders-v2-");
+  // SAFETY: the ID field's blur handler ignores the event.
+  id().props.onBlur!(undefined as never);
+  await settle();
+  expect(id().props.value).toBe("acme-orders-v2");
+  await type(tree, NAME, "Something else");
+  expect(id().props.value).toBe("acme-orders-v2");
+  await fillTheRest(tree);
+  await submit(tree);
+  expect(added[0]).toMatchObject({
+    name: "Something else",
+    service: "acme-orders-v2",
+  });
+});
+
+test("a refused ID shows under the ID field, not at the bottom", async () => {
+  addError = new Error('a credential for service "acme-orders" already exists');
+  const tree = await mountForm();
+  await type(tree, NAME, "Acme orders");
+  await fillTheRest(tree);
+  await submit(tree);
+  expect(dialog(tree).error).toBeNull();
+  const id = find(tree.output(), Input, ID);
+  expect(id).toBeDefined();
+  expect(id!.props["aria-invalid"]).toBe(true);
+  const described = String(id!.props["aria-describedby"]).split(" ");
+  const message = described
+    .map((ref) =>
+      find(tree.output(), "p", (p: { id?: string }) => p.id === ref),
+    )
+    .find((p) => JSON.stringify(p?.props).includes("already exists"));
+  expect(message).toBeDefined();
+});
+
+test("an existing credential's ID is read-only, its name editable", async () => {
+  const tree = await mountForm(
+    credentialFixture("kc-8", "acme-api", { name: "Acme API" }),
+  );
+  expect(dialog(tree).title).toBe("Edit Acme API");
+  expect(find(tree.output(), Input, ID)).toBeUndefined();
+  expect(find(tree.output(), TextLink, (p) => p.children === "Edit")).toBe(
+    undefined,
+  );
+  expect(text(tree)).toContain("acme-api");
+  await type(tree, valued("Acme API"), "Acme API, production");
+  await submit(tree);
+  expect(patched[0]!.patch.name).toBe("Acme API, production");
+});
+
+test("a login's ID follows its name too", async () => {
+  const tree = harness.mount(LoginDialog, {
+    onClose: () => {},
+    onSaved: () => {},
+  });
+  await settle();
+  await type(tree, placeholder("Acme staging"), "Acme Staging QA");
+  expect(text(tree)).toContain("acme-staging-qa");
+  await type(
+    tree,
+    placeholder("https://app.example.test/login"),
+    "https://app.example.test/login",
+  );
+  await type(tree, placeholder("qa@example.test"), "qa@example.test");
+  await type(tree, secretField, "pw");
+  await submit(tree);
+  expect(added[0]).toMatchObject({
+    name: "Acme Staging QA",
+    service: "acme-staging-qa",
+  });
 });
 
 /** The method chips, by label, with whether each is on. */
@@ -320,7 +437,7 @@ test("methods are chips, and the chosen ones are saved", async () => {
   await toggle(tree, "POST");
   await toggle(tree, "POST");
   expect(chips(tree)).toMatchObject({ GET: true, POST: false, DELETE: true });
-  await type(tree, placeholder("acme-api"), "acme");
+  await type(tree, placeholder("Acme orders"), "acme");
   await type(tree, placeholder("api.example.test"), "api.example.test");
   await type(tree, secretField, "sk-acme");
   await type(tree, placeholder("/v1/orders"), "/v1/orders, /v2/orders");
@@ -332,7 +449,7 @@ test("methods are chips, and the chosen ones are saved", async () => {
 
 test("no chip selected sends no method limit", async () => {
   const tree = await mountForm();
-  await type(tree, placeholder("acme-api"), "acme");
+  await type(tree, placeholder("Acme orders"), "acme");
   await type(tree, placeholder("api.example.test"), "api.example.test");
   await type(tree, secretField, "sk-acme");
   await submit(tree);
@@ -456,6 +573,12 @@ test("rows show an expired credential and one about to expire", async () => {
   expect(JSON.stringify(row(tree, "acme-soon").props.desc)).toContain(
     "expires in 5 days",
   );
+});
+
+test("a row shows the name, with the ID beside it", async () => {
+  const tree = await section();
+  const title = JSON.stringify(row(tree, "Acme named orders").props.title);
+  expect(title).toContain("acme-named");
 });
 
 test("a row's Edit opens the dialog for that credential", async () => {

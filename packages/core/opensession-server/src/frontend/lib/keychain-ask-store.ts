@@ -18,6 +18,8 @@ export type SessionKeychainAsk = {
   run?: { command: string; maxCalls: number };
   credentials: Array<{
     service: string;
+    /** What people call it; absent, the service is shown. */
+    name?: string;
     host: string;
     kind?: "api" | "login";
     username?: string;

@@ -154,6 +154,7 @@ beforeEach(() => {
   kc.addCredential({
     owner: "Alex",
     service: "acme-prod",
+    name: "Acme production",
     host: "api.example.test",
     secret: "sk-test-secret",
   });
@@ -719,7 +720,13 @@ describe("the keychain card in the asking session", () => {
       requestedBy: "Alex",
       purpose: "read the invoices",
       requestedMode: "once",
-      credentials: [{ service: "acme-prod", host: "api.example.test" }],
+      credentials: [
+        {
+          service: "acme-prod",
+          name: "Acme production",
+          host: "api.example.test",
+        },
+      ],
     });
 
     // The card answers through the owner-checked route.

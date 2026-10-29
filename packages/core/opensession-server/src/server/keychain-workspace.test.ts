@@ -453,6 +453,28 @@ describe("what an agent learns before it calls", () => {
     expect(api).not.toContain("status only");
   });
 
+  test("list_credentials shows the name people see and the ID to use", async () => {
+    kc.addCredential({
+      owner: "Alex",
+      service: "acme-orders",
+      name: "Acme orders",
+      host: "api.example.test",
+      secret: "sk-orders",
+    });
+    kc.addCredential({
+      owner: "Alex",
+      service: "acme-plain",
+      host: "plain.example.test",
+      secret: "sk-plain",
+    });
+    const out = textOf(await (await tools()).list_credentials.handler({}, {}));
+    const named = out.split("\n").find((l) => l.includes("Acme orders"))!;
+    expect(named).toContain("ID: acme-orders");
+    const plain = out.split("\n").find((l) => l.includes("acme-plain"))!;
+    expect(plain).toContain("**acme-plain**");
+    expect(plain).not.toContain("ID:");
+  });
+
   test("call_credential says what was wrong: credential, host, method or path", async () => {
     kc.addCredential({
       owner: "Alex",

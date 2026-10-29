@@ -3,6 +3,7 @@ import { fetchAudit, type KeychainCredentialDto } from "../../lib/api";
 import { auditEventsSchema, type AuditEvent } from "../../lib/audit-events";
 import { errorMessage } from "../../lib/error-message";
 import { FIELD_HINT } from "../../lib/incident-settings-classes";
+import { credentialName } from "../../lib/keychain-credential";
 import { EmptyState, InlineAlert, ListSkeleton } from "../../ui/state";
 import { AuditEventList } from "./AuditEventList";
 import { SettingsDialog } from "./incidents/SettingsDialog";
@@ -61,7 +62,7 @@ export function CredentialHistoryDialog({
       open
       wide
       onClose={onClose}
-      title={`${credential.service} history`}
+      title={`${credentialName(credential)} history`}
     >
       <p className={FIELD_HINT}>
         Calls with their status, refusals with their reason, tests, grants and
@@ -82,7 +83,7 @@ export function CredentialHistoryDialog({
         <ListSkeleton rows={4} variant="rows" label="Loading history" />
       ) : events.length === 0 ? (
         <EmptyState placement="row">
-          Nothing for {credential.service} on this day
+          Nothing for {credentialName(credential)} on this day
         </EmptyState>
       ) : (
         <div className="-mx-5 flex flex-col phone:-mx-4">
