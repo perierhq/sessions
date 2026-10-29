@@ -183,6 +183,7 @@ test("describe_access tells the agent how to call each lent credential", async (
   const limited = kc.addCredential({
     owner: "Alex",
     service: "acme-orders",
+    name: "Acme orders",
     host: "api.example.test",
     secret: "sk-orders",
     description: "Read-only orders",
@@ -226,6 +227,7 @@ test("describe_access tells the agent how to call each lent credential", async (
     expect(out.credentials).toEqual([
       {
         service: "acme-orders",
+        name: "Acme orders",
         mode: "standing",
         host: "api.example.test",
         description: "Read-only orders",

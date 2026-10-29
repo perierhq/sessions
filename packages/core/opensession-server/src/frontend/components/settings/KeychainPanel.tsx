@@ -17,6 +17,7 @@ import { ceilingSummary } from "../../../shared/keychain-ceiling";
 import { routePath } from "../../lib/app-route";
 import {
   canLend,
+  credentialName,
   expiryNote,
   lendingRoles,
   testOutcome,
@@ -152,7 +153,10 @@ export function KeychainSection() {
     (g) => g.status === "active" || g.status === "suspended",
   );
   const pending = data.asks.filter((a) => a.status === "pending");
-  const serviceOf = (id: string) => byId.get(id)?.service ?? id;
+  const serviceOf = (id: string) => {
+    const c = byId.get(id);
+    return c ? credentialName(c) : id;
+  };
   // One owner's credentials in a multi-credential run are one answer.
   const sameRun = (a: KeychainAskDto) =>
     pending.filter(
@@ -174,8 +178,8 @@ export function KeychainSection() {
     const sharing = c.scope !== "workspace";
     confirm({
       title: sharing
-        ? `Share ${c.service} with the workspace?`
-        : `Make ${c.service} personal?`,
+        ? `Share ${credentialName(c)} with the workspace?`
+        : `Make ${credentialName(c)} personal?`,
       description: sharing
         ? "Every session in the workspace can call it without asking you, within its host, methods and paths. Calls are still audited."
         : "Sessions will have to ask you again before using it. Access they got without asking ends now.",
@@ -198,7 +202,7 @@ export function KeychainSection() {
       (g) => g.credentialId === c.id && new Date(g.expiresAt).getTime() > now,
     ).length;
     confirm({
-      title: `Delete ${c.service}?`,
+      title: `Delete ${credentialName(c)}?`,
       description:
         live === 0
           ? "No session holds a grant for it. This can't be undone."
@@ -219,14 +223,17 @@ export function KeychainSection() {
     testKeychainCredential({ credentialId: c.id })
       .then((result) => {
         const { text, tone } = testOutcome(result, path);
-        toast(`${c.service}: ${text}`, {
+        toast(`${credentialName(c)}: ${text}`, {
           variant: tone === "success" ? "success" : "default",
         });
       })
       .catch((e) =>
-        toast(`${c.service}: ${errorMessage(e, "Couldn't run the test")}`, {
-          variant: "error",
-        }),
+        toast(
+          `${credentialName(c)}: ${errorMessage(e, "Couldn't run the test")}`,
+          {
+            variant: "error",
+          },
+        ),
       );
   };
 
@@ -291,8 +298,14 @@ export function KeychainSection() {
                 title={
                   <span className="inline-flex flex-wrap items-center gap-2">
                     {c.kind === "login"
-                      ? `${c.service} · ${c.username ?? ""}`
-                      : `${c.service} · ${c.host}`}
+                      ? `${credentialName(c)} · ${c.username ?? ""}`
+                      : `${credentialName(c)} · ${c.host}`}
+                    {/* The ID agents ask for it by, when a name hides it. */}
+                    {c.name && (
+                      <span className="font-mono text-meta font-normal text-faint">
+                        {c.service}
+                      </span>
+                    )}
                     {c.scope === "workspace" && (
                       <Badge tone="info">Workspace</Badge>
                     )}
@@ -338,7 +351,7 @@ export function KeychainSection() {
                       <Menu.Root>
                         <Menu.Trigger
                           className={rowMenuTriggerClasses}
-                          aria-label={`More for ${c.service}`}
+                          aria-label={`More for ${credentialName(c)}`}
                         >
                           <IconDotsHorizontal size={18} />
                         </Menu.Trigger>
@@ -511,7 +524,7 @@ export function KeychainSection() {
             {waiting.map((a) => (
               <SettingRow
                 key={a.id}
-                title={`${byId.get(a.credentialId)?.service ?? a.credentialId} · waiting on ${a.owner}`}
+                title={`${serviceOf(a.credentialId)} · waiting on ${a.owner}`}
                 desc={`${a.requestedMode} · ${a.purpose}`}
                 control={null}
               />
@@ -534,7 +547,7 @@ export function KeychainSection() {
                   key={g.id}
                   title={
                     <span className="inline-flex flex-wrap items-center gap-2">
-                      {`${byId.get(g.credentialId)?.service ?? g.credentialId} → ${g.requestedBy}`}
+                      {`${serviceOf(g.credentialId)} → ${g.requestedBy}`}
                       {paused && <Badge tone="warning">Paused</Badge>}
                     </span>
                   }

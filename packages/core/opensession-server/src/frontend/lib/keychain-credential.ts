@@ -13,6 +13,9 @@ import {
 } from "./api/settings";
 
 export interface CredentialFormState {
+  /** What people read; optional. */
+  name: string;
+  /** The ID agents use: a slug, following the name until edited. */
   service: string;
   host: string;
   description: string;
@@ -32,6 +35,7 @@ export interface CredentialFormState {
 
 export function credentialForm(c?: KeychainCredentialDto): CredentialFormState {
   return {
+    name: c?.name ?? "",
     service: c?.service ?? "",
     host: c?.host ?? "",
     description: c?.description ?? "",
@@ -62,7 +66,8 @@ export function credentialSpec(
   form: CredentialFormState,
 ): KeychainCredentialSpec & { service: string; host: string } {
   return {
-    service: form.service.trim(),
+    name: form.name.trim(),
+    service: serviceSlug(form.service),
     host: form.host.trim(),
     description: form.description.trim(),
     injection: injectionOf(form),
@@ -73,6 +78,38 @@ export function credentialSpec(
     expiresOn: form.expiresOn || null,
     testPath: form.testPath.trim() || null,
   };
+}
+
+/**
+ * What a person types as a credential's ID (or the name it follows) as the
+ * server's slug rule takes it: lower-case, each run of other characters one
+ * "-", nothing before the first letter or digit, no "-" at the end. While
+ * `typing`, a trailing "-" stays, so the next word can follow it.
+ */
+export function serviceSlug(raw: string, typing = false): string {
+  const slug = raw
+    .toLowerCase()
+    .replace(/-*[^a-z0-9._-]+-*/g, "-")
+    .replace(/^[._-]+/, "");
+  return typing ? slug : slug.replace(/-+$/, "");
+}
+
+/** What people call a credential: its name, else its ID. */
+export function credentialName(c: { name?: string; service: string }): string {
+  return c.name || c.service;
+}
+
+/** A server refusal about the ID, worded for the field it shows under;
+ *  null for any other error. */
+export function serviceIdError(message: string): string | null {
+  if (/^service must\b/i.test(message))
+    return "The ID takes lowercase letters, digits, . _ and -, starting with a letter or digit";
+  const taken = /credential for service "([^"]*)" already exists/i.exec(
+    message,
+  );
+  return taken
+    ? `A credential with the ID ${taken[1]} already exists. Choose another`
+    : null;
 }
 
 /** The schemes the dialog offers, "" meaning none. */

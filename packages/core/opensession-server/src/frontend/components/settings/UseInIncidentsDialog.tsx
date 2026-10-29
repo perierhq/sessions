@@ -4,7 +4,7 @@ import { fetchProjects } from "../../lib/api/projects";
 import { routePath } from "../../lib/app-route";
 import { errorMessage } from "../../lib/error-message";
 import { FIELD_ERROR, FIELD_HINT } from "../../lib/incident-settings-classes";
-import { lendingRoles } from "../../lib/keychain-credential";
+import { credentialName, lendingRoles } from "../../lib/keychain-credential";
 import {
   SHEET_CHOICE,
   SHEET_CHOICE_DESC,
@@ -35,11 +35,12 @@ export function UseInIncidentsDialog({
     <SettingsDialog
       open
       onClose={onClose}
-      title={`Use ${credential.service} in incidents`}
+      title={`Use ${credentialName(credential)} in incidents`}
     >
       <p className={FIELD_HINT}>
         A project lends it to its incident agents under What agents may use.
-        Open a project, add {credential.service} there and tick the roles
+        Open a project, add {credentialName(credential)} there and tick the
+        roles
       </p>
       {projects.error ? (
         <p className={FIELD_ERROR}>

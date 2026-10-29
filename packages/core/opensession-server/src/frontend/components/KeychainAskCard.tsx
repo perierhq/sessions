@@ -92,7 +92,13 @@ function AskCard({
           return (
             <div key={index} className="flex flex-col">
               <p className="m-0 text-body leading-6 text-fg [overflow-wrap:anywhere]">
-                <span className="font-semibold">{c.service}</span>
+                <span className="font-semibold">{c.name ?? c.service}</span>
+                {c.name && (
+                  <span className="font-mono text-meta text-faint">
+                    {" "}
+                    {c.service}
+                  </span>
+                )}
                 {c.kind === "login" ? (
                   <>
                     : {c.username} on {c.loginUrl}

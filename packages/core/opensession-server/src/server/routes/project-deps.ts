@@ -159,7 +159,9 @@ async function liveConnectors(): Promise<ConnectorState[]> {
     });
 }
 
-async function liveCredentials(): Promise<Record<string, CredentialInfo>> {
+async function liveCredentials(): Promise<
+  Record<string, CredentialInfo & { label?: string }>
+> {
   await ensureKeychainLoaded();
   return Object.fromEntries(
     listCredentials().map((c) => [
@@ -170,7 +172,9 @@ async function liveCredentials(): Promise<Record<string, CredentialInfo>> {
         owner: c.owner,
         scope: c.scope === "workspace" ? "workspace" : "personal",
         kind: c.kind === "login" ? "login" : "api",
-      } satisfies CredentialInfo,
+        // The access table titles a row with it, over the service.
+        ...(c.name ? { label: c.name } : {}),
+      } satisfies CredentialInfo & { label?: string },
     ]),
   );
 }

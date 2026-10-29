@@ -10,11 +10,13 @@ import {
 } from "../../lib/api";
 import {
   DIALOG_INPUT,
+  FIELD_ERROR,
   FIELD_HINT,
   FORM_SECTION_TITLE,
 } from "../../lib/incident-settings-classes";
 import {
   credentialForm,
+  credentialName,
   credentialSpec,
   defaultScheme,
   editEffect,
@@ -22,6 +24,8 @@ import {
   injectionPreview,
   formChanged,
   list,
+  serviceIdError,
+  serviceSlug,
   testOutcome,
   type CredentialFormState,
   type TestResult,
@@ -57,6 +61,108 @@ const TEST_TONE = {
 } as const;
 
 /**
+ * A credential's name, free text for people, and its ID, the slug agents
+ * ask for it by. The ID follows the name until the person edits it by
+ * hand. An existing credential's ID is fixed: grants and agents refer to
+ * it. A refusal of the ID opens its field and shows under it. A hook that
+ * returns the fields, so they render as part of the dialog's own output.
+ */
+function useNameAndIdFields({
+  name,
+  service,
+  existing,
+  error,
+  namePlaceholder,
+  idPlaceholder,
+  onChange,
+}: {
+  name: string;
+  service: string;
+  existing: boolean;
+  /** The server's refusal of the ID, worded for the field. */
+  error: string | null;
+  namePlaceholder: string;
+  idPlaceholder: string;
+  onChange: (next: { name?: string; service?: string }) => void;
+}) {
+  // Edited by hand: the ID no longer follows the name.
+  const [custom, setCustom] = useState(false);
+  const [open, setOpen] = useState(false);
+  const idLineId = useId();
+  const idHintId = useId();
+  const errorId = useId();
+  const editingId = !existing && (open || error !== null);
+  const nameDescribedBy = editingId ? idHintId : `${idLineId} ${idHintId}`;
+  const idDescribedBy = error === null ? idHintId : `${idHintId} ${errorId}`;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Field label="Name">
+        <Input
+          className={DIALOG_INPUT}
+          value={name}
+          onChange={(e) => {
+            const next = e.target.value;
+            onChange(
+              custom || existing
+                ? { name: next }
+                : { name: next, service: serviceSlug(next) },
+            );
+          }}
+          placeholder={namePlaceholder}
+          aria-describedby={nameDescribedBy}
+        />
+      </Field>
+      {editingId ? (
+        <Field label="ID">
+          <Input
+            className={DIALOG_INPUT}
+            value={service}
+            onChange={(e) => {
+              setCustom(true);
+              onChange({ service: serviceSlug(e.target.value, true) });
+            }}
+            onBlur={() => onChange({ service: serviceSlug(service) })}
+            placeholder={idPlaceholder}
+            autoCapitalize="none"
+            autoComplete="off"
+            spellCheck={false}
+            aria-invalid={error !== null || undefined}
+            aria-describedby={idDescribedBy}
+          />
+        </Field>
+      ) : (
+        <p id={idLineId} className={cn(FIELD_HINT, "[overflow-wrap:anywhere]")}>
+          {"ID: "}
+          {service ? (
+            <span className="font-mono text-fg">{service}</span>
+          ) : (
+            "follows the name"
+          )}
+          {!existing && (
+            <>
+              {" · "}
+              <TextLink type="button" onClick={() => setOpen(true)}>
+                Edit
+              </TextLink>
+            </>
+          )}
+        </p>
+      )}
+      <p id={idHintId} className={FIELD_HINT}>
+        {existing
+          ? "Agents ask for it by this ID, so it stays as it is"
+          : "Agents ask for it by this ID"}
+      </p>
+      {error !== null && (
+        <p id={errorId} className={FIELD_ERROR}>
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
  * Adding or editing an API credential: one form for both. Mounted only
  * while open (the Keychain section renders it conditionally), so a typed
  * secret never outlives the dialog in React state.
@@ -85,8 +191,10 @@ export function CredentialDialog({
   // the owner chooses to rotate it.
   const [rotating, setRotating] = useState(!editing);
   const [busy, setBusy] = useState(false);
-  // A failed save is the dialog's own message, above its buttons.
+  // A failed save is the dialog's own message, above its buttons, unless
+  // it is about the ID, which shows under the ID.
   const [error, setError] = useState<string | null>(null);
+  const [idError, setIdError] = useState<string | null>(null);
   const [test, setTest] = useState<{ result: TestResult; path: string } | null>(
     null,
   );
@@ -122,7 +230,7 @@ export function CredentialDialog({
 
   const canSave = editing
     ? formChanged(initial, form) || secret.length > 0
-    : Boolean(form.service.trim() && form.host.trim() && secret);
+    : Boolean(serviceSlug(form.service) && form.host.trim() && secret);
   const testPath = form.testPath.trim() || list(form.prefixes)[0] || "/";
   const canTest = Boolean(form.host.trim() && (editing || secret));
   const expiry = expiryNote(form.expiresOn || undefined);
@@ -132,6 +240,7 @@ export function CredentialDialog({
   const save = () => {
     setBusy(true);
     setError(null);
+    setIdError(null);
     const spec = credentialSpec(form);
     const saving = credential
       ? updateKeychainCredential(credential.id, {
@@ -149,7 +258,10 @@ export function CredentialDialog({
       })
       .catch((e) => {
         setBusy(false);
-        setError(errorMessage(e, "Couldn't save the credential"));
+        const message = errorMessage(e, "Couldn't save the credential");
+        const aboutId = editing ? null : serviceIdError(message);
+        if (aboutId) setIdError(aboutId);
+        else setError(message);
       });
   };
 
@@ -163,22 +275,44 @@ export function CredentialDialog({
       secret,
       path,
     })
-      .then((result) => setTest({ result, path }))
-      .catch((e) =>
-        setTest({
-          result: { error: errorMessage(e, "Couldn't run the test") },
-          path,
-        }),
-      )
+      .then((result) => {
+        const aboutId =
+          !editing && "error" in result
+            ? serviceIdError(String(result.error))
+            : null;
+        if (aboutId) setIdError(aboutId);
+        else setTest({ result, path });
+      })
+      .catch((e) => {
+        const message = errorMessage(e, "Couldn't run the test");
+        const aboutId = editing ? null : serviceIdError(message);
+        if (aboutId) setIdError(aboutId);
+        else setTest({ result: { error: message }, path });
+      })
       .finally(() => setTesting(false));
   };
   const outcome = test && testOutcome(test.result, test.path);
+  const nameAndId = useNameAndIdFields({
+    name: form.name,
+    service: form.service,
+    existing: editing,
+    error: idError,
+    namePlaceholder: "Acme orders",
+    idPlaceholder: "acme-orders",
+    onChange: (next) => {
+      setForm((f) => ({ ...f, ...next }));
+      setTest(null);
+      if (next.service !== undefined) setIdError(null);
+    },
+  });
 
   return (
     <SettingsDialog
       open
       onClose={onClose}
-      title={credential ? `Edit ${credential.service}` : "Add credential"}
+      title={
+        credential ? `Edit ${credentialName(credential)}` : "Add credential"
+      }
       error={error}
       busy={busy}
       canSave={canSave}
@@ -191,18 +325,7 @@ export function CredentialDialog({
         server-side, so the agent never sees it.
       </p>
       <div className="flex flex-col gap-3">
-        {!editing && (
-          <Field label="Service">
-            <Input
-              className={DIALOG_INPUT}
-              value={form.service}
-              onChange={(e) => set("service", e.target.value)}
-              placeholder="acme-api"
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-          </Field>
-        )}
+        {nameAndId}
         <Field label="API host">
           <Input
             className={DIALOG_INPUT}
@@ -490,7 +613,8 @@ export function LoginDialog({
   onSaved: () => void;
 }) {
   const editing = credential !== undefined;
-  const [service, setService] = useState("");
+  const [name, setName] = useState(credential?.name ?? "");
+  const [service, setService] = useState(credential?.service ?? "");
   const [loginUrl, setLoginUrl] = useState(credential?.loginUrl ?? "");
   const [username, setUsername] = useState(credential?.username ?? "");
   const [password, setPassword] = useState("");
@@ -499,23 +623,44 @@ export function LoginDialog({
   const [rotating, setRotating] = useState(!editing);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [idError, setIdError] = useState<string | null>(null);
   const descriptionHintId = useId();
   const passwordHintId = useId();
   const expiryHintId = useId();
   const expiry = expiryNote(expiresOn || undefined);
+  const nameAndId = useNameAndIdFields({
+    name,
+    service,
+    existing: editing,
+    error: idError,
+    namePlaceholder: "Acme staging",
+    idPlaceholder: "acme-staging",
+    onChange: (next) => {
+      if (next.name !== undefined) setName(next.name);
+      if (next.service !== undefined) {
+        setService(next.service);
+        setIdError(null);
+      }
+    },
+  });
   const changed =
+    name.trim() !== (credential?.name ?? "") ||
     loginUrl.trim() !== (credential?.loginUrl ?? "") ||
     username.trim() !== (credential?.username ?? "") ||
     description.trim() !== (credential?.description ?? "") ||
     expiresOn !== (credential?.expiresOn ?? "");
   const canSave = editing
     ? changed || password.length > 0
-    : Boolean(service.trim() && loginUrl.trim() && username.trim() && password);
+    : Boolean(
+        serviceSlug(service) && loginUrl.trim() && username.trim() && password,
+      );
 
   const save = () => {
     setBusy(true);
     setError(null);
+    setIdError(null);
     const fields = {
+      name: name.trim(),
       loginUrl: loginUrl.trim(),
       username: username.trim(),
       description: description.trim(),
@@ -530,7 +675,7 @@ export function LoginDialog({
         })
       : addKeychainCredential({
           ...fields,
-          service: service.trim(),
+          service: serviceSlug(service),
           kind: "login",
           secret: password,
         });
@@ -541,7 +686,10 @@ export function LoginDialog({
       })
       .catch((e) => {
         setBusy(false);
-        setError(errorMessage(e, "Couldn't save the login"));
+        const message = errorMessage(e, "Couldn't save the login");
+        const aboutId = editing ? null : serviceIdError(message);
+        if (aboutId) setIdError(aboutId);
+        else setError(message);
       });
   };
 
@@ -549,7 +697,7 @@ export function LoginDialog({
     <SettingsDialog
       open
       onClose={onClose}
-      title={credential ? `Edit ${credential.service}` : "Add login"}
+      title={credential ? `Edit ${credentialName(credential)}` : "Add login"}
       error={error}
       busy={busy}
       canSave={canSave}
@@ -561,18 +709,7 @@ export function LoginDialog({
         the agent can read the password once it has it.
       </p>
       <div className="flex flex-col gap-3">
-        {!editing && (
-          <Field label="Service">
-            <Input
-              className={DIALOG_INPUT}
-              value={service}
-              onChange={(e) => setService(e.target.value)}
-              placeholder="acme-staging"
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-          </Field>
-        )}
+        {nameAndId}
         <Field label="Sign-in page">
           <Input
             className={DIALOG_INPUT}

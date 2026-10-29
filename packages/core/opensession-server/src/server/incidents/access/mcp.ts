@@ -165,6 +165,8 @@ function describeCredential(c: AgentAccess["credentials"][number]) {
   const meta = findCredential(c.credential);
   return {
     service: c.service,
+    // What people call it; the service is the ID calls use.
+    ...(meta?.name ? { name: meta.name } : {}),
     mode: c.mode,
     host: c.host,
     ...(meta?.description ? { description: meta.description } : {}),

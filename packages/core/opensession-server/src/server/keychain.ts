@@ -172,8 +172,11 @@ export interface KeychainCredential {
   id: string;
   /** Owner's roster first name — the person who approves asks for it. */
   owner: string;
-  /** Lookup + display key, e.g. "vercel", "ahrefs". Unique per keychain. */
+  /** Lookup key agents use, e.g. "vercel", "ahrefs". Unique per keychain;
+   *  shown as the ID when the credential has a name. */
   service: string;
+  /** What people read, e.g. "Acme orders". Absent: the service is shown. */
+  name?: string;
   description?: string;
   /** Absent for an API credential. */
   kind?: "login";
@@ -472,6 +475,8 @@ export function isCredentialOwnerLogin(
 export interface AddCredentialInput {
   owner: string;
   service: string;
+  /** Free text shown to people; the service stays the ID. */
+  name?: string;
   /** Required for an API credential; a login takes it from loginUrl. */
   host?: string;
   secret: string;
@@ -494,6 +499,7 @@ export type CredentialSpec = Omit<AddCredentialInput, "owner" | "secret">;
 
 export interface NormalizedCredentialSpec {
   service: string;
+  name?: string;
   host: string;
   description?: string;
   kind?: "login";
@@ -569,6 +575,9 @@ export function displaySafe(
     .slice(0, max)
     .trim();
 }
+
+/** The longest credential name kept. */
+export const MAX_CREDENTIAL_NAME_CHARS = 120;
 
 /** A purpose as kept: display-safe, at most 500 characters, "" if none. */
 function safePurpose(raw: string | undefined): string {
@@ -654,8 +663,10 @@ export function normalizeCredentialSpec(
     };
   }
   const description = displaySafe(input.description);
+  const name = displaySafe(input.name, MAX_CREDENTIAL_NAME_CHARS);
   return {
     service,
+    ...(name ? { name } : {}),
     host,
     ...(description ? { description } : {}),
     ...(injection && Object.keys(injection).length ? { injection } : {}),
@@ -766,9 +777,11 @@ function normalizeLoginSpec(
   if (taken)
     throw new Error(`a credential for service "${service}" already exists`);
   const description = displaySafe(input.description);
+  const name = displaySafe(input.name, MAX_CREDENTIAL_NAME_CHARS);
   const expiresOn = normalizeExpiry(input.expiresOn);
   return {
     service,
+    ...(name ? { name } : {}),
     host: url.hostname,
     kind: "login",
     loginUrl: url.toString(),
@@ -973,6 +986,7 @@ export async function deleteCredentialAsync(
 /** The fields of a credential an update may change. Its id, owner, service
  *  slug and kind stay. */
 export const UPDATABLE_CREDENTIAL_FIELDS = [
+  "name",
   "host",
   "description",
   "loginUrl",
@@ -3475,6 +3489,7 @@ export interface SessionKeychainAsk {
    *  multi-credential run asks each owner once for all of theirs). */
   credentials: Array<{
     service: string;
+    name?: string;
     host: string;
     kind?: CredentialKind;
     username?: string;
@@ -3511,6 +3526,7 @@ export function keychainAsksInSession(
     const cred = findCredential(a.credentialId);
     const meta = {
       service: cred?.service ?? a.credentialId,
+      ...(cred?.name ? { name: cred.name } : {}),
       host: cred?.host ?? "",
       ...(cred?.kind ? { kind: cred.kind } : {}),
       ...(cred?.username ? { username: cred.username } : {}),

@@ -8,7 +8,7 @@ import { parseAutomationEgressDomain } from "../../../../server/sandbox/automati
 import { fetchConnections } from "../../../lib/api/automations";
 import { fetchKeychain } from "../../../lib/api/settings";
 import { routePath } from "../../../lib/app-route";
-import { canLend } from "../../../lib/keychain-credential";
+import { canLend, credentialName } from "../../../lib/keychain-credential";
 import { errorMessage } from "../../../lib/error-message";
 import {
   DIALOG_INPUT,
@@ -113,7 +113,7 @@ export function AddAccessRowDialog({
           // workspace ones. Anyone else's would be refused on save.
           .filter(canLend)
           .filter((c) => !has({ kind: "credential", credential: c.id }))
-          .map((c) => ({ value: c.id, label: c.service }))
+          .map((c) => ({ value: c.id, label: credentialName(c) }))
       : null;
   else if (kind === "host")
     choices = view.runners

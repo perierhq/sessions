@@ -167,7 +167,10 @@ export async function disconnectTool(
 export interface KeychainCredentialDto {
   id: string;
   owner: string;
+  /** The ID agents ask for it by: a slug, fixed once added. */
   service: string;
+  /** What people read; absent, the service is shown. */
+  name?: string;
   description?: string;
   host: string;
   /** A username and password for a sign-in page, released to a session
@@ -208,6 +211,7 @@ export interface KeychainCredentialDto {
 /** The fields a credential is added or edited with. */
 export interface KeychainCredentialSpec {
   service?: string;
+  name?: string;
   host?: string;
   kind?: "login";
   loginUrl?: string;

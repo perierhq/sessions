@@ -8,6 +8,8 @@ import {
   formChanged,
   injectionPreview,
   lendingRoles,
+  serviceIdError,
+  serviceSlug,
   testOutcome,
 } from "./keychain-credential";
 
@@ -71,6 +73,7 @@ test("an edit form starts from the credential and sends every field", () => {
   expect(formChanged(form, cleared)).toBe(true);
   // Cleared fields are sent as clears, so an edit can remove a limit.
   expect(credentialSpec(cleared)).toEqual({
+    name: "",
     service: "acme-api",
     host: "api.example.test",
     description: "",
@@ -218,4 +221,32 @@ test("the preview line is what goes out, with the secret masked", () => {
   expect(injectionPreview({ ...form, scheme: "Token" })).toBe(
     "Authorization: Token ••••",
   );
+});
+
+test("a service ID is the server's slug, made from what a person types", () => {
+  expect(serviceSlug("Betterbahn Search Status")).toBe(
+    "betterbahn-search-status",
+  );
+  expect(serviceSlug("  Acme: orders / v2!  ")).toBe("acme-orders-v2");
+  expect(serviceSlug("acme--orders")).toBe("acme--orders");
+  expect(serviceSlug("-_.acme.orders_v2")).toBe("acme.orders_v2");
+  expect(serviceSlug("Café")).toBe("caf");
+  expect(serviceSlug("!!!")).toBe("");
+  // While typing, the "-" a space made stays for the next word.
+  expect(serviceSlug("acme ", true)).toBe("acme-");
+  expect(serviceSlug("acme- ", true)).toBe("acme-");
+  for (const raw of ["A b", " x ", "Ünïcode name", "a__b", "9 lives"])
+    expect(serviceSlug(raw)).toMatch(/^([a-z0-9][a-z0-9._-]*)?$/);
+});
+
+test("the server's ID refusals are worded for the ID field", () => {
+  expect(
+    serviceIdError(
+      "service must be a short lowercase slug (letters, digits, . _ -)",
+    ),
+  ).toContain("lowercase letters, digits");
+  expect(
+    serviceIdError('a credential for service "acme-orders" already exists'),
+  ).toBe("A credential with the ID acme-orders already exists. Choose another");
+  expect(serviceIdError("host must be a public host name")).toBeNull();
 });
