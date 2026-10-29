@@ -280,7 +280,6 @@ describe("podman argv", () => {
       "opensession-sbx-acme-pkgcache:/var/cache/opensession-packages:z,nosuid,nodev",
     ]);
     expect(operands(argv, "--env")).toEqual([
-      "BUN_INSTALL_CACHE_DIR=/var/cache/opensession-packages/bun",
       "npm_config_cache=/var/cache/opensession-packages/npm",
       "npm_config_store_dir=/var/cache/opensession-packages/pnpm-store",
       "pnpm_config_store_dir=/var/cache/opensession-packages/pnpm-store",

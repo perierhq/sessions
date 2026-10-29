@@ -367,12 +367,19 @@ function foldKey(id: string): string {
 
 // ── Package cache ────────────────────────────────────────────────────────────
 //
-// A sandbox's home grew its own bun cache, pnpm store and npm cache, for
-// every session, often over a gigabyte each. The package managers' caches
-// live on one volume per project instead, mounted read-write at a fixed path
-// in each of that project's sandboxes. They are content-addressed (bun and
-// npm by integrity hash, pnpm's store by file hash), built for concurrent
-// installs, and hold only what the project's own dependency installs fetch.
+// A sandbox's home grew its own pnpm store and npm cache under each turn's
+// isolated HOME, for every session, often gigabytes on top of the same
+// packages in node_modules. Those caches live on one volume per project
+// instead, mounted read-write at a fixed path in each of that project's
+// sandboxes. They are content-addressed (npm by integrity hash, pnpm's store
+// by file hash), built for concurrent installs, and hold only what the
+// project's own dependency installs fetch.
+//
+// bun's install cache stays in the home: bun hardlinks node_modules to it
+// when both are on one filesystem, so there it costs next to nothing, while
+// across a mount bun copies every file (measured on a sandbox of this
+// repository: a 1.4 GB home beside a 1.3 GB shared cache, where the home
+// alone used to be 1.3 GB).
 // Per project, not per instance: a sandbox can write the cache other
 // sandboxes install from, so it is shared only by sessions that already run
 // the same repository's code. Nothing else is shared; the home stays the
@@ -394,7 +401,6 @@ const PACKAGE_CACHE_SUFFIX = "-pkgcache";
  *  and pnpm 11 `pnpm_config_*`. */
 export function podmanPackageCacheEnv(): Record<string, string> {
   return {
-    BUN_INSTALL_CACHE_DIR: `${PODMAN_PACKAGE_CACHE_DIR}/bun`,
     npm_config_cache: `${PODMAN_PACKAGE_CACHE_DIR}/npm`,
     npm_config_store_dir: `${PODMAN_PACKAGE_CACHE_DIR}/pnpm-store`,
     pnpm_config_store_dir: `${PODMAN_PACKAGE_CACHE_DIR}/pnpm-store`,

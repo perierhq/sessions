@@ -692,13 +692,14 @@ is `podman pod stop` after `idleStopMinutes` (the home volume is kept), and
 every wake goes through the firewalled start again. A Terminal tab is
 `podman exec -it` as uid 1000. Portals ride the outbound relay.
 
-**Package caches.** The package managers' caches (bun's install cache,
-pnpm's store and npm's cache) live on one volume per project,
-`opensession-sbx-<repo>-pkgcache`, mounted read-write at
-`/var/cache/opensession-packages` in each of that project's
-sandboxes (`BUN_INSTALL_CACHE_DIR`, `npm_config_cache` and the pnpm store
-dir point there), so a session's home holds its checkout and
-`node_modules`, not its own copy of every package. The caches are
+**Package caches.** pnpm's store and npm's cache live on one volume per
+project, `opensession-sbx-<repo>-pkgcache`, mounted read-write at
+`/var/cache/opensession-packages` in each of that project's sandboxes
+(`npm_config_cache` and the pnpm store dir point there), so a session's home
+holds its checkout and `node_modules`, not another copy of every package for
+each turn. bun's install cache stays in the home: bun hardlinks
+`node_modules` to it, which costs next to nothing on one filesystem, and
+would copy every file from a cache on another volume. The caches are
 content-addressed and safe to install from concurrently. A sandbox can write
 to the cache the project's other sandboxes install from, so it is shared only
 between sessions of the same repository, which already run that
