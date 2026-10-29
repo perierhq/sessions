@@ -376,10 +376,10 @@ function foldKey(id: string): string {
 // project's own dependency installs fetch.
 //
 // bun's install cache stays in the home: bun hardlinks node_modules to it
-// when both are on one filesystem, so there it costs next to nothing, while
-// across a mount bun copies every file (measured on a sandbox of this
-// repository: a 1.4 GB home beside a 1.3 GB shared cache, where the home
-// alone used to be 1.3 GB).
+// when both are on one filesystem, so node_modules costs next to nothing
+// there, while across a mount bun copies every file. Measured on a sandbox
+// of this repository: 1.5 GB home with the cache in it; 1.4 GB home plus a
+// 1.3 GB shared cache with the cache moved out. Sharing it saves nothing.
 // Per project, not per instance: a sandbox can write the cache other
 // sandboxes install from, so it is shared only by sessions that already run
 // the same repository's code. Nothing else is shared; the home stays the
