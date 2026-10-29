@@ -84,6 +84,12 @@ export interface FakeOptions {
   cgroup?: string;
   /** Package cache volumes that already exist. */
   volumes?: string[];
+  /** The package cache volumes themselves, shared with another fake: two
+   *  gateways' sandboxes on one podman host. */
+  cacheVolumes?: Set<string>;
+  /** Another process creates each package cache volume between this
+   *  provider's `volume exists` and its `volume create`. */
+  cacheCreatedElsewhere?: boolean;
 }
 
 /** An nft listing of a namespace with no ruleset loaded. */
@@ -103,7 +109,8 @@ const EMPTY_LISTING =
  */
 export function fakePodman(o: FakeOptions = {}) {
   const calls: { argv: string[]; opts?: PodmanRunOpts }[] = [];
-  const cacheVolumes = new Set(o.volumes ?? []);
+  const cacheVolumes = o.cacheVolumes ?? new Set<string>();
+  for (const volume of o.volumes ?? []) cacheVolumes.add(volume);
   const state = {
     podExists: o.podExists ?? false,
     workloadExists: o.podExists ?? false,
@@ -214,6 +221,13 @@ export function fakePodman(o: FakeOptions = {}) {
     if (a === "volume" && b === "exists" && last.endsWith("-pkgcache"))
       return cacheVolumes.has(last) ? ok() : fail("");
     if (a === "volume" && b === "create" && last.endsWith("-pkgcache")) {
+      if (o.cacheCreatedElsewhere) cacheVolumes.add(last);
+      // Real podman refuses a name that exists (exit 125).
+      if (cacheVolumes.has(last))
+        return fail(
+          `Error: volume with name ${last} already exists: volume already exists`,
+          125,
+        );
       cacheVolumes.add(last);
       return ok();
     }

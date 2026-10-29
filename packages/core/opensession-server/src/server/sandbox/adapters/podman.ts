@@ -704,22 +704,37 @@ function namesForPod(pod: string): PodmanNames {
   };
 }
 
-/** Starts per pod are serialized: two wakes must not interleave. */
-const startChains = new Map<string, Promise<unknown>>();
-
-function withStartLock<T>(pod: string, fn: () => Promise<T>): Promise<T> {
-  const prev = startChains.get(pod) ?? Promise.resolve();
+/** Run `fn` after everything queued under `key` in `chains`, one at a time. */
+function withKeyedLock<T>(
+  chains: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = chains.get(key) ?? Promise.resolve();
   const next = prev.then(fn, fn);
   const tail = next.then(
     () => {},
     () => {},
   );
-  startChains.set(pod, tail);
+  chains.set(key, tail);
   void tail.finally(() => {
-    if (startChains.get(pod) === tail) startChains.delete(pod);
+    if (chains.get(key) === tail) chains.delete(key);
   });
   return next;
 }
+
+/** Starts per pod are serialized: two wakes must not interleave. */
+const startChains = new Map<string, Promise<unknown>>();
+
+function withStartLock<T>(pod: string, fn: () => Promise<T>): Promise<T> {
+  return withKeyedLock(startChains, pod, fn);
+}
+
+/** Creates of a shared volume are serialized per volume name. A project's
+ *  package cache is shared by all its sandboxes, and the per-pod start lock
+ *  does not stop two first sandboxes of one project from both seeing it
+ *  missing and both creating it. */
+const volumeChains = new Map<string, Promise<unknown>>();
 
 export class PodmanProvider implements SandboxProvider {
   readonly id = "podman" as const;
@@ -907,16 +922,9 @@ export class PodmanProvider implements SandboxProvider {
     repoId?: string,
   ): Promise<void> {
     const settings = this.d.settings();
-    let packageCache: string | undefined;
-    if (repoId) {
-      packageCache = podmanPackageCacheVolume(repoId);
-      if ((await this.run(["volume", "exists", packageCache])).exitCode !== 0)
-        await must(
-          this.run,
-          packageCacheVolumeCreateArgs(repoId),
-          `create ${packageCache}`,
-        );
-    }
+    const packageCache = repoId
+      ? await this.ensurePackageCache(repoId)
+      : undefined;
     await must(
       this.run,
       workloadCreateArgs({
@@ -929,6 +937,23 @@ export class PodmanProvider implements SandboxProvider {
       }),
       `create ${names.workload}`,
     );
+  }
+
+  /** The project's package cache volume, created when missing. Idempotent:
+   *  creates are serialized per volume in this process, and a create that
+   *  podman refuses because the volume appeared meanwhile (another process
+   *  on the host made it) counts as done once the volume is there. */
+  private ensurePackageCache(repoId: string): Promise<string> {
+    const volume = podmanPackageCacheVolume(repoId);
+    const exists = async () =>
+      (await this.run(["volume", "exists", volume])).exitCode === 0;
+    return withKeyedLock(volumeChains, volume, async () => {
+      if (await exists()) return volume;
+      const created = await this.run(packageCacheVolumeCreateArgs(repoId));
+      if (created.exitCode !== 0 && !(await exists()))
+        throw failure(`create ${volume}`, created);
+      return volume;
+    });
   }
 
   private egressInput(callbackBaseUrl: string): Promise<EgressInput> {
