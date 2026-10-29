@@ -378,9 +378,12 @@ function foldKey(id: string): string {
 // the same repository's code. Nothing else is shared; the home stays the
 // session's own.
 
-/** Where the shared caches are mounted. Inside the home, which is writable,
- *  so the mountpoint needs nothing from the read-only image. */
-export const PODMAN_PACKAGE_CACHE_DIR = `${PODMAN_WORKLOAD_HOME}/.cache/opensession-packages`;
+/** Where the shared caches are mounted. Outside the home: a mountpoint
+ *  under it would be created root-owned in the home volume (`~/.cache`),
+ *  and uid 1000 could no longer create its own caches there (corepack's
+ *  COREPACK_HOME is `~/.cache/node/corepack`). Podman creates this one in
+ *  the read-only root, and a new volume is chowned to the workload user. */
+export const PODMAN_PACKAGE_CACHE_DIR = "/var/cache/opensession-packages";
 export const PODMAN_PACKAGE_CACHE_LABEL = "opensession.sandbox.package-cache=1";
 export const PODMAN_PACKAGE_CACHE_REPO_LABEL_KEY =
   "opensession.sandbox.package-cache.repo";

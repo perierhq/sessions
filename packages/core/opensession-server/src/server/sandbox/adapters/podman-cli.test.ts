@@ -277,13 +277,13 @@ describe("podman argv", () => {
     // (z), not the private one the home volume gets (Z).
     expect(operands(argv, "-v")).toEqual([
       `${names.volume}:/home/ubuntu:Z,nosuid,nodev`,
-      "opensession-sbx-acme-pkgcache:/home/ubuntu/.cache/opensession-packages:z,nosuid,nodev",
+      "opensession-sbx-acme-pkgcache:/var/cache/opensession-packages:z,nosuid,nodev",
     ]);
     expect(operands(argv, "--env")).toEqual([
-      "BUN_INSTALL_CACHE_DIR=/home/ubuntu/.cache/opensession-packages/bun",
-      "npm_config_cache=/home/ubuntu/.cache/opensession-packages/npm",
-      "npm_config_store_dir=/home/ubuntu/.cache/opensession-packages/pnpm-store",
-      "pnpm_config_store_dir=/home/ubuntu/.cache/opensession-packages/pnpm-store",
+      "BUN_INSTALL_CACHE_DIR=/var/cache/opensession-packages/bun",
+      "npm_config_cache=/var/cache/opensession-packages/npm",
+      "npm_config_store_dir=/var/cache/opensession-packages/pnpm-store",
+      "pnpm_config_store_dir=/var/cache/opensession-packages/pnpm-store",
     ]);
     expect(argv.slice(-3)).toEqual([
       "localhost/opensession-sandbox:0123456789abcdef",

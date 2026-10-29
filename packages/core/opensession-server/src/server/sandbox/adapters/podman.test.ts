@@ -263,7 +263,7 @@ describe("podman provider ensure", () => {
     );
     const { argv } = fake.calls.find(({ argv }) => argv[0] === "create")!;
     expect(argv).toContain(
-      "opensession-sbx-acme-pkgcache:/home/ubuntu/.cache/opensession-packages:z,nosuid,nodev",
+      "opensession-sbx-acme-pkgcache:/var/cache/opensession-packages:z,nosuid,nodev",
     );
 
     // A second session of the project reuses the volume.
@@ -280,7 +280,7 @@ describe("podman provider ensure", () => {
     expect(
       second.calls.find(({ argv }) => argv[0] === "create")!.argv,
     ).toContain(
-      "opensession-sbx-acme-pkgcache:/home/ubuntu/.cache/opensession-packages:z,nosuid,nodev",
+      "opensession-sbx-acme-pkgcache:/var/cache/opensession-packages:z,nosuid,nodev",
     );
   });
 
