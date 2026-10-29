@@ -764,7 +764,11 @@ update", for up to 15 minutes) instead of failing, and incident agents that
 ran out of that wait start again on their own. Only a failed build refuses,
 with "Requalify This machine (container)"; the next start a minute later
 tries the build again. `opensession update` and `opensession doctor` report
-where the build stands.
+where the build stands. After a build, and at each start of the server once the
+current image is there, the images of earlier releases are removed: the
+current image and the one before it stay, as does any image a container (a
+sleeping sandbox, say) still uses. `/api/health` reports what was removed
+under `housekeeping.sandbox-image-prune`.
 
 **Limits.** Each sandbox gets a memory limit (default 4096 MB), a process
 limit (default 4096) and a CPU limit (default 2 CPUs, or every CPU on a

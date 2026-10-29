@@ -35,6 +35,8 @@ const SHAPES: RegExp[] = [
   `info\x00--format\x00(json|\\{\\{\\.Store\\.GraphRoot\\}\\})`,
   `(pod|container|volume)\x00exists\x00${NAME}`,
   `image\x00exists\x00[^\x00]+`,
+  `image\x00ls\x00--filter\x00reference=localhost/opensession-sandbox\x00--format\x00json`,
+  `image\x00rm\x00localhost/opensession-sandbox:[0-9a-f]{16}`,
   `(pod|volume)\x00inspect\x00--format\x00\\{\\{index \\.Labels "opensession\\.sandbox"\\}\\}\x00${NAME}`,
   `pod\x00inspect\x00--format\x00\\{\\{\\.State\\}\\}\x00${NAME}`,
   `container\x00inspect\x00--format\x00(${FORMAT_FIELDS.map(escape).join("|")})\x00${NAME}`,
