@@ -33,7 +33,17 @@ export type HousekeepingReclaimed = {
   bytes: number;
 };
 
+export type HousekeepingKept = {
+  /** Things the job left in place although they were due for removal. */
+  count: number;
+  /** Which, and why; the first KEPT_ITEMS_SHOWN. */
+  items: { id: string; reason: string }[];
+};
+
+const KEPT_ITEMS_SHOWN = 20;
+
 const jobs = new Map<string, HousekeepingJobHealth>();
+const kept = new Map<string, HousekeepingKept>();
 const reclaimed = new Map<
   string,
   { last: HousekeepingReclaimed; sinceBoot: HousekeepingReclaimed }
@@ -121,7 +131,22 @@ export function noteHousekeepingReclaimed(
   });
 }
 
+/** What one pass of `job` was due to remove but kept, with the reason: a
+ *  Sandbox holding work it could not bank first (archive-sweep.ts). Replaced
+ *  every pass, so it lists what is kept now. */
+export function noteHousekeepingKept(
+  job: string,
+  items: { id: string; reason: string }[],
+): void {
+  kept.set(job, {
+    count: items.length,
+    items: items.slice(0, KEPT_ITEMS_SHOWN).map((item) => ({ ...item })),
+  });
+}
+
 export type HousekeepingJobReport = HousekeepingJobHealth & {
+  /** The last pass's keeps, for jobs that report them. */
+  lastKept?: HousekeepingKept;
   /** The last pass's removals, for jobs that report them. */
   lastReclaimed?: HousekeepingReclaimed;
   /** Everything removed since this process started. */
@@ -133,15 +158,19 @@ export function housekeepingHealth(): Record<string, HousekeepingJobReport> {
   return Object.fromEntries(
     [...jobs].map(([job, health]) => {
       const counts = reclaimed.get(job);
+      const held = kept.get(job);
       return [
         job,
-        counts
-          ? {
-              ...health,
-              lastReclaimed: counts.last,
-              reclaimedSinceBoot: counts.sinceBoot,
-            }
-          : health,
+        {
+          ...health,
+          ...(counts
+            ? {
+                lastReclaimed: counts.last,
+                reclaimedSinceBoot: counts.sinceBoot,
+              }
+            : {}),
+          ...(held ? { lastKept: held } : {}),
+        },
       ];
     }),
   );
@@ -163,5 +192,6 @@ export function failingHousekeepingJobs(
 /** Test seam. */
 export function resetHousekeepingHealthForTest(): void {
   jobs.clear();
+  kept.clear();
   reclaimed.clear();
 }

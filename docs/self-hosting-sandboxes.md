@@ -724,6 +724,19 @@ how many sandboxes it removed and their measured size under
 session's checkpoint is restored into the fresh sandbox its next prompt
 creates.
 
+The sandbox holds the session's working copy in its home volume, with no
+copy on the host, so the sweep checks it before destroying anything. It
+wakes a sleeping sandbox for the check. Uncommitted changes and unpushed
+commits on the checked-out branch are first pushed as the session's
+checkpoint, and the session keeps its branch. A sandbox whose work cannot be
+checkpointed stays, and goes back to sleep: work on the default branch or a
+detached HEAD, a repository not on GitHub, a missing credential, a failed
+push, or unpushed commits on another local branch. A sandbox that cannot be
+woken or checked also stays. `/api/health` lists each kept sandbox and the
+reason under `housekeeping.sandbox-sweep.lastKept`, and `opensession doctor`
+prints them. A kept sandbox is checked again once its session has new
+activity.
+
 **Host prerequisites.** Qualification checks each of these and names the
 fix when one is missing:
 

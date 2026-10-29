@@ -47,6 +47,7 @@ function deps(over: Partial<ArchiveSweepDeps> = {}) {
     destroySandbox: (s) => {
       destroyed.push(s.id);
     },
+    bankWork: async () => ({ retire: true, why: "clean" }),
     invalidate: () => {
       invalidated++;
     },
@@ -191,6 +192,63 @@ describe("archive sweep", () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  test("a Sandbox whose working copy holds work it could not bank is kept and reported, archived or automation", async () => {
+    // Every remote Sandbox, Podman included, holds the session's working
+    // copy in its own volume: destroying it with uncommitted changes or
+    // unpushed commits that no checkpoint holds would lose them.
+    const box = (id: string, over: Partial<UnifiedSession> = {}) =>
+      session(id, {
+        sandbox: { provider: "podman", sandboxId: `sbx-${id}` },
+        ...over,
+      } as Partial<UnifiedSession>);
+    const banked = box("banked");
+    const dirty = box("dirty");
+    const worker = box("worker", {
+      archived: false,
+      automation: "Incidents · acme",
+    } as Partial<UnifiedSession>);
+    const asked: string[] = [];
+    const t = deps({
+      sessions: async () => [banked, dirty, worker],
+      sandboxBytes: () => 1_000,
+      bankWork: async (s) => {
+        asked.push(s.id);
+        return s.id === "banked"
+          ? { retire: true, why: "banked" }
+          : {
+              retire: false,
+              reason:
+                "uncommitted changes; no checkpoint: no GitHub credential",
+            };
+      },
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await runArchiveSweep(t.d)).sandboxes).toEqual(["banked"]);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+    expect(asked).toEqual(["banked", "dirty", "worker"]);
+    expect(t.destroyed).toEqual(["banked"]);
+    const health = housekeepingHealth()["sandbox-sweep"];
+    expect(health?.lastReclaimed).toEqual({ count: 1, bytes: 1_000 });
+    expect(health?.lastKept).toEqual({
+      count: 2,
+      items: [
+        {
+          id: "dirty",
+          reason: "uncommitted changes; no checkpoint: no GitHub credential",
+        },
+        {
+          id: "worker",
+          reason: "uncommitted changes; no checkpoint: no GitHub credential",
+        },
+      ],
+    });
   });
 
   test("a failed session listing fails both sweeps, never reads as nothing archived", async () => {
