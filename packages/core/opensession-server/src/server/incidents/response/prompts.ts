@@ -22,6 +22,7 @@ import {
   type ProofSample,
   type ReportIssue,
   type SendBackReason,
+  type VerifierFindings,
   roundOfMax,
 } from "../../../shared/incident-response";
 import type { FindingsSet } from "../../../shared/findings";
@@ -379,6 +380,9 @@ export interface EarlierRound {
   /** The fresh session starts clean and brings the earlier round's commits
    *  over instead of building on its branch (see CarriedWork). */
   carry?: CarriedWork;
+  /** The fresh session works on the earlier round's branch itself, and the
+   *  earlier round's pull request stays open. */
+  continues?: { branch: string };
 }
 
 /**
@@ -435,6 +439,29 @@ function carryLines(
   ];
 }
 
+/** A fresh session on the earlier round's own branch: its pull request
+ *  goes on. Work a checkpoint holds that the branch does not is brought
+ *  over. */
+function continueLines(
+  branch: string,
+  carry: CarriedWork | undefined,
+  round: number,
+): string[] {
+  const out = [
+    `This session works on round ${round}'s branch ${branch}, and its pull request stays open: commit and push there, and don't open another pull request.`,
+  ];
+  const checkpoint = carry?.checkpoint;
+  if (checkpoint)
+    out.push(
+      `Round ${round} may have left work that is not pushed. Bring it over:`,
+      `- git fetch origin ${checkpoint.ref}`,
+      `- git merge --ff-only ${checkpoint.head} (round ${round}'s last commit)`,
+      `- git diff ${checkpoint.head} FETCH_HEAD shows what round ${round} left uncommitted; apply what this incident needs.`,
+    );
+  out.push("");
+  return out;
+}
+
 function earlierRoundLines(
   earlier: EarlierRound,
   round: number,
@@ -463,18 +490,30 @@ function earlierRoundLines(
     ];
     out.push(...dataBlock(`What round ${earlier.round} found`, lines), "");
   }
-  if (earlier.carry)
+  if (earlier.continues)
+    out.push(
+      ...continueLines(earlier.continues.branch, earlier.carry, earlier.round),
+    );
+  else if (earlier.carry)
     out.push(...carryLines(earlier.carry, earlier.round, baseBranch));
   // A pull request on a shared branch is the other incident's.
   const shared =
     earlier.carry &&
     (earlier.carry.reason ?? "shared-branch") === "shared-branch";
-  if (earlier.prUrl && !shared)
+  if (earlier.prUrl && earlier.continues)
     out.push(
       ...dataBlock(`Round ${earlier.round}'s pull request`, [
         dataText(earlier.prUrl, 200),
       ]),
-      "Read it and carry its fix, note and runbook update forward into your own pull request.",
+      "It is this session's pull request now. Update its fix, note and runbook instead of starting over, unless the verifier's findings or an open pull request show a better fix; then say in your report which fix you chose and why.",
+      "",
+    );
+  else if (earlier.prUrl && !shared)
+    out.push(
+      ...dataBlock(`Round ${earlier.round}'s pull request`, [
+        dataText(earlier.prUrl, 200),
+      ]),
+      "Read it and carry its fix, note and runbook update forward into your own pull request, unless the verifier's findings or an open pull request show a better fix; then say in your report which fix you chose and why.",
       "",
     );
   return out;
@@ -731,6 +770,43 @@ export function buildSendBackMessage(
   return `${text}\n\nYour round ${previous.round} findings stay on the page until you call show_findings for this round. Keep a block with {"id": "…", "keep": true}.`;
 }
 
+const WEIGH_VERIFIER =
+  "Weigh the verifier's findings before your own last round: if they show a better fix (another open pull request, a case your fix misses), take it, and say in your report which fix you chose and why.";
+
+/** What the round's verifier found, as a data block; its reasons only when
+ *  the head does not list them already. */
+function verifierLines(v: VerifierFindings, reasons: boolean): string[] {
+  const lines: string[] = [];
+  if (reasons && v.reasons.length)
+    lines.push("Reasons:", ...v.reasons.map((r) => `- ${dataText(r)}`));
+  if (v.claims.length)
+    lines.push(
+      "Claims it checked:",
+      ...v.claims.map(
+        (c) =>
+          `- ${c.status}: ${dataText(c.text, 200)}${c.evidence ? ` · ${dataText(c.evidence, 200)}` : ""}`,
+      ),
+    );
+  if (v.questions.length)
+    lines.push(
+      "Its questions:",
+      ...v.questions.map(
+        (q) =>
+          `- ${dataText(q.text, 200)}${q.wouldAnswer ? ` (would answer: ${dataText(q.wouldAnswer, 200)})` : ""}`,
+      ),
+    );
+  if (v.hypotheses.length)
+    lines.push(
+      "Its hypotheses:",
+      ...v.hypotheses.map((h) => `- ${dataText(h, 200)}`),
+    );
+  if (!lines.length) return [];
+  return [
+    ...dataBlock(`What the verifier found in round ${v.round}`, lines),
+    WEIGH_VERIFIER,
+  ];
+}
+
 /** Why the work came back, as a data block. */
 function sendBackHead(
   round: number,
@@ -741,13 +817,19 @@ function sendBackHead(
     dataBlock(title, lines).join("\n");
   let head: string;
   switch (why.kind) {
-    case "not-certain":
-      head = block(
-        `The verifier was not certain (round ${roundOfMax(round, maxRounds)}). Their reasons`,
-        why.reasons.map((r) => `- ${dataText(r)}`),
-      );
+    case "not-certain": {
+      const found = why.verifier ? verifierLines(why.verifier, false) : [];
+      head = [
+        block(
+          `The verifier was not certain (round ${roundOfMax(round, maxRounds)}). Their reasons`,
+          why.reasons.map((r) => `- ${dataText(r)}`),
+        ),
+        ...found,
+      ].join("\n");
       break;
-    case "owner":
+    }
+    case "owner": {
+      const found = why.verifier ? verifierLines(why.verifier, true) : [];
       head = why.answering
         ? [
             block(
@@ -755,13 +837,18 @@ function sendBackHead(
               [dataText(why.answering, 2000)],
             ),
             block("Their note", [dataText(why.note, 2000)]),
+            ...found,
             "",
             BUILD_ON_IT,
           ].join("\n")
-        : block(`${dataText(why.by, 120)} sent this back. Their note`, [
-            dataText(why.note, 2000),
-          ]);
+        : [
+            block(`${dataText(why.by, 120)} sent this back. Their note`, [
+              dataText(why.note, 2000),
+            ]),
+            ...found,
+          ].join("\n");
       break;
+    }
     case "rolled-back":
       head = block("Your fix was released and rolled back. What Sessions saw", [
         dataText(why.detail),

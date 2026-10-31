@@ -33,6 +33,15 @@ export const AGENT_MAX_MS = 7_200_000;
 export const PR_REFRESH_MS = 30_000;
 /** Checks still pending this long after merging began ask the owner. */
 export const PR_CHECKS_WAIT_MS = 1_200_000;
+/** How often a pull request the owner releases by hand is read from GitHub
+ *  when the PR cache doesn't know it. */
+export const HAND_RELEASE_REFRESH_MS = 600_000;
+/** How often a pull request whose checks GitHub Actions did not run is
+ *  read again while the owner fixes it. */
+export const ACTIONS_RECHECK_MS = 600_000;
+/** How often a card that holds Deploy the fix back for failing checks
+ *  reads its pull request again. */
+export const CHECKS_RECHECK_MS = 600_000;
 /** A release this close before the incident opened is rolled back first. */
 export const ROLLBACK_FIRST_WINDOW_MS = 1_800_000;
 /** Rollback-first's parallel investigator, refused by the access gate for a
@@ -64,6 +73,9 @@ export interface ResponseView {
   /** Action runs this process is executing right now. */
   liveActionRunIds: ReadonlySet<string>;
   models: RoleModels | { error: string };
+  /** Only while the owner releases the fix by hand: its pull request's
+   *  state as the PR cache has it, undefined when the cache doesn't know. */
+  handReleasePr?: "OPEN" | "MERGED" | "CLOSED";
 }
 
 export type ResponseStep =
@@ -101,7 +113,12 @@ export type ResponseStep =
     }
   | { step: "cancel-agents"; reason: string; for: CancelReason }
   | { step: "run-proof" }
-  | { step: "fetch-pr"; purpose: "verify" | "merge" | "note" }
+  | {
+      step: "fetch-pr";
+      /** `recheck`: a waiting card's pull request read again; an error
+       *  leaves the card as it is. */
+      purpose: "verify" | "merge" | "note" | "recheck";
+    }
   | {
       step: "transition";
       to: IncidentState | null;
@@ -119,6 +136,8 @@ export type ResponseStep =
        *  fixed. */
       retryable?: boolean;
       fix?: SetupFix;
+      /** The card is brought up to date because the signal failed again. */
+      failedAgainAt?: string;
       patch?: Partial<IncidentResponse>;
       /** A state the incident passes through first, so a person picks the
        *  work up from there. */

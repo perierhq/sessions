@@ -463,6 +463,9 @@ export interface PrSnapshot {
   /** The base branch's rules could not be read, so required checks and
    *  reviews are unknown and Sessions does not merge. */
   rulesUnreadable?: true;
+  /** Every check failed because GitHub Actions did not run it (a billing
+   *  or spending limit, say): why, as GitHub put it. */
+  actionsBlocked?: string;
   fetchedAt: string;
 }
 
@@ -548,6 +551,7 @@ export const OWNER_DECISIONS = [
   "roll-back",
   "close-prs",
   "keep-prs",
+  "release-watch",
 ] as const;
 export type OwnerDecision = (typeof OWNER_DECISIONS)[number];
 
@@ -633,14 +637,27 @@ export const RESPONSE_PHASES = [
 ] as const;
 export type ResponsePhase = (typeof RESPONSE_PHASES)[number];
 
+/** What a round's verifier found, carried into a send-back so the next
+ *  round weighs it: the verdict's reasons, its claim checks and its
+ *  findings' questions and hypotheses. */
+export interface VerifierFindings {
+  round: number;
+  reasons: string[];
+  claims: ClaimCheck[];
+  questions: Array<{ text: string; wouldAnswer: string }>;
+  hypotheses: string[];
+}
+
 export type SendBackReason =
-  | { kind: "not-certain"; reasons: string[] }
+  | { kind: "not-certain"; reasons: string[]; verifier?: VerifierFindings }
   | {
       kind: "owner";
       by: string;
       note: string;
       /** The needs-you reason the owner answered by sending it back. */
       answering?: string;
+      /** The verifier's findings, when the round sent back had one. */
+      verifier?: VerifierFindings;
     }
   | { kind: "rolled-back"; detail: string }
   | { kind: "reopened"; detail: string }
@@ -674,6 +691,9 @@ export interface IncidentResponse {
   ownerTouched: boolean;
   ownerRollback?: { by: string; at: string };
   sendBack?: SendBackReason;
+  /** The owner releases the candidate's pull request by hand: Sessions
+   *  merges and deploys nothing, waits for the merge, then watches. */
+  handRelease?: { by: string; at: string; prUrl: string; number: number };
   retryRequested?: boolean;
   /** Rollback-first only: the investigator that studies the release in
    *  parallel is best effort. Set when it could not start (`unavailable`:
@@ -698,7 +718,16 @@ export interface IncidentResponse {
     /** The incident's agents' pull requests still open when the card
      *  appeared, named on the card. */
     prs?: AgentPullRequest[];
+    /** The card was brought up to date because the signal failed again
+     *  (its `lastProblemAt` then). Such a card alerts at most once a day. */
+    failedAgainAt?: string;
   };
+  /** The failed check the incident opened on (its detail names a status
+   *  page's failing parts), for telling a different part's failure apart. */
+  openedOn?: { at: string; detail: string };
+  /** Failures of other parts than the one the incident opened on, while it
+   *  waited on its owner: newest last, at most OTHER_FAILURES_MAX. */
+  otherFailures?: Array<{ at: string; detail: string }>;
   note?: { prUrl?: string; pr?: PrSnapshot; merged: boolean; detail?: string };
   /** Closed without action: pull requests the incident's agents opened that
    *  change code, left open for the owner to close or keep. Their note-only

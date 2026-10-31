@@ -77,13 +77,18 @@ import {
   ensureIncidentAutomation,
 } from "./agents";
 import {
+  approveBlocked,
   currentAgent,
   decideNextStep,
+  failedCheckAt,
+  handReleaseAvailable,
   manualRollbackAvailable,
   nextActionFor,
   rereadsReport,
   roundRan,
+  verifierFindingsOf,
   waitingMayBeStale,
+  waitingOnChecks,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
 import { appendLedger, emptyResponse, spendInMonth } from "./ledger";
@@ -742,6 +747,14 @@ export async function buildResponseView(
     for (const [id, signal] of signals)
       passes.set(id, trailingPasses(signal, d.recent(id)));
   }
+  // The owner releases the fix by hand: the PR cache says when it merged.
+  let handReleasePr: ResponseView["handReleasePr"];
+  if (r?.handRelease)
+    try {
+      handReleasePr = d.prState(incident.project, r.handRelease.prUrl);
+    } catch {
+      handReleasePr = undefined;
+    }
   const setup =
     incident.state === "needs-you" &&
     incident.response?.needsYou?.kind === "setup"
@@ -761,6 +774,7 @@ export async function buildResponseView(
     agents,
     liveActionRunIds: new Set(liveActions),
     models,
+    ...(handReleasePr ? { handReleasePr } : {}),
   };
 }
 
@@ -965,6 +979,11 @@ async function init(
         maxRounds: settings.maxRounds,
         phase: release && rollback ? "deciding" : "investigating",
       });
+      // What failed when it opened: a later failure of another part is
+      // told apart from it (staleWaiting).
+      const opened = failedCheckAt(view.primaryRecent, Date.parse(c.openedAt));
+      if (opened)
+        r = { ...r, openedOn: { at: opened.at, detail: opened.detail } };
       if (!release || !rollback) return { incident: c, response: r };
       const time = hhmm(release.at);
       const candidate: CandidateState = {
@@ -1006,6 +1025,49 @@ interface Supersede {
   widened: AccessWidening[];
   carry?: CarriedWork;
   moved?: boolean;
+  /** The fresh session works on the run's branch itself, and the run's
+   *  pull request goes on with it (see continuation). */
+  continues?: Continuation;
+}
+
+/** The branch and open pull request a fresh session takes over. */
+interface Continuation {
+  branch: string;
+  prUrl: string;
+  number: number;
+}
+
+/**
+ * The run's branch and pull request when a fresh session can take them
+ * over: the pull request is in the project's repository and not merged or
+ * closed as far as the PR cache knows. Closing it and opening a new one
+ * lost its reviews and history. Undefined when the branch is another
+ * incident's too (the caller checks) or there is no such pull request:
+ * the fresh session then starts a branch of its own, as before.
+ */
+async function continuation(
+  view: ResponseView,
+  run: AgentRun,
+  agents: IncidentAgents,
+  d: CoordinatorDeps,
+): Promise<Continuation | undefined> {
+  if (run.role !== "investigator") return undefined;
+  const prUrl = view.agents.get(run.sessionId)?.prUrl ?? run.prUrl;
+  const pr = prUrl ? parsePrUrl(prUrl) : null;
+  if (!prUrl || !pr) return undefined;
+  const own = d.ghRepoOf(view.incident.project);
+  if (!own || own.toLowerCase() !== pr.ghRepo.toLowerCase()) return undefined;
+  let state: ReturnType<CoordinatorDeps["prState"]>;
+  try {
+    state = d.prState(view.incident.project, prUrl);
+  } catch {
+    return undefined;
+  }
+  if (state === "MERGED" || state === "CLOSED") return undefined;
+  const branch = (await agents.work(run.sessionId))?.branch;
+  if (!branch || branch === d.defaultBranch(view.incident.project))
+    return undefined;
+  return { branch, prUrl, number: pr.number };
 }
 
 /** A carry for a branch another incident uses (#83's original case). */
@@ -1150,6 +1212,9 @@ async function startAgent(
                 : {}),
               ...(earlier.prUrl ? { prUrl: earlier.prUrl } : {}),
               ...(supersede?.carry ? { carry: supersede.carry } : {}),
+              ...(supersede?.continues
+                ? { continues: { branch: supersede.continues.branch } }
+                : {}),
             },
           }
         : r.sendBack
@@ -1207,9 +1272,11 @@ async function startAgent(
       // clean and brings the commits over (its brief says how).
       ...(role === "verifier" && investigator
         ? { baseSessionId: investigator.sessionId }
-        : supersede && !supersede.carry
-          ? { baseSessionId: supersede.run.sessionId }
-          : {}),
+        : supersede?.continues
+          ? { continueSessionId: supersede.run.sessionId }
+          : supersede && !supersede.carry
+            ? { baseSessionId: supersede.run.sessionId }
+            : {}),
       access,
       workspace,
     }));
@@ -1241,6 +1308,8 @@ async function startAgent(
       costUsd: 0,
       tokens: 0,
       reminded: false,
+      // It works on the pull request it took over.
+      ...(supersede?.continues ? { prUrl: supersede.continues.prUrl } : {}),
     };
     const fresh = `${roleLabel(role)} started in a fresh session on ${label}, round ${round}`;
     const started = !supersede
@@ -1252,6 +1321,11 @@ async function startAgent(
           : `${fresh}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
     const detail = [
       started,
+      ...(supersede?.continues
+        ? [
+            `It continues on ${supersede.continues.branch} and pull request #${supersede.continues.number}`,
+          ]
+        : []),
       ...unavailable.map((p) => `${p.connection} can't be used: ${p.reason}`),
     ].join(". ");
     const response = ledger(
@@ -1291,8 +1365,9 @@ async function startAgent(
   if (supersede) {
     const agents = await agentsFor(next, d);
     if (agents) await retire(agents, supersede.run.sessionId);
-    // A pull request on a shared branch is the other incident's: it stays.
-    if (!sharedCarry(supersede.carry))
+    // A pull request on a shared branch is the other incident's, and one
+    // the fresh session took over goes on: both stay.
+    if (!sharedCarry(supersede.carry) && !supersede.continues)
       await closeSupersededPr(
         view,
         supersede.run,
@@ -1642,6 +1717,9 @@ async function messageAgent(
           reason: moved ? "workspace" : "unpushed",
         };
       }
+      const continues = shared
+        ? undefined
+        : await continuation(view, run, agents, d);
       return startAgent(
         view,
         {
@@ -1656,6 +1734,7 @@ async function messageAgent(
           widened,
           ...(carry ? { carry } : {}),
           ...(moved ? { moved } : {}),
+          ...(continues ? { continues } : {}),
         },
       );
     }
@@ -1976,7 +2055,7 @@ async function proveCandidate(
 
 async function fetchPr(
   view: ResponseView,
-  purpose: "verify" | "merge" | "note",
+  purpose: "verify" | "merge" | "note" | "recheck",
   d: CoordinatorDeps,
 ): Promise<boolean> {
   const { incident, settings } = view;
@@ -1986,9 +2065,10 @@ async function fetchPr(
   const prUrl = note
     ? (view.agents.get(investigator?.sessionId ?? "")?.prUrl ??
       investigator?.prUrl)
-    : r.candidate?.prUrl;
+    : (r.candidate?.prUrl ??
+      (purpose === "recheck" ? r.candidate?.pr?.url : undefined));
   if (!prUrl) {
-    if (note) return false;
+    if (note || purpose === "recheck") return false;
     return needsYou(
       view,
       {
@@ -2005,6 +2085,34 @@ async function fetchPr(
     { ghRepoOf: d.ghRepoOf },
   );
   if ("error" in snapshot) {
+    // A waiting card read again: it stays as it is, and the next read
+    // waits the full interval (the old snapshot is marked as read now).
+    if (purpose === "recheck") {
+      console.warn(
+        `[incidents] Could not read ${prUrl} again:`,
+        snapshot.error,
+      );
+      const at = new Date(d.now()).toISOString();
+      const next = await write(
+        incident.id,
+        d,
+        settings,
+        guardOf(view),
+        (c, base) =>
+          base.candidate?.pr
+            ? {
+                incident: c,
+                response: patched(base, {
+                  candidate: {
+                    ...base.candidate,
+                    pr: { ...base.candidate.pr, fetchedAt: at },
+                  },
+                }),
+              }
+            : { error: "The candidate's pull request is gone" },
+      );
+      return next !== null;
+    }
     if (!note)
       return needsYou(
         view,
@@ -2143,6 +2251,9 @@ async function needsYou(
             ...(step.retryable === false ? { retryable: false } : {}),
             ...(step.fix ? { fix: step.fix } : {}),
             ...(prs.length ? { prs } : {}),
+            ...(step.failedAgainAt
+              ? { failedAgainAt: step.failedAgainAt }
+              : {}),
           },
         },
         { retryRequested: undefined },
@@ -2728,7 +2839,10 @@ function needsAttention(
       // A setup problem: Try again follows whether the agents could start.
       // A proof card whose signal failed again is brought up to date.
       return (
-        working || r?.needsYou?.kind === "setup" || waitingMayBeStale(incident)
+        working ||
+        r?.needsYou?.kind === "setup" ||
+        waitingMayBeStale(incident) ||
+        waitingOnChecks(incident)
       );
     case "done":
       return working;
@@ -2829,6 +2943,7 @@ const REFUSALS: Record<OwnerDecision, string> = {
   "roll-back": "Nothing to roll back",
   "close-prs": "No pull request is waiting for you",
   "keep-prs": "No pull request is waiting for you",
+  "release-watch": "No verified pull request to release",
 };
 
 const STOPPABLE_PHASES: ReadonlySet<ResponsePhase> = new Set([
@@ -2890,7 +3005,15 @@ function decisionAllowed(
             r.candidate.rollbackFirst === true)) ||
           // Not proven before release: the head the verifier reviewed is
           // the one merged, and the watch after release is the proof.
-          (r.needsYou?.kind === "unproven" && !!r.verdict?.verifiedSha))
+          (r.needsYou?.kind === "unproven" && !!r.verdict?.verifiedSha)) &&
+        // Not where merging sends it back or nothing deploys it.
+        !approveBlocked(r, settings)
+      );
+    case "release-watch":
+      return (
+        c.state === "needs-you" &&
+        r.needsYou?.kind === "unproven" &&
+        handReleaseAvailable(r)
       );
     case "send-back":
       return c.state === "needs-you" || c.state === "veto";
@@ -3009,6 +3132,7 @@ function decisionMove(
         patched(r, {
           phase: "needs-you",
           veto: undefined,
+          handRelease: undefined,
           needsYou: {
             kind: "stopped",
             reason,
@@ -3033,7 +3157,26 @@ function decisionMove(
             : {}),
         }),
       );
-    case "send-back":
+    case "release-watch": {
+      // decisionAllowed checked the candidate has an open pull request.
+      const candidate = base.candidate!;
+      const prUrl = (candidate.prUrl ?? candidate.pr?.url)!;
+      const number = candidate.pr?.number ?? parsePrUrl(prUrl)?.number ?? 0;
+      return move(
+        "deploying",
+        `${by} releases PR #${number}; Sessions watches after it merges`,
+        patched(base, {
+          phase: "merging",
+          mergingSince: at,
+          veto: undefined,
+          handRelease: { by, at, prUrl, number },
+        }),
+      );
+    }
+    case "send-back": {
+      // The round's verifier findings go along: a send-back that kept only
+      // the card's reason lost what the verifier found.
+      const verifier = verifierFindingsOf(base, base.round);
       return move(
         "investigating",
         `Sent back by ${by}`,
@@ -3050,7 +3193,9 @@ function decisionMove(
             ...(c.state === "needs-you" && base.needsYou?.reason
               ? { answering: base.needsYou.reason }
               : {}),
+            ...(verifier ? { verifier } : {}),
           },
+          handRelease: undefined,
           candidate: undefined,
           proof: undefined,
           verdict: undefined,
@@ -3060,6 +3205,7 @@ function decisionMove(
           mergingSince: undefined,
         }),
       );
+    }
     case "retry": {
       const resume = base.needsYou?.resumePhase ?? "investigating";
       return move(

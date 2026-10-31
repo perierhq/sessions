@@ -145,6 +145,9 @@ export interface WorkflowSpawnSessionOpts {
     baseRef?: string;
     /** Start from another child session's pushed branch. */
     baseSessionId?: string;
+    /** Work on another child session's branch itself, so its pull request
+     *  goes on: the new session takes the branch over from it. */
+    continueSessionId?: string;
   };
   branch?: string;
   /** A model id or alias for this child only. Unknown models are rejected;

@@ -10,6 +10,7 @@ import {
   type NotificationDocument,
 } from "../notification-threads";
 import {
+  FAILED_AGAIN_ALERT_MS,
   type NotifyFacts,
   planHeldFlush,
   planIncidentNotification,
@@ -610,4 +611,40 @@ test("two nights flushed on one UTC day each alert once", () => {
   );
   expect(second.thread).not.toBeNull();
   expect(second.delivery).toBe("alert");
+});
+
+test("a waiting card brought up to date because its signal failed again alerts at most once a day", () => {
+  const a = inc("investigating", [ev("investigating")]);
+  const waitingOn = (since: string, failedAgainAt?: string) =>
+    ({
+      next: {
+        kind: "needs-you",
+        reason: "The fix can only be proven after release",
+        needsYou: "unproven",
+        options: ["send-back", "close"],
+      },
+      needsYou: {
+        kind: "unproven",
+        reason: "The fix can only be proven after release",
+        since,
+        resumePhase: "verifying",
+        ...(failedAgainAt ? { failedAgainAt } : {}),
+      },
+    }) as unknown as IncidentResponse;
+  const waiting = step(a, "needs-you", "sessions", {
+    response: waitingOn("t1"),
+  });
+  const again = planIncidentNotification(
+    { ...waiting, response: waitingOn("t2", "t2") },
+    waiting,
+    facts(),
+    NOW,
+  );
+  expect(again?.event).toMatchObject({
+    kind: "incident_needs_you",
+    eventKey: "needs:t2",
+    delivery: "alert",
+    cooldown: { key: "incident_needs_you", ms: FAILED_AGAIN_ALERT_MS },
+  });
+  expect(FAILED_AGAIN_ALERT_MS).toBe(86_400_000);
 });

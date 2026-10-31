@@ -25,6 +25,7 @@ import {
   manualRollbackAvailable,
   needsYouOptions,
   nextActionFor,
+  waitingOnChecks,
   ownSignalIds,
   rollbackFirstApplies,
   waitingMayBeStale,
@@ -3026,7 +3027,9 @@ test("verifying a fix proven after release: unproven asks the owner to merge and
   });
   expect(needsYouOptions("unproven", r)).toEqual([
     "approve",
+    "release-watch",
     "send-back",
+    "resolve",
     "close",
   ]);
   // A refuted claim is the fix's own problem: the investigator gets it back.
@@ -3111,6 +3114,7 @@ test("an unproven fix whose signal failed again says so, once per return", () =>
     kind: "unproven",
     reason:
       "The fix can only be proven after release: Only the release can show it (Search failed again at 11:55 UTC)",
+    failedAgainAt: iso(-5 * 60_000),
   });
   // Said again later, the newer time replaces the older one.
   const r = back.incident.response!;
@@ -3239,4 +3243,278 @@ test("an agent stopped while the sandbox image was still being built starts agai
     round: 1,
     attempt: 2,
   });
+});
+
+test("Deploy the fix is offered on an unproven card only when it can work; else the card says why", () => {
+  const unproven = (pr: Partial<PrSnapshot>) =>
+    response({
+      phase: "needs-you",
+      candidate: candidate({ pr: prSnapshot(pr) }),
+      verdict: {
+        round: 1,
+        at: iso(0),
+        verdict: "not-certain",
+        reasons: ["Only the release can show it"],
+        verifiedSha: "abc1234",
+      },
+      needsYou: {
+        kind: "unproven",
+        reason:
+          "The fix can only be proven after release: Only the release can show it",
+        since: iso(0),
+        resumePhase: "verifying",
+      },
+    });
+  // Checks pass and the project deploys: every way out.
+  expect(needsYouOptions("unproven", unproven({}), defaultSettings)).toEqual([
+    "approve",
+    "release-watch",
+    "send-back",
+    "resolve",
+    "close",
+  ]);
+  // A required check fails: merging would only send it back.
+  const failing = unproven({ failingChecks: ["ci-success"] });
+  expect(needsYouOptions("unproven", failing, defaultSettings)).toEqual([
+    "release-watch",
+    "send-back",
+    "resolve",
+    "close",
+  ]);
+  expect(
+    nextActionFor(incident("needs-you", failing), defaultSettings),
+  ).toMatchObject({
+    reason:
+      "The fix can only be proven after release: Only the release can show it. Deploy the fix isn't offered: check ci-success fails on PR #12.",
+  });
+  // No deploy action: nothing would release the merged fix.
+  const manual = { ...defaultSettings, actions: [] };
+  expect(needsYouOptions("unproven", unproven({}), manual)).toEqual([
+    "release-watch",
+    "send-back",
+    "resolve",
+    "close",
+  ]);
+  expect(
+    nextActionFor(incident("needs-you", unproven({})), manual),
+  ).toMatchObject({
+    reason:
+      "The fix can only be proven after release: Only the release can show it. Deploy the fix isn't offered: no deploy action is declared for acme.",
+  });
+});
+
+test("checks GitHub Actions never ran: a setup problem before any verifier, resumed once they run", () => {
+  const blocked =
+    "the job was not started because recent account payments have failed";
+  const provingWith = (pr: Partial<PrSnapshot>) =>
+    view({
+      incident: incident(
+        "fix-ready",
+        response({
+          phase: "proving",
+          candidate: candidate({ pr: prSnapshot(pr) }),
+          proof: proofResult({
+            round: 1,
+            baseline: "fails",
+            candidate: "passes",
+          }),
+          agents: [run("investigator", { round: 1, status: "done" })],
+        }),
+      ),
+    });
+  expect(
+    decideNextStep(
+      provingWith({ failingChecks: ["test"], actionsBlocked: blocked }),
+    ),
+  ).toEqual({
+    step: "needs-you",
+    kind: "setup",
+    reason: `GitHub Actions can't run for acme/web (${blocked})`,
+  });
+  // Red for the code's own reasons: the verifier goes ahead as before.
+  expect(
+    decideNextStep(provingWith({ failingChecks: ["test"] })),
+  ).toMatchObject({ step: "transition", phase: "verifying" });
+
+  // The card waits; the pull request is read again now and then.
+  const waiting = (pr: Partial<PrSnapshot>) =>
+    view({
+      incident: incident(
+        "needs-you",
+        response({
+          phase: "needs-you",
+          candidate: candidate({ pr: prSnapshot(pr) }),
+          proof: proofResult({
+            round: 1,
+            baseline: "fails",
+            candidate: "passes",
+          }),
+          agents: [run("investigator", { round: 1, status: "done" })],
+          needsYou: {
+            kind: "setup",
+            reason: `GitHub Actions can't run for acme/web (${blocked})`,
+            since: iso(-60_000),
+            resumePhase: "proving",
+          },
+        }),
+        { resumeState: "fix-ready" },
+      ),
+      setup: { ready: true },
+    });
+  expect(
+    decideNextStep(
+      waiting({ failingChecks: ["test"], actionsBlocked: blocked }),
+    ),
+  ).toEqual({ step: "none" });
+  expect(
+    decideNextStep(
+      waiting({
+        failingChecks: ["test"],
+        actionsBlocked: blocked,
+        fetchedAt: iso(-700_000),
+      }),
+    ),
+  ).toEqual({ step: "fetch-pr", purpose: "recheck" });
+  // The checks ran: back to proving, where the verifier starts.
+  expect(decideNextStep(waiting({ failingChecks: [] }))).toMatchObject({
+    step: "transition",
+    to: "fix-ready",
+    phase: "proving",
+    detail: "GitHub Actions runs for acme/web again",
+    patch: { needsYou: undefined },
+  });
+});
+
+test("a failure folded into a waiting card names the part that failed", () => {
+  const back = waitingOn("unproven", { lastProblemAt: iso(-5 * 60_000) });
+  const named = {
+    ...back,
+    primaryRecent: [
+      { at: iso(-7 * 60_000), result: "fail" as const, detail: "search: slow" },
+      { at: iso(-6 * 60_000), result: "fail" as const, detail: "search: slow" },
+      { at: iso(-5 * 60_000), result: "fail" as const, detail: "search: slow" },
+      {
+        at: iso(-4 * 60_000),
+        result: "ok" as const,
+        detail: "All components operational",
+      },
+    ],
+  };
+  expect(decideNextStep(named)).toEqual({
+    step: "needs-you",
+    kind: "unproven",
+    reason:
+      "The fix can only be proven after release: Only the release can show it (Search failed again at 11:55 UTC: search: slow)",
+    failedAgainAt: iso(-5 * 60_000),
+  });
+});
+
+test("a different part failing is shown apart from the incident's cause, without asking the owner again", () => {
+  const back = waitingOn("unproven", { lastProblemAt: iso(-5 * 60_000) });
+  const r = back.incident.response!;
+  const other: ResponseView = {
+    ...back,
+    incident: {
+      ...back.incident,
+      response: {
+        ...r,
+        openedOn: { at: iso(-3_600_000), detail: "search: slow" },
+      },
+    },
+    primaryRecent: [
+      { at: iso(-6 * 60_000), result: "fail", detail: "betterfare: down" },
+      { at: iso(-5 * 60_000), result: "fail", detail: "betterfare: down" },
+    ],
+  };
+  const step = decideNextStep(other);
+  expect(step).toEqual({
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail:
+      "A different part failed at 11:55 UTC: betterfare: down. This incident is about search",
+    patch: {
+      needsYou: { ...r.needsYou!, failedAgainAt: iso(-5 * 60_000) },
+      otherFailures: [{ at: iso(-5 * 60_000), detail: "betterfare: down" }],
+    },
+  });
+  // Handled: nothing more until the signal fails again.
+  const handled = {
+    ...other.incident,
+    response: {
+      ...other.incident.response!,
+      ...(step as { patch: Partial<IncidentResponse> }).patch,
+    },
+  } as Incident;
+  expect(waitingMayBeStale(handled)).toBe(false);
+  // The card keeps its own reason and lists the other part apart.
+  expect(nextActionFor(handled, defaultSettings)).toMatchObject({
+    reason: expect.stringContaining(
+      "Only the release can show it. Another part failed meanwhile: betterfare: down at 11:55 UTC.",
+    ),
+  });
+});
+
+test("without a recorded opening check, the one in the recent checks at the open tells the parts apart", () => {
+  const back = waitingOn("unproven", {
+    lastProblemAt: iso(-5 * 60_000),
+    openedAt: iso(-20 * 60_000),
+  });
+  const step = decideNextStep({
+    ...back,
+    primaryRecent: [
+      { at: iso(-21 * 60_000), result: "fail", detail: "search: slow" },
+      { at: iso(-5 * 60_000), result: "fail", detail: "betterfare: down" },
+    ],
+  });
+  expect(step).toMatchObject({
+    step: "transition",
+    phase: "needs-you",
+    detail:
+      "A different part failed at 11:55 UTC: betterfare: down. This incident is about search",
+  });
+});
+
+test("a card that holds Deploy the fix back for failing checks reads the pull request again now and then", () => {
+  const card = (fetchedAt: string) =>
+    incident(
+      "needs-you",
+      response({
+        phase: "needs-you",
+        candidate: candidate({
+          pr: prSnapshot({ failingChecks: ["ci"], fetchedAt }),
+        }),
+        verdict: {
+          round: 1,
+          at: iso(0),
+          verdict: "not-certain",
+          reasons: ["Only the release can show it"],
+          verifiedSha: "abc1234",
+        },
+        needsYou: {
+          kind: "unproven",
+          reason: "The fix can only be proven after release",
+          since: iso(-3_600_000),
+          resumePhase: "verifying",
+        },
+      }),
+      { lastProblemAt: iso(-4_000_000) },
+    );
+  expect(waitingOnChecks(card(iso(-60_000)))).toBe(true);
+  expect(decideNextStep(view({ incident: card(iso(-60_000)) }))).toEqual({
+    step: "none",
+  });
+  // Read again quietly: a GitHub error leaves the card as it is.
+  expect(decideNextStep(view({ incident: card(iso(-700_000)) }))).toEqual({
+    step: "fetch-pr",
+    purpose: "recheck",
+  });
+  const green = incident(
+    "needs-you",
+    response({
+      ...card(iso(0)).response!,
+      candidate: candidate({ pr: prSnapshot() }),
+    }),
+  );
+  expect(waitingOnChecks(green)).toBe(false);
 });

@@ -47,6 +47,11 @@ export const DECISION_COPY: Readonly<
     label: "Keep open",
     description: "Leave the pull request open to review it",
   },
+  "release-watch": {
+    label: "I'll release it myself, watch after",
+    description:
+      "Sessions waits for the pull request to merge, then watches the signal",
+  },
 };
 
 const DECISIONS: ReadonlySet<string> = new Set(OWNER_DECISIONS);

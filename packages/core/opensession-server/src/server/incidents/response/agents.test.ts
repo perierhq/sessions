@@ -358,6 +358,25 @@ test("agents start under plan 3's policy, on their own model, never reporting in
   expect(h.creates[1]!.isolatedWorktree).toBeFalsy();
   expect(h.creates[1]!.stackedOnBranch).toBeUndefined();
   expect(sessionId).not.toBe(h.creates[1]!.id);
+  // A fresh investigator taking round 1 over works on its branch itself.
+  const taken = h.sessions.get(sessionId)!;
+  h.sessions.set(sessionId, { ...taken, branch: "incident/search-403" });
+  await agents.spawn({
+    role: "investigator",
+    round: 2,
+    attempt: 2,
+    prompt: "Investigate again",
+    model: "pi/anthropic/claude-opus-5-5",
+    continueSessionId: sessionId,
+    access: access("investigator", { connections: ["sentry"] }),
+    workspace: { kind: "sandbox", provider: "daytona" },
+  });
+  expect(h.creates[2]).toMatchObject({
+    branch: "incident/search-403",
+    existingBranch: true,
+    isolatedWorktree: true,
+  });
+  expect(h.creates[2]!.stackedOnBranch).toBeUndefined();
 });
 
 test("an agent's run binding is read from its session, and a superseded one is archived", async () => {

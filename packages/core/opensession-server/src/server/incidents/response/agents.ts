@@ -263,6 +263,9 @@ export interface SpawnAgentInput {
   model: string;
   /** The investigator's session, for a code-mode agent to branch from. */
   baseSessionId?: string;
+  /** The session a fresh investigator takes over: it works on that
+   *  session's branch itself, so the pull request on it goes on. */
+  continueSessionId?: string;
   access: AgentAccess;
   workspace: AgentWorkspace;
 }
@@ -415,9 +418,11 @@ export function createIncidentAgents(
             ? {
                 workspace: {
                   type: "isolated-worktree" as const,
-                  ...(input.baseSessionId
-                    ? { baseSessionId: input.baseSessionId }
-                    : {}),
+                  ...(input.continueSessionId
+                    ? { continueSessionId: input.continueSessionId }
+                    : input.baseSessionId
+                      ? { baseSessionId: input.baseSessionId }
+                      : {}),
                 },
               }
             : {}),

@@ -350,6 +350,13 @@ export function createWorkflowSessionController(
         throw new Error(
           "spawnSession() workspace.baseSessionId must be a session id",
         );
+      if (
+        input.workspace?.continueSessionId !== undefined &&
+        typeof input.workspace.continueSessionId !== "string"
+      )
+        throw new Error(
+          "spawnSession() workspace.continueSessionId must be a session id",
+        );
       const parent =
         control.getSession(opts.parentSessionId) ||
         findSession(opts.parentSessionId);
@@ -418,8 +425,32 @@ export function createWorkflowSessionController(
         throw new Error(
           "Choose either workspace.baseRef or workspace.baseSessionId, not both",
         );
+      if (
+        input.workspace?.continueSessionId &&
+        (input.workspace.baseRef ||
+          input.workspace.baseSessionId ||
+          input.branch !== undefined)
+      )
+        throw new Error(
+          "workspace.continueSessionId takes the other session's branch: give no baseRef, baseSessionId or branch",
+        );
       let baseRef = input.workspace?.baseRef;
       let stackBase: string | undefined;
+      // The branch another child worked on, taken over as it is on origin.
+      let continued: string | undefined;
+      if (input.workspace?.continueSessionId) {
+        const fromId = input.workspace.continueSessionId;
+        assertOwned(fromId);
+        const from = control.getSession(fromId);
+        if (!from) throw new Error(`Session \`${fromId}\` no longer exists`);
+        if (from.repo !== input.repo)
+          throw new Error(
+            `Session \`${fromId}\` belongs to repo \`${from.repo || "unknown"}\`, not \`${input.repo}\``,
+          );
+        if (!from.branch || from.branch === deps.defaultBranch(input.repo))
+          throw new Error(`Session \`${fromId}\` has no branch of its own`);
+        continued = from.branch;
+      }
       if (input.workspace?.baseSessionId) {
         const baseId = input.workspace.baseSessionId;
         assertOwned(baseId);
@@ -531,7 +562,8 @@ export function createWorkflowSessionController(
         prompt,
         repo: input.repo,
         mode,
-        branch: input.branch,
+        branch: continued ?? input.branch,
+        ...(continued ? { existingBranch: true } : {}),
         isolatedWorktree: isolated,
         baseRef,
         stackedOnBranch: stackBase,

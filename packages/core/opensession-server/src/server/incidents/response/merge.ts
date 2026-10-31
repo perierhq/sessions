@@ -5,6 +5,7 @@
 // checks, conflicts, a strict up-to-date rule or unreadable rules all stop
 // the merge. Only the verified head SHA is ever merged (pinned in the merge
 // request, so GitHub refuses it if the head moves in between).
+import { actionsNotRunning } from "../../github-workflow-runs";
 import type {
   MergeRecord,
   PrSnapshot,
@@ -164,6 +165,12 @@ export interface MergeGithub {
   ): Promise<void>;
   /** Close an open pull request without merging it, with `c`. */
   close(ghRepo: string, n: number, c: GithubCredential): Promise<void>;
+  /** Why GitHub Actions ran none of these failing checks, or undefined
+   *  when the code ran (see actionsNotRunning). */
+  actionsBlocked?(
+    ghRepo: string,
+    checks: ReadonlyArray<{ name: string; url?: string }>,
+  ): Promise<string | undefined>;
 }
 
 async function gh(args: string[], credential: GithubCredential) {
@@ -221,6 +228,7 @@ export function defaultMergeGithub(): MergeGithub {
       resolveGithubCredential(serviceGithubCredential, { write: true, repo }),
     comment: (repo, n, body, c) =>
       githubForceMergeApi.comment(repo, n, body, c),
+    actionsBlocked: (repo, checks) => actionsNotRunning(repo, checks),
     async close(ghRepo, n, c) {
       const { err, code } = await gh(
         [
@@ -302,7 +310,23 @@ export async function fetchPrSnapshot(
             .mergeCommit(parsed.ghRepo, parsed.number)
             .catch(() => undefined)
         : undefined;
-    return snapshotFromVerdict(v, { files, mergeCommitSha, now: input.now });
+    // Every check failed and none ran or passes: whether GitHub Actions
+    // ran them at all, before a verifier is spent on a red pull request.
+    const allFailed =
+      v.state === "OPEN" &&
+      v.checks.failing.length > 0 &&
+      !v.checks.passing.length &&
+      !v.checks.pending.length;
+    const actionsBlocked =
+      allFailed && github.actionsBlocked
+        ? await github
+            .actionsBlocked(parsed.ghRepo, v.checks.failing)
+            .catch(() => undefined)
+        : undefined;
+    return {
+      ...snapshotFromVerdict(v, { files, mergeCommitSha, now: input.now }),
+      ...(actionsBlocked ? { actionsBlocked } : {}),
+    };
   } catch (error) {
     return { error: errorMessage(error) };
   }

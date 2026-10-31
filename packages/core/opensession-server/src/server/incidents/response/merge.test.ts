@@ -519,3 +519,54 @@ test("a PR file list at GitHub's cap is unreadable, never a short list", () => {
     MAX_PR_FILES - 1,
   );
 });
+
+test("a snapshot whose every check failed asks whether GitHub Actions ran at all", async () => {
+  const asked: unknown[] = [];
+  const failing = [
+    {
+      ...check("test"),
+      url: "https://github.com/acme/web/actions/runs/7/job/70",
+    },
+  ];
+  const { gh } = github({
+    verdict: async () =>
+      verdict({
+        checks: {
+          total: 1,
+          passing: [],
+          failing,
+          pending: [],
+          skipped: [],
+          missingRequired: [],
+        },
+      }),
+    actionsBlocked: async (ghRepo, checks) => {
+      asked.push([ghRepo, checks.map((c) => c.name)]);
+      return "the job was not started because the spending limit is reached";
+    },
+  });
+  const repos = { ghRepoOf: () => "acme/web" };
+  const url = "https://github.com/acme/web/pull/12";
+  expect(
+    await fetchPrSnapshot({ prUrl: url, repoId: "acme", now: 0 }, gh, repos),
+  ).toMatchObject({
+    failingChecks: ["test"],
+    actionsBlocked:
+      "the job was not started because the spending limit is reached",
+  });
+  expect(asked).toEqual([["acme/web", ["test"]]]);
+  // A check still running or passing: the code ran somewhere, nothing asked.
+  const ran = github({
+    verdict: async () => verdict(),
+    actionsBlocked: async () => {
+      throw new Error("not asked");
+    },
+  });
+  expect(
+    await fetchPrSnapshot(
+      { prUrl: url, repoId: "acme", now: 0 },
+      ran.gh,
+      repos,
+    ),
+  ).not.toHaveProperty("actionsBlocked");
+});

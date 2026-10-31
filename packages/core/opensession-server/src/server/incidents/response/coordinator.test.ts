@@ -12,7 +12,7 @@ import type {
   Signal,
   SignalEvaluation,
 } from "../../../shared/incidents";
-import type { FindingsSet } from "../../../shared/findings";
+import type { FindingBlock, FindingsSet } from "../../../shared/findings";
 import { roundReports } from "../../../shared/findings-status";
 import type { Automation } from "../../automations";
 import type { PrMergeVerdict } from "../../pr-merge-readiness";
@@ -232,6 +232,9 @@ type PrShape = {
   reviewDecision?: string;
   headSha?: string;
   pending?: string[];
+  failing?: string[];
+  /** GitHub Actions ran none of the failing checks, and why. */
+  actionsBlocked?: string;
 };
 
 function prVerdict(pr: PrShape, merged: boolean): PrMergeVerdict {
@@ -248,6 +251,7 @@ function prVerdict(pr: PrShape, merged: boolean): PrMergeVerdict {
     checks: {
       ...v.checks,
       pending: (pr.pending ?? []).map((name) => ({ name })),
+      failing: (pr.failing ?? []).map((name) => ({ name })),
     },
   } as PrMergeVerdict;
 }
@@ -334,7 +338,12 @@ async function world(
         return { sessionId: known, branch: works.get(known)?.branch ?? "" };
       const id = `child-${++next}`;
       requests.set(key, id);
-      works.set(id, { branch: `session-branch-${next}` });
+      // A session that continues another works on that session's branch.
+      works.set(id, {
+        branch: input.continueSessionId
+          ? (works.get(input.continueSessionId)?.branch ?? "")
+          : `session-branch-${next}`,
+      });
       live.set(id, { status: "running", costUsd: 0, tokens: 0 });
       bound.set(id, {
         connections: [...input.access.connections],
@@ -415,6 +424,7 @@ async function world(
     close: async (ghRepo: string, n: number) => {
       prCloses.push({ ghRepo, n });
     },
+    actionsBlocked: async () => pr.actionsBlocked,
   } as unknown as MergeGithub;
   const deps: Partial<CoordinatorDeps> = {
     now: () => clock,
@@ -1063,6 +1073,151 @@ async function storeInvestigatorSet(
     },
   }));
 }
+
+/** Stores the verifier's set for `round`, as show_findings would. */
+async function storeVerifierSet(
+  incidentId: string,
+  sessionId: string,
+  round: number,
+  blocks: FindingBlock[],
+): Promise<void> {
+  const set: FindingsSet = {
+    role: "verifier",
+    round,
+    attempt: 1,
+    sessionId,
+    source: "tool",
+    updatedAt: new Date(START).toISOString(),
+    calls: 1,
+    blocks,
+    notes: [],
+  };
+  await updateIncident(incidentId, (c) => ({
+    ...c,
+    response: {
+      ...c.response!,
+      findingSets: [...(c.response!.findingSets ?? []), set],
+    },
+  }));
+}
+
+const VERIFIER_BLOCKS: FindingBlock[] = [
+  {
+    id: "v-margin",
+    kind: "question",
+    size: "full",
+    text: "PR #469 is the better fix; 11-16 s calls still break the 10 s threshold",
+    wouldAnswer: "Which pull request goes out",
+  },
+  {
+    id: "v-covers",
+    kind: "hypothesis",
+    size: "full",
+    statement: "The threshold change misses the probe's own slow calls",
+    confidence: "medium",
+    evidence: [],
+    claims: [],
+  },
+];
+
+const NOT_CERTAIN_VERIFIER: VerifierReport = {
+  ...goodVerifier,
+  verdict: "not-certain",
+  reasons: [
+    "The checks never ran on the head commit",
+    "Calls of 11-16 s still flip the part",
+  ],
+  claims: [
+    {
+      text: "Upstream returns 403 to the default user agent",
+      status: "unverifiable",
+      evidence: "The logs from that hour are gone",
+    },
+  ],
+};
+
+function expectVerifierFindings(text: string): void {
+  expect(text).toContain("What the verifier found in round 1");
+  expect(text).toContain("- The checks never ran on the head commit");
+  expect(text).toContain("- Calls of 11-16 s still flip the part");
+  expect(text).toContain(
+    "- unverifiable: Upstream returns 403 to the default user agent · The logs from that hour are gone",
+  );
+  expect(text).toContain(
+    "- PR #469 is the better fix; 11-16 s calls still break the 10 s threshold (would answer: Which pull request goes out)",
+  );
+  expect(text).toContain(
+    "- The threshold change misses the probe's own slow calls",
+  );
+}
+
+test("an owner's send-back of an unproven fix carries the verifier's reasons, claim checks and questions", async () => {
+  const w = await world();
+  w.evaluate("sig-a", "ok");
+  w.deps.proof = async (input) => ({
+    round: input.round,
+    at: new Date(w.clock).toISOString(),
+    baseline: {
+      samples: [1, 2, 3].map(() => ({
+        at: new Date(w.clock).toISOString(),
+        result: "ok" as const,
+        detail: "200",
+      })),
+      verdict: "passes",
+    },
+    candidate: { kind: "after-deploy", samples: [], verdict: "after-deploy" },
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      check: {
+        kind: "after-deploy",
+        reason: "A request now can't tell before from after",
+      },
+    }),
+    { prUrl: "https://github.com/acme/web/pull/12" },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  await storeVerifierSet(w.incident.id, "child-2", 1, VERIFIER_BLOCKS);
+  w.finish("child-2", fence(NOT_CERTAIN_VERIFIER));
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.needsYou?.kind).toBe(
+    "unproven",
+  );
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "The token is in the keychain",
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  const message = w.sends.at(-1)?.message ?? "";
+  expect(w.sends.at(-1)?.id).toBe("child-1");
+  expect(message).toContain("The token is in the keychain");
+  expectVerifierFindings(message);
+  expect(message).toContain("say in your report which fix you chose and why");
+});
+
+test("a verifier's send-back to a fresh investigator carries its claim checks and questions", async () => {
+  const { w, granted } = await widenableWorld();
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish("child-1", fence(investigatorReport), {
+    prUrl: "https://github.com/acme/web/pull/12",
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  await storeVerifierSet(w.incident.id, "child-2", 1, VERIFIER_BLOCKS);
+  // A connection lent meanwhile: round 2 goes to a fresh session.
+  granted.connections = ["logs"];
+  w.finish("child-2", fence(NOT_CERTAIN_VERIFIER));
+  await advanceIncident(w.incident.id, w.deps);
+  await __waitForCoordinatorForTest();
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2 });
+  expectVerifierFindings(fresh.prompt);
+});
 
 test("round 2's investigator gets round 1's set; the verifier gets the round's investigator set", async () => {
   const { w, granted } = await widenableWorld();
@@ -1973,16 +2128,44 @@ test("send it back with the investigator's access widened starts a fresh investi
   });
   expect(i?.response?.sendBack).toBeUndefined();
   expect(i?.response?.ledger.at(-1)?.detail).toContain("(logs and tickets)");
-  // It starts from round 1's work, and round 1's pull request is closed.
+  // It works on round 1's branch, and round 1's pull request stays open
+  // with its reviews: the fresh session pushes to it.
+  expect(fresh.continueSessionId).toBe("child-1");
+  expect(fresh.baseSessionId).toBeUndefined();
+  expect(fresh.prompt).toContain(
+    "This session works on round 1's branch session-branch-1, and its pull request stays open",
+  );
+  expect(fresh.prompt).not.toContain("into your own pull request");
+  expect(runs.at(-1)).toMatchObject({
+    prUrl: "https://github.com/acme/web/pull/12",
+  });
+  expect(i?.response?.ledger.at(-1)?.detail).toContain(
+    "It continues on session-branch-1 and pull request #12",
+  );
+  expect(w.prComments).toEqual([]);
+  expect(w.prCloses).toEqual([]);
+});
+
+test("a fresh investigator whose predecessor's pull request is closed starts its own, as before", async () => {
+  const { w, granted } = await widenableWorld();
+  granted.connections = ["sentry"];
+  await w.toCertain();
+  w.deps.prState = () => "CLOSED";
+  granted.connections = ["sentry", "logs"];
+  await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps);
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Check the search logs too",
+    w.deps,
+  );
+  await __waitForCoordinatorForTest();
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
+  expect(fresh.continueSessionId).toBeUndefined();
   expect(fresh.baseSessionId).toBe("child-1");
-  expect(w.prComments).toEqual([
-    {
-      ghRepo: "acme/web",
-      n: 12,
-      body: expect.stringContaining("fresh session on `session-branch-3`"),
-    },
-  ]);
-  expect(w.prCloses).toEqual([{ ghRepo: "acme/web", n: 12 }]);
+  expect(fresh.prompt).toContain("into your own pull request");
 });
 
 test("send it back from a branch another incident uses: a fresh session carries the commit", async () => {
@@ -3231,7 +3414,7 @@ test("a run that failed to start still counts the turns a person ran in it", asy
   expect(i?.response?.costUsd).toBe(1.47);
 });
 
-test("a fresh investigator whose predecessor could not push starts clean and carries its commits", async () => {
+test("a fresh investigator whose predecessor could not push continues its branch and brings the commits over", async () => {
   const w = await sentBackWidened([], ["logs"], {
     beforeSendBack: (world) => {
       world.unstackable.add("child-1");
@@ -3246,14 +3429,17 @@ test("a fresh investigator whose predecessor could not push starts clean and car
   });
   const fresh = w.spawns.at(-1)!;
   expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
-  // Never stacked on a branch the controller would refuse.
+  // Never stacked on a branch the controller would refuse; it takes the
+  // branch and its open pull request over instead.
   expect(fresh.baseSessionId).toBeUndefined();
+  expect(fresh.continueSessionId).toBe("child-1");
   expect(fresh.prompt).toContain(
     "git fetch origin refs/opensession/checkpoints/child-1",
   );
   expect(fresh.prompt).toContain(
-    "git cherry-pick origin/main..ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+    "git merge --ff-only ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
   );
+  expect(w.prCloses).toEqual([]);
   expect(fresh.prompt).not.toContain("another incident");
   expect(w.retired).toEqual(["child-1"]);
   const i = await getIncident(w.incident.id);
@@ -3577,7 +3763,7 @@ test("a fix proven only after release reaches the verifier; unproven, the owner 
   expect(i?.response?.next).toMatchObject({
     kind: "needs-you",
     needsYou: "unproven",
-    options: ["approve", "send-back", "close"],
+    options: ["approve", "release-watch", "send-back", "resolve", "close"],
   });
   expect(i?.response?.next).not.toMatchObject({
     reason: expect.stringContaining("problem stopped"),
@@ -3587,6 +3773,213 @@ test("a fix proven only after release reaches the verifier; unproven, the owner 
   ).toMatchObject({ state: "deploying" });
   await advanceIncident(w.incident.id, w.deps);
   expect(w.merges).toEqual([{ ghRepo: "acme/web", n: 12, sha: "abc1234" }]);
+});
+
+test("checks GitHub Actions never ran raise a setup problem instead of a verifier, and the work resumes when they run", async () => {
+  const blocked =
+    "the job was not started because recent account payments have failed";
+  const w = await world({ pr: { failing: ["ci"], actionsBlocked: blocked } });
+  await w.runToVerifier();
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.needsYou).toMatchObject({
+    kind: "setup",
+    reason: `GitHub Actions can't run for acme/web (${blocked})`,
+    resumePhase: "proving",
+  });
+  // No verifier was spent on it.
+  expect(w.spawns.map((s) => s.role)).toEqual(["investigator"]);
+  // Still refused ten minutes later: nothing changes, nobody is asked again.
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.needsYou?.since).toBe(new Date(START).toISOString());
+  expect(w.spawns.map((s) => s.role)).toEqual(["investigator"]);
+  // The owner fixed billing and the checks ran.
+  w.setPr({});
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("fix-ready");
+  expect(w.spawns.map((s) => s.role)).toEqual(["investigator", "verifier"]);
+});
+
+test("the fix loop records the failed check the incident opened on", async () => {
+  const w = await world();
+  const at = (ms: number) => new Date(START + ms).toISOString();
+  w.deps.recent = () => [
+    { at: at(-120_000), result: "fail", detail: "search: slow" },
+    { at: at(-60_000), result: "fail", detail: "search: slow" },
+    { at: at(60_000), result: "fail", detail: "betterfare: down" },
+  ];
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.openedOn).toEqual({
+    at: at(-60_000),
+    detail: "search: slow",
+  });
+});
+
+/** An after-release fix the verifier could not prove: the unproven card. */
+async function toUnproven(w: Awaited<ReturnType<typeof world>>) {
+  w.evaluate("sig-a", "ok");
+  w.deps.proof = async (input) => ({
+    round: input.round,
+    at: new Date(w.clock).toISOString(),
+    baseline: {
+      samples: [1, 2, 3].map(() => ({
+        at: new Date(w.clock).toISOString(),
+        result: "ok" as const,
+        detail: "200",
+      })),
+      verdict: "passes",
+    },
+    candidate: { kind: "after-deploy", samples: [], verdict: "after-deploy" },
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      check: {
+        kind: "after-deploy",
+        reason: "A request now can't tell before from after",
+      },
+    }),
+    { prUrl: "https://github.com/acme/web/pull/12" },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-2",
+    fence({
+      ...goodVerifier,
+      verdict: "not-certain",
+      reasons: ["Only the release can show it"],
+      proofAccepted: false,
+    }),
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.needsYou?.kind).toBe(
+    "unproven",
+  );
+}
+
+test("I'll release it myself: Sessions waits for the merge, then watches the signal and resolves", async () => {
+  const w = await world();
+  await toUnproven(w);
+  let state: "OPEN" | "MERGED" | "CLOSED" = "OPEN";
+  w.deps.prState = (_project, url) =>
+    url === "https://github.com/acme/web/pull/12" ? state : undefined;
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "release-watch",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toMatchObject({ state: "deploying" });
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  // Nothing is merged or run: the owner releases it.
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+  expect(i?.state).toBe("deploying");
+  expect(i?.response?.next).toEqual({
+    kind: "working",
+    detail: "Waiting for Bo to merge and release PR #12",
+  });
+  state = "MERGED";
+  w.clock += 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("watching");
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+  w.clock += 60_000;
+  w.evaluate("sig-a", "ok");
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("resolved");
+});
+
+test("a waiting card whose pull request can't be read again waits the full interval before the next read", async () => {
+  const w = await world({ pr: { failing: ["ci"] } });
+  await toUnproven(w);
+  expect((await getIncident(w.incident.id))?.response?.next).toMatchObject({
+    needsYou: "unproven",
+    reason: expect.stringContaining(
+      "Deploy the fix isn't offered: check ci fails",
+    ),
+  });
+  let reads = 0;
+  const github = w.deps.github!;
+  w.deps.github = {
+    ...github,
+    verdict: async () => {
+      reads++;
+      throw new Error("GitHub is down");
+    },
+  };
+  w.clock += 700_000;
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  w.clock += 5_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(reads).toBe(1);
+  const i = await getIncident(w.incident.id);
+  // The card stays as it was.
+  expect(i?.response?.needsYou?.kind).toBe("unproven");
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(reads).toBe(2);
+});
+
+test("I'll release it myself: a fix still failing after the watch comes back to the owner, never rolled back", async () => {
+  const w = await world();
+  await toUnproven(w);
+  w.deps.prState = () => "MERGED";
+  w.clock += 60_000;
+  await applyOwnerDecision(
+    w.incident.id,
+    "release-watch",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("watching");
+  w.evaluate("sig-a", "failing");
+  w.clock += 3_600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.needsYou?.reason).toContain(
+    "Search is still failing after PR #12 was merged",
+  );
+  expect(w.actions).toEqual([]);
+});
+
+test("I'll release it myself: a pull request closed without merging comes back to the owner", async () => {
+  const w = await world();
+  await toUnproven(w);
+  w.deps.prState = () => "CLOSED";
+  await applyOwnerDecision(
+    w.incident.id,
+    "release-watch",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.needsYou).toMatchObject({
+    kind: "merge",
+    reason: "PR #12 was closed without being merged",
+  });
 });
 
 test("a proof that stopped is measured again when the signal fails again, instead of saying it stopped", async () => {
