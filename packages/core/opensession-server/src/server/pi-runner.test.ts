@@ -2304,9 +2304,13 @@ describe("runPi pi/anthropic account walk (fake engine, no network)", () => {
     expect(first.errors).toHaveLength(0);
     expect(fake.usedTokens).toEqual([a.token, b.token]);
     // Plan headroom does not bring it back: it waits for paid credits,
-    // at the latest the next billing month.
+    // at the latest the next billing month (start of the next UTC month,
+    // which is under a day away on a month's last day).
     const until = sidelines()[`${a.id}#credits`];
-    expect(until).toBeGreaterThan(started + 24 * 60 * 60_000 - 1);
+    const startedAt = new Date(started);
+    expect(until).toBe(
+      Date.UTC(startedAt.getUTCFullYear(), startedAt.getUTCMonth() + 1, 1),
+    );
     // New turns, on any key, never try it again.
     for (const turn of [2, 3]) {
       const { errors } = await runNativeTurn(fake.sdk, {
