@@ -33,11 +33,15 @@ export interface WorkflowRun {
 }
 
 export interface WorkflowRunJob {
+  /** The job's id, which is also its check run's id. */
+  id?: number;
   name: string;
   status: string;
   conclusion: string;
   /** Names of the steps that failed, in run order. */
   failedSteps: string[];
+  /** How many steps the job has; 0 when it never started. */
+  steps?: number;
 }
 
 /** A read GitHub answered with 404: the workflow, run, or repository does
@@ -165,11 +169,78 @@ export async function listWorkflowRunJobs(
   );
   const jobs = Array.isArray(body?.jobs) ? body.jobs : [];
   return jobs.map((job: any) => ({
+    id: Number(job?.id) || 0,
     name: String(job?.name || "job"),
     status: String(job?.status || ""),
     conclusion: String(job?.conclusion || ""),
     failedSteps: (Array.isArray(job?.steps) ? job.steps : [])
       .filter((step: any) => FAILED_CONCLUSIONS.has(String(step?.conclusion)))
       .map((step: any) => String(step?.name || "step")),
+    steps: Array.isArray(job?.steps) ? job.steps.length : 0,
   }));
+}
+
+/** The messages of a check run's annotations (an Actions job's id is its
+ *  check run's id): where GitHub says why a job was not started. */
+export async function listCheckRunAnnotations(
+  repo: string,
+  checkRunId: number,
+): Promise<string[]> {
+  const body = await githubRest(
+    repo,
+    `/repos/${repo}/check-runs/${checkRunId}/annotations?per_page=20`,
+    "incident:check-run-annotations",
+  );
+  return (Array.isArray(body) ? body : [])
+    .map((a: any) => String(a?.message || ""))
+    .filter(Boolean);
+}
+
+const ACTIONS_JOB_URL = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
+/** At most this many workflow runs are read for one pull request. */
+const ACTIONS_RUNS_MAX = 5;
+
+/**
+ * Why GitHub Actions ran none of a pull request's failing checks, or
+ * undefined when it can't tell or the code ran. Every check must be an
+ * Actions job that stopped before its first step (GitHub refused it: a
+ * billing or spending limit, a disabled workflow); the reason is the
+ * first job's annotation ("The job was not started because…"), else a
+ * plain sentence. A failure of the code itself always has a step.
+ */
+export async function actionsNotRunning(
+  repo: string,
+  checks: ReadonlyArray<{ name: string; url?: string }>,
+  deps: {
+    jobs: (repo: string, runId: number) => Promise<WorkflowRunJob[]>;
+    annotations: (repo: string, checkRunId: number) => Promise<string[]>;
+  } = { jobs: listWorkflowRunJobs, annotations: listCheckRunAnnotations },
+): Promise<string | undefined> {
+  if (!checks.length) return undefined;
+  const jobRuns = new Map<number, number>();
+  for (const check of checks) {
+    const m = ACTIONS_JOB_URL.exec(check.url ?? "");
+    if (!m) return undefined;
+    jobRuns.set(Number(m[2]), Number(m[1]));
+  }
+  const runs = [...new Set(jobRuns.values())];
+  if (runs.length > ACTIONS_RUNS_MAX) return undefined;
+  const jobs = new Map<number, WorkflowRunJob>();
+  for (const run of runs)
+    for (const job of await deps.jobs(repo, run))
+      if (job.id) jobs.set(job.id, job);
+  for (const id of jobRuns.keys())
+    if ((jobs.get(id)?.steps ?? 1) > 0) return undefined;
+  const first = jobRuns.keys().next().value!;
+  const notes = await deps.annotations(repo, first).catch(() => []);
+  const note = notes.find((n) =>
+    /not (been )?started|spending limit|billing|payment/i.test(n),
+  );
+  if (!note) return "every job stopped before its first step";
+  const sentence = note
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(/(?<=\.)\s/)[0]!;
+  const text = sentence.replace(/\.$/, "").slice(0, 200);
+  return text.charAt(0).toLowerCase() + text.slice(1);
 }

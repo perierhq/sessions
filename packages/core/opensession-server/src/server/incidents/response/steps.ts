@@ -36,6 +36,9 @@ export const PR_CHECKS_WAIT_MS = 1_200_000;
 /** How often a pull request the owner releases by hand is read from GitHub
  *  when the PR cache doesn't know it. */
 export const HAND_RELEASE_REFRESH_MS = 600_000;
+/** How often a pull request whose checks GitHub Actions did not run is
+ *  read again while the owner fixes it. */
+export const ACTIONS_RECHECK_MS = 600_000;
 /** A release this close before the incident opened is rolled back first. */
 export const ROLLBACK_FIRST_WINDOW_MS = 1_800_000;
 /** Rollback-first's parallel investigator, refused by the access gate for a

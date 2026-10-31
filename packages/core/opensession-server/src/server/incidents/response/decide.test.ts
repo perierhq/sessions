@@ -3300,3 +3300,85 @@ test("Deploy the fix is offered on an unproven card only when it can work; else 
       "The fix can only be proven after release: Only the release can show it. Deploy the fix isn't offered: no deploy action is declared for acme.",
   });
 });
+
+test("checks GitHub Actions never ran: a setup problem before any verifier, resumed once they run", () => {
+  const blocked =
+    "the job was not started because recent account payments have failed";
+  const provingWith = (pr: Partial<PrSnapshot>) =>
+    view({
+      incident: incident(
+        "fix-ready",
+        response({
+          phase: "proving",
+          candidate: candidate({ pr: prSnapshot(pr) }),
+          proof: proofResult({
+            round: 1,
+            baseline: "fails",
+            candidate: "passes",
+          }),
+          agents: [run("investigator", { round: 1, status: "done" })],
+        }),
+      ),
+    });
+  expect(
+    decideNextStep(
+      provingWith({ failingChecks: ["test"], actionsBlocked: blocked }),
+    ),
+  ).toEqual({
+    step: "needs-you",
+    kind: "setup",
+    reason: `GitHub Actions can't run for acme/web (${blocked})`,
+  });
+  // Red for the code's own reasons: the verifier goes ahead as before.
+  expect(
+    decideNextStep(provingWith({ failingChecks: ["test"] })),
+  ).toMatchObject({ step: "transition", phase: "verifying" });
+
+  // The card waits; the pull request is read again now and then.
+  const waiting = (pr: Partial<PrSnapshot>) =>
+    view({
+      incident: incident(
+        "needs-you",
+        response({
+          phase: "needs-you",
+          candidate: candidate({ pr: prSnapshot(pr) }),
+          proof: proofResult({
+            round: 1,
+            baseline: "fails",
+            candidate: "passes",
+          }),
+          agents: [run("investigator", { round: 1, status: "done" })],
+          needsYou: {
+            kind: "setup",
+            reason: `GitHub Actions can't run for acme/web (${blocked})`,
+            since: iso(-60_000),
+            resumePhase: "proving",
+          },
+        }),
+        { resumeState: "fix-ready" },
+      ),
+      setup: { ready: true },
+    });
+  expect(
+    decideNextStep(
+      waiting({ failingChecks: ["test"], actionsBlocked: blocked }),
+    ),
+  ).toEqual({ step: "none" });
+  expect(
+    decideNextStep(
+      waiting({
+        failingChecks: ["test"],
+        actionsBlocked: blocked,
+        fetchedAt: iso(-700_000),
+      }),
+    ),
+  ).toEqual({ step: "fetch-pr", purpose: "verify" });
+  // The checks ran: back to proving, where the verifier starts.
+  expect(decideNextStep(waiting({ failingChecks: [] }))).toMatchObject({
+    step: "transition",
+    to: "fix-ready",
+    phase: "proving",
+    detail: "GitHub Actions runs for acme/web again",
+    patch: { needsYou: undefined },
+  });
+});

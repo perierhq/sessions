@@ -52,6 +52,7 @@ import { isSandboxImageBuildingError } from "../../sandbox/reliability";
 import {
   AGENT_MAX_MS,
   FINAL_TEXT_GRACE_MS,
+  ACTIONS_RECHECK_MS,
   HAND_RELEASE_REFRESH_MS,
   PR_CHECKS_WAIT_MS,
   PR_REFRESH_MS,
@@ -559,6 +560,36 @@ export function recoveredOnItsOwn(
   };
 }
 
+const ACTIONS_DOWN = "GitHub Actions can't run for";
+
+/**
+ * A setup card for checks GitHub Actions never ran (rule 20b): the pull
+ * request is read again every ACTIONS_RECHECK_MS, and once its checks
+ * run the work goes on where it stopped.
+ */
+function actionsDownWait(view: ResponseView): ResponseStep | undefined {
+  const r = view.incident.response;
+  const ny = r?.needsYou;
+  const pr = r?.candidate?.pr;
+  if (
+    ny?.kind !== "setup" ||
+    ny.resumePhase !== "proving" ||
+    !ny.reason.startsWith(ACTIONS_DOWN) ||
+    !pr
+  )
+    return undefined;
+  if (!(view.now - Date.parse(pr.fetchedAt) < ACTIONS_RECHECK_MS))
+    return { step: "fetch-pr", purpose: "verify" };
+  if (pr.actionsBlocked) return NONE;
+  return {
+    step: "transition",
+    to: view.incident.resumeState ?? "fix-ready",
+    phase: "proving",
+    detail: `GitHub Actions runs for ${pr.ghRepo} again`,
+    patch: { needsYou: undefined },
+  };
+}
+
 /** A setup problem whose readiness changed: Try again and the place to fix
  *  it follow what the agents would meet now. */
 function setupChanged(view: ResponseView): ResponseStep | undefined {
@@ -735,7 +766,9 @@ function guards(view: ResponseView): ResponseStep | undefined {
         detail: "Question answered",
         patch: { needsYou: undefined },
       };
-    return setupChanged(view) ?? staleWaiting(view) ?? NONE;
+    return (
+      actionsDownWait(view) ?? setupChanged(view) ?? staleWaiting(view) ?? NONE
+    );
   }
   if (!r) return undefined;
 
@@ -1279,6 +1312,16 @@ function proving(view: ResponseView): ResponseStep {
     };
   if (!r.candidate?.pr || stale(r.candidate.pr.fetchedAt, view.now))
     return { step: "fetch-pr", purpose: "verify" };
+  // 20b. GitHub Actions ran none of the checks (a billing or spending
+  // limit, say): no verifier can be certain and no merge can pass until
+  // the owner fixes it, so they are asked once instead.
+  const blocked = r.candidate.pr.actionsBlocked;
+  if (blocked)
+    return {
+      step: "needs-you",
+      kind: "setup",
+      reason: `${ACTIONS_DOWN} ${r.candidate.pr.ghRepo} (${blocked})`,
+    };
   if (deferred)
     return {
       step: "transition",

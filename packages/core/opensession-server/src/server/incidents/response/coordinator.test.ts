@@ -232,6 +232,9 @@ type PrShape = {
   reviewDecision?: string;
   headSha?: string;
   pending?: string[];
+  failing?: string[];
+  /** GitHub Actions ran none of the failing checks, and why. */
+  actionsBlocked?: string;
 };
 
 function prVerdict(pr: PrShape, merged: boolean): PrMergeVerdict {
@@ -248,6 +251,7 @@ function prVerdict(pr: PrShape, merged: boolean): PrMergeVerdict {
     checks: {
       ...v.checks,
       pending: (pr.pending ?? []).map((name) => ({ name })),
+      failing: (pr.failing ?? []).map((name) => ({ name })),
     },
   } as PrMergeVerdict;
 }
@@ -420,6 +424,7 @@ async function world(
     close: async (ghRepo: string, n: number) => {
       prCloses.push({ ghRepo, n });
     },
+    actionsBlocked: async () => pr.actionsBlocked,
   } as unknown as MergeGithub;
   const deps: Partial<CoordinatorDeps> = {
     now: () => clock,
@@ -3768,6 +3773,35 @@ test("a fix proven only after release reaches the verifier; unproven, the owner 
   ).toMatchObject({ state: "deploying" });
   await advanceIncident(w.incident.id, w.deps);
   expect(w.merges).toEqual([{ ghRepo: "acme/web", n: 12, sha: "abc1234" }]);
+});
+
+test("checks GitHub Actions never ran raise a setup problem instead of a verifier, and the work resumes when they run", async () => {
+  const blocked =
+    "the job was not started because recent account payments have failed";
+  const w = await world({ pr: { failing: ["ci"], actionsBlocked: blocked } });
+  await w.runToVerifier();
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.needsYou).toMatchObject({
+    kind: "setup",
+    reason: `GitHub Actions can't run for acme/web (${blocked})`,
+    resumePhase: "proving",
+  });
+  // No verifier was spent on it.
+  expect(w.spawns.map((s) => s.role)).toEqual(["investigator"]);
+  // Still refused ten minutes later: nothing changes, nobody is asked again.
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.needsYou?.since).toBe(new Date(START).toISOString());
+  expect(w.spawns.map((s) => s.role)).toEqual(["investigator"]);
+  // The owner fixed billing and the checks ran.
+  w.setPr({});
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("fix-ready");
+  expect(w.spawns.map((s) => s.role)).toEqual(["investigator", "verifier"]);
 });
 
 /** An after-release fix the verifier could not prove: the unproven card. */

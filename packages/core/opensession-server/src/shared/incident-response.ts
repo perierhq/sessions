@@ -463,6 +463,9 @@ export interface PrSnapshot {
   /** The base branch's rules could not be read, so required checks and
    *  reviews are unknown and Sessions does not merge. */
   rulesUnreadable?: true;
+  /** Every check failed because GitHub Actions did not run it (a billing
+   *  or spending limit, say): why, as GitHub put it. */
+  actionsBlocked?: string;
   fetchedAt: string;
 }
 
