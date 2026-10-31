@@ -380,6 +380,9 @@ export interface EarlierRound {
   /** The fresh session starts clean and brings the earlier round's commits
    *  over instead of building on its branch (see CarriedWork). */
   carry?: CarriedWork;
+  /** The fresh session works on the earlier round's branch itself, and the
+   *  earlier round's pull request stays open. */
+  continues?: { branch: string };
 }
 
 /**
@@ -436,6 +439,29 @@ function carryLines(
   ];
 }
 
+/** A fresh session on the earlier round's own branch: its pull request
+ *  goes on. Work a checkpoint holds that the branch does not is brought
+ *  over. */
+function continueLines(
+  branch: string,
+  carry: CarriedWork | undefined,
+  round: number,
+): string[] {
+  const out = [
+    `This session works on round ${round}'s branch ${branch}, and its pull request stays open: commit and push there, and don't open another pull request.`,
+  ];
+  const checkpoint = carry?.checkpoint;
+  if (checkpoint)
+    out.push(
+      `Round ${round} may have left work that is not pushed. Bring it over:`,
+      `- git fetch origin ${checkpoint.ref}`,
+      `- git merge --ff-only ${checkpoint.head} (round ${round}'s last commit)`,
+      `- git diff ${checkpoint.head} FETCH_HEAD shows what round ${round} left uncommitted; apply what this incident needs.`,
+    );
+  out.push("");
+  return out;
+}
+
 function earlierRoundLines(
   earlier: EarlierRound,
   round: number,
@@ -464,13 +490,25 @@ function earlierRoundLines(
     ];
     out.push(...dataBlock(`What round ${earlier.round} found`, lines), "");
   }
-  if (earlier.carry)
+  if (earlier.continues)
+    out.push(
+      ...continueLines(earlier.continues.branch, earlier.carry, earlier.round),
+    );
+  else if (earlier.carry)
     out.push(...carryLines(earlier.carry, earlier.round, baseBranch));
   // A pull request on a shared branch is the other incident's.
   const shared =
     earlier.carry &&
     (earlier.carry.reason ?? "shared-branch") === "shared-branch";
-  if (earlier.prUrl && !shared)
+  if (earlier.prUrl && earlier.continues)
+    out.push(
+      ...dataBlock(`Round ${earlier.round}'s pull request`, [
+        dataText(earlier.prUrl, 200),
+      ]),
+      "It is this session's pull request now. Update its fix, note and runbook instead of starting over, unless the verifier's findings or an open pull request show a better fix; then say in your report which fix you chose and why.",
+      "",
+    );
+  else if (earlier.prUrl && !shared)
     out.push(
       ...dataBlock(`Round ${earlier.round}'s pull request`, [
         dataText(earlier.prUrl, 200),

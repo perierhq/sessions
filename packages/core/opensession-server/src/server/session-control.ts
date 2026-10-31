@@ -103,6 +103,9 @@ export interface CreateSessionOpts {
   createdByLogin?: string;
   /** Branch for a code-mode worktree session. Ignored for ask mode. */
   branch?: string;
+  /** `branch` exists already (on origin or here): the worktree checks it out
+   *  as it is instead of creating it. */
+  existingBranch?: boolean;
   /** Committed ref the new isolated branch starts from. Internal callers must
    * validate access and existence before passing it. */
   baseRef?: string;

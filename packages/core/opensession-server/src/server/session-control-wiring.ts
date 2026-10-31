@@ -702,6 +702,7 @@ registerSessionControl({
       prompt,
       title: titleInput,
       branch,
+      existingBranch,
       baseRef,
       stackedOnBranch,
       repo: repoInput,
@@ -1130,6 +1131,7 @@ registerSessionControl({
             worktreePath: plannedWorktreePath,
             baseBranch: baseRef,
             isolated: isolatedWorktree === true,
+            ...(existingBranch ? { existingBranch: true } : {}),
             credentialPrincipal: githubCredential?.principal,
           });
         }
@@ -1441,7 +1443,7 @@ ${createMentionsNote}`;
         ? { repo: repo.id, branch: stackedOnBranch }
         : undefined,
       needsWorktree: !!materializeWorktree,
-      worktreeKind: "new",
+      worktreeKind: existingBranch ? "existing" : "new",
       worktreeIsolated: isolatedWorktree === true,
       materializeWorktree,
       fork: fork?.canFork

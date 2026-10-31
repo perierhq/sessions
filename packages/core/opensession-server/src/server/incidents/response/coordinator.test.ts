@@ -334,7 +334,12 @@ async function world(
         return { sessionId: known, branch: works.get(known)?.branch ?? "" };
       const id = `child-${++next}`;
       requests.set(key, id);
-      works.set(id, { branch: `session-branch-${next}` });
+      // A session that continues another works on that session's branch.
+      works.set(id, {
+        branch: input.continueSessionId
+          ? (works.get(input.continueSessionId)?.branch ?? "")
+          : `session-branch-${next}`,
+      });
       live.set(id, { status: "running", costUsd: 0, tokens: 0 });
       bound.set(id, {
         connections: [...input.access.connections],
@@ -2118,16 +2123,44 @@ test("send it back with the investigator's access widened starts a fresh investi
   });
   expect(i?.response?.sendBack).toBeUndefined();
   expect(i?.response?.ledger.at(-1)?.detail).toContain("(logs and tickets)");
-  // It starts from round 1's work, and round 1's pull request is closed.
+  // It works on round 1's branch, and round 1's pull request stays open
+  // with its reviews: the fresh session pushes to it.
+  expect(fresh.continueSessionId).toBe("child-1");
+  expect(fresh.baseSessionId).toBeUndefined();
+  expect(fresh.prompt).toContain(
+    "This session works on round 1's branch session-branch-1, and its pull request stays open",
+  );
+  expect(fresh.prompt).not.toContain("into your own pull request");
+  expect(runs.at(-1)).toMatchObject({
+    prUrl: "https://github.com/acme/web/pull/12",
+  });
+  expect(i?.response?.ledger.at(-1)?.detail).toContain(
+    "It continues on session-branch-1 and pull request #12",
+  );
+  expect(w.prComments).toEqual([]);
+  expect(w.prCloses).toEqual([]);
+});
+
+test("a fresh investigator whose predecessor's pull request is closed starts its own, as before", async () => {
+  const { w, granted } = await widenableWorld();
+  granted.connections = ["sentry"];
+  await w.toCertain();
+  w.deps.prState = () => "CLOSED";
+  granted.connections = ["sentry", "logs"];
+  await applyOwnerDecision(w.incident.id, "stop", "Bo", undefined, w.deps);
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Check the search logs too",
+    w.deps,
+  );
+  await __waitForCoordinatorForTest();
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
+  expect(fresh.continueSessionId).toBeUndefined();
   expect(fresh.baseSessionId).toBe("child-1");
-  expect(w.prComments).toEqual([
-    {
-      ghRepo: "acme/web",
-      n: 12,
-      body: expect.stringContaining("fresh session on `session-branch-3`"),
-    },
-  ]);
-  expect(w.prCloses).toEqual([{ ghRepo: "acme/web", n: 12 }]);
+  expect(fresh.prompt).toContain("into your own pull request");
 });
 
 test("send it back from a branch another incident uses: a fresh session carries the commit", async () => {
@@ -3376,7 +3409,7 @@ test("a run that failed to start still counts the turns a person ran in it", asy
   expect(i?.response?.costUsd).toBe(1.47);
 });
 
-test("a fresh investigator whose predecessor could not push starts clean and carries its commits", async () => {
+test("a fresh investigator whose predecessor could not push continues its branch and brings the commits over", async () => {
   const w = await sentBackWidened([], ["logs"], {
     beforeSendBack: (world) => {
       world.unstackable.add("child-1");
@@ -3391,14 +3424,17 @@ test("a fresh investigator whose predecessor could not push starts clean and car
   });
   const fresh = w.spawns.at(-1)!;
   expect(fresh).toMatchObject({ role: "investigator", round: 2, attempt: 2 });
-  // Never stacked on a branch the controller would refuse.
+  // Never stacked on a branch the controller would refuse; it takes the
+  // branch and its open pull request over instead.
   expect(fresh.baseSessionId).toBeUndefined();
+  expect(fresh.continueSessionId).toBe("child-1");
   expect(fresh.prompt).toContain(
     "git fetch origin refs/opensession/checkpoints/child-1",
   );
   expect(fresh.prompt).toContain(
-    "git cherry-pick origin/main..ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
+    "git merge --ff-only ae4a79ccb5b4ed8af103ed3b0dccd047a6a8b5e5",
   );
+  expect(w.prCloses).toEqual([]);
   expect(fresh.prompt).not.toContain("another incident");
   expect(w.retired).toEqual(["child-1"]);
   const i = await getIncident(w.incident.id);

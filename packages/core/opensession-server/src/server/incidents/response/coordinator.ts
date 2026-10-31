@@ -1007,6 +1007,49 @@ interface Supersede {
   widened: AccessWidening[];
   carry?: CarriedWork;
   moved?: boolean;
+  /** The fresh session works on the run's branch itself, and the run's
+   *  pull request goes on with it (see continuation). */
+  continues?: Continuation;
+}
+
+/** The branch and open pull request a fresh session takes over. */
+interface Continuation {
+  branch: string;
+  prUrl: string;
+  number: number;
+}
+
+/**
+ * The run's branch and pull request when a fresh session can take them
+ * over: the pull request is in the project's repository and not merged or
+ * closed as far as the PR cache knows. Closing it and opening a new one
+ * lost its reviews and history. Undefined when the branch is another
+ * incident's too (the caller checks) or there is no such pull request:
+ * the fresh session then starts a branch of its own, as before.
+ */
+async function continuation(
+  view: ResponseView,
+  run: AgentRun,
+  agents: IncidentAgents,
+  d: CoordinatorDeps,
+): Promise<Continuation | undefined> {
+  if (run.role !== "investigator") return undefined;
+  const prUrl = view.agents.get(run.sessionId)?.prUrl ?? run.prUrl;
+  const pr = prUrl ? parsePrUrl(prUrl) : null;
+  if (!prUrl || !pr) return undefined;
+  const own = d.ghRepoOf(view.incident.project);
+  if (!own || own.toLowerCase() !== pr.ghRepo.toLowerCase()) return undefined;
+  let state: ReturnType<CoordinatorDeps["prState"]>;
+  try {
+    state = d.prState(view.incident.project, prUrl);
+  } catch {
+    return undefined;
+  }
+  if (state === "MERGED" || state === "CLOSED") return undefined;
+  const branch = (await agents.work(run.sessionId))?.branch;
+  if (!branch || branch === d.defaultBranch(view.incident.project))
+    return undefined;
+  return { branch, prUrl, number: pr.number };
 }
 
 /** A carry for a branch another incident uses (#83's original case). */
@@ -1151,6 +1194,9 @@ async function startAgent(
                 : {}),
               ...(earlier.prUrl ? { prUrl: earlier.prUrl } : {}),
               ...(supersede?.carry ? { carry: supersede.carry } : {}),
+              ...(supersede?.continues
+                ? { continues: { branch: supersede.continues.branch } }
+                : {}),
             },
           }
         : r.sendBack
@@ -1208,9 +1254,11 @@ async function startAgent(
       // clean and brings the commits over (its brief says how).
       ...(role === "verifier" && investigator
         ? { baseSessionId: investigator.sessionId }
-        : supersede && !supersede.carry
-          ? { baseSessionId: supersede.run.sessionId }
-          : {}),
+        : supersede?.continues
+          ? { continueSessionId: supersede.run.sessionId }
+          : supersede && !supersede.carry
+            ? { baseSessionId: supersede.run.sessionId }
+            : {}),
       access,
       workspace,
     }));
@@ -1242,6 +1290,8 @@ async function startAgent(
       costUsd: 0,
       tokens: 0,
       reminded: false,
+      // It works on the pull request it took over.
+      ...(supersede?.continues ? { prUrl: supersede.continues.prUrl } : {}),
     };
     const fresh = `${roleLabel(role)} started in a fresh session on ${label}, round ${round}`;
     const started = !supersede
@@ -1253,6 +1303,11 @@ async function startAgent(
           : `${fresh}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
     const detail = [
       started,
+      ...(supersede?.continues
+        ? [
+            `It continues on ${supersede.continues.branch} and pull request #${supersede.continues.number}`,
+          ]
+        : []),
       ...unavailable.map((p) => `${p.connection} can't be used: ${p.reason}`),
     ].join(". ");
     const response = ledger(
@@ -1292,8 +1347,9 @@ async function startAgent(
   if (supersede) {
     const agents = await agentsFor(next, d);
     if (agents) await retire(agents, supersede.run.sessionId);
-    // A pull request on a shared branch is the other incident's: it stays.
-    if (!sharedCarry(supersede.carry))
+    // A pull request on a shared branch is the other incident's, and one
+    // the fresh session took over goes on: both stay.
+    if (!sharedCarry(supersede.carry) && !supersede.continues)
       await closeSupersededPr(
         view,
         supersede.run,
@@ -1643,6 +1699,9 @@ async function messageAgent(
           reason: moved ? "workspace" : "unpushed",
         };
       }
+      const continues = shared
+        ? undefined
+        : await continuation(view, run, agents, d);
       return startAgent(
         view,
         {
@@ -1657,6 +1716,7 @@ async function messageAgent(
           widened,
           ...(carry ? { carry } : {}),
           ...(moved ? { moved } : {}),
+          ...(continues ? { continues } : {}),
         },
       );
     }

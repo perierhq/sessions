@@ -207,6 +207,46 @@ describe("workflow durable sessions", () => {
     });
   });
 
+  test("continues another child's branch itself, even unpushed", async () => {
+    const h = harness({ pushed: (session) => session.id === "parent" });
+    const first = await h.controller.spawn(foundationOpts, "request-a");
+    const next = await h.controller.spawn(
+      {
+        prompt: "Take round 2 over",
+        repo: "renderer",
+        mode: "code",
+        workspace: {
+          type: "isolated-worktree",
+          continueSessionId: first.id,
+        },
+      },
+      "request-b",
+    );
+    expect(next.branch).toBe("compat/layout");
+    expect(h.creates[1]).toMatchObject({
+      branch: "compat/layout",
+      existingBranch: true,
+      isolatedWorktree: true,
+    });
+    expect(h.creates[1]?.baseRef).toBeUndefined();
+    expect(h.creates[1]?.stackedOnBranch).toBeUndefined();
+    await expect(
+      h.controller.spawn(
+        {
+          prompt: "Take it over on another branch",
+          repo: "renderer",
+          mode: "code",
+          branch: "compat/other",
+          workspace: {
+            type: "isolated-worktree",
+            continueSessionId: first.id,
+          },
+        },
+        "request-c",
+      ),
+    ).rejects.toThrow(/continueSessionId takes the other session's branch/);
+  });
+
   test("rejects unpushed, uncommitted and cross-repository base sessions clearly", async () => {
     const unpushed = harness({ pushed: (session) => session.id === "parent" });
     const base = await unpushed.controller.spawn(foundationOpts, "request-a");
