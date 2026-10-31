@@ -17,7 +17,9 @@ import type {
   ResponsePhase,
   SendBackReason,
   Verdict,
+  VerifierFindings,
 } from "../../../shared/incident-response";
+import { findingSetOf } from "../../../shared/findings";
 import { roundOfMax } from "../../../shared/incident-response";
 import {
   RECOVERED_MIN_PASSES,
@@ -352,6 +354,48 @@ const RESUME: Partial<
   "rolling-back": { to: "investigating", phase: "rolling-back" },
   "watch-only": { to: "investigating", phase: "watch-only" },
 };
+
+const VERIFIER_CLAIMS_MAX = 10;
+const VERIFIER_QUESTIONS_MAX = 8;
+const VERIFIER_HYPOTHESES_MAX = 5;
+
+/**
+ * What round `round`'s verifier found: its verdict's reasons (Sessions'
+ * own when given), its claim checks and its findings' questions and
+ * hypotheses. Undefined when no verifier reported in that round.
+ */
+export function verifierFindingsOf(
+  r: IncidentResponse,
+  round: number,
+  reasons?: string[],
+): VerifierFindings | undefined {
+  const report = r.agents.findLast(
+    (a) => a.role === "verifier" && a.round === round,
+  )?.report;
+  const set = findingSetOf(r, "verifier", round);
+  if (report?.role !== "verifier" && !set) return undefined;
+  const verifier = report?.role === "verifier" ? report : undefined;
+  const blocks = set?.blocks ?? [];
+  return {
+    round,
+    reasons:
+      reasons ??
+      (r.verdict?.round === round ? r.verdict.reasons : undefined) ??
+      verifier?.reasons ??
+      [],
+    claims: (verifier?.claims ?? []).slice(0, VERIFIER_CLAIMS_MAX),
+    questions: blocks
+      .flatMap((b) =>
+        b.kind === "question"
+          ? [{ text: b.text, wouldAnswer: b.wouldAnswer }]
+          : [],
+      )
+      .slice(0, VERIFIER_QUESTIONS_MAX),
+    hypotheses: blocks
+      .flatMap((b) => (b.kind === "hypothesis" ? [b.statement] : []))
+      .slice(0, VERIFIER_HYPOTHESES_MAX),
+  };
+}
 
 /**
  * Send the work back for another round, or ask the owner once the rounds
@@ -1260,12 +1304,18 @@ function verifying(view: ResponseView): ResponseStep {
         },
       },
     };
-  return sendBack(view, { kind: "not-certain", reasons }, reasons[0]!, {
-    round: r.round,
-    at,
-    verdict: "not-certain",
-    reasons,
-  });
+  const verifier = verifierFindingsOf(r, r.round, reasons);
+  return sendBack(
+    view,
+    { kind: "not-certain", reasons, ...(verifier ? { verifier } : {}) },
+    reasons[0]!,
+    {
+      round: r.round,
+      at,
+      verdict: "not-certain",
+      reasons,
+    },
+  );
 }
 
 /** A new round after a rollback: everything about the last candidate goes. */

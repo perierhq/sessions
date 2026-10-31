@@ -12,7 +12,7 @@ import type {
   Signal,
   SignalEvaluation,
 } from "../../../shared/incidents";
-import type { FindingsSet } from "../../../shared/findings";
+import type { FindingBlock, FindingsSet } from "../../../shared/findings";
 import { roundReports } from "../../../shared/findings-status";
 import type { Automation } from "../../automations";
 import type { PrMergeVerdict } from "../../pr-merge-readiness";
@@ -1063,6 +1063,151 @@ async function storeInvestigatorSet(
     },
   }));
 }
+
+/** Stores the verifier's set for `round`, as show_findings would. */
+async function storeVerifierSet(
+  incidentId: string,
+  sessionId: string,
+  round: number,
+  blocks: FindingBlock[],
+): Promise<void> {
+  const set: FindingsSet = {
+    role: "verifier",
+    round,
+    attempt: 1,
+    sessionId,
+    source: "tool",
+    updatedAt: new Date(START).toISOString(),
+    calls: 1,
+    blocks,
+    notes: [],
+  };
+  await updateIncident(incidentId, (c) => ({
+    ...c,
+    response: {
+      ...c.response!,
+      findingSets: [...(c.response!.findingSets ?? []), set],
+    },
+  }));
+}
+
+const VERIFIER_BLOCKS: FindingBlock[] = [
+  {
+    id: "v-margin",
+    kind: "question",
+    size: "full",
+    text: "PR #469 is the better fix; 11-16 s calls still break the 10 s threshold",
+    wouldAnswer: "Which pull request goes out",
+  },
+  {
+    id: "v-covers",
+    kind: "hypothesis",
+    size: "full",
+    statement: "The threshold change misses the probe's own slow calls",
+    confidence: "medium",
+    evidence: [],
+    claims: [],
+  },
+];
+
+const NOT_CERTAIN_VERIFIER: VerifierReport = {
+  ...goodVerifier,
+  verdict: "not-certain",
+  reasons: [
+    "The checks never ran on the head commit",
+    "Calls of 11-16 s still flip the part",
+  ],
+  claims: [
+    {
+      text: "Upstream returns 403 to the default user agent",
+      status: "unverifiable",
+      evidence: "The logs from that hour are gone",
+    },
+  ],
+};
+
+function expectVerifierFindings(text: string): void {
+  expect(text).toContain("What the verifier found in round 1");
+  expect(text).toContain("- The checks never ran on the head commit");
+  expect(text).toContain("- Calls of 11-16 s still flip the part");
+  expect(text).toContain(
+    "- unverifiable: Upstream returns 403 to the default user agent · The logs from that hour are gone",
+  );
+  expect(text).toContain(
+    "- PR #469 is the better fix; 11-16 s calls still break the 10 s threshold (would answer: Which pull request goes out)",
+  );
+  expect(text).toContain(
+    "- The threshold change misses the probe's own slow calls",
+  );
+}
+
+test("an owner's send-back of an unproven fix carries the verifier's reasons, claim checks and questions", async () => {
+  const w = await world();
+  w.evaluate("sig-a", "ok");
+  w.deps.proof = async (input) => ({
+    round: input.round,
+    at: new Date(w.clock).toISOString(),
+    baseline: {
+      samples: [1, 2, 3].map(() => ({
+        at: new Date(w.clock).toISOString(),
+        result: "ok" as const,
+        detail: "200",
+      })),
+      verdict: "passes",
+    },
+    candidate: { kind: "after-deploy", samples: [], verdict: "after-deploy" },
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      check: {
+        kind: "after-deploy",
+        reason: "A request now can't tell before from after",
+      },
+    }),
+    { prUrl: "https://github.com/acme/web/pull/12" },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  await storeVerifierSet(w.incident.id, "child-2", 1, VERIFIER_BLOCKS);
+  w.finish("child-2", fence(NOT_CERTAIN_VERIFIER));
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.needsYou?.kind).toBe(
+    "unproven",
+  );
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "The token is in the keychain",
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  const message = w.sends.at(-1)?.message ?? "";
+  expect(w.sends.at(-1)?.id).toBe("child-1");
+  expect(message).toContain("The token is in the keychain");
+  expectVerifierFindings(message);
+  expect(message).toContain("say in your report which fix you chose and why");
+});
+
+test("a verifier's send-back to a fresh investigator carries its claim checks and questions", async () => {
+  const { w, granted } = await widenableWorld();
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish("child-1", fence(investigatorReport), {
+    prUrl: "https://github.com/acme/web/pull/12",
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  await storeVerifierSet(w.incident.id, "child-2", 1, VERIFIER_BLOCKS);
+  // A connection lent meanwhile: round 2 goes to a fresh session.
+  granted.connections = ["logs"];
+  w.finish("child-2", fence(NOT_CERTAIN_VERIFIER));
+  await advanceIncident(w.incident.id, w.deps);
+  await __waitForCoordinatorForTest();
+  const fresh = w.spawns.at(-1)!;
+  expect(fresh).toMatchObject({ role: "investigator", round: 2 });
+  expectVerifierFindings(fresh.prompt);
+});
 
 test("round 2's investigator gets round 1's set; the verifier gets the round's investigator set", async () => {
   const { w, granted } = await widenableWorld();

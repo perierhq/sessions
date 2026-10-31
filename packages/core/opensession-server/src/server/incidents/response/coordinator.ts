@@ -83,6 +83,7 @@ import {
   nextActionFor,
   rereadsReport,
   roundRan,
+  verifierFindingsOf,
   waitingMayBeStale,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
@@ -3033,7 +3034,10 @@ function decisionMove(
             : {}),
         }),
       );
-    case "send-back":
+    case "send-back": {
+      // The round's verifier findings go along: a send-back that kept only
+      // the card's reason lost what the verifier found.
+      const verifier = verifierFindingsOf(base, base.round);
       return move(
         "investigating",
         `Sent back by ${by}`,
@@ -3050,6 +3054,7 @@ function decisionMove(
             ...(c.state === "needs-you" && base.needsYou?.reason
               ? { answering: base.needsYou.reason }
               : {}),
+            ...(verifier ? { verifier } : {}),
           },
           candidate: undefined,
           proof: undefined,
@@ -3060,6 +3065,7 @@ function decisionMove(
           mergingSince: undefined,
         }),
       );
+    }
     case "retry": {
       const resume = base.needsYou?.resumePhase ?? "investigating";
       return move(

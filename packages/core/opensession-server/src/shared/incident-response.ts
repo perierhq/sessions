@@ -633,14 +633,27 @@ export const RESPONSE_PHASES = [
 ] as const;
 export type ResponsePhase = (typeof RESPONSE_PHASES)[number];
 
+/** What a round's verifier found, carried into a send-back so the next
+ *  round weighs it: the verdict's reasons, its claim checks and its
+ *  findings' questions and hypotheses. */
+export interface VerifierFindings {
+  round: number;
+  reasons: string[];
+  claims: ClaimCheck[];
+  questions: Array<{ text: string; wouldAnswer: string }>;
+  hypotheses: string[];
+}
+
 export type SendBackReason =
-  | { kind: "not-certain"; reasons: string[] }
+  | { kind: "not-certain"; reasons: string[]; verifier?: VerifierFindings }
   | {
       kind: "owner";
       by: string;
       note: string;
       /** The needs-you reason the owner answered by sending it back. */
       answering?: string;
+      /** The verifier's findings, when the round sent back had one. */
+      verifier?: VerifierFindings;
     }
   | { kind: "rolled-back"; detail: string }
   | { kind: "reopened"; detail: string }
