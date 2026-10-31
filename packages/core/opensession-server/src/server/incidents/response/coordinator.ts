@@ -2086,13 +2086,32 @@ async function fetchPr(
   );
   if ("error" in snapshot) {
     // A waiting card read again: it stays as it is, and the next read
-    // tries again.
+    // waits the full interval (the old snapshot is marked as read now).
     if (purpose === "recheck") {
       console.warn(
         `[incidents] Could not read ${prUrl} again:`,
         snapshot.error,
       );
-      return false;
+      const at = new Date(d.now()).toISOString();
+      const next = await write(
+        incident.id,
+        d,
+        settings,
+        guardOf(view),
+        (c, base) =>
+          base.candidate?.pr
+            ? {
+                incident: c,
+                response: patched(base, {
+                  candidate: {
+                    ...base.candidate,
+                    pr: { ...base.candidate.pr, fetchedAt: at },
+                  },
+                }),
+              }
+            : { error: "The candidate's pull request is gone" },
+      );
+      return next !== null;
     }
     if (!note)
       return needsYou(

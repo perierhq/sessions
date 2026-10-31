@@ -3904,6 +3904,38 @@ test("I'll release it myself: Sessions waits for the merge, then watches the sig
   expect(i?.state).toBe("resolved");
 });
 
+test("a waiting card whose pull request can't be read again waits the full interval before the next read", async () => {
+  const w = await world({ pr: { failing: ["ci"] } });
+  await toUnproven(w);
+  expect((await getIncident(w.incident.id))?.response?.next).toMatchObject({
+    needsYou: "unproven",
+    reason: expect.stringContaining(
+      "Deploy the fix isn't offered: check ci fails",
+    ),
+  });
+  let reads = 0;
+  const github = w.deps.github!;
+  w.deps.github = {
+    ...github,
+    verdict: async () => {
+      reads++;
+      throw new Error("GitHub is down");
+    },
+  };
+  w.clock += 700_000;
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  w.clock += 5_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(reads).toBe(1);
+  const i = await getIncident(w.incident.id);
+  // The card stays as it was.
+  expect(i?.response?.needsYou?.kind).toBe("unproven");
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(reads).toBe(2);
+});
+
 test("I'll release it myself: a fix still failing after the watch comes back to the owner, never rolled back", async () => {
   const w = await world();
   await toUnproven(w);

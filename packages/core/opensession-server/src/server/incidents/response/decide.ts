@@ -1824,11 +1824,11 @@ function handReleaseStep(
       kind: "merge",
       reason: `${n} was closed without being merged`,
     };
-  if (
-    !view.handReleasePr &&
-    (!pr || view.now - Date.parse(pr.fetchedAt) >= HAND_RELEASE_REFRESH_MS)
-  )
-    return { step: "fetch-pr", purpose: "recheck" };
+  if (!view.handReleasePr) {
+    if (!pr) return { step: "fetch-pr", purpose: "merge" };
+    if (view.now - Date.parse(pr.fetchedAt) >= HAND_RELEASE_REFRESH_MS)
+      return { step: "fetch-pr", purpose: "recheck" };
+  }
   return NONE;
 }
 
