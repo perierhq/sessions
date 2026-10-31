@@ -305,6 +305,12 @@ function needsYouReason(
     : undefined;
   if (blocked)
     reason = `${reason.replace(/\.$/, "")}. Deploy the fix isn't offered: ${blocked}.`;
+  const others = r.otherFailures ?? [];
+  if (others.length)
+    reason = `${reason.replace(/\.$/, "")}. Another part failed meanwhile: ${others
+      .slice(-3)
+      .map((o) => `${o.detail} at ${hhmmUtc(Date.parse(o.at))} UTC`)
+      .join("; ")}.`;
   const prs = ny.prs ?? [];
   if (!prs.length) return reason;
   const numbers = prs.map((p) => `#${p.number}`).join(", ");
@@ -625,23 +631,80 @@ export function waitingMayBeStale(incident: Incident): boolean {
   const ny = r?.needsYou;
   if (incident.state !== "needs-you" || !r || !ny) return false;
   if (ny.kind !== "proof-stopped" && ny.kind !== "unproven") return false;
-  if (Date.parse(incident.lastProblemAt) > Date.parse(ny.since)) return true;
+  const seen = Math.max(
+    Date.parse(ny.since),
+    ny.failedAgainAt ? Date.parse(ny.failedAgainAt) : Number.NEGATIVE_INFINITY,
+  );
+  if (Date.parse(incident.lastProblemAt) > seen) return true;
   return (
     ny.kind === "proof-stopped" && r.candidate?.check.kind === "after-deploy"
   );
 }
 
-const FAILED_AGAIN = / \(.+ failed again at \d\d:\d\d UTC\)$/;
+const FAILED_AGAIN = / \(.+ failed again at \d\d:\d\d UTC(?:: .*)?\)$/;
+/** Other parts' failures a waiting incident keeps. */
+const OTHER_FAILURES_MAX = 5;
+
+/** The detail of the primary signal's failed check at `at`: the newest
+ *  failed check of its main lane no later than that. */
+export function failedCheckAt(
+  observations: readonly Observation[],
+  at: number,
+): Observation | undefined {
+  let best: Observation | undefined;
+  for (const o of observations) {
+    if (o.lane || o.result !== "fail") continue;
+    const t = Date.parse(o.at);
+    if (!(t <= at)) continue;
+    if (!best || t >= Date.parse(best.at)) best = o;
+  }
+  return best;
+}
+
+/** The parts a status page's worst-lane detail names as failing
+ *  ("search: slow, betterfare: down"), lower-cased; empty when the detail
+ *  is not such a list (a plain check's "HTTP 503"). */
+export function failingParts(detail: string): string[] {
+  const pieces = detail.split(", ");
+  const parts: string[] = [];
+  for (const piece of pieces) {
+    const at = piece.indexOf(": ");
+    if (at <= 0) return [];
+    parts.push(piece.slice(0, at).trim().toLowerCase());
+  }
+  return parts;
+}
 
 /** A waiting card brought up to date (see waitingMayBeStale): a proof that
  *  stopped is measured again, and an unproven fix says when its signal
- *  failed again. */
+ *  failed again and which part failed. A different part than the one the
+ *  incident opened on is listed apart, and the owner is not asked again. */
 function staleWaiting(view: ResponseView): ResponseStep | undefined {
   const { incident } = view;
-  const ny = incident.response?.needsYou;
-  if (!ny || !incident.response?.candidate || !waitingMayBeStale(incident))
-    return undefined;
-  const again = `${primaryName(view)} failed again at ${hhmmUtc(Date.parse(incident.lastProblemAt))} UTC`;
+  const r = incident.response;
+  const ny = r?.needsYou;
+  if (!ny || !r?.candidate || !waitingMayBeStale(incident)) return undefined;
+  const problemAt = Date.parse(incident.lastProblemAt);
+  const check = failedCheckAt(view.primaryRecent, problemAt);
+  const detail = check?.detail.trim() ?? "";
+  const when = `${hhmmUtc(problemAt)} UTC`;
+  const cause = failingParts(r.openedOn?.detail ?? "");
+  const parts = failingParts(detail);
+  if (cause.length && parts.length && parts.every((p) => !cause.includes(p)))
+    return {
+      step: "transition",
+      to: null,
+      phase: "needs-you",
+      detail: `A different part failed at ${when}: ${detail}. This incident is about ${cause.join(", ")}`,
+      patch: {
+        needsYou: { ...ny, failedAgainAt: incident.lastProblemAt },
+        otherFailures: [
+          ...(r.otherFailures ?? []),
+          { at: incident.lastProblemAt, detail },
+        ].slice(-OTHER_FAILURES_MAX),
+      },
+    };
+  const again = `${primaryName(view)} failed again at ${when}${detail ? `: ${detail}` : ""}`;
   const back = Date.parse(incident.lastProblemAt) > Date.parse(ny.since);
   if (ny.kind === "proof-stopped")
     return {
@@ -657,6 +720,7 @@ function staleWaiting(view: ResponseView): ResponseStep | undefined {
     step: "needs-you",
     kind: ny.kind,
     reason: `${ny.reason.replace(FAILED_AGAIN, "")} (${again})`,
+    failedAgainAt: incident.lastProblemAt,
   };
 }
 

@@ -3804,6 +3804,22 @@ test("checks GitHub Actions never ran raise a setup problem instead of a verifie
   expect(w.spawns.map((s) => s.role)).toEqual(["investigator", "verifier"]);
 });
 
+test("the fix loop records the failed check the incident opened on", async () => {
+  const w = await world();
+  const at = (ms: number) => new Date(START + ms).toISOString();
+  w.deps.recent = () => [
+    { at: at(-120_000), result: "fail", detail: "search: slow" },
+    { at: at(-60_000), result: "fail", detail: "search: slow" },
+    { at: at(60_000), result: "fail", detail: "betterfare: down" },
+  ];
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.openedOn).toEqual({
+    at: at(-60_000),
+    detail: "search: slow",
+  });
+});
+
 /** An after-release fix the verifier could not prove: the unproven card. */
 async function toUnproven(w: Awaited<ReturnType<typeof world>>) {
   w.evaluate("sig-a", "ok");

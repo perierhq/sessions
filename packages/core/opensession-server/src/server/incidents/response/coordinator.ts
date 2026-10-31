@@ -80,6 +80,7 @@ import {
   approveBlocked,
   currentAgent,
   decideNextStep,
+  failedCheckAt,
   handReleaseAvailable,
   manualRollbackAvailable,
   nextActionFor,
@@ -977,6 +978,11 @@ async function init(
         maxRounds: settings.maxRounds,
         phase: release && rollback ? "deciding" : "investigating",
       });
+      // What failed when it opened: a later failure of another part is
+      // told apart from it (staleWaiting).
+      const opened = failedCheckAt(view.primaryRecent, Date.parse(c.openedAt));
+      if (opened)
+        r = { ...r, openedOn: { at: opened.at, detail: opened.detail } };
       if (!release || !rollback) return { incident: c, response: r };
       const time = hhmm(release.at);
       const candidate: CandidateState = {
@@ -2215,6 +2221,9 @@ async function needsYou(
             ...(step.retryable === false ? { retryable: false } : {}),
             ...(step.fix ? { fix: step.fix } : {}),
             ...(prs.length ? { prs } : {}),
+            ...(step.failedAgainAt
+              ? { failedAgainAt: step.failedAgainAt }
+              : {}),
           },
         },
         { retryRequested: undefined },

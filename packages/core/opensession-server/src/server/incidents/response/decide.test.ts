@@ -3113,6 +3113,7 @@ test("an unproven fix whose signal failed again says so, once per return", () =>
     kind: "unproven",
     reason:
       "The fix can only be proven after release: Only the release can show it (Search failed again at 11:55 UTC)",
+    failedAgainAt: iso(-5 * 60_000),
   });
   // Said again later, the newer time replaces the older one.
   const r = back.incident.response!;
@@ -3380,5 +3381,75 @@ test("checks GitHub Actions never ran: a setup problem before any verifier, resu
     phase: "proving",
     detail: "GitHub Actions runs for acme/web again",
     patch: { needsYou: undefined },
+  });
+});
+
+test("a failure folded into a waiting card names the part that failed", () => {
+  const back = waitingOn("unproven", { lastProblemAt: iso(-5 * 60_000) });
+  const named = {
+    ...back,
+    primaryRecent: [
+      { at: iso(-7 * 60_000), result: "fail" as const, detail: "search: slow" },
+      { at: iso(-6 * 60_000), result: "fail" as const, detail: "search: slow" },
+      { at: iso(-5 * 60_000), result: "fail" as const, detail: "search: slow" },
+      {
+        at: iso(-4 * 60_000),
+        result: "ok" as const,
+        detail: "All components operational",
+      },
+    ],
+  };
+  expect(decideNextStep(named)).toEqual({
+    step: "needs-you",
+    kind: "unproven",
+    reason:
+      "The fix can only be proven after release: Only the release can show it (Search failed again at 11:55 UTC: search: slow)",
+    failedAgainAt: iso(-5 * 60_000),
+  });
+});
+
+test("a different part failing is shown apart from the incident's cause, without asking the owner again", () => {
+  const back = waitingOn("unproven", { lastProblemAt: iso(-5 * 60_000) });
+  const r = back.incident.response!;
+  const other: ResponseView = {
+    ...back,
+    incident: {
+      ...back.incident,
+      response: {
+        ...r,
+        openedOn: { at: iso(-3_600_000), detail: "search: slow" },
+      },
+    },
+    primaryRecent: [
+      { at: iso(-6 * 60_000), result: "fail", detail: "betterfare: down" },
+      { at: iso(-5 * 60_000), result: "fail", detail: "betterfare: down" },
+    ],
+  };
+  const step = decideNextStep(other);
+  expect(step).toEqual({
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail:
+      "A different part failed at 11:55 UTC: betterfare: down. This incident is about search",
+    patch: {
+      needsYou: { ...r.needsYou!, failedAgainAt: iso(-5 * 60_000) },
+      otherFailures: [{ at: iso(-5 * 60_000), detail: "betterfare: down" }],
+    },
+  });
+  // Handled: nothing more until the signal fails again.
+  const handled = {
+    ...other.incident,
+    response: {
+      ...other.incident.response!,
+      ...(step as { patch: Partial<IncidentResponse> }).patch,
+    },
+  } as Incident;
+  expect(waitingMayBeStale(handled)).toBe(false);
+  // The card keeps its own reason and lists the other part apart.
+  expect(nextActionFor(handled, defaultSettings)).toMatchObject({
+    reason: expect.stringContaining(
+      "Only the release can show it. Another part failed meanwhile: betterfare: down at 11:55 UTC.",
+    ),
   });
 });

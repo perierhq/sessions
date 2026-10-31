@@ -718,7 +718,16 @@ export interface IncidentResponse {
     /** The incident's agents' pull requests still open when the card
      *  appeared, named on the card. */
     prs?: AgentPullRequest[];
+    /** The card was brought up to date because the signal failed again
+     *  (its `lastProblemAt` then). Such a card alerts at most once a day. */
+    failedAgainAt?: string;
   };
+  /** The failed check the incident opened on (its detail names a status
+   *  page's failing parts), for telling a different part's failure apart. */
+  openedOn?: { at: string; detail: string };
+  /** Failures of other parts than the one the incident opened on, while it
+   *  waited on its owner: newest last, at most OTHER_FAILURES_MAX. */
+  otherFailures?: Array<{ at: string; detail: string }>;
   note?: { prUrl?: string; pr?: PrSnapshot; merged: boolean; detail?: string };
   /** Closed without action: pull requests the incident's agents opened that
    *  change code, left open for the owner to close or keep. Their note-only

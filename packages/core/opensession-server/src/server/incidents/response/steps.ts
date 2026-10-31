@@ -128,6 +128,8 @@ export type ResponseStep =
        *  fixed. */
       retryable?: boolean;
       fix?: SetupFix;
+      /** The card is brought up to date because the signal failed again. */
+      failedAgainAt?: string;
       patch?: Partial<IncidentResponse>;
       /** A state the incident passes through first, so a person picks the
        *  work up from there. */

@@ -57,6 +57,9 @@ export interface PlannedNotification {
 }
 
 export const INCIDENT_ALERT_COOLDOWN_MS = 900_000;
+/** A waiting card brought up to date because its signal failed again
+ *  alerts at most this often; in between it updates the row quietly. */
+export const FAILED_AGAIN_ALERT_MS = 86_400_000;
 export const TTL_SECONDS = {
   veto: { min: 60, max: 3600 },
   needsYou: 43_200,
@@ -373,11 +376,20 @@ export function planIncidentNotification(
     // and nothing held for after the night.
     delivered = { delivery: facts.night ? "quiet" : "replace" };
   else if (row.kind === "incident_update") delivered = { delivery: "replace" };
-  else
+  else {
+    // The same card again because the signal failed again: once a day.
+    const failedAgain =
+      asked &&
+      next.response?.needsYou?.failedAgainAt !== undefined &&
+      next.response.needsYou.kind === previous?.response?.needsYou?.kind;
     delivered = {
       delivery: "alert",
-      cooldown: { key: row.kind, ms: INCIDENT_ALERT_COOLDOWN_MS },
+      cooldown: {
+        key: row.kind,
+        ms: failedAgain ? FAILED_AGAIN_ALERT_MS : INCIDENT_ALERT_COOLDOWN_MS,
+      },
     };
+  }
   if (facts.night && !ownChange && delivered.delivery !== "quiet") {
     const wakes =
       row.kind === "incident_needs_you" &&
