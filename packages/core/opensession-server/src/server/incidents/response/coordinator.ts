@@ -77,8 +77,10 @@ import {
   ensureIncidentAutomation,
 } from "./agents";
 import {
+  approveBlocked,
   currentAgent,
   decideNextStep,
+  handReleaseAvailable,
   manualRollbackAvailable,
   nextActionFor,
   rereadsReport,
@@ -743,6 +745,14 @@ export async function buildResponseView(
     for (const [id, signal] of signals)
       passes.set(id, trailingPasses(signal, d.recent(id)));
   }
+  // The owner releases the fix by hand: the PR cache says when it merged.
+  let handReleasePr: ResponseView["handReleasePr"];
+  if (r?.handRelease)
+    try {
+      handReleasePr = d.prState(incident.project, r.handRelease.prUrl);
+    } catch {
+      handReleasePr = undefined;
+    }
   const setup =
     incident.state === "needs-you" &&
     incident.response?.needsYou?.kind === "setup"
@@ -762,6 +772,7 @@ export async function buildResponseView(
     agents,
     liveActionRunIds: new Set(liveActions),
     models,
+    ...(handReleasePr ? { handReleasePr } : {}),
   };
 }
 
@@ -2890,6 +2901,7 @@ const REFUSALS: Record<OwnerDecision, string> = {
   "roll-back": "Nothing to roll back",
   "close-prs": "No pull request is waiting for you",
   "keep-prs": "No pull request is waiting for you",
+  "release-watch": "No verified pull request to release",
 };
 
 const STOPPABLE_PHASES: ReadonlySet<ResponsePhase> = new Set([
@@ -2951,7 +2963,15 @@ function decisionAllowed(
             r.candidate.rollbackFirst === true)) ||
           // Not proven before release: the head the verifier reviewed is
           // the one merged, and the watch after release is the proof.
-          (r.needsYou?.kind === "unproven" && !!r.verdict?.verifiedSha))
+          (r.needsYou?.kind === "unproven" && !!r.verdict?.verifiedSha)) &&
+        // Not where merging sends it back or nothing deploys it.
+        !approveBlocked(r, settings)
+      );
+    case "release-watch":
+      return (
+        c.state === "needs-you" &&
+        r.needsYou?.kind === "unproven" &&
+        handReleaseAvailable(r)
       );
     case "send-back":
       return c.state === "needs-you" || c.state === "veto";
@@ -3070,6 +3090,7 @@ function decisionMove(
         patched(r, {
           phase: "needs-you",
           veto: undefined,
+          handRelease: undefined,
           needsYou: {
             kind: "stopped",
             reason,
@@ -3094,6 +3115,22 @@ function decisionMove(
             : {}),
         }),
       );
+    case "release-watch": {
+      // decisionAllowed checked the candidate has an open pull request.
+      const candidate = base.candidate!;
+      const prUrl = (candidate.prUrl ?? candidate.pr?.url)!;
+      const number = candidate.pr?.number ?? parsePrUrl(prUrl)?.number ?? 0;
+      return move(
+        "deploying",
+        `${by} releases PR #${number}; Sessions watches after it merges`,
+        patched(base, {
+          phase: "merging",
+          mergingSince: at,
+          veto: undefined,
+          handRelease: { by, at, prUrl, number },
+        }),
+      );
+    }
     case "send-back": {
       // The round's verifier findings go along: a send-back that kept only
       // the card's reason lost what the verifier found.
@@ -3116,6 +3153,7 @@ function decisionMove(
               : {}),
             ...(verifier ? { verifier } : {}),
           },
+          handRelease: undefined,
           candidate: undefined,
           proof: undefined,
           verdict: undefined,

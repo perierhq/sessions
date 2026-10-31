@@ -548,6 +548,7 @@ export const OWNER_DECISIONS = [
   "roll-back",
   "close-prs",
   "keep-prs",
+  "release-watch",
 ] as const;
 export type OwnerDecision = (typeof OWNER_DECISIONS)[number];
 
@@ -687,6 +688,9 @@ export interface IncidentResponse {
   ownerTouched: boolean;
   ownerRollback?: { by: string; at: string };
   sendBack?: SendBackReason;
+  /** The owner releases the candidate's pull request by hand: Sessions
+   *  merges and deploys nothing, waits for the merge, then watches. */
+  handRelease?: { by: string; at: string; prUrl: string; number: number };
   retryRequested?: boolean;
   /** Rollback-first only: the investigator that studies the release in
    *  parallel is best effort. Set when it could not start (`unavailable`:

@@ -52,6 +52,7 @@ import { isSandboxImageBuildingError } from "../../sandbox/reliability";
 import {
   AGENT_MAX_MS,
   FINAL_TEXT_GRACE_MS,
+  HAND_RELEASE_REFRESH_MS,
   PR_CHECKS_WAIT_MS,
   PR_REFRESH_MS,
   ROLLBACK_FIRST_WINDOW_MS,
@@ -182,21 +183,75 @@ export function manualRollbackAvailable(
   );
 }
 
-export function needsYouOptions(
-  kind: NeedsYouKind,
+/**
+ * Why Deploy the fix can't work for the candidate now, as a clause; else
+ * undefined. A required check failing sends the work back at the merge,
+ * and a pull request with no deploy action stops after it.
+ */
+export function approveBlocked(
   r: IncidentResponse,
-): OwnerDecision[] {
+  settings: IncidentProjectSettings,
+): string | undefined {
+  const c = r.candidate;
+  if (!c || c.rollbackFirst) return undefined;
+  const pr = c.pr;
+  if (c.plan.pr && pr && pr.state === "OPEN" && pr.failingChecks.length) {
+    const checks = pr.failingChecks.slice(0, 3).join(", ");
+    return `${pr.failingChecks.length === 1 ? "check" : "checks"} ${checks} ${pr.failingChecks.length === 1 ? "fails" : "fail"} on PR #${pr.number}`;
+  }
+  const facts = changeFacts({ plan: c.plan, settings, prFiles: [] });
+  if ("error" in facts)
+    return facts.error.charAt(0).toLowerCase() + facts.error.slice(1);
+  return undefined;
+}
+
+/** Whether the owner may release the candidate's pull request by hand and
+ *  have Sessions watch after: a verified head on an open pull request. */
+export function handReleaseAvailable(r: IncidentResponse): boolean {
+  const c = r.candidate;
+  return (
+    !!c?.plan.pr &&
+    !c.rollbackFirst &&
+    !!(c.prUrl ?? c.pr?.url) &&
+    !!r.verdict?.verifiedSha &&
+    c.pr?.state !== "MERGED" &&
+    c.pr?.state !== "CLOSED"
+  );
+}
+
+/** Whether `kind`'s card would offer Deploy the fix, before asking whether
+ *  it can work. */
+function offersApprove(kind: NeedsYouKind, r: IncidentResponse): boolean {
   switch (kind) {
     case "policy":
     case "protection":
     case "stopped":
-      return [
-        ...(r.verdict?.verdict === "certain" || r.candidate?.rollbackFirst
-          ? (["approve"] as const)
-          : []),
-        "send-back",
-        "close",
-      ];
+      return r.verdict?.verdict === "certain" || !!r.candidate?.rollbackFirst;
+    case "unproven":
+      // Deploy the fix merges the head the verifier reviewed, and the watch
+      // after release is the proof.
+      return !!r.candidate && !!r.verdict?.verifiedSha;
+    default:
+      return false;
+  }
+}
+
+/** `settings`, when given, keeps Deploy the fix off a card where it can't
+ *  work (approveBlocked); the card says why instead. */
+export function needsYouOptions(
+  kind: NeedsYouKind,
+  r: IncidentResponse,
+  settings?: IncidentProjectSettings,
+): OwnerDecision[] {
+  const approve: OwnerDecision[] =
+    offersApprove(kind, r) && !(settings && approveBlocked(r, settings))
+      ? ["approve"]
+      : [];
+  switch (kind) {
+    case "policy":
+    case "protection":
+    case "stopped":
+      return [...approve, "send-back", "close"];
     case "setup":
       // Starting again would fail the same way until the setup is fixed.
       return r.needsYou?.retryable === false
@@ -215,13 +270,13 @@ export function needsYouOptions(
         ? ["send-back", "resolve", "close"]
         : ["resolve", "close"];
     case "unproven":
-      // Deploy the fix merges the head the verifier reviewed, and the watch
-      // after release is the proof.
+      // The owner may also release it by hand (a project without a deploy
+      // action, or checks that can't run) and have Sessions watch after.
       return [
-        ...(r.candidate && r.verdict?.verifiedSha
-          ? (["approve"] as const)
-          : []),
+        ...approve,
+        ...(handReleaseAvailable(r) ? (["release-watch"] as const) : []),
         "send-back",
+        "resolve",
         "close",
       ];
     default:
@@ -233,14 +288,22 @@ function sendBackLeavesARound(r: IncidentResponse): boolean {
   return r.round + 1 < r.maxRounds;
 }
 
-/** What the card says beyond the stored reason: why Send it back is not
- *  offered, and the incident's open pull requests. */
-function needsYouReason(r: IncidentResponse): string {
+/** What the card says beyond the stored reason: why Send it back or
+ *  Deploy the fix is not offered, and the incident's open pull requests. */
+function needsYouReason(
+  r: IncidentResponse,
+  settings: IncidentProjectSettings,
+): string {
   const ny = r.needsYou!;
   let reason = ny.reason;
   if (ny.kind === "proof-stopped" && !sendBackLeavesARound(r))
     reason +=
       ". Sending it back would spend the last round and stop here again while the problem is away; Sessions measures again if it fails again";
+  const blocked = offersApprove(ny.kind, r)
+    ? approveBlocked(r, settings)
+    : undefined;
+  if (blocked)
+    reason = `${reason.replace(/\.$/, "")}. Deploy the fix isn't offered: ${blocked}.`;
   const prs = ny.prs ?? [];
   if (!prs.length) return reason;
   const numbers = prs.map((p) => `#${p.number}`).join(", ");
@@ -264,6 +327,8 @@ function workingDetail(r: IncidentResponse): string {
     case "deciding":
       return "Checking the policy";
     case "merging":
+      if (r.handRelease)
+        return `Waiting for ${r.handRelease.by} to merge and release PR #${r.handRelease.number}`;
       return r.candidate?.pr
         ? `Merging PR #${r.candidate.pr.number}`
         : "Merging the fix";
@@ -292,11 +357,11 @@ export function nextActionFor(
     const rule = kind === "policy" ? r.decision?.rule : undefined;
     return {
       kind: "needs-you",
-      reason: needsYouReason(r),
+      reason: needsYouReason(r, settings),
       needsYou: kind,
       ...(rule ? { rule } : {}),
       ...(kind === "setup" && fix ? { fix } : {}),
-      options: needsYouOptions(kind, r),
+      options: needsYouOptions(kind, r, settings),
     };
   }
   if (isTerminalIncidentState(incident.state))
@@ -419,6 +484,7 @@ export function sendBack(
         round: r.round + 1,
         sendBack: why,
         verdict,
+        handRelease: undefined,
         proof: undefined,
         decision: undefined,
         veto: undefined,
@@ -804,6 +870,7 @@ function starting(view: ResponseView): ResponseStep | undefined {
         mergingSince: undefined,
         documentingSince: undefined,
         openPrs: undefined,
+        handRelease: undefined,
       },
     };
   }
@@ -1335,6 +1402,7 @@ function nextRound(
     watch: undefined,
     mergingSince: undefined,
     ownerRollback: undefined,
+    handRelease: undefined,
   };
 }
 
@@ -1504,6 +1572,8 @@ function vetoStep(view: ResponseView): ResponseStep {
 function mergingStep(view: ResponseView): ResponseStep {
   const r = view.incident.response!;
   const n = prRef(r);
+  if (r.handRelease && r.merge?.status !== "merged")
+    return handReleaseStep(view, r.handRelease);
   if (r.merge?.status === "merged")
     return {
       step: "transition",
@@ -1569,6 +1639,51 @@ function mergingStep(view: ResponseView): ResponseStep {
   }
 }
 
+/**
+ * The owner merges and releases the fix: Sessions waits for the merge, as
+ * the PR cache sees it (GitHub, now and then, when the cache doesn't know
+ * the pull request), and then watches the signal. It merges nothing.
+ */
+function handReleaseStep(
+  view: ResponseView,
+  hand: NonNullable<IncidentResponse["handRelease"]>,
+): ResponseStep {
+  const r = view.incident.response!;
+  const pr = r.candidate?.pr;
+  const state = view.handReleasePr ?? pr?.state;
+  const n = `PR #${hand.number}`;
+  if (state === "MERGED")
+    return {
+      step: "transition",
+      to: null,
+      phase: "deploying",
+      detail: `${n} was merged`,
+      patch: {
+        merge: {
+          ghRepo: pr?.ghRepo ?? "",
+          number: hand.number,
+          sha: r.verdict?.verifiedSha ?? pr?.headSha ?? "",
+          status: "merged",
+          method: "by-hand",
+          ...(pr?.mergeCommitSha ? { mergedSha: pr.mergeCommitSha } : {}),
+          at: now(view),
+        },
+      },
+    };
+  if (state === "CLOSED")
+    return {
+      step: "needs-you",
+      kind: "merge",
+      reason: `${n} was closed without being merged`,
+    };
+  if (
+    !view.handReleasePr &&
+    (!pr || view.now - Date.parse(pr.fetchedAt) >= HAND_RELEASE_REFRESH_MS)
+  )
+    return { step: "fetch-pr", purpose: "merge" };
+  return NONE;
+}
+
 /** How a recorded action run goes on: wait, ask, or done. Never re-run. */
 function actionRunProblem(
   view: ResponseView,
@@ -1610,6 +1725,8 @@ function interrupted(run: ActionRun): ResponseStep {
 function deployingStep(view: ResponseView): ResponseStep {
   const { settings } = view;
   const r = view.incident.response!;
+  // The owner released it: nothing to run, the watch is the proof.
+  if (r.handRelease) return { step: "start-watch" };
   const c = r.candidate;
   if (!c)
     return {
@@ -1670,6 +1787,21 @@ function watchingStep(view: ResponseView): ResponseStep {
   if (!(view.now >= Date.parse(r.watch.deadline))) return NONE;
   const name = primaryName(view);
   const state = primaryState(view);
+  // Released by hand: passing the whole watch is fixed too, and nothing
+  // Sessions did is there to roll back.
+  if (r.handRelease) {
+    if (watched.every((id) => view.evaluations.get(id)?.state === "ok"))
+      return {
+        step: "resolve",
+        fixedBy: "agents-with-you",
+        detail: `${watched.map((id) => view.signals.get(id)?.name ?? id).join(", ")} passed through the watch after the release`,
+      };
+    return {
+      step: "needs-you",
+      kind: "no-action",
+      reason: `${name} is still ${state} after PR #${r.handRelease.number} was merged. If it isn't released yet, release it, then mark it fixed or send it back`,
+    };
+  }
   const steps = r.candidate
     ? changeFacts({ plan: r.candidate.plan, settings, prFiles: [] })
     : { error: "" };

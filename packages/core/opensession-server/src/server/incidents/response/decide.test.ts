@@ -3026,7 +3026,9 @@ test("verifying a fix proven after release: unproven asks the owner to merge and
   });
   expect(needsYouOptions("unproven", r)).toEqual([
     "approve",
+    "release-watch",
     "send-back",
+    "resolve",
     "close",
   ]);
   // A refuted claim is the fix's own problem: the investigator gets it back.
@@ -3238,5 +3240,63 @@ test("an agent stopped while the sandbox image was still being built starts agai
     role: "investigator",
     round: 1,
     attempt: 2,
+  });
+});
+
+test("Deploy the fix is offered on an unproven card only when it can work; else the card says why", () => {
+  const unproven = (pr: Partial<PrSnapshot>) =>
+    response({
+      phase: "needs-you",
+      candidate: candidate({ pr: prSnapshot(pr) }),
+      verdict: {
+        round: 1,
+        at: iso(0),
+        verdict: "not-certain",
+        reasons: ["Only the release can show it"],
+        verifiedSha: "abc1234",
+      },
+      needsYou: {
+        kind: "unproven",
+        reason:
+          "The fix can only be proven after release: Only the release can show it",
+        since: iso(0),
+        resumePhase: "verifying",
+      },
+    });
+  // Checks pass and the project deploys: every way out.
+  expect(needsYouOptions("unproven", unproven({}), defaultSettings)).toEqual([
+    "approve",
+    "release-watch",
+    "send-back",
+    "resolve",
+    "close",
+  ]);
+  // A required check fails: merging would only send it back.
+  const failing = unproven({ failingChecks: ["ci-success"] });
+  expect(needsYouOptions("unproven", failing, defaultSettings)).toEqual([
+    "release-watch",
+    "send-back",
+    "resolve",
+    "close",
+  ]);
+  expect(
+    nextActionFor(incident("needs-you", failing), defaultSettings),
+  ).toMatchObject({
+    reason:
+      "The fix can only be proven after release: Only the release can show it. Deploy the fix isn't offered: check ci-success fails on PR #12.",
+  });
+  // No deploy action: nothing would release the merged fix.
+  const manual = { ...defaultSettings, actions: [] };
+  expect(needsYouOptions("unproven", unproven({}), manual)).toEqual([
+    "release-watch",
+    "send-back",
+    "resolve",
+    "close",
+  ]);
+  expect(
+    nextActionFor(incident("needs-you", unproven({})), manual),
+  ).toMatchObject({
+    reason:
+      "The fix can only be proven after release: Only the release can show it. Deploy the fix isn't offered: no deploy action is declared for acme.",
   });
 });

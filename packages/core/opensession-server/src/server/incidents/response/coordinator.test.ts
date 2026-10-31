@@ -3758,7 +3758,7 @@ test("a fix proven only after release reaches the verifier; unproven, the owner 
   expect(i?.response?.next).toMatchObject({
     kind: "needs-you",
     needsYou: "unproven",
-    options: ["approve", "send-back", "close"],
+    options: ["approve", "release-watch", "send-back", "resolve", "close"],
   });
   expect(i?.response?.next).not.toMatchObject({
     reason: expect.stringContaining("problem stopped"),
@@ -3768,6 +3768,136 @@ test("a fix proven only after release reaches the verifier; unproven, the owner 
   ).toMatchObject({ state: "deploying" });
   await advanceIncident(w.incident.id, w.deps);
   expect(w.merges).toEqual([{ ghRepo: "acme/web", n: 12, sha: "abc1234" }]);
+});
+
+/** An after-release fix the verifier could not prove: the unproven card. */
+async function toUnproven(w: Awaited<ReturnType<typeof world>>) {
+  w.evaluate("sig-a", "ok");
+  w.deps.proof = async (input) => ({
+    round: input.round,
+    at: new Date(w.clock).toISOString(),
+    baseline: {
+      samples: [1, 2, 3].map(() => ({
+        at: new Date(w.clock).toISOString(),
+        result: "ok" as const,
+        detail: "200",
+      })),
+      verdict: "passes",
+    },
+    candidate: { kind: "after-deploy", samples: [], verdict: "after-deploy" },
+  });
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-1",
+    fence({
+      ...investigatorReport,
+      check: {
+        kind: "after-deploy",
+        reason: "A request now can't tell before from after",
+      },
+    }),
+    { prUrl: "https://github.com/acme/web/pull/12" },
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  w.finish(
+    "child-2",
+    fence({
+      ...goodVerifier,
+      verdict: "not-certain",
+      reasons: ["Only the release can show it"],
+      proofAccepted: false,
+    }),
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.needsYou?.kind).toBe(
+    "unproven",
+  );
+}
+
+test("I'll release it myself: Sessions waits for the merge, then watches the signal and resolves", async () => {
+  const w = await world();
+  await toUnproven(w);
+  let state: "OPEN" | "MERGED" | "CLOSED" = "OPEN";
+  w.deps.prState = (_project, url) =>
+    url === "https://github.com/acme/web/pull/12" ? state : undefined;
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "release-watch",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toMatchObject({ state: "deploying" });
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  // Nothing is merged or run: the owner releases it.
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+  expect(i?.state).toBe("deploying");
+  expect(i?.response?.next).toEqual({
+    kind: "working",
+    detail: "Waiting for Bo to merge and release PR #12",
+  });
+  state = "MERGED";
+  w.clock += 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("watching");
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+  w.clock += 60_000;
+  w.evaluate("sig-a", "ok");
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("resolved");
+});
+
+test("I'll release it myself: a fix still failing after the watch comes back to the owner, never rolled back", async () => {
+  const w = await world();
+  await toUnproven(w);
+  w.deps.prState = () => "MERGED";
+  w.clock += 60_000;
+  await applyOwnerDecision(
+    w.incident.id,
+    "release-watch",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("watching");
+  w.evaluate("sig-a", "failing");
+  w.clock += 3_600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.needsYou?.reason).toContain(
+    "Search is still failing after PR #12 was merged",
+  );
+  expect(w.actions).toEqual([]);
+});
+
+test("I'll release it myself: a pull request closed without merging comes back to the owner", async () => {
+  const w = await world();
+  await toUnproven(w);
+  w.deps.prState = () => "CLOSED";
+  await applyOwnerDecision(
+    w.incident.id,
+    "release-watch",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.needsYou).toMatchObject({
+    kind: "merge",
+    reason: "PR #12 was closed without being merged",
+  });
 });
 
 test("a proof that stopped is measured again when the signal fails again, instead of saying it stopped", async () => {
