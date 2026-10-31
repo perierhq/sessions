@@ -688,7 +688,15 @@ function staleWaiting(view: ResponseView): ResponseStep | undefined {
   const check = failedCheckAt(view.primaryRecent, problemAt);
   const detail = check?.detail.trim() ?? "";
   const when = `${hhmmUtc(problemAt)} UTC`;
-  const cause = failingParts(r.openedOn?.detail ?? "");
+  // An incident whose fix loop did not record it (one that started at the
+  // watch level, or before this was recorded): the recent checks at its
+  // open, while they still reach back that far.
+  const cause = failingParts(
+    r.openedOn?.detail ??
+      failedCheckAt(view.primaryRecent, Date.parse(incident.openedAt))
+        ?.detail ??
+      "",
+  );
   const parts = failingParts(detail);
   if (cause.length && parts.length && parts.every((p) => !cause.includes(p)))
     return {

@@ -3453,3 +3453,23 @@ test("a different part failing is shown apart from the incident's cause, without
     ),
   });
 });
+
+test("without a recorded opening check, the one in the recent checks at the open tells the parts apart", () => {
+  const back = waitingOn("unproven", {
+    lastProblemAt: iso(-5 * 60_000),
+    openedAt: iso(-20 * 60_000),
+  });
+  const step = decideNextStep({
+    ...back,
+    primaryRecent: [
+      { at: iso(-21 * 60_000), result: "fail", detail: "search: slow" },
+      { at: iso(-5 * 60_000), result: "fail", detail: "betterfare: down" },
+    ],
+  });
+  expect(step).toMatchObject({
+    step: "transition",
+    phase: "needs-you",
+    detail:
+      "A different part failed at 11:55 UTC: betterfare: down. This incident is about search",
+  });
+});
