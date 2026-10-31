@@ -39,6 +39,9 @@ export const HAND_RELEASE_REFRESH_MS = 600_000;
 /** How often a pull request whose checks GitHub Actions did not run is
  *  read again while the owner fixes it. */
 export const ACTIONS_RECHECK_MS = 600_000;
+/** How often a card that holds Deploy the fix back for failing checks
+ *  reads its pull request again. */
+export const CHECKS_RECHECK_MS = 600_000;
 /** A release this close before the incident opened is rolled back first. */
 export const ROLLBACK_FIRST_WINDOW_MS = 1_800_000;
 /** Rollback-first's parallel investigator, refused by the access gate for a
@@ -110,7 +113,12 @@ export type ResponseStep =
     }
   | { step: "cancel-agents"; reason: string; for: CancelReason }
   | { step: "run-proof" }
-  | { step: "fetch-pr"; purpose: "verify" | "merge" | "note" }
+  | {
+      step: "fetch-pr";
+      /** `recheck`: a waiting card's pull request read again; an error
+       *  leaves the card as it is. */
+      purpose: "verify" | "merge" | "note" | "recheck";
+    }
   | {
       step: "transition";
       to: IncidentState | null;

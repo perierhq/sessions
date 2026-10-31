@@ -53,6 +53,7 @@ import {
   AGENT_MAX_MS,
   FINAL_TEXT_GRACE_MS,
   ACTIONS_RECHECK_MS,
+  CHECKS_RECHECK_MS,
   HAND_RELEASE_REFRESH_MS,
   PR_CHECKS_WAIT_MS,
   PR_REFRESH_MS,
@@ -585,7 +586,7 @@ function actionsDownWait(view: ResponseView): ResponseStep | undefined {
   )
     return undefined;
   if (!(view.now - Date.parse(pr.fetchedAt) < ACTIONS_RECHECK_MS))
-    return { step: "fetch-pr", purpose: "verify" };
+    return { step: "fetch-pr", purpose: "recheck" };
   if (pr.actionsBlocked) return NONE;
   return {
     step: "transition",
@@ -594,6 +595,34 @@ function actionsDownWait(view: ResponseView): ResponseStep | undefined {
     detail: `GitHub Actions runs for ${pr.ghRepo} again`,
     patch: { needsYou: undefined },
   };
+}
+
+/**
+ * A card that would offer Deploy the fix but holds it back because a check
+ * fails on the pull request (approveBlocked): the pull request is read
+ * again every CHECKS_RECHECK_MS, so the button comes back once the checks
+ * pass. The tick reads such an incident.
+ */
+export function waitingOnChecks(incident: Incident): boolean {
+  const r = incident.response;
+  const ny = r?.needsYou;
+  const pr = r?.candidate?.pr;
+  return (
+    incident.state === "needs-you" &&
+    !!ny &&
+    !!pr &&
+    pr.state === "OPEN" &&
+    pr.failingChecks.length > 0 &&
+    offersApprove(ny.kind, r!)
+  );
+}
+
+function checksRecheck(view: ResponseView): ResponseStep | undefined {
+  if (!waitingOnChecks(view.incident)) return undefined;
+  const pr = view.incident.response!.candidate!.pr!;
+  return view.now - Date.parse(pr.fetchedAt) < CHECKS_RECHECK_MS
+    ? undefined
+    : { step: "fetch-pr", purpose: "recheck" };
 }
 
 /** A setup problem whose readiness changed: Try again and the place to fix
@@ -839,7 +868,11 @@ function guards(view: ResponseView): ResponseStep | undefined {
         patch: { needsYou: undefined },
       };
     return (
-      actionsDownWait(view) ?? setupChanged(view) ?? staleWaiting(view) ?? NONE
+      actionsDownWait(view) ??
+      setupChanged(view) ??
+      staleWaiting(view) ??
+      checksRecheck(view) ??
+      NONE
     );
   }
   if (!r) return undefined;
@@ -1795,7 +1828,7 @@ function handReleaseStep(
     !view.handReleasePr &&
     (!pr || view.now - Date.parse(pr.fetchedAt) >= HAND_RELEASE_REFRESH_MS)
   )
-    return { step: "fetch-pr", purpose: "merge" };
+    return { step: "fetch-pr", purpose: "recheck" };
   return NONE;
 }
 

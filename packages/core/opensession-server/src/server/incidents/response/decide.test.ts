@@ -25,6 +25,7 @@ import {
   manualRollbackAvailable,
   needsYouOptions,
   nextActionFor,
+  waitingOnChecks,
   ownSignalIds,
   rollbackFirstApplies,
   waitingMayBeStale,
@@ -3373,7 +3374,7 @@ test("checks GitHub Actions never ran: a setup problem before any verifier, resu
         fetchedAt: iso(-700_000),
       }),
     ),
-  ).toEqual({ step: "fetch-pr", purpose: "verify" });
+  ).toEqual({ step: "fetch-pr", purpose: "recheck" });
   // The checks ran: back to proving, where the verifier starts.
   expect(decideNextStep(waiting({ failingChecks: [] }))).toMatchObject({
     step: "transition",
@@ -3472,4 +3473,48 @@ test("without a recorded opening check, the one in the recent checks at the open
     detail:
       "A different part failed at 11:55 UTC: betterfare: down. This incident is about search",
   });
+});
+
+test("a card that holds Deploy the fix back for failing checks reads the pull request again now and then", () => {
+  const card = (fetchedAt: string) =>
+    incident(
+      "needs-you",
+      response({
+        phase: "needs-you",
+        candidate: candidate({
+          pr: prSnapshot({ failingChecks: ["ci"], fetchedAt }),
+        }),
+        verdict: {
+          round: 1,
+          at: iso(0),
+          verdict: "not-certain",
+          reasons: ["Only the release can show it"],
+          verifiedSha: "abc1234",
+        },
+        needsYou: {
+          kind: "unproven",
+          reason: "The fix can only be proven after release",
+          since: iso(-3_600_000),
+          resumePhase: "verifying",
+        },
+      }),
+      { lastProblemAt: iso(-4_000_000) },
+    );
+  expect(waitingOnChecks(card(iso(-60_000)))).toBe(true);
+  expect(decideNextStep(view({ incident: card(iso(-60_000)) }))).toEqual({
+    step: "none",
+  });
+  // Read again quietly: a GitHub error leaves the card as it is.
+  expect(decideNextStep(view({ incident: card(iso(-700_000)) }))).toEqual({
+    step: "fetch-pr",
+    purpose: "recheck",
+  });
+  const green = incident(
+    "needs-you",
+    response({
+      ...card(iso(0)).response!,
+      candidate: candidate({ pr: prSnapshot() }),
+    }),
+  );
+  expect(waitingOnChecks(green)).toBe(false);
 });

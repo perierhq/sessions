@@ -88,6 +88,7 @@ import {
   roundRan,
   verifierFindingsOf,
   waitingMayBeStale,
+  waitingOnChecks,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
 import { appendLedger, emptyResponse, spendInMonth } from "./ledger";
@@ -2054,7 +2055,7 @@ async function proveCandidate(
 
 async function fetchPr(
   view: ResponseView,
-  purpose: "verify" | "merge" | "note",
+  purpose: "verify" | "merge" | "note" | "recheck",
   d: CoordinatorDeps,
 ): Promise<boolean> {
   const { incident, settings } = view;
@@ -2064,9 +2065,10 @@ async function fetchPr(
   const prUrl = note
     ? (view.agents.get(investigator?.sessionId ?? "")?.prUrl ??
       investigator?.prUrl)
-    : r.candidate?.prUrl;
+    : (r.candidate?.prUrl ??
+      (purpose === "recheck" ? r.candidate?.pr?.url : undefined));
   if (!prUrl) {
-    if (note) return false;
+    if (note || purpose === "recheck") return false;
     return needsYou(
       view,
       {
@@ -2083,6 +2085,15 @@ async function fetchPr(
     { ghRepoOf: d.ghRepoOf },
   );
   if ("error" in snapshot) {
+    // A waiting card read again: it stays as it is, and the next read
+    // tries again.
+    if (purpose === "recheck") {
+      console.warn(
+        `[incidents] Could not read ${prUrl} again:`,
+        snapshot.error,
+      );
+      return false;
+    }
     if (!note)
       return needsYou(
         view,
@@ -2809,7 +2820,10 @@ function needsAttention(
       // A setup problem: Try again follows whether the agents could start.
       // A proof card whose signal failed again is brought up to date.
       return (
-        working || r?.needsYou?.kind === "setup" || waitingMayBeStale(incident)
+        working ||
+        r?.needsYou?.kind === "setup" ||
+        waitingMayBeStale(incident) ||
+        waitingOnChecks(incident)
       );
     case "done":
       return working;
