@@ -119,16 +119,18 @@ export function SwipeCard<A extends string>({
       custom={custom}
       transition={{ type: "spring", stiffness: 400, damping: 34 }}
     >
-      {/* Swipe intent stamps. */}
+      {/* Swipe intent stamps sit on the trailing edge, so the card uncovers
+          them as it moves: a right swipe shows its stamp top left, a left
+          swipe top right. */}
       <motion.div
-        className="pointer-events-none absolute left-4 top-16 z-10 rounded-md border-2 border-red px-2.5 py-1 text-sm font-bold tracking-wide text-red"
-        style={{ opacity: leftTint, rotate: -12 }}
+        className="pointer-events-none absolute right-4 top-16 z-10 rounded-md border-2 border-red px-2.5 py-1 text-sm font-bold tracking-wide text-red"
+        style={{ opacity: leftTint, rotate: 12 }}
       >
         {stampLeft}
       </motion.div>
       <motion.div
-        className="pointer-events-none absolute right-4 top-16 z-10 rounded-md border-2 border-green px-2.5 py-1 text-sm font-bold tracking-wide text-green"
-        style={{ opacity: rightTint, rotate: 12 }}
+        className="pointer-events-none absolute left-4 top-16 z-10 rounded-md border-2 border-green px-2.5 py-1 text-sm font-bold tracking-wide text-green"
+        style={{ opacity: rightTint, rotate: -12 }}
       >
         {stampRight}
       </motion.div>
