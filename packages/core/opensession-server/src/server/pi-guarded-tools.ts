@@ -15,7 +15,7 @@ import {
   writeFile as fsWriteFile,
 } from "fs/promises";
 import { basename, dirname, join, resolve, sep } from "path";
-import { SHIPPED_SKILLS_DIR } from "./skill-paths";
+import { SHIPPED_SKILLS_DIR, instanceSkillsDir } from "./skill-paths";
 
 // ── Guarded local tools (the containment invariant) ──────────────────────────
 //
@@ -240,13 +240,17 @@ export function makeGuardedToolOps(
   };
 }
 
-/** The skills this server ships, which a Sandbox run may read from here
- *  (they exist nowhere else; remote-workspace.ts). */
-export function shippedSkillRoots(): string[] {
-  const roots = [resolve(SHIPPED_SKILLS_DIR)];
-  try {
-    roots.push(realpathSync(SHIPPED_SKILLS_DIR));
-  } catch {}
+/** The skills kept on this server, shipped and instance ones, which a
+ *  Sandbox run may read from here (they exist nowhere else;
+ *  remote-workspace.ts). */
+export function hostSkillRoots(): string[] {
+  const roots: string[] = [];
+  for (const dir of [SHIPPED_SKILLS_DIR, instanceSkillsDir()]) {
+    roots.push(resolve(dir));
+    try {
+      roots.push(realpathSync(dir));
+    } catch {}
+  }
   return [...new Set(roots)];
 }
 

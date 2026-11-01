@@ -206,6 +206,17 @@ session is working on. A session's own checkout adds to the set with its
 the shipped one. Product-specific workflows belong in that product's
 repository instead.
 
+**Instance skills** sit between the two: skills you create, upload or edit
+in Settings → Skills, which every session on this server loads whatever repo
+it is on. They are plain folders under `~/.opensession/skills/<name>/` (or
+`<OPENSESSION_STATE_DIR>/.opensession-skills/` on an isolated instance), so a
+skill moves in and out as a folder. An upload can be the skill's folder, a
+`.zip` or `.skill` archive of it, or a lone `SKILL.md`. A checkout's own skill
+beats an instance skill of the same name, and an instance skill beats a
+shipped one. Support sessions load only their project's skills, so instance
+skills stay out of customer replies. Automations cannot change instance
+skills: they are text every later session reads.
+
 The list of directories is
 `packages/core/opensession-server/src/server/skill-paths.ts`, read by both the
 runner and the composer's "/" menu so the menu cannot offer a skill a turn would not

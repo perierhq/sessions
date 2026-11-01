@@ -351,10 +351,11 @@ model above:
 
 **Skills** are prompt-level extensions — a directory with a `SKILL.md` the
 engine loads on demand, invocable as a `/`-command in the composer. They load
-from the session checkout's `.claude/skills/` and `.agents/skills/`, plus Open
+from the session checkout's `.claude/skills/` and `.agents/skills/`, then the
+instance skills created, uploaded and edited in Settings → Skills, then Open
 Session's shipped or package-installed skills directory
-(`OPENSESSION_SKILLS_DIR` can override it). Host-account and engine-embedded
-skills are disabled.
+(`OPENSESSION_SKILLS_DIR` can override it); the first of a name wins.
+Host-account and engine-embedded skills are disabled.
 
 See [docs/extending.md](docs/extending.md) for both, plus integrations and
 providers.

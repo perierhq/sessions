@@ -9,11 +9,13 @@
  * menu cannot drift from what a turn actually loads.
  *
  * Order is precedence: pi keeps the FIRST skill it sees for a name, so a
- * checkout that ships its own `simplify` beats Open Session's.
+ * checkout that ships its own `simplify` beats an instance skill of that
+ * name, and an instance skill beats Open Session's.
  */
 
 import { existsSync, readFileSync, realpathSync } from "fs";
 import { join, resolve } from "path";
+import { stateDir } from "./paths";
 
 /**
  * Skills Open Session ships for every session, whatever repo it is on. They
@@ -29,14 +31,24 @@ export const SHIPPED_SKILLS_DIR =
   join(resolve(import.meta.dir, "../../../../.."), ".agents", "skills");
 
 /**
+ * Instance skills: the ones people add, upload and edit in Settings → Skills
+ * (server/instance-skills.ts). Every session loads them, after the checkout's
+ * own and before the shipped set. Resolved per call, like every state path,
+ * so a dev instance with its own OPENSESSION_STATE_DIR keeps its own set.
+ */
+export function instanceSkillsDir(): string {
+  return stateDir("skills");
+}
+
+/**
  * Every skills directory a run in `worktreeDir` loads, most specific first.
  * Missing directories are dropped: pi reports a diagnostic for a skill path
  * that does not exist, and most checkouts carry neither directory.
  *
- * `projectOnly` keeps the checkout's own directories and drops the shipped
- * one: a support session answers customer mail for one project, and the
- * shipped directory can be an installer-managed one full of a person's
- * own skills (`OPENSESSION_SKILLS_DIR`).
+ * `projectOnly` keeps the checkout's own directories and drops the instance
+ * and shipped ones: a support session answers customer mail for one project,
+ * and both of those hold skills written for the people running this server
+ * (instance skills, or an installer-managed `OPENSESSION_SKILLS_DIR`).
  */
 export function skillSearchPaths(
   worktreeDir?: string,
@@ -49,7 +61,7 @@ export function skillSearchPaths(
           join(worktreeDir, ".agents", "skills"),
         ]
       : []),
-    ...(opts.projectOnly ? [] : [SHIPPED_SKILLS_DIR]),
+    ...(opts.projectOnly ? [] : [instanceSkillsDir(), SHIPPED_SKILLS_DIR]),
   ];
   const seen = new Set<string>();
   const out: string[] = [];

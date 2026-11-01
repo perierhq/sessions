@@ -69,6 +69,7 @@ import { NotificationsPanel } from "./settings/NotificationsPanel";
 import { PapercutsPanel } from "./settings/PapercutsPanel";
 import { PreferencesPanel } from "./settings/PreferencesPanel";
 import { ShortcutsPanel } from "./settings/ShortcutsPanel";
+import { SkillsPanel } from "./settings/SkillsPanel";
 import { PrewarmingPanel } from "./settings/PrewarmingPanel";
 import {
   ProjectNavRows,
@@ -293,6 +294,7 @@ function SectionPanel({
       {section === "members" && <MembersPanel />}
       {section === "authentication" && <AuthenticationPanel />}
       {section === "library" && <LibraryPanel />}
+      {section === "skills" && <SkillsPanel />}
       {section === "integrations" && <IntegrationsPanel />}
       {section === "inboxes" && <InboxesPanel />}
       {section === "audit" && <AuditPanel />}

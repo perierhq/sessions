@@ -167,7 +167,15 @@ export const SETTINGS_KEYWORDS = {
     "quota",
   ],
   runners: ["run hosts", "machines", "workers", "capacity", "detached runs"],
-  library: ["templates", "prompts", "skills", "starters", "commands"],
+  library: ["templates", "prompts", "starters", "commands"],
+  skills: [
+    "skill.md",
+    "agent skills",
+    "slash commands",
+    "instructions",
+    "upload skill",
+    "playbooks",
+  ],
   sandboxes: [
     "daytona",
     "boat",

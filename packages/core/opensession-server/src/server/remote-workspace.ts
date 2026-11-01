@@ -18,8 +18,9 @@
  *
  * Paths are the Sandbox's own. The model sees the Sandbox checkout path as
  * its working directory, and a relative path resolves against it. The one
- * host-side exception is read access to the skills this server ships, which
- * exist only here (see `hostReadableRoots`).
+ * host-side exception is read access to the skills kept on this server
+ * (shipped and instance skills), which exist only here (see
+ * `hostReadableRoots`).
  */
 
 import { registerMemoryGauge } from "./memory-gauges";
@@ -500,7 +501,7 @@ export function remoteWorkspaceForRun(
 
 /**
  * Directories this server may read on the model's behalf in a remote run:
- * the skills it ships. They exist only here, and the model is told their
+ * the skills it keeps (shipped and instance skills). They exist only here, and the model is told their
  * paths, so read/ls/find under them are served from local disk. Read only;
  * nothing else on this machine is reachable.
  */
@@ -516,7 +517,7 @@ export function makeRemoteToolOps(
   workspace: RemoteWorkspace,
   hostReadableRoots: string[] = [],
 ) {
-  // Lexically under a shipped root, and still there once symlinks resolve.
+  // Lexically under a skill root, and still there once symlinks resolve.
   const local = (path: string) => {
     if (!underRoot(path, hostReadableRoots)) return false;
     try {
@@ -530,7 +531,7 @@ export function makeRemoteToolOps(
   const readOnlyHere = (path: string) => {
     if (local(path))
       throw new RemoteWorkspaceError(
-        `${path} is one of Open Session's shipped skills and is read only.`,
+        `${path} is one of this server's skills and is read only here. Edit instance skills in Settings, Skills.`,
       );
   };
   return {

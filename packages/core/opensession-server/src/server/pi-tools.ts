@@ -21,7 +21,7 @@ import {
 import {
   makeGuardedGrepExecute,
   makeGuardedToolOps,
-  shippedSkillRoots,
+  hostSkillRoots,
 } from "./pi-guarded-tools";
 import { makePiBashTool } from "./pi-bash-tool";
 import {
@@ -159,7 +159,7 @@ export function buildPiToolset(input: {
   // The session scratch dir is where the runner points $TMPDIR, so files a
   // command saves there (screenshots) are readable by the file tools too.
   const guardedOps = remote
-    ? makeRemoteToolOps(remote, shippedSkillRoots())
+    ? makeRemoteToolOps(remote, hostSkillRoots())
     : makeGuardedToolOps(cwd, opts.scratchDir ? [opts.scratchDir] : []);
   const commandEnv = remote
     ? remoteCommandEnv(
