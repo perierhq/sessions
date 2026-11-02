@@ -21,12 +21,22 @@
  *   commits on another local branch), or a Sandbox that cannot be woken or
  *   checked: it is kept, put back to sleep, and reported in housekeeping
  *   health with the reason. Work is never deleted unbanked.
+ * - Neither the machine nor its disk exists any more: nothing to bank.
  *
- * A sleeping Sandbox is woken for the check. A kept one is not woken again
- * on later passes until its session shows new activity.
+ * Where the provider can read the disk without starting the machine
+ * (`inspectDisk`; for This machine (container), a throwaway read-only
+ * container on the home volume), the check runs there first: a clean
+ * Sandbox goes without being woken, and a Sandbox is woken only to
+ * checkpoint work. That also covers a pod that is gone or cannot start
+ * while its volume holds the working copy: clean, it goes; with work, it
+ * is kept with what the work is and why no checkpoint could be taken.
+ * Otherwise, or when the disk cannot be read, a sleeping Sandbox is woken
+ * for the check. A disk that cannot be read never counts as gone. A kept
+ * Sandbox is not checked again on later passes until its session shows new
+ * activity.
  */
 
-import type { Sandbox } from "./sandbox";
+import type { ExecResult, Sandbox } from "./sandbox";
 import { isRemoteSandboxProvider } from "./sandbox/config";
 import type { CheckpointOutcome } from "./sandbox/checkpoint";
 import type { SandboxCheckpointRecord, UnifiedSession } from "./types";
@@ -45,6 +55,14 @@ export type SandboxWorkBankDeps = {
   wake: (
     session: UnifiedSession,
   ) => Promise<{ sandbox: Sandbox; woke: boolean } | null>;
+  /** Run the check script on the Sandbox's disk without starting its
+   *  machine: its output, null when the disk no longer exists, undefined
+   *  when the provider cannot read a disk that way. Throws when the disk
+   *  cannot be read; the check then wakes the Sandbox instead. */
+  inspectDisk?: (
+    session: UnifiedSession,
+    script: string,
+  ) => Promise<ExecResult | null | undefined>;
   /** Put back to sleep a Sandbox the check woke. */
   sleep: (session: UnifiedSession) => Promise<void>;
   checkpoint: (
@@ -89,71 +107,130 @@ export async function bankSandboxWork(
   const key = `${record.sandboxId}\n${session.lastActivity}`;
   const known = d.memo.get(session.id);
   if (known?.key === key) return { retire: false, reason: known.reason };
-  const keep = (reason: string): SandboxWorkVerdict => {
-    d.memo.set(session.id, { key, reason });
+  const settle = (verdict: SandboxWorkVerdict): SandboxWorkVerdict => {
+    if (verdict.retire) {
+      d.memo.delete(session.id);
+      return verdict;
+    }
+    d.memo.set(session.id, { key, reason: verdict.reason });
     console.warn(
-      `[sandbox-sweep] ${session.id}: kept ${record.sandboxId}: ${reason}`,
+      `[sandbox-sweep] ${session.id}: kept ${record.sandboxId}: ${verdict.reason}`,
     );
-    return { retire: false, reason };
+    return verdict;
   };
+
+  // The disk first, where the provider can read it without starting the
+  // machine: a clean Sandbox then goes without being woken at all.
+  let diskError: string | null = null;
+  if (d.inspectDisk) {
+    try {
+      const result = await d.inspectDisk(session, SANDBOX_WORK_CHECK_SCRIPT);
+      if (result === null) return settle({ retire: true, why: "gone" });
+      if (result !== undefined) {
+        const work = readWork(result);
+        if (work.state !== "work") return settle(work.verdict);
+        return settle(await bankFoundWork(session, work.what, d));
+      }
+    } catch (error) {
+      diskError = message(error);
+    }
+  }
 
   let live: { sandbox: Sandbox; woke: boolean } | null;
   try {
     live = await d.wake(session);
   } catch (error) {
-    return keep(
-      `could not wake the Sandbox to check its working copy: ${message(error)}`,
+    return settle({
+      retire: false,
+      reason:
+        `could not wake the Sandbox to check its working copy: ${message(error)}` +
+        (diskError ? `; its disk could not be read either: ${diskError}` : ""),
+    });
+  }
+  if (!live)
+    return settle(
+      diskError
+        ? {
+            retire: false,
+            reason: `the Sandbox's machine is gone and its disk could not be checked: ${diskError}`,
+          }
+        : { retire: true, why: "gone" },
     );
-  }
-  if (!live) {
-    d.memo.delete(session.id);
-    return { retire: true, why: "gone" };
-  }
   const verdict = await judge(session, live.sandbox, d);
-  if (verdict.retire) {
-    d.memo.delete(session.id);
-    return verdict;
-  }
-  if (live.woke)
-    await d
-      .sleep(session)
-      .catch((error) =>
-        console.warn(
-          `[sandbox-sweep] ${session.id}: could not put ${record.sandboxId} back to sleep: ${message(error)}`,
-        ),
-      );
-  return keep(verdict.reason);
+  if (!verdict.retire && live.woke) await putBack(session, d);
+  return settle(verdict);
 }
 
-async function judge(
+/** Work the disk check found: wake the Sandbox only to checkpoint it. */
+async function bankFoundWork(
   session: UnifiedSession,
-  sandbox: Sandbox,
+  what: string,
   d: SandboxWorkBankDeps,
 ): Promise<SandboxWorkVerdict> {
-  const cwd = sandbox.cwd || session.worktreeDir || "";
-  let line: string;
+  let live: { sandbox: Sandbox; woke: boolean } | null;
   try {
-    const result = await sandbox.exec(
-      ["bash", "-c", SANDBOX_WORK_CHECK_SCRIPT],
-      { env: { OS_CWD: cwd }, timeoutMs: CHECK_TIMEOUT_MS },
-    );
-    line = result.stdout.trim().split("\n").at(-1) ?? "";
-    if (result.exitCode !== 0)
-      throw new Error(
-        `exit ${result.exitCode}: ${(result.stderr || result.stdout).trim()}`,
-      );
+    live = await d.wake(session);
   } catch (error) {
     return {
       retire: false,
-      reason: `could not check the working copy: ${message(error)}`,
+      reason: `${what}; could not wake the Sandbox to checkpoint the work: ${message(error)}`,
     };
   }
-  if (line === "none") return { retire: true, why: "clean" };
+  if (!live)
+    return {
+      retire: false,
+      reason: `${what}; the Sandbox's machine is gone, so no checkpoint can be taken`,
+    };
+  const verdict = await checkpointWork(session, live.sandbox, what, d);
+  if (!verdict.retire && live.woke) await putBack(session, d);
+  return verdict;
+}
+
+async function putBack(
+  session: UnifiedSession,
+  d: SandboxWorkBankDeps,
+): Promise<void> {
+  await d
+    .sleep(session)
+    .catch((error) =>
+      console.warn(
+        `[sandbox-sweep] ${session.id}: could not put ${session.sandbox?.sandboxId} back to sleep: ${message(error)}`,
+      ),
+    );
+}
+
+type Work =
+  | { state: "settled"; verdict: SandboxWorkVerdict }
+  | { state: "work"; what: string };
+
+/** The check script's verdict on its own: clean, kept, or work a
+ *  checkpoint can hold. */
+function readWork(result: {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}): Work {
+  const line = result.stdout.trim().split("\n").at(-1) ?? "";
+  if (result.exitCode !== 0)
+    return {
+      state: "settled",
+      verdict: {
+        retire: false,
+        reason: `could not check the working copy: ${message(
+          `exit ${result.exitCode}: ${(result.stderr || result.stdout).trim()}`,
+        )}`,
+      },
+    };
+  if (line === "none")
+    return { state: "settled", verdict: { retire: true, why: "clean" } };
   const match = /^work (\d+) (\d+) (\d+)$/.exec(line);
   if (!match)
     return {
-      retire: false,
-      reason: `could not check the working copy: ${line.slice(0, 120)}`,
+      state: "settled",
+      verdict: {
+        retire: false,
+        reason: `could not check the working copy: ${line.slice(0, 120)}`,
+      },
     };
   const [dirty, ahead, other] = match.slice(1).map(Number) as [
     number,
@@ -162,16 +239,53 @@ async function judge(
   ];
   if (other > 0)
     return {
-      retire: false,
-      reason: `${other} unpushed commit(s) on other branches`,
+      state: "settled",
+      verdict: {
+        retire: false,
+        reason: `${other} unpushed commit(s) on other branches`,
+      },
     };
-  if (dirty === 0 && ahead === 0) return { retire: true, why: "clean" };
+  if (dirty === 0 && ahead === 0)
+    return { state: "settled", verdict: { retire: true, why: "clean" } };
   const what = [
     dirty ? `${dirty} uncommitted path(s)` : "",
     ahead ? `${ahead} unpushed commit(s)` : "",
   ]
     .filter(Boolean)
     .join(" and ");
+  return { state: "work", what };
+}
+
+async function judge(
+  session: UnifiedSession,
+  sandbox: Sandbox,
+  d: SandboxWorkBankDeps,
+): Promise<SandboxWorkVerdict> {
+  const cwd = sandbox.cwd || session.worktreeDir || "";
+  let work: Work;
+  try {
+    work = readWork(
+      await sandbox.exec(["bash", "-c", SANDBOX_WORK_CHECK_SCRIPT], {
+        env: { OS_CWD: cwd },
+        timeoutMs: CHECK_TIMEOUT_MS,
+      }),
+    );
+  } catch (error) {
+    return {
+      retire: false,
+      reason: `could not check the working copy: ${message(error)}`,
+    };
+  }
+  if (work.state !== "work") return work.verdict;
+  return checkpointWork(session, sandbox, work.what, d);
+}
+
+async function checkpointWork(
+  session: UnifiedSession,
+  sandbox: Sandbox,
+  what: string,
+  d: SandboxWorkBankDeps,
+): Promise<SandboxWorkVerdict> {
   try {
     const outcome = await d.checkpoint(session, sandbox);
     if (outcome.state === "skipped")
@@ -208,6 +322,12 @@ async function defaultDeps(): Promise<SandboxWorkBankDeps> {
       if (!woken || (await woken.status()) !== "running")
         throw new Error(`${sandboxId} did not wake`);
       return { sandbox: woken, woke: true };
+    },
+    inspectDisk: async (session, script) => {
+      const { provider, sandboxId } = session.sandbox!;
+      return getSandboxProvider(provider).inspectDisk?.(sandboxId!, script, {
+        timeoutMs: CHECK_TIMEOUT_MS,
+      });
     },
     sleep: async (session) => {
       const { provider, sandboxId } = session.sandbox!;

@@ -261,6 +261,16 @@ export interface SandboxProvider {
   /** Persist a session-owned filesystem checkpoint after a clean turn.
    * Providers whose stopped sandboxes retain disk do not need this hook. */
   checkpoint?(sandboxId: string): Promise<void>;
+  /** Run a read-only `script` against the sandbox's working copy on its
+   *  disk without starting the machine (the archive sweep's work check,
+   *  sandbox-work-bank.ts). Null when the disk no longer exists; throws
+   *  when it cannot be read. Providers whose disk cannot be read without
+   *  the machine leave this undefined. */
+  inspectDisk?(
+    sandboxId: string,
+    script: string,
+    opts: { timeoutMs: number },
+  ): Promise<ExecResult | null>;
   /** Tear the sandbox down (session delete/archive). Workspace data outlives
    *  it where the provider stores it on the host (local worktrees always do).
    *  Strict cleanup rejects unless disposal is confirmed. */

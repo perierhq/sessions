@@ -1098,6 +1098,105 @@ describe("podman provider destroy", () => {
   });
 });
 
+describe("podman disk check", () => {
+  const SCRIPT = 'cd "$OS_CWD" && echo work 0 0 0';
+
+  test("reads a sleeping sandbox's working copy from its home volume without starting the pod", async () => {
+    const fake = fakePodman({ diskCheck: "work 2 1 0\n" });
+    const provider = new PodmanProvider(deps(fake));
+    const id = sessionId();
+    const names = podmanNames(id);
+    await provider.ensure({ sessionId: id });
+    await provider.pause(names.pod);
+    fake.calls.length = 0;
+    const result = await provider.inspectDisk(names.pod, SCRIPT, {
+      timeoutMs: 60_000,
+    });
+    expect(result).toEqual({ exitCode: 0, stdout: "work 2 1 0\n", stderr: "" });
+    expect(fake.state.running).toBe(false);
+    const runs = fake.calls.filter(({ argv }) => argv[0] === "run");
+    expect(runs.map(({ argv }) => argv)).toEqual([
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "1000:1000",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--security-opt",
+        "label=disable",
+        "--read-only",
+        "--pids-limit",
+        "64",
+        "--memory",
+        "512m",
+        "-v",
+        `${names.volume}:/home/ubuntu:ro,nosuid,nodev`,
+        "--env",
+        "OS_CWD=/home/ubuntu/worktrees/acme-main",
+        "--env",
+        "GIT_OPTIONAL_LOCKS=0",
+        IMAGE,
+        "/usr/bin/timeout",
+        "-k",
+        "5",
+        "60",
+        "/bin/bash",
+        "-c",
+        SCRIPT,
+      ],
+    ]);
+    expect(verbs(fake.calls)).not.toContain(`start ${names.workload}`);
+  });
+
+  test("a volume that no longer exists has nothing to check", async () => {
+    const fake = fakePodman();
+    const provider = new PodmanProvider(deps(fake));
+    const id = sessionId();
+    const names = podmanNames(id);
+    await provider.ensure({ sessionId: id });
+    await fake.run(["pod", "rm", "-f", "-t", "5", names.pod]);
+    await fake.run(["volume", "rm", names.volume]);
+    fake.calls.length = 0;
+    expect(
+      await provider.inspectDisk(names.pod, SCRIPT, { timeoutMs: 60_000 }),
+    ).toBeNull();
+    expect(fake.calls.some(({ argv }) => argv[0] === "run")).toBe(false);
+  });
+
+  test("a volume whose pod is gone is still read", async () => {
+    const fake = fakePodman({ diskCheck: "work 1 0 0\n" });
+    const provider = new PodmanProvider(deps(fake));
+    const id = sessionId();
+    const names = podmanNames(id);
+    await provider.ensure({ sessionId: id });
+    await fake.run(["pod", "rm", "-f", "-t", "5", names.pod]);
+    expect(await provider.get(names.pod)).toBeNull();
+    const result = await provider.inspectDisk(names.pod, SCRIPT, {
+      timeoutMs: 60_000,
+    });
+    expect(result?.stdout).toBe("work 1 0 0\n");
+  });
+
+  test("with the sandbox image missing, the check fails instead of building one", async () => {
+    const options: Parameters<typeof fakePodman>[0] = {};
+    const fake = fakePodman(options);
+    const provider = new PodmanProvider(deps(fake));
+    const id = sessionId();
+    const names = podmanNames(id);
+    await provider.ensure({ sessionId: id });
+    options.imageExists = false;
+    await expect(
+      provider.inspectDisk(names.pod, SCRIPT, { timeoutMs: 60_000 }),
+    ).rejects.toThrow(/image/);
+    expect(fake.calls.some(({ argv }) => argv[0] === "run")).toBe(false);
+  });
+});
+
 describe("podman driver", () => {
   test("exec passes env through a file, never in argv", async () => {
     const fake = fakePodman({ podExists: true, running: true });

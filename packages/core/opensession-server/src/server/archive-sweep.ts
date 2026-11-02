@@ -184,7 +184,7 @@ export async function runArchiveSweep(
       const since = retentionClock(s, d.archivedAt);
       if (since === null || since >= cutoff) continue;
       const outcome = await lane(s.id, () => retireIfBanked(s, d));
-      if (outcome.kept) kept.push({ id: s.id, reason: outcome.kept });
+      if ("kept" in outcome) kept.push({ id: s.id, reason: outcome.kept });
       else if (outcome.why === "gone") cleared.push(s.id);
       else {
         retired.push(s.id);
@@ -212,9 +212,7 @@ export async function runArchiveSweep(
   return { worktrees: removed, sandboxes: retired, cleared };
 }
 
-type RetireOutcome =
-  | { kept: string }
-  | { kept?: undefined; why: string; bytes: number };
+type RetireOutcome = { kept: string } | { why: string; bytes: number };
 
 /** Check the working copy, then destroy the Sandbox once its work is safe.
  *  Retired only when the destroy succeeded; its size is sampled before, as

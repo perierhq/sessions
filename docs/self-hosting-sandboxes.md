@@ -720,22 +720,29 @@ the window in days with `OPENSESSION_ARCHIVE_RETENTION_DAYS` (process or
 service env). The sweep runs 15 minutes after the server starts and then
 every six hours (`OPENSESSION_ARCHIVE_SWEEP_MINUTES`); `/api/health` shows
 how many sandboxes it removed and their measured size under
-`housekeeping.sandbox-sweep`, and `opensession doctor` prints the total. The
+`housekeeping.sandbox-sweep`, and `opensession doctor` prints the total. A
+sandbox counts as removed only once its destroy succeeded; a failed destroy
+keeps it, listed as kept with the error, and the next pass tries again. A
+session whose sandbox no longer exists only has its record cleared. The
 session's checkpoint is restored into the fresh sandbox its next prompt
 creates.
 
 The sandbox holds the session's working copy in its home volume, with no
 copy on the host, so the sweep checks it before destroying anything. It
-wakes a sleeping sandbox for the check. Uncommitted changes and unpushed
-commits on the checked-out branch are first pushed as the session's
-checkpoint, and the session keeps its branch. A sandbox whose work cannot be
-checkpointed stays, and goes back to sleep: work on the default branch or a
-detached HEAD, a repository not on GitHub, a missing credential, a failed
-push, or unpushed commits on another local branch. A sandbox that cannot be
-woken or checked also stays. `/api/health` lists each kept sandbox and the
-reason under `housekeeping.sandbox-sweep.lastKept`, and `opensession doctor`
-prints them. A kept sandbox is checked again once its session has new
-activity.
+reads the working copy straight from the volume, in a throwaway container
+with the volume mounted read-only, no network and no capabilities, without
+starting the pod. A clean sandbox goes without being woken, and so does
+one whose pod is gone but whose volume is clean. Uncommitted changes and
+unpushed commits on the checked-out branch are first pushed as the
+session's checkpoint, which wakes the sandbox, and the session keeps its
+branch. A sandbox whose work cannot be checkpointed stays, and goes back
+to sleep: work on the default branch or a detached HEAD, a repository not
+on GitHub, a missing credential, a failed push, unpushed commits on another
+local branch, or a pod that is gone or will not start. A sandbox whose
+volume cannot be read is woken for the check instead, and stays if that
+fails too. `/api/health` lists each kept sandbox and the reason under
+`housekeeping.sandbox-sweep.lastKept`, and `opensession doctor` prints
+them. A kept sandbox is checked again once its session has new activity.
 
 **Host prerequisites.** Qualification checks each of these and names the
 fix when one is missing:

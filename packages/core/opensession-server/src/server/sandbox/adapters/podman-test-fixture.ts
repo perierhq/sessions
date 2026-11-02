@@ -90,6 +90,8 @@ export interface FakeOptions {
   /** Another process creates each package cache volume between this
    *  provider's `volume exists` and its `volume create`. */
   cacheCreatedElsewhere?: boolean;
+  /** What a disk check (`podman run` on the home volume) prints. */
+  diskCheck?: string;
 }
 
 /** An nft listing of a namespace with no ruleset loaded. */
@@ -318,6 +320,12 @@ export function fakePodman(o: FakeOptions = {}) {
       if (script.includes("probe_tcp"))
         return ok(selfTestRows(script, o.selfTest ?? {}));
       return ok("");
+    }
+    if (a === "run") {
+      const volume = argv[argv.indexOf("-v") + 1]!.split(":")[0]!;
+      if (!state.volumeExists || !volume.endsWith("-home"))
+        return fail(`Error: no such volume ${volume}`, 125);
+      return ok(o.diskCheck ?? "work 0 0 0\n");
     }
     if (a === "pod" && b === "stop") {
       if (o.stopFails) return fail("Error: timed out stopping the pod");
