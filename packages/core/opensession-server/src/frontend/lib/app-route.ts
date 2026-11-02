@@ -134,6 +134,7 @@ const SETTINGS_SECTIONS: ReadonlySet<string> = new Set<SettingsSectionKey>([
   "sandboxes",
   "runners",
   "library",
+  "skills",
   "integrations",
   "inboxes",
   "connections",

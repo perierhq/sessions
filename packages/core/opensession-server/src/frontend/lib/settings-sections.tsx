@@ -24,6 +24,7 @@ import {
   IconServer,
   IconShieldCheck,
   IconSliders,
+  IconSparkle,
   IconStack,
   IconTarget,
   IconUser,
@@ -58,6 +59,7 @@ export type SettingsSectionKey =
   | "sandboxes"
   | "runners"
   | "library"
+  | "skills"
   | "integrations"
   | "inboxes"
   | "connections"
@@ -171,6 +173,12 @@ export const SECTIONS: SettingsSection[] = [
     label: "Library",
     group: "Organization",
     icon: <IconBook />,
+  },
+  {
+    key: "skills",
+    label: "Skills",
+    group: "Organization",
+    icon: <IconSparkle />,
   },
   {
     key: "integrations",

@@ -1,8 +1,9 @@
 // Skill/command index for "/"-skill autocomplete in the composer.
 //
 // Mirrors what a run actually loads, and does it by reading the same list the
-// runner passes to pi (skill-paths.ts): the skills Open Session ships plus the
-// session checkout's own `.claude/skills` and `.agents/skills`. Skills are
+// runner passes to pi (skill-paths.ts): the skills Open Session ships, the
+// instance skills kept in Settings → Skills, and the session checkout's own
+// `.claude/skills` and `.agents/skills`. Skills are
 // matched the way the engine globs them (`skills/**\/SKILL.md`), so nested
 // ones count. Cached briefly per directory so keystrokes only re-filter in
 // memory.
@@ -14,15 +15,20 @@
 
 import { readdirSync, readFileSync, existsSync, statSync } from "fs";
 import { join, resolve } from "path";
-import { SHIPPED_SKILLS_DIR, skillSearchPaths } from "./skill-paths";
+import {
+  SHIPPED_SKILLS_DIR,
+  instanceSkillsDir,
+  skillSearchPaths,
+} from "./skill-paths";
 
 export interface SkillEntry {
   /** Slash-command name, without the leading "/". */
   name: string;
   /** One-line description from frontmatter (or first content line). */
   description: string;
-  /** Where it came from: opensession's own set, the session's checkout, or a builtin command. */
-  source: "user" | "project" | "builtin";
+  /** Where it came from: opensession's own set, the instance skills in
+   *  Settings, the session's checkout, or a builtin command. */
+  source: "user" | "instance" | "project" | "builtin";
 }
 
 /**
@@ -164,6 +170,14 @@ function cachedSkillsDir(
   return entries;
 }
 
+/** Forget every cached listing, so an instance skill saved in Settings shows
+ *  up in the "/" menu on the next keystroke rather than after the TTL. */
+export function invalidateSkillIndex(): void {
+  cache.clear();
+  for (const key of dirCache.keys())
+    if (key.startsWith("instance\0")) dirCache.delete(key);
+}
+
 /** All skills a run in `worktreeDir` would see (deduped by name; the directory the run would load it from wins). */
 function loadSkills(
   worktreeDir?: string,
@@ -174,6 +188,7 @@ function loadSkills(
   if (hit && performance.now() - hit.at < CACHE_TTL_MS) return hit.entries;
 
   const shipped = resolve(SHIPPED_SKILLS_DIR);
+  const instance = resolve(instanceSkillsDir());
   const byName = new Map<string, SkillEntry>();
   // skillSearchPaths is precedence order, most specific first, and pi keeps
   // the first skill it sees for a name. Later entries win the dedupe below,
@@ -183,10 +198,11 @@ function loadSkills(
       .slice()
       .reverse()
       .flatMap((dir) => {
-        const isShipped = resolve(dir) === shipped;
+        const at = resolve(dir);
+        const isShipped = at === shipped;
         return cachedSkillsDir(
           dir,
-          isShipped ? "user" : "project",
+          at === instance ? "instance" : isShipped ? "user" : "project",
           isShipped && !process.env.OPENSESSION_SKILLS_DIR,
         );
       }),

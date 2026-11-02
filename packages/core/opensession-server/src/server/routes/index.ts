@@ -70,6 +70,7 @@ import { handleModelsRoutes } from "./models";
 import { handleRunnersRoutes } from "./runners";
 import { handlePapercutsRoutes } from "./papercuts";
 import { handleLibraryRoutes } from "./library";
+import { handleInstanceSkillsRoutes } from "./instance-skills";
 import { handleTodosRoutes } from "./todos";
 import { handleDeskVoiceRoutes } from "./desk-voice";
 import { handleDeskNavigationRoutes } from "./desk-navigation";
@@ -161,6 +162,7 @@ export const routeHandlers: RouteHandler[] = [
   handleRunnersRoutes,
   handlePapercutsRoutes,
   handleLibraryRoutes,
+  handleInstanceSkillsRoutes,
   handleTodosRoutes,
   handleDeskVoiceRoutes,
   handleClientDiagnosticsRoutes,
