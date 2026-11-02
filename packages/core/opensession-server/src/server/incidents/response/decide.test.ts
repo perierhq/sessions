@@ -3776,20 +3776,20 @@ test("needs-you: merge and hand release need a reviewed, open pull request Actio
   const dropped = (over: Partial<IncidentResponse>) =>
     agentOptionsFor(offering(both, over), noDeploy).dropped;
   expect(dropped({ verdict: undefined })).toEqual([
-    'Left off the verifier\'s option "Merge it": the verifier hasn\'t reviewed its head',
-    'Left off the verifier\'s option "I\'ll release it": there is no reviewed, open pull request to release',
+    "Left off the verifier's option \"Merge it\": the verifier hasn't reviewed its head",
+    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
   ]);
   expect(
     dropped({ candidate: candidate({ pr: prSnapshot({ state: "MERGED" }) }) }),
   ).toEqual([
     'Left off the verifier\'s option "Merge it": PR #12 is already merged',
-    'Left off the verifier\'s option "I\'ll release it": there is no reviewed, open pull request to release',
+    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
   ]);
   expect(
     dropped({ candidate: candidate({ pr: prSnapshot({ state: "CLOSED" }) }) }),
   ).toEqual([
     'Left off the verifier\'s option "Merge it": PR #12 is closed',
-    'Left off the verifier\'s option "I\'ll release it": there is no reviewed, open pull request to release',
+    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
   ]);
   // Actions refusing to run stops the merge, not a release by hand.
   const refused = agentOptionsFor(
@@ -3804,15 +3804,17 @@ test("needs-you: merge and hand release need a reviewed, open pull request Actio
     noDeploy,
   );
   expect(refused.dropped).toEqual([
-    'Left off the verifier\'s option "Merge it": GitHub Actions can\'t run on PR #12',
+    "Left off the verifier's option \"Merge it\": GitHub Actions can't run on PR #12",
   ]);
   expect(refused.options.map((o) => o.action)).toEqual(["release-watch"]);
   // A rollback-first fix has no pull request to merge or release.
   expect(
-    dropped({ candidate: candidate({ rollbackFirst: true, pr: prSnapshot() }) }),
+    dropped({
+      candidate: candidate({ rollbackFirst: true, pr: prSnapshot() }),
+    }),
   ).toEqual([
     'Left off the verifier\'s option "Merge it": there is no pull request to merge',
-    'Left off the verifier\'s option "I\'ll release it": there is no reviewed, open pull request to release',
+    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
   ]);
 });
 
@@ -3861,7 +3863,7 @@ test("needs-you: the post-release check's options come before the verifier's", (
   expect(out.sessionId).toBe("child-3");
   expect(out.options.map((o) => o.label)).toEqual(["Another round"]);
   expect(out.dropped).toEqual([
-    'Left off the post-release check\'s option "Merge #99": PR #99 isn\'t this round\'s fix',
+    "Left off the post-release check's option \"Merge #99\": PR #99 isn't this round's fix",
   ]);
 });
 

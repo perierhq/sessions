@@ -9,6 +9,7 @@
 import type {
   FindingBlock,
   FindingsSet,
+  OwnerOption,
   SignalMarker,
 } from "../../shared/findings";
 import type { AgentRole } from "../../shared/incident-response";
@@ -24,6 +25,31 @@ const sessionOf = (role: AgentRole) => `demo-incident-${role}`;
 export const DEMO_REPLICA_CLAIM =
   "The replica was removed in the release config";
 
+/** The post-release check's session on the checkout incident. */
+export const DEMO_CHECK_SESSION = "demo-incident-post-release";
+
+/** Why the checkout check couldn't confirm the fix. */
+export const DEMO_CHECKOUT_DOUBT =
+  "EUR carts still answer 502 after the release; USD carts check out";
+
+/** The checkout check's question and the options it offers the owner. */
+export const DEMO_CHECKOUT_QUESTION =
+  "EUR checkouts still fail after the release. How should this go on?";
+export const DEMO_CHECKOUT_OPTIONS: OwnerOption[] = [
+  {
+    label: "Send it back for EUR",
+    detail:
+      "Another round on the EUR price path; the released fix stays, it holds for USD",
+    action: "send-back",
+    note: "EUR carts still answer 502 after the release. Look at the EUR price path, which reads the currency column through the price cache.",
+  },
+  {
+    label: "Mark it fixed",
+    detail: "When EUR checkout is tracked on its own",
+    action: "mark-fixed",
+  },
+];
+
 export interface DemoFindingsInput {
   kind: "veto" | "needs-you";
   signalId: string;
@@ -32,6 +58,8 @@ export interface DemoFindingsInput {
   prUrl?: string;
   /** When the first failed check was stored (veto): its marker cites it. */
   firstFailureAt?: number;
+  /** When the post-release check reported (needs-you). */
+  checkedAt?: number;
 }
 
 function set(
@@ -176,9 +204,11 @@ function vetoSets(input: DemoFindingsInput): FindingsSet[] {
   ];
 }
 
-/** The checkout incident: a migration renamed a column; needs the owner. */
+/** The checkout incident: a migration renamed a column; the fix went out
+ *  and the post-release check couldn't confirm it for every currency. */
 function needsYouSets(input: DemoFindingsInput): FindingsSet[] {
   const found = input.openedAt + 22 * MINUTE_MS;
+  const checked = input.checkedAt ?? input.now;
   return [
     set("investigator", found, 2, [
       {
@@ -201,6 +231,32 @@ function needsYouSets(input: DemoFindingsInput): FindingsSet[] {
           "Whoever runs payments migrations: whether it can go out ahead of the checkout deploy.",
       },
     ]),
+    {
+      ...set("verifier", checked, 2, [
+        {
+          id: "eur-path",
+          kind: "hypothesis",
+          title: "EUR prices read the old column through a cache",
+          size: "full",
+          statement:
+            "USD carts check out since the release, EUR carts still answer 502: the EUR price path reads the currency column through the price cache, which the fix didn't touch.",
+          confidence: "low",
+          evidence: [],
+          claims: [],
+        },
+        {
+          id: "how-on",
+          kind: "question",
+          size: "full",
+          text: DEMO_CHECKOUT_QUESTION,
+          wouldAnswer:
+            "Whether EUR checkout belongs to this incident or is tracked on its own.",
+          options: DEMO_CHECKOUT_OPTIONS,
+        },
+      ]),
+      check: "post-release",
+      sessionId: DEMO_CHECK_SESSION,
+    },
   ];
 }
 
