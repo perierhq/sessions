@@ -223,12 +223,16 @@ function needsYouSets(input: DemoFindingsInput): FindingsSet[] {
         claims: [],
       },
       {
-        id: "migration-order",
-        kind: "question",
+        id: "read-path",
+        kind: "timeline",
         size: "half",
-        text: "Can the migration be applied before the deploy?",
-        wouldAnswer:
-          "Whoever runs payments migrations: whether it can go out ahead of the checkout deploy.",
+        events: [
+          {
+            at: iso(input.openedAt - 3 * MINUTE_MS),
+            text: "The payments migration renames `currency`",
+          },
+          { at: iso(input.openedAt), text: "Checkout starts answering 502" },
+        ],
       },
     ]),
     {

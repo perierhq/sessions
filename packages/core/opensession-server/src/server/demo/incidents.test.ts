@@ -260,9 +260,11 @@ test("demo findings are well-formed", async () => {
   ]);
   expect(needsYouSets[0]!.blocks.map((b) => b.kind)).toEqual([
     "hypothesis",
-    "question",
+    "timeline",
   ]);
-  expect(needsYouSets[0]!.blocks[1]).toMatchObject({
-    text: "Can the migration be applied before the deploy?",
+  // The check's question carries the options the card offers.
+  expect(needsYouSets[1]!.blocks[1]).toMatchObject({
+    kind: "question",
+    options: [{ action: "send-back" }, { action: "mark-fixed" }],
   });
 });
