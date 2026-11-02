@@ -44,7 +44,7 @@ function deps(over: Partial<ArchiveSweepDeps> = {}) {
       swept.push(sessions);
       return [];
     },
-    destroySandbox: (s) => {
+    retireSandbox: async (s) => {
       destroyed.push(s.id);
     },
     bankWork: async () => ({ retire: true, why: "clean" }),
@@ -86,7 +86,11 @@ describe("archive sweep", () => {
     const log = spyOn(console, "log").mockImplementation(() => {});
     try {
       const result = await runArchiveSweep(t.d);
-      expect(result).toEqual({ worktrees: ["acme-a"], sandboxes: ["a"] });
+      expect(result).toEqual({
+        worktrees: ["acme-a"],
+        sandboxes: ["a"],
+        cleared: [],
+      });
     } finally {
       log.mockRestore();
     }
@@ -251,6 +255,158 @@ describe("archive sweep", () => {
     });
   });
 
+  test("a Sandbox counts as retired only once its destroy succeeded; a failed destroy is kept with the reason", async () => {
+    // A provider that cannot be reached must not show the same Sandboxes
+    // as retired on every pass while nothing leaves the disk.
+    const box = (id: string) =>
+      session(id, {
+        sandbox: { provider: "podman", sandboxId: `sbx-${id}` },
+      } as Partial<UnifiedSession>);
+    const attempts: string[] = [];
+    const t = deps({
+      sessions: async () => [box("ok"), box("stuck")],
+      sandboxBytes: (s) => (s.id === "ok" ? 2_000 : 5_000),
+      retireSandbox: async (s) => {
+        attempts.push(s.id);
+        if (s.id === "stuck")
+          throw new Error("Modal is not connected: add a token id and secret");
+      },
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await runArchiveSweep(t.d)).sandboxes).toEqual(["ok"]);
+      const lines = log.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(lines).toContain("Retired 1 Sandbox(es)");
+      expect(lines).not.toContain("stuck");
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+    expect(attempts).toEqual(["ok", "stuck"]);
+    const health = housekeepingHealth()["sandbox-sweep"];
+    expect(health?.lastReclaimed).toEqual({ count: 1, bytes: 2_000 });
+    expect(health?.lastKept?.items).toEqual([
+      {
+        id: "stuck",
+        reason:
+          "could not destroy it: Modal is not connected: add a token id and secret",
+      },
+    ]);
+  });
+
+  test("a Sandbox that no longer exists has its record cleared once, not counted as retired", async () => {
+    const gone = session("gone", {
+      sandbox: { provider: "podman", sandboxId: "sbx-gone" },
+    } as Partial<UnifiedSession>);
+    const t = deps({
+      sessions: async () => [gone],
+      sandboxBytes: () => 9_000,
+      bankWork: async () => ({ retire: true, why: "gone" }),
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const result = await runArchiveSweep(t.d);
+      expect(result.sandboxes).toEqual([]);
+      expect(result.cleared).toEqual(["gone"]);
+      const lines = log.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(lines).not.toContain("Retired");
+      expect(lines).toContain("Cleared the record of 1 Sandbox(es)");
+    } finally {
+      log.mockRestore();
+    }
+    // The teardown still ran: it revokes the machine's credentials and
+    // clears the session's record.
+    expect(t.destroyed).toEqual(["gone"]);
+    expect(housekeepingHealth()["sandbox-sweep"]?.lastReclaimed).toEqual({
+      count: 0,
+      bytes: 0,
+    });
+  });
+
+  test("the work check and the destroy run in one hold of the session's lifecycle lane", async () => {
+    const order: string[] = [];
+    let held: string | null = null;
+    const t = deps({
+      sessions: async () => [
+        session("laned", {
+          sandbox: { provider: "podman", sandboxId: "sbx-laned" },
+        } as Partial<UnifiedSession>),
+      ],
+      lane: async (id, fn) => {
+        order.push(`enter ${id}`);
+        held = id;
+        try {
+          return await fn();
+        } finally {
+          held = null;
+          order.push(`leave ${id}`);
+        }
+      },
+      bankWork: async (s) => {
+        order.push(`bank ${s.id} in ${held}`);
+        return { retire: true, why: "clean" };
+      },
+      retireSandbox: async (s) => {
+        order.push(`retire ${s.id} in ${held}`);
+      },
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runArchiveSweep(t.d);
+    } finally {
+      log.mockRestore();
+    }
+    expect(order).toEqual([
+      "enter laned",
+      "bank laned in laned",
+      "retire laned in laned",
+      "leave laned",
+    ]);
+  });
+
+  test("inside the lane the session is read again: one changed since the listing is left alone", async () => {
+    // Each check or destroy can take a minute, so a session listed at the
+    // start of the pass may have been unarchived, prompted or moved to
+    // another Sandbox by the time its lane is free.
+    const box = (id: string) =>
+      session(id, {
+        sandbox: { provider: "podman", sandboxId: `sbx-${id}` },
+      } as Partial<UnifiedSession>);
+    const listed = ["unarchived", "running", "moved", "deleted", "same"].map(
+      box,
+    );
+    const now: Record<string, UnifiedSession | null> = {
+      unarchived: { ...box("unarchived"), archived: false },
+      running: { ...box("running"), isRunning: true },
+      moved: session("moved", {
+        sandbox: { provider: "podman", sandboxId: "sbx-moved-2" },
+      } as Partial<UnifiedSession>),
+      deleted: null,
+      same: { ...box("same"), title: "read again" } as UnifiedSession,
+    };
+    const checked: UnifiedSession[] = [];
+    const t = deps({
+      sessions: async () => listed,
+      refresh: async (s) => now[s.id] ?? null,
+      bankWork: async (s) => {
+        checked.push(s);
+        return { retire: true, why: "clean" };
+      },
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect((await runArchiveSweep(t.d)).sandboxes).toEqual(["same"]);
+    } finally {
+      log.mockRestore();
+    }
+    expect(t.destroyed).toEqual(["same"]);
+    // The check and the destroy act on the session as read in the lane.
+    expect(checked.map((s) => (s as { title?: string }).title)).toEqual([
+      "read again",
+    ]);
+  });
+
   test("a failed session listing fails both sweeps, never reads as nothing archived", async () => {
     const t = deps({
       sessions: async () => {
@@ -260,7 +416,7 @@ describe("archive sweep", () => {
     const error = spyOn(console, "error").mockImplementation(() => {});
     try {
       const result = await runArchiveSweep(t.d);
-      expect(result).toEqual({ worktrees: [], sandboxes: [] });
+      expect(result).toEqual({ worktrees: [], sandboxes: [], cleared: [] });
     } finally {
       error.mockRestore();
     }

@@ -39,6 +39,7 @@ import {
   type PodmanConnectionFacts,
 } from "../connections";
 import type {
+  ExecResult,
   Sandbox,
   SandboxProvider,
   SandboxSessionSpec,
@@ -66,6 +67,7 @@ import {
   type SandboxTrustPolicy,
 } from "./bootstrap";
 import {
+  diskCheckArgs,
   isIpv4,
   PODMAN_NAME_PREFIX,
   PODMAN_PROVIDER_LABEL,
@@ -1265,8 +1267,13 @@ export class PodmanProvider implements SandboxProvider {
     return result.results;
   }
 
-  /** Start a stopped pod behind its firewall (any wake path). */
+  /** Start a stopped pod behind its firewall (any wake path). A wake is
+   *  activity, recorded before the start lock is taken: an idle sweep
+   *  waiting on that lock rereads it and leaves the pod running. Without
+   *  it, a pod idle for days (the archive sweep waking it to check its
+   *  working copy) was stopped again as soon as it had started. */
   private async wake(names: PodmanNames): Promise<boolean> {
+    touchRemoteState(this.id, names.pod);
     const callbackBaseUrl = this.d.callbackBaseUrl();
     const egress = await this.egressInput(callbackBaseUrl);
     return this.startLocked(names, egress, callbackBaseUrl);
@@ -1402,6 +1409,52 @@ export class PodmanProvider implements SandboxProvider {
     const woke = await this.wake(names);
     if (woke) await this.d.resumeHook(this.driver(names), names.pod, state);
     return { wokeFromSleep: woke };
+  }
+
+  /**
+   * Run `script` against the sandbox's working copy on its home volume,
+   * without starting the pod (diskCheckArgs). Works while the pod sleeps
+   * and when it is gone but its volume is not. Null when the volume no
+   * longer exists: nothing is left to read. Throws when the volume cannot
+   * be read: no working directory recorded, no sandbox image, or podman
+   * failing to run the check.
+   */
+  async inspectDisk(
+    sandboxId: string,
+    script: string,
+    opts: { timeoutMs: number },
+  ): Promise<ExecResult | null> {
+    const names = namesForPod(sandboxId);
+    const exists = (await this.run(["volume", "exists", names.volume]))
+      .exitCode;
+    if (exists === 1) return null;
+    if (exists !== 0)
+      throw new Error(
+        `podman volume exists ${names.volume} failed (exit ${exists})`,
+      );
+    const cwd = podmanSandboxCwd(
+      readRemoteState(this.id, sandboxId)?.cwd ?? "",
+    );
+    if (!cwd)
+      throw new Error(`no working directory is recorded for ${names.pod}`);
+    // This release's image, never built here: the check is not worth a
+    // build, and a missing image fails it instead.
+    const image = this.d.imageTag();
+    if ((await this.run(["image", "exists", image])).exitCode !== 0)
+      throw new Error(`the sandbox image ${image} is missing`);
+    const timeoutSec = Math.max(1, Math.ceil(opts.timeoutMs / 1000));
+    // A home the check cannot list (a mount or label problem) must fail it:
+    // the script reads a working copy it cannot see as absent.
+    const cmd = `ls -A ${PODMAN_WORKLOAD_HOME}/ >/dev/null || { echo "cannot read the home volume" >&2; exit 3; }\n${script}`;
+    const result = await this.run(
+      diskCheckArgs({ volume: names.volume, image, cwd, timeoutSec, cmd }),
+      { timeoutMs: opts.timeoutMs + 30_000 },
+    );
+    // 125 and up: podman itself failed (no such volume, a bad mount), not
+    // the script.
+    if (result.exitCode >= 125)
+      throw failure(`disk check of ${names.volume}`, result);
+    return result;
   }
 
   /** Remove the pod (and its containers) and the session volume: the

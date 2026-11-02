@@ -643,6 +643,70 @@ export function execArgs(o: {
   ];
 }
 
+/**
+ * `podman run` of a throwaway container that runs `cmd` against a sandbox's
+ * home volume while its pod is stopped or gone: the archive sweep's work
+ * check (sandbox-work-bank.ts), so a sleeping sandbox is not started just
+ * to read `git status`. The volume is mounted read-only at the home it was
+ * written under, so a linked worktree's absolute gitdir resolves, as uid
+ * 1000, so its files are its owner's. Git runs inside the container, never
+ * on the host: the repository's config (an fsmonitor hook, a clean filter)
+ * is the sandbox's to write and must not run with the gateway's rights.
+ *
+ * No network, no capabilities, no new privileges, a read-only root, and a
+ * small pid and memory cap. `label=disable`: the home volume carries the
+ * workload's private SELinux label (`Z`); relabelling it here would take it
+ * from the workload, and with any other label the check cannot read it.
+ * The mount is read-only and the container has no network, so it can only
+ * print what it read. `OS_CWD` is a path, never a secret, so it goes in argv.
+ */
+export function diskCheckArgs(o: {
+  volume: string;
+  image: string;
+  cwd: string;
+  timeoutSec: number;
+  cmd: string;
+}): string[] {
+  assertOwnName(o.volume);
+  if (!o.cwd.startsWith(`${PODMAN_WORKLOAD_HOME}/`) || /[\0\r\n]/.test(o.cwd))
+    throw new Error(`disk check cwd must be under ${PODMAN_WORKLOAD_HOME}/`);
+  return [
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--user",
+    PODMAN_WORKLOAD_USER,
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--security-opt",
+    "label=disable",
+    "--read-only",
+    "--pids-limit",
+    "64",
+    "--memory",
+    "512m",
+    "-v",
+    `${o.volume}:${PODMAN_WORKLOAD_HOME}:ro,nosuid,nodev`,
+    "--env",
+    `OS_CWD=${o.cwd}`,
+    // git status would otherwise try to refresh the index on a read-only
+    // mount.
+    "--env",
+    "GIT_OPTIONAL_LOCKS=0",
+    o.image,
+    "/usr/bin/timeout",
+    "-k",
+    "5",
+    positiveInt(o.timeoutSec, "timeoutSec"),
+    "/bin/bash",
+    "-c",
+    o.cmd,
+  ];
+}
+
 /** `$XDG_RUNTIME_DIR/opensession`, created 0700 and owned by us (a symlink
  *  or someone else's dir is refused). */
 async function privateRuntimeDir(runtimeDir: string): Promise<string> {

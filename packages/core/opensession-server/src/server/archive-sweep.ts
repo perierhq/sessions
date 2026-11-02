@@ -5,7 +5,7 @@
  *   WIP are removed (sweepArchivedWorktrees, worktree.ts). The hourly
  *   worktree reaper parks them sooner, banking any WIP first.
  * - Sandboxes are torn down through the same path a session delete uses
- *   (destroySessionSandbox): for This machine (container) that is the pod,
+ *   (retireSessionSandbox, awaited): for This machine (container) that is the pod,
  *   its containers and its home volume. Archiving only puts a Sandbox to
  *   sleep, which keeps all of it on disk, so this is what frees the space:
  *   - an archived session's, once it has been archived and idle for
@@ -21,9 +21,12 @@
  *   and unpushed commits are checkpointed to origin first, and a Sandbox
  *   whose work cannot be banked that way is kept (sandbox-work-bank.ts). A
  *   revived session re-ensures a fresh Sandbox on its next prompt, restored
- *   from the checkpoint. What was removed, its size where the provider
- *   measured it, and what was kept and why show under `housekeeping` in
- *   `/api/health`.
+ *   from the checkpoint. A Sandbox counts as retired only once its destroy
+ *   succeeded; a failed destroy keeps it recorded and lists it as kept with
+ *   the error, for the next pass. One the provider no longer has frees
+ *   nothing and only has its record cleared. What was removed, its size
+ *   where the provider measured it, and what was kept and why show under
+ *   `housekeeping` in `/api/health`.
  *
  * The session list comes from the list index / catalogs
  * (getSessionListSnapshotAsync), never from the offline directory scanner:
@@ -81,14 +84,19 @@ export type ArchiveSweepDeps = {
     sessions: UnifiedSession[],
     days: number,
   ) => Promise<string[]>;
-  destroySandbox: (
-    session: UnifiedSession,
-    why: string,
-    clearSandboxId: boolean,
-  ) => void;
+  /** Destroy the session's Sandboxes and clear their ids from the session
+   *  (retireSessionSandbox). Resolves only once the destroy succeeded. */
+  retireSandbox: (session: UnifiedSession, why: string) => Promise<void>;
   /** Whether the Sandbox may go: its working copy is clean, or its work
    *  was banked to origin first (sandbox-work-bank.ts). */
   bankWork: (session: UnifiedSession) => Promise<SandboxWorkVerdict>;
+  /** Run the check and the destroy in one hold of the session's lifecycle
+   *  lane, where run admission waits: no turn starts in between. */
+  lane?: <T>(sessionId: string, fn: () => Promise<T>) => Promise<T>;
+  /** The session as it is now, read inside the lane, with `isRunning` set
+   *  while any run holds it; null once it is gone. The listing is minutes
+   *  old by the time a later session's lane is free. */
+  refresh?: (session: UnifiedSession) => Promise<UnifiedSession | null>;
   /** When the session was archived (ms), or null when unknown. */
   archivedAt?: (session: UnifiedSession) => number | null;
   /** The Sandbox's disk use as last measured, or null when unknown. */
@@ -99,27 +107,53 @@ export type ArchiveSweepDeps = {
 };
 
 async function defaultDeps(): Promise<ArchiveSweepDeps> {
-  const [cache, worktree, sandbox, archive, podmanDisk, bank, lane] =
-    await Promise.all([
-      import("./session-cache"),
-      import("./worktree"),
-      import("./session-sandbox"),
-      import("./archive"),
-      import("./sandbox/adapters/podman-disk"),
-      import("./sandbox-work-bank"),
-      import("./sandbox/lifecycle-lane"),
-    ]);
+  const [
+    cache,
+    worktree,
+    sandbox,
+    archive,
+    podmanDisk,
+    bank,
+    lane,
+    host,
+    agent,
+  ] = await Promise.all([
+    import("./session-cache"),
+    import("./worktree"),
+    import("./session-sandbox"),
+    import("./archive"),
+    import("./sandbox/adapters/podman-disk"),
+    import("./sandbox-work-bank"),
+    import("./sandbox/lifecycle-lane"),
+    import("./host-registry"),
+    import("./agent-runner"),
+  ]);
   return {
     sessions: async () =>
       cache.enrichSessionRuntime(
         await cache.getSessionListSnapshotAsync("include"),
       ),
     sweepWorktrees: worktree.sweepArchivedWorktrees,
-    destroySandbox: sandbox.destroySessionSandbox,
-    // On the session's lifecycle lane, where checkpoints run and run
-    // admission waits: no turn starts while the working copy is checked.
-    bankWork: (s) =>
-      lane.withSessionLifecycleLane(s.id, () => bank.bankSandboxWork(s)),
+    retireSandbox: sandbox.retireSessionSandbox,
+    bankWork: (s) => bank.bankSandboxWork(s),
+    // Where checkpoints run and run admission waits: no turn starts while
+    // the working copy is checked or the Sandbox destroyed.
+    lane: lane.withSessionLifecycleLane,
+    // As sandbox-archive-sleep.ts does: the archive registry decides
+    // archived, and a run on the host or an agent counts as running.
+    refresh: async (s) => {
+      const fresh = await cache.findSessionAsync(s.id);
+      if (!fresh) return null;
+      return {
+        ...fresh,
+        aliasIds: s.aliasIds,
+        archived: [s.id, ...(s.aliasIds ?? [])].some(archive.isArchivedId),
+        isRunning:
+          fresh.isRunning ||
+          host.hostRunBusy(s.id) ||
+          agent.isAgentSessionBusy(s.id),
+      };
+    },
     // The latest archive among the row and its aliases: the window starts
     // from the most recent one.
     archivedAt: (s) => {
@@ -140,11 +174,13 @@ async function defaultDeps(): Promise<ArchiveSweepDeps> {
  *  under its own housekeeping job. */
 export async function runArchiveSweep(
   deps?: ArchiveSweepDeps,
-): Promise<{ worktrees: string[]; sandboxes: string[] }> {
+): Promise<{ worktrees: string[]; sandboxes: string[]; cleared: string[] }> {
   const d = deps ?? (await defaultDeps());
   const now = d.now ?? Date.now;
+  const lane = d.lane ?? ((_id, fn) => fn());
   const removed: string[] = [];
   const retired: string[] = [];
+  const cleared: string[] = [];
   // One snapshot for both sweeps. A failed listing fails both: neither may
   // treat an unknown list as "nothing archived".
   let sessions: UnifiedSession[] | null = null;
@@ -177,26 +213,37 @@ export async function runArchiveSweep(
       if (!s.sandbox?.sandboxId || s.isRunning) continue;
       const since = retentionClock(s, d.archivedAt);
       if (since === null || since >= cutoff) continue;
-      const verdict = await d.bankWork(s);
-      if (!verdict.retire) {
-        kept.push({ id: s.id, reason: verdict.reason });
-        continue;
+      const outcome = await lane(s.id, async () => {
+        const current = d.refresh ? await d.refresh(s) : s;
+        if (
+          !current ||
+          current.isRunning ||
+          current.sandbox?.sandboxId !== s.sandbox?.sandboxId
+        )
+          return null;
+        const since = retentionClock(current, d.archivedAt);
+        if (since === null || since >= cutoff) return null;
+        return retireIfBanked(current, d);
+      });
+      if (!outcome) continue;
+      if ("kept" in outcome) kept.push({ id: s.id, reason: outcome.kept });
+      else if (outcome.why === "gone") cleared.push(s.id);
+      else {
+        retired.push(s.id);
+        bytes += outcome.bytes;
       }
-      bytes += d.sandboxBytes?.(s) ?? 0;
-      d.destroySandbox(
-        s,
-        s.archived ? "archive-retention" : "automation-retention",
-        true,
-      );
-      retired.push(s.id);
     }
     if (retired.length)
       console.log(
         `[sandbox-sweep] Retired ${retired.length} Sandbox(es) idle >${days}d: ${retired.join(", ")}`,
       );
+    if (cleared.length)
+      console.log(
+        `[sandbox-sweep] Cleared the record of ${cleared.length} Sandbox(es) that no longer exist: ${cleared.join(", ")}`,
+      );
     if (kept.length)
       console.warn(
-        `[sandbox-sweep] Kept ${kept.length} Sandbox(es) holding work that could not be banked: ${kept.map((k) => k.id).join(", ")}`,
+        `[sandbox-sweep] Kept ${kept.length} Sandbox(es): ${kept.map((k) => `${k.id} (${k.reason})`).join("; ")}`,
       );
     noteHousekeepingReclaimed("sandbox-sweep", {
       count: retired.length,
@@ -204,7 +251,32 @@ export async function runArchiveSweep(
     });
     noteHousekeepingKept("sandbox-sweep", kept);
   });
-  return { worktrees: removed, sandboxes: retired };
+  return { worktrees: removed, sandboxes: retired, cleared };
+}
+
+type RetireOutcome = { kept: string } | { why: string; bytes: number };
+
+/** Check the working copy, then destroy the Sandbox once its work is safe.
+ *  Retired only when the destroy succeeded; its size is sampled before, as
+ *  the provider last measured it, and counted only then. A Sandbox that no
+ *  longer exists frees nothing: its teardown only clears the record. */
+async function retireIfBanked(
+  s: UnifiedSession,
+  d: ArchiveSweepDeps,
+): Promise<RetireOutcome> {
+  const verdict = await d.bankWork(s);
+  if (!verdict.retire) return { kept: verdict.reason };
+  const bytes = verdict.why === "gone" ? 0 : (d.sandboxBytes?.(s) ?? 0);
+  try {
+    await d.retireSandbox(
+      s,
+      s.archived ? "archive-retention" : "automation-retention",
+    );
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error);
+    return { kept: `could not destroy it: ${text.slice(0, 240)}` };
+  }
+  return { why: verdict.why, bytes };
 }
 
 /** When a Sandbox's retention window started, or null when it has none:

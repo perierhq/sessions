@@ -54,6 +54,7 @@ const SHAPES: RegExp[] = [
   `unshare\x00/bin/bash\x00-c\x00${escape(NFT_PIPE_SCRIPT)}\x00bash\x00${PATH}\x00(-f\x00-|-j\x00list\x00ruleset|-j\x00list\x00table\x00inet\x00opensession)`,
   `unshare\x00du\x00-s\x00-x\x00-B1\x00--(\x00${PATH})+`,
   `exec(\x00-i)?(\x00-d)?\x00--user\x001000:1000(\x00--workdir\x00${PATH})?(\x00--env-file\x00${PATH})?\x00${NAME}(\x00/usr/bin/timeout\x00-k\x005\x00\\d+)?\x00/bin/bash\x00-c\x00[\\s\\S]*`,
+  `run\x00--rm\x00--network\x00none\x00--user\x001000:1000\x00--cap-drop\x00ALL\x00--security-opt\x00no-new-privileges\x00--security-opt\x00label=disable\x00--read-only\x00--pids-limit\x0064\x00--memory\x00512m\x00-v\x00${NAME}-home:/home/ubuntu:ro,nosuid,nodev\x00--env\x00OS_CWD=${PATH}\x00--env\x00GIT_OPTIONAL_LOCKS=0\x00localhost/opensession-sandbox:[0-9a-f]{16}\x00/usr/bin/timeout\x00-k\x005\x00\\d+\x00/bin/bash\x00-c\x00[\\s\\S]*`,
   `build\x00--pull=missing\x00--network\x00pasta:[^\x00]+\x00-t\x00[^\x00]+\x00-f\x00-\x00${PATH}`,
 ].map((shape) => new RegExp(`^${shape}$`));
 

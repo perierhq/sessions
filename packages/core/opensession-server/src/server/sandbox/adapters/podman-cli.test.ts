@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createPodmanRunner,
+  diskCheckArgs,
   execArgs,
   execEnvFileText,
   type PodmanRunner,
@@ -1033,5 +1034,41 @@ describe("podman exec carries any value to the shell", () => {
       podmanExec(run, { ...base, env: { "BAD;NAME": "a\nb" }, cmd: "true" }),
     ).rejects.toThrow("invalid environment variable name");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("podman disk check argv", () => {
+  const names = podmanNames("bks-acme-disk");
+  const base = {
+    volume: names.volume,
+    image: "localhost/opensession-sandbox:0123456789abcdef",
+    cwd: "/home/ubuntu/worktrees/acme-main",
+    timeoutSec: 60,
+    cmd: "git status",
+  };
+
+  test("mounts only the home volume, read-only, with no network or capabilities", () => {
+    const argv = diskCheckArgs(base);
+    expect(operands(argv, "-v")).toEqual([
+      `${names.volume}:/home/ubuntu:ro,nosuid,nodev`,
+    ]);
+    expect(operands(argv, "--network")).toEqual(["none"]);
+    expect(operands(argv, "--cap-drop")).toEqual(["ALL"]);
+    expect(operands(argv, "--user")).toEqual(["1000:1000"]);
+    expect(argv).toContain("--read-only");
+    expect(argv).toContain("--rm");
+    expect(argv.slice(-3)).toEqual(["/bin/bash", "-c", "git status"]);
+  });
+
+  test("refuses another volume or a directory outside the sandbox home", () => {
+    expect(() => diskCheckArgs({ ...base, volume: "acme-data" })).toThrow(
+      /not an Open Session podman resource/,
+    );
+    expect(() => diskCheckArgs({ ...base, cwd: "/etc" })).toThrow(
+      /under \/home\/ubuntu/,
+    );
+    expect(() => diskCheckArgs({ ...base, cwd: "/home/ubuntu/a\nb" })).toThrow(
+      /under \/home\/ubuntu/,
+    );
   });
 });

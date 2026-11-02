@@ -1,5 +1,11 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -218,6 +224,152 @@ describe("banking a Sandbox's work before retention destroys it", () => {
     }
   });
 
+  describe("checked from the Sandbox's disk, without waking it", () => {
+    /** Deps whose disk check prints `line`, or null when the disk is gone. */
+    function onDisk(
+      line: string | null | Error,
+      sandbox: Sandbox | null,
+      over: Partial<SandboxWorkBankDeps> = {},
+    ) {
+      const t = deps(sandbox, over);
+      const scripts: string[] = [];
+      t.d.inspectDisk = async (_s, script) => {
+        t.calls.push("disk");
+        scripts.push(script);
+        if (line instanceof Error) throw line;
+        return line === null
+          ? null
+          : { exitCode: 0, stdout: `${line}\n`, stderr: "" };
+      };
+      return { ...t, scripts };
+    }
+
+    test("a clean working copy goes without waking the Sandbox", async () => {
+      const { sandbox, scripts: execs } = fakeSandbox("work 9 9 9");
+      const t = onDisk("work 0 0 0", sandbox);
+      expect(await bankSandboxWork(session(), t.d)).toEqual({
+        retire: true,
+        why: "clean",
+      });
+      expect(t.scripts).toEqual([SANDBOX_WORK_CHECK_SCRIPT]);
+      expect(t.calls).toEqual(["disk"]);
+      expect(execs).toEqual([]);
+    });
+
+    test("work found on the disk wakes the Sandbox only to checkpoint it", async () => {
+      const { sandbox } = fakeSandbox("work 2 0 0");
+      const t = onDisk("work 2 0 0", sandbox);
+      expect(await bankSandboxWork(session(), t.d)).toEqual({
+        retire: true,
+        why: "banked",
+        checkpoint: CHECKPOINT,
+      });
+      expect(t.calls).toEqual(["disk", "wake", "checkpoint"]);
+    });
+
+    test("work on the disk of a Sandbox that cannot be woken is kept with what it holds", async () => {
+      const t = onDisk("work 2 1 0", null, {
+        wake: async () => {
+          throw new Error("opensession-sbx-bks-retire did not wake");
+        },
+      });
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const verdict = await bankSandboxWork(session(), t.d);
+        expect(verdict).toEqual({
+          retire: false,
+          reason:
+            "2 uncommitted path(s) and 1 unpushed commit(s); could not wake the Sandbox to checkpoint the work: opensession-sbx-bks-retire did not wake",
+        });
+      } finally {
+        warn.mockRestore();
+      }
+      expect(t.calls).not.toContain("checkpoint");
+    });
+
+    test("work on a disk whose machine is gone is kept: no checkpoint can be taken", async () => {
+      const t = onDisk("work 1 0 0", null);
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const verdict = await bankSandboxWork(session(), t.d);
+        expect(verdict.retire).toBe(false);
+        if (!verdict.retire)
+          expect(verdict.reason).toBe(
+            "1 uncommitted path(s); the Sandbox's machine is gone, so no checkpoint can be taken",
+          );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    test("unpushed commits on other branches are kept without waking the Sandbox", async () => {
+      const { sandbox } = fakeSandbox("work 0 0 2");
+      const t = onDisk("work 0 0 2", sandbox);
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect((await bankSandboxWork(session(), t.d)).retire).toBe(false);
+      } finally {
+        warn.mockRestore();
+      }
+      expect(t.calls).toEqual(["disk"]);
+    });
+
+    test("with the disk gone there is nothing to bank", async () => {
+      const { sandbox } = fakeSandbox("work 0 0 0");
+      const t = onDisk(null, sandbox);
+      expect(await bankSandboxWork(session(), t.d)).toEqual({
+        retire: true,
+        why: "gone",
+      });
+      expect(t.calls).toEqual(["disk"]);
+    });
+
+    test("a disk that cannot be read falls back to waking the Sandbox", async () => {
+      const { sandbox, scripts: execs } = fakeSandbox("work 0 0 0");
+      const t = onDisk(new Error("the sandbox image is missing"), sandbox);
+      expect(await bankSandboxWork(session(), t.d)).toEqual({
+        retire: true,
+        why: "clean",
+      });
+      expect(t.calls).toEqual(["disk", "wake"]);
+      expect(execs).toEqual([SANDBOX_WORK_CHECK_SCRIPT]);
+    });
+
+    test("a disk that cannot be read is never taken as gone, even with the machine gone", async () => {
+      const t = onDisk(new Error("the sandbox image is missing"), null);
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const verdict = await bankSandboxWork(session(), t.d);
+        expect(verdict).toEqual({
+          retire: false,
+          reason:
+            "the Sandbox's machine is gone and its disk could not be checked: the sandbox image is missing",
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    test("a Sandbox that cannot be woken names why its disk could not be read either", async () => {
+      const t = onDisk(new Error("the sandbox image is missing"), null, {
+        wake: async () => {
+          throw new Error("podman start failed");
+        },
+      });
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const verdict = await bankSandboxWork(session(), t.d);
+        expect(verdict).toEqual({
+          retire: false,
+          reason:
+            "could not wake the Sandbox to check its working copy: podman start failed; its disk could not be read either: the sandbox image is missing",
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
   test("the check script counts uncommitted files, unpushed commits on HEAD, and on other branches", () => {
     const root = mkdtempSync(join(tmpdir(), "sandbox-work-bank-"));
     const git = (cwd: string, ...args: string[]) => {
@@ -268,6 +420,29 @@ describe("banking a Sandbox's work before retention destroys it", () => {
       expect(check(work)).toBe("work 0 1 1");
 
       expect(check(join(root, "missing"))).toBe("none");
+
+      // Never "none" when the working copy is there but cannot be read: a
+      // clean verdict destroys the Sandbox.
+      const exit = (cwd: string) =>
+        Bun.spawnSync(["bash", "-c", SANDBOX_WORK_CHECK_SCRIPT], {
+          env: { ...process.env, OS_CWD: cwd },
+        }).exitCode;
+      const locked = join(root, "locked");
+      mkdirSync(locked);
+      chmodSync(locked, 0o000);
+      try {
+        if (process.getuid?.() !== 0) {
+          expect(check(locked)).not.toBe("none");
+          expect(exit(locked)).not.toBe(0);
+        }
+      } finally {
+        chmodSync(locked, 0o755);
+      }
+      const broken = join(root, "broken");
+      mkdirSync(join(broken, ".git"), { recursive: true });
+      writeFileSync(join(broken, ".git", "HEAD"), "not a ref\n");
+      expect(check(broken)).not.toBe("none");
+      expect(exit(broken)).not.toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
