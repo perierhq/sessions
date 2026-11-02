@@ -46,53 +46,95 @@ import type { NativeSessionFile, UnifiedSession } from "./types";
  * Tear down a session's Sandboxes, including their workspace disks
  * (documented data loss: push your work): the workspace Sandbox and, for a
  * host session, the Portal Sandbox that ran its dev server. Best-effort and
- * detached so a provider hiccup never blocks the caller (session delete,
- * archive sweep). `clearSandboxId` drops the stale ids from the session file
- * so later sweeps don't re-destroy — only for sessions that keep existing
- * (the archive sweep); a deleted session has no file to touch.
+ * detached so a provider hiccup never blocks the caller (session delete).
+ * A deleted session has no file to touch, so its ids are not cleared.
  */
 export function destroySessionSandbox(
   session: UnifiedSession,
   why: string,
-  clearSandboxId = false,
 ): void {
-  const retire = (
+  for (const retiring of retireSessionSandboxes(session, why, false))
+    retiring.catch(() => {});
+  retireGpuMachineOf(session, why);
+}
+
+/**
+ * The archive sweep's retirement: the same teardown as destroySessionSandbox,
+ * awaited. Resolves once every Sandbox of the session is destroyed and its
+ * id cleared from the session file, so later passes don't retire it again;
+ * rejects with the reason when any destroy failed, and then that Sandbox
+ * stays recorded for the next pass.
+ */
+export async function retireSessionSandbox(
+  session: UnifiedSession,
+  why: string,
+): Promise<void> {
+  const results = await Promise.allSettled(
+    retireSessionSandboxes(session, why, true),
+  );
+  retireGpuMachineOf(session, why);
+  const failed = results.flatMap((r) =>
+    r.status === "rejected" ? [errorText(r.reason)] : [],
+  );
+  if (failed.length) throw new Error(failed.join("; "));
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** One teardown per recorded Sandbox (workspace, Portal), each settling
+ *  after its record was cleared when `clearSandboxId` asks for it. */
+function retireSessionSandboxes(
+  session: UnifiedSession,
+  why: string,
+  clearSandboxId: boolean,
+): Promise<void>[] {
+  const retire = async (
     record: { provider: string; sandboxId?: string },
     label: string,
-    clear: () => void,
+    clear: () => Promise<void>,
     providerSessionId = session.id,
-  ) => {
+  ): Promise<void> => {
     if (!isRemoteSandboxProvider(record.provider)) return;
-    void (async () => {
-      try {
-        const id = await teardownRecordedSandbox(providerSessionId, record);
-        console.log(
-          `[sandbox] retired ${id || "unmaterialized Sandbox"} for ${session.id} (${label})`,
-        );
-        if (clearSandboxId && session.source === "opensession") clear();
-      } catch (e) {
-        console.warn(
-          `[sandbox] destroy ${record.sandboxId} for ${session.id} (${label}) failed:`,
-          e,
-        );
-      }
-    })();
+    try {
+      const id = await teardownRecordedSandbox(providerSessionId, record);
+      console.log(
+        `[sandbox] retired ${id || "unmaterialized Sandbox"} for ${session.id} (${label})`,
+      );
+    } catch (e) {
+      console.warn(
+        `[sandbox] destroy ${record.sandboxId} for ${session.id} (${label}) failed:`,
+        e,
+      );
+      throw e;
+    }
+    if (clearSandboxId && session.source === "opensession") await clear();
   };
+  const retiring: Promise<void>[] = [];
   const sb = session.sandbox;
   if (sb)
-    retire(sb, why, () =>
-      touchNativeSession(session.id, {
-        sandbox: { ...sb, sandboxId: undefined },
-      }),
+    retiring.push(
+      retire(sb, why, () =>
+        touchNativeSession(session.id, {
+          sandbox: { ...sb, sandboxId: undefined },
+        }),
+      ),
     );
   const portal = session.portalSandbox;
   if (portal)
-    retire(
-      portal,
-      `${why}, Portal Sandbox`,
-      () => touchNativeSession(session.id, { portalSandbox: undefined }),
-      `${session.id}--portals`,
+    retiring.push(
+      retire(
+        portal,
+        `${why}, Portal Sandbox`,
+        () => touchNativeSession(session.id, { portalSandbox: undefined }),
+        `${session.id}--portals`,
+      ),
     );
+  return retiring;
+}
+
+function retireGpuMachineOf(session: UnifiedSession, why: string): void {
   // The GPU machine its GPU jobs ran on (gpu-jobs.ts), if it ever had one.
   void import("./gpu-jobs")
     .then(({ retireGpuMachine }) => retireGpuMachine(session.id))

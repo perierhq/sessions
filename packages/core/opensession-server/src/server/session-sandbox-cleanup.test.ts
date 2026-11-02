@@ -177,3 +177,20 @@ test("recovery skips malformed provider mapping files", async () => {
     (await findRemoteStateBySessionAsync("daytona", "failed"))?.sandboxId,
   ).toBe("good-vm");
 });
+
+test("the archive sweep's retirement waits for the destroy and reports its failure", async () => {
+  const { retireSessionSandbox } = await import("./session-sandbox");
+  // Not an Open Session session file: nothing to clear, only the teardown.
+  const session = {
+    id: "archived",
+    source: "acme-import",
+    sandbox: { provider: "daytona", sandboxId: "archived-vm" },
+  } as any;
+  await retireSessionSandbox(session, "archive-retention");
+  expect(events.at(-1)).toBe("destroy:daytona:archived-vm");
+
+  destroyError = new Error("provider unavailable");
+  await expect(
+    retireSessionSandbox(session, "archive-retention"),
+  ).rejects.toThrow("provider unavailable");
+});
