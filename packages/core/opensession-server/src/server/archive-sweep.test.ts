@@ -365,6 +365,48 @@ describe("archive sweep", () => {
     ]);
   });
 
+  test("inside the lane the session is read again: one changed since the listing is left alone", async () => {
+    // Each check or destroy can take a minute, so a session listed at the
+    // start of the pass may have been unarchived, prompted or moved to
+    // another Sandbox by the time its lane is free.
+    const box = (id: string) =>
+      session(id, {
+        sandbox: { provider: "podman", sandboxId: `sbx-${id}` },
+      } as Partial<UnifiedSession>);
+    const listed = ["unarchived", "running", "moved", "deleted", "same"].map(
+      box,
+    );
+    const now: Record<string, UnifiedSession | null> = {
+      unarchived: { ...box("unarchived"), archived: false },
+      running: { ...box("running"), isRunning: true },
+      moved: session("moved", {
+        sandbox: { provider: "podman", sandboxId: "sbx-moved-2" },
+      } as Partial<UnifiedSession>),
+      deleted: null,
+      same: { ...box("same"), title: "read again" } as UnifiedSession,
+    };
+    const checked: UnifiedSession[] = [];
+    const t = deps({
+      sessions: async () => listed,
+      refresh: async (s) => now[s.id] ?? null,
+      bankWork: async (s) => {
+        checked.push(s);
+        return { retire: true, why: "clean" };
+      },
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect((await runArchiveSweep(t.d)).sandboxes).toEqual(["same"]);
+    } finally {
+      log.mockRestore();
+    }
+    expect(t.destroyed).toEqual(["same"]);
+    // The check and the destroy act on the session as read in the lane.
+    expect(checked.map((s) => (s as { title?: string }).title)).toEqual([
+      "read again",
+    ]);
+  });
+
   test("a failed session listing fails both sweeps, never reads as nothing archived", async () => {
     const t = deps({
       sessions: async () => {

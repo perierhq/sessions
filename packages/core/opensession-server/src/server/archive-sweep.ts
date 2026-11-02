@@ -93,6 +93,10 @@ export type ArchiveSweepDeps = {
   /** Run the check and the destroy in one hold of the session's lifecycle
    *  lane, where run admission waits: no turn starts in between. */
   lane?: <T>(sessionId: string, fn: () => Promise<T>) => Promise<T>;
+  /** The session as it is now, read inside the lane, with `isRunning` set
+   *  while any run holds it; null once it is gone. The listing is minutes
+   *  old by the time a later session's lane is free. */
+  refresh?: (session: UnifiedSession) => Promise<UnifiedSession | null>;
   /** When the session was archived (ms), or null when unknown. */
   archivedAt?: (session: UnifiedSession) => number | null;
   /** The Sandbox's disk use as last measured, or null when unknown. */
@@ -103,16 +107,27 @@ export type ArchiveSweepDeps = {
 };
 
 async function defaultDeps(): Promise<ArchiveSweepDeps> {
-  const [cache, worktree, sandbox, archive, podmanDisk, bank, lane] =
-    await Promise.all([
-      import("./session-cache"),
-      import("./worktree"),
-      import("./session-sandbox"),
-      import("./archive"),
-      import("./sandbox/adapters/podman-disk"),
-      import("./sandbox-work-bank"),
-      import("./sandbox/lifecycle-lane"),
-    ]);
+  const [
+    cache,
+    worktree,
+    sandbox,
+    archive,
+    podmanDisk,
+    bank,
+    lane,
+    host,
+    agent,
+  ] = await Promise.all([
+    import("./session-cache"),
+    import("./worktree"),
+    import("./session-sandbox"),
+    import("./archive"),
+    import("./sandbox/adapters/podman-disk"),
+    import("./sandbox-work-bank"),
+    import("./sandbox/lifecycle-lane"),
+    import("./host-registry"),
+    import("./agent-runner"),
+  ]);
   return {
     sessions: async () =>
       cache.enrichSessionRuntime(
@@ -124,6 +139,21 @@ async function defaultDeps(): Promise<ArchiveSweepDeps> {
     // Where checkpoints run and run admission waits: no turn starts while
     // the working copy is checked or the Sandbox destroyed.
     lane: lane.withSessionLifecycleLane,
+    // As sandbox-archive-sleep.ts does: the archive registry decides
+    // archived, and a run on the host or an agent counts as running.
+    refresh: async (s) => {
+      const fresh = await cache.findSessionAsync(s.id);
+      if (!fresh) return null;
+      return {
+        ...fresh,
+        aliasIds: s.aliasIds,
+        archived: [s.id, ...(s.aliasIds ?? [])].some(archive.isArchivedId),
+        isRunning:
+          fresh.isRunning ||
+          host.hostRunBusy(s.id) ||
+          agent.isAgentSessionBusy(s.id),
+      };
+    },
     // The latest archive among the row and its aliases: the window starts
     // from the most recent one.
     archivedAt: (s) => {
@@ -183,7 +213,19 @@ export async function runArchiveSweep(
       if (!s.sandbox?.sandboxId || s.isRunning) continue;
       const since = retentionClock(s, d.archivedAt);
       if (since === null || since >= cutoff) continue;
-      const outcome = await lane(s.id, () => retireIfBanked(s, d));
+      const outcome = await lane(s.id, async () => {
+        const current = d.refresh ? await d.refresh(s) : s;
+        if (
+          !current ||
+          current.isRunning ||
+          current.sandbox?.sandboxId !== s.sandbox?.sandboxId
+        )
+          return null;
+        const since = retentionClock(current, d.archivedAt);
+        if (since === null || since >= cutoff) return null;
+        return retireIfBanked(current, d);
+      });
+      if (!outcome) continue;
       if ("kept" in outcome) kept.push({ id: s.id, reason: outcome.kept });
       else if (outcome.why === "gone") cleared.push(s.id);
       else {
