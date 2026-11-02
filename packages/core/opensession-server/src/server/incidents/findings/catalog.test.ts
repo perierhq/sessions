@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   FINDING_KINDS,
+  OWNER_OPTION_ACTIONS,
   type FindingBlock,
   type ToolRef,
 } from "../../../shared/findings";
@@ -9,6 +10,8 @@ import {
   FINDINGS_CATALOG,
   FINDINGS_EXAMPLE,
   findingsBrief,
+  OPTION_ACTIONS_CATALOG,
+  OPTIONS_EXAMPLE,
   REF_CATALOG,
 } from "./catalog";
 import { REF_TYPES, validateFindings } from "./validate";
@@ -285,4 +288,40 @@ describe("findings brief times", () => {
       'Don\'t write "Round 2:" or what changed into prose; the page marks new and changed blocks against the round before.',
     );
   });
+});
+
+describe("options brief", () => {
+  test("the options example passes the validator with zero notes", () => {
+    const out = validateFindings(
+      { blocks: [OPTIONS_EXAMPLE] },
+      { keepFrom: new Map(), nowMs: NOW },
+    );
+    expect(out.notes).toEqual([]);
+    const block = out.blocks[0];
+    expect(block && !block.kept && block.block.kind === "question").toBe(true);
+    expect(
+      block && !block.kept && block.block.kind === "question"
+        ? block.block.options?.length
+        : 0,
+    ).toBe(3);
+  });
+
+  test("every action is explained once, in order", () => {
+    expect(OPTION_ACTIONS_CATALOG.map((a) => a.action)).toEqual([
+      ...OWNER_OPTION_ACTIONS,
+    ]);
+  });
+
+  for (const role of ["investigator", "verifier"] as const)
+    test(`the ${role}'s brief says when and how to offer options`, () => {
+      const brief = findingsBrief(role).join("\n");
+      expect(brief).toContain("### Options");
+      expect(brief).toContain(
+        "Offer only real choices: 2 to 4, the one you recommend first.",
+      );
+      expect(brief).toContain("Don't restate the card's question in them.");
+      for (const a of OPTION_ACTIONS_CATALOG)
+        expect(brief).toContain(`- ${a.action}: ${a.does}.`);
+      expect(brief).toContain(JSON.stringify(OPTIONS_EXAMPLE, null, 2));
+    });
 });

@@ -5,7 +5,11 @@
 // checks, conflicts, a strict up-to-date rule or unreadable rules all stop
 // the merge. Only the verified head SHA is ever merged (pinned in the merge
 // request, so GitHub refuses it if the head moves in between).
-import { actionsNotRunning } from "../../github-workflow-runs";
+import {
+  actionsNotRunning,
+  actionsRunIds,
+  actionsRunsAgain,
+} from "../../github-workflow-runs";
 import type {
   MergeRecord,
   PrSnapshot,
@@ -171,6 +175,14 @@ export interface MergeGithub {
     ghRepo: string,
     checks: ReadonlyArray<{ name: string; url?: string }>,
   ): Promise<string | undefined>;
+  /** Whether GitHub Actions runs code for the repository again. */
+  actionsHealthy?(ghRepo: string): Promise<boolean>;
+  /** Re-run a workflow run's failed jobs, with `c` (`actions: write`). */
+  rerunFailedJobs?(
+    ghRepo: string,
+    runId: number,
+    c: GithubCredential,
+  ): Promise<void>;
 }
 
 async function gh(args: string[], credential: GithubCredential) {
@@ -229,6 +241,20 @@ export function defaultMergeGithub(): MergeGithub {
     comment: (repo, n, body, c) =>
       githubForceMergeApi.comment(repo, n, body, c),
     actionsBlocked: (repo, checks) => actionsNotRunning(repo, checks),
+    actionsHealthy: (repo) => actionsRunsAgain(repo),
+    async rerunFailedJobs(ghRepo, runId, c) {
+      const { err, code } = await gh(
+        [
+          "api",
+          "-X",
+          "POST",
+          `repos/${ghRepo}/actions/runs/${runId}/rerun-failed-jobs`,
+        ],
+        c,
+      );
+      if (code !== 0)
+        throw new Error(err.trim() || `gh exited with code ${code}`);
+    },
     async close(ghRepo, n, c) {
       const { err, code } = await gh(
         [
@@ -323,9 +349,11 @@ export async function fetchPrSnapshot(
             .actionsBlocked(parsed.ghRepo, v.checks.failing)
             .catch(() => undefined)
         : undefined;
+    const blockedRuns = actionsBlocked ? actionsRunIds(v.checks.failing) : [];
     return {
       ...snapshotFromVerdict(v, { files, mergeCommitSha, now: input.now }),
       ...(actionsBlocked ? { actionsBlocked } : {}),
+      ...(blockedRuns.length ? { blockedRuns } : {}),
     };
   } catch (error) {
     return { error: errorMessage(error) };

@@ -797,3 +797,79 @@ test("a failed signal fix toasts the error and frees the button", async () => {
   ]);
   expect(view(card.output()).busy).toBeNull();
 });
+
+// ── The agents' own options ────────────────────────────────────────────────
+
+const offering = () =>
+  incident(
+    {
+      kind: "needs-you",
+      reason: "The fix can only be proven after release: CI can't start",
+      needsYou: "unproven",
+      options: ["send-back", "resolve", "close"],
+      agentQuestion: "How should PR #12 go out?",
+      agentOptions: [
+        {
+          label: "Yes, merge it",
+          detail: "Sessions merges #12, then checks production",
+          action: "merge",
+          decision: "merge",
+          role: "verifier",
+          recommended: true,
+          pr: 12,
+        },
+        {
+          label: "I'll restore billing",
+          detail: "Tell me when CI runs",
+          action: "answer",
+          decision: "answer",
+          role: "verifier",
+        },
+      ],
+    },
+    "needs-you",
+  );
+
+test("an agent's options are the card's only options, with Close in the … menu", () => {
+  const card = harness.mount(NextAction, props({ incident: offering() }));
+  const ask = askOf(card.output());
+  expect(ask.questions[0]!.question).toBe("How should PR #12 go out?");
+  expect(ask.questions[0]!.options!.map((o) => o.label)).toEqual([
+    "Yes, merge it",
+    "I'll restore billing",
+  ]);
+  expect(ask.groups).toEqual([
+    { label: "Recommended", count: 1 },
+    { count: 1 },
+  ]);
+  expect(ask.menu?.map((m) => m.label)).toEqual(["Close without action"]);
+  expect(ask.freeText).toMatchObject({ placeholder: "Tell the investigator…" });
+});
+
+test("an agent's Merge it posts merge; Answer posts the answer; the menu closes", async () => {
+  const inc = offering();
+  decide.mockResolvedValue(inc);
+  let card = harness.mount(NextAction, props({ incident: inc }));
+  let ask = askOf(card.output());
+  const q = ask.questions[0]!.question;
+  ask.onAnswer({ [q]: "Yes, merge it" }, {}, {});
+  await settle();
+  expect(decide).toHaveBeenLastCalledWith("inc-1", "merge", undefined);
+  harness.unmountAll();
+  card = harness.mount(NextAction, props({ incident: inc }));
+  ask = askOf(card.output());
+  ask.onAnswer(
+    { [q]: "I'll restore billing" },
+    { [q]: "Done, CI runs again" },
+    {},
+  );
+  await settle();
+  expect(decide).toHaveBeenLastCalledWith(
+    "inc-1",
+    "answer",
+    "Done, CI runs again",
+  );
+  ask.menu![0]!.onSelect();
+  await settle();
+  expect(decide).toHaveBeenLastCalledWith("inc-1", "close", undefined);
+});

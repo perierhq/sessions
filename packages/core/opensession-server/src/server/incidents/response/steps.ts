@@ -8,7 +8,9 @@ import type {
   IncidentProjectSettings,
   IncidentResponse,
   InvestigatorReport,
+  LedgerKind,
   NeedsYouKind,
+  PostReleaseReport,
   PolicyDecision,
   ReportIssue,
   ReportProblem,
@@ -76,12 +78,38 @@ export interface ResponseView {
   /** Only while the owner releases the fix by hand: its pull request's
    *  state as the PR cache has it, undefined when the cache doesn't know. */
   handReleasePr?: "OPEN" | "MERGED" | "CLOSED";
+  /** Only while a hand-released fix waits for its release: the project's
+   *  release pull requests the PR cache knows (release-please and the
+   *  like), with the time each was last updated. */
+  releasePrs?: ReleasePr[];
 }
+
+/** A release pull request of the project, as the PR cache has it. */
+export interface ReleasePr {
+  url: string;
+  title: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  updatedAt: string;
+}
+
+/** How long a merged fix waits for its release before asking the owner. */
+export const RELEASE_WAIT_MS = 24 * 3_600_000;
+/** How long the post-release check may run before Sessions stops it and
+ *  the watch decides alone. */
+export const CHECK_MAX_MS = 1_800_000;
 
 export type ResponseStep =
   | { step: "none" }
   | { step: "init"; rollbackFirst: boolean }
-  | { step: "start-agent"; role: AgentRole; round: number; attempt: number }
+  | {
+      step: "start-agent";
+      role: AgentRole;
+      round: number;
+      attempt: number;
+      /** A post-release check (a verifier session), and what went out. */
+      check?: "post-release";
+      after?: string;
+    }
   | {
       step: "skip-parallel-investigator";
       outcome: "unavailable" | "refused";
@@ -90,12 +118,14 @@ export type ResponseStep =
   | {
       step: "message-agent";
       sessionId: string;
-      message: "send-back" | "reminder";
+      /** `answer`: the owner's answer to the agent's question, as its
+       *  next prompt in the same round. */
+      message: "send-back" | "reminder" | "answer";
     }
   | {
       step: "record-report";
       sessionId: string;
-      report?: InvestigatorReport | VerifierReport;
+      report?: InvestigatorReport | VerifierReport | PostReleaseReport;
       error?: string;
       problem?: ReportProblem;
       /** Every problem with a refused report, for one reminder. */
@@ -126,6 +156,8 @@ export type ResponseStep =
       detail: string;
       patch?: Partial<IncidentResponse>;
       fixedBy?: FixedBy;
+      /** Also a ledger line of this kind, with `detail`. */
+      log?: LedgerKind;
     }
   | {
       step: "needs-you";
@@ -149,6 +181,14 @@ export type ResponseStep =
     }
   | { step: "merge" }
   | { step: "run-action"; actionId: string; purpose: ActionRun["purpose"] }
-  | { step: "start-watch" }
+  | {
+      step: "start-watch";
+      /** How long it lasts; the project's watch window when absent. */
+      ms?: number;
+    }
   | { step: "resolve"; fixedBy: FixedBy; detail: string }
-  | { step: "merge-note" };
+  | { step: "merge-note" }
+  /** A card whose pull request's checks GitHub Actions never ran: look
+   *  whether Actions works again, and if so re-run them and verify the fix
+   *  again (no new investigator round). */
+  | { step: "actions-recheck" };

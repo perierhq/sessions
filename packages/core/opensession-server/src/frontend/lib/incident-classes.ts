@@ -106,6 +106,11 @@ export const LIKELY_CAUSE = "flex min-w-0 flex-col gap-0.5 pl-6";
 
 /** The likely cause's status, the agent's confidence and "See findings":
  *  one wrapping row; the link goes to the row's end on a desktop. */
+/** What stopped, above an agent's own question on the Next card: quieter
+ *  than the question, plain text. */
+export const NEXT_REASON =
+  "m-0 text-supporting text-dim [overflow-wrap:anywhere] whitespace-pre-wrap";
+
 export const NEXT_FINDINGS_META =
   "m-0 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0 text-supporting text-dim";
 
@@ -388,6 +393,16 @@ export const FINDINGS_SOURCE_BODY =
 
 /** "Round 2 under way": quiet, under the heading. */
 export const FINDINGS_UNDER_WAY = "m-0 px-2 text-supporting text-faint";
+
+/** The post-release check's head under the round's blocks: its label,
+ *  where it stands with a dot, its reason. Twice the grid's gap above. */
+export const FINDINGS_AFTER_HEAD = "-mx-2 mt-8 flex min-w-0 flex-col gap-1";
+export const FINDINGS_AFTER_LABEL =
+  "m-0 px-2 text-supporting font-medium text-fg";
+export const FINDINGS_AFTER_STATUS =
+  "m-0 flex min-w-0 items-center gap-1.5 px-2 text-supporting text-dim";
+export const FINDINGS_AFTER_REASON =
+  "m-0 px-2 text-supporting text-dim [overflow-wrap:anywhere]";
 
 /** A cell of the Findings grid: one column on a phone; a half block takes
  *  one desktop column, a full block both. */

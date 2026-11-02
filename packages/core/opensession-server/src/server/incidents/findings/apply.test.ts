@@ -1039,3 +1039,70 @@ test("the verifier's claims default to the candidate of its own round", async ()
     expect(saved.claims).toEqual([...expected]);
   }
 });
+
+test("a question's option naming a PR the incident doesn't know is left off", async () => {
+  const h = harness(
+    incident({
+      agents: [run({ prUrl: "https://github.com/acme/web/pull/12" })],
+    }),
+  );
+  const out = await applyFindings(
+    request({
+      input: {
+        blocks: [
+          {
+            ...question("next"),
+            options: [
+              { label: "Merge #12", action: "merge", pr: 12 },
+              { label: "Merge #99", action: "merge", pr: 99 },
+              { label: "Close it", action: "close" },
+            ],
+          },
+        ],
+      },
+    }),
+    h.deps,
+  );
+  const block = savedSet(h)?.blocks[0];
+  expect(block?.kind === "question" && block.options).toEqual([
+    { label: "Merge #12", detail: "", action: "merge", pr: 12 },
+    { label: "Close it", detail: "", action: "close" },
+  ]);
+  expect(out.notes).toContain(
+    "Block `next`: option 2 left off: PR #99 isn't one this incident's agents opened.",
+  );
+});
+
+test("a post-release check saves its own set beside the round's verifier", async () => {
+  const verifierSet = storedSet({
+    role: "verifier",
+    sessionId: "os-ver",
+    blocks: [
+      { id: "v", kind: "question", size: "full", text: "t", wouldAnswer: "" },
+    ],
+  });
+  const h = harness(
+    incident({
+      agents: [
+        run(),
+        run({ role: "verifier", sessionId: "os-ver", status: "done" }),
+        run({ role: "verifier", sessionId: "os-check", check: "post-release" }),
+      ],
+      findingSets: [verifierSet],
+    }),
+  );
+  const out = await applyFindings(
+    request({
+      role: "verifier",
+      sessionId: "os-check",
+      input: { blocks: [question("after")] },
+    }),
+    h.deps,
+  );
+  expect(out.saved).toBe(true);
+  const sets = h.state().response?.findingSets ?? [];
+  expect(sets.map((s) => [s.role, s.check ?? null, s.blocks[0]?.id])).toEqual([
+    ["verifier", null, "v"],
+    ["verifier", "post-release", "after"],
+  ]);
+});

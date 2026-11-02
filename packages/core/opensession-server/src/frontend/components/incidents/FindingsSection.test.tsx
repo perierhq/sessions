@@ -226,3 +226,34 @@ test("round 2 says what changed, marks the blocks and links round 1", () => {
   expect(html.split("in round 2</p>").length).toBe(3);
   expect(html).toMatch(/<button[^>]*>Round 1 findings<\/button>/);
 });
+
+test("the post-release check shows under the round, as After release", () => {
+  const html = render(
+    incident(
+      response({
+        findingSets: [
+          set(1, [block("a", "Round block")]),
+          {
+            ...set(1, [block("p", "Production after the release")], "verifier"),
+            check: "post-release",
+            sessionId: "os-check",
+          },
+        ],
+        postRelease: {
+          round: 1,
+          status: "regressed",
+          at: T("13:00"),
+          after: "Deploy at 12:50 UTC",
+          reasons: ["The old 403 is back on api.example.test"],
+        },
+      }),
+    ),
+  );
+  expect(html).toContain(">After release</h3>");
+  expect(html).toContain("Worse in production after the release");
+  expect(html).toContain("The old 403 is back on api.example.test");
+  expect(html).toContain("From the post-release check, ");
+  expect(html.indexOf("Production after the release")).toBeGreaterThan(
+    html.indexOf("Round block"),
+  );
+});

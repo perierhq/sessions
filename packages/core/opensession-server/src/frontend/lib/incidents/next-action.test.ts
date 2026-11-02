@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { DECISION_COPY } from "../../../shared/incident-decision-copy";
 import {
+  type AgentOption,
   type AgentRun,
   type IncidentResponse,
   type InvestigatorReport,
@@ -915,4 +916,122 @@ test("closed without action with a code fix still open asks what to do with it",
     headline: "PRs #465 and #469 from the investigator are still open",
     body: "They change code, so Sessions left them for you to close or keep",
   });
+});
+
+// ── The agents' own options ────────────────────────────────────────────────
+
+const agentCard = (
+  agentOptions: AgentOption[],
+  over: { agentOptions?: undefined } = {},
+) => {
+  const card = nextCard({
+    ...base,
+    incident: inc("needs-you", {
+      phase: "needs-you",
+      agents: [
+        verifier({
+          role: "investigator",
+          round: 2,
+          sessionId: "inv",
+          report: report(steps),
+        }),
+      ],
+      next: {
+        kind: "needs-you",
+        reason: "The fix can only be proven after release: CI can't start",
+        needsYou: "unproven",
+        options: ["release-watch", "send-back", "resolve", "close"],
+        agentOptions,
+        agentQuestion: "How should PR #12 go out?",
+        ...over,
+      },
+    }),
+  });
+  if (card?.mode !== "choice") throw new Error("Not a choice card");
+  return card;
+};
+
+const merge: AgentOption = {
+  label: "Yes, merge it",
+  detail: "Sessions merges #12 and checks production after the release",
+  action: "merge",
+  decision: "merge",
+  role: "verifier",
+  recommended: true,
+  pr: 12,
+};
+const another: AgentOption = {
+  label: "Look at the cache",
+  detail: "Another round on the cache",
+  action: "send-back",
+  decision: "send-back",
+  role: "verifier",
+  note: "Check the cache on api.example.test",
+};
+const answer: AgentOption = {
+  label: "I'll restore billing",
+  detail: "Tell me when CI runs",
+  action: "answer",
+  decision: "answer",
+  role: "verifier",
+};
+
+test("needs you: the agent's options only, never beside the card's own or the suggested steps", () => {
+  const card = agentCard([merge, another, answer]);
+  expect(card.question).toEqual({
+    header: "Needs you",
+    question: "How should PR #12 go out?",
+    options: [
+      { label: "Yes, merge it", description: merge.detail },
+      { label: "Look at the cache", description: another.detail },
+      { label: "I'll restore billing", description: answer.detail },
+    ],
+    multiSelect: false,
+  });
+  // What stopped is said above the agent's question.
+  expect(card.reason).toBe(
+    "The fix can only be proven after release: CI can't start",
+  );
+  expect(card.picks).toEqual({
+    "Yes, merge it": { kind: "decision", decision: "merge" },
+    "Look at the cache": { kind: "decision", decision: "send-back" },
+    "I'll restore billing": { kind: "decision", decision: "answer" },
+  });
+  // Send it back starts with the agent's note; Answer asks for the answer.
+  expect(card.notes["Look at the cache"]).toMatchObject({
+    initial: "Check the cache on api.example.test",
+  });
+  expect(card.notes["I'll restore billing"]).toMatchObject({
+    label: "Your answer",
+  });
+  // The typed field stays Send it back.
+  expect(card.freeText?.placeholder).toBe("Tell the investigator…");
+  // The recommended option is marked, subtly, as a group label.
+  expect(card.groups).toEqual([
+    { label: "Recommended", count: 1 },
+    { count: 2 },
+  ]);
+  // Close without action, not offered by the agent, is in the menu.
+  expect(card.menu).toEqual(["close"]);
+});
+
+test("needs you: an agent that offers Close keeps it out of the menu; no recommended, no label", () => {
+  const close: AgentOption = {
+    label: "Close it",
+    detail: "",
+    action: "close",
+    decision: "close",
+    role: "verifier",
+  };
+  const card = agentCard([{ ...answer }, close]);
+  expect(card.menu).toBeUndefined();
+  expect(card.groups).toBeUndefined();
+});
+
+test("needs you: without agent options the card offers its own, as before", () => {
+  const card = agentCard([], { agentOptions: undefined });
+  expect(card.question.options?.map((o) => o.label)).toContain(
+    "Close without action",
+  );
+  expect(card.menu).toBeUndefined();
 });

@@ -86,11 +86,14 @@ import {
   nextActionFor,
   rereadsReport,
   roundRan,
+  earlierVerifierFindings,
   verifierFindingsOf,
   waitingMayBeStale,
+  waitingOnActions,
   waitingOnChecks,
 } from "./decide";
 import { incidentWorkspaceFor } from "./host-agents";
+import { KNOWLEDGE_GLOB, globMatch } from "./facts";
 import { appendLedger, emptyResponse, spendInMonth } from "./ledger";
 import {
   type MergeGithub,
@@ -102,6 +105,7 @@ import {
   prFilePaths,
 } from "./merge";
 import { independenceBetween, resolveRoleModels } from "./models";
+import { agentOptionsFor, mergeBlocked, offersOption } from "./options";
 import { budgetProblem } from "./policy";
 import {
   getProjectSettings,
@@ -117,7 +121,10 @@ import {
   EARLIER_INCIDENTS_MAX,
   type EarlierIncident,
   INCIDENT_DOCS_DIR,
+  type PrOverlap,
+  buildAnswerMessage,
   buildInvestigatorPrompt,
+  buildPostReleasePrompt,
   buildReminder,
   buildSendBackMessage,
   buildVerifierPrompt,
@@ -129,6 +136,7 @@ import { productionRunOnProblem, runnerLabel } from "./runners";
 import {
   FINAL_TEXT_GRACE_MS,
   PARALLEL_INVESTIGATOR_RETRY_MS,
+  type ReleasePr,
   type ResponseStep,
   type ResponseView,
 } from "./steps";
@@ -179,6 +187,9 @@ export interface CoordinatorDeps {
     project: string,
     url: string,
   ) => "OPEN" | "MERGED" | "CLOSED" | undefined;
+  /** The project's release pull requests the PR cache knows (release
+   *  branches such as release-please's). Cheap: no GitHub call. */
+  releasePrs: (project: string) => ReleasePr[];
   /** Saves the findings an accepted report carries, unless the run already
    *  showed some with `show_findings` this round. Never throws. */
   applyReportFindings: (req: {
@@ -189,6 +200,9 @@ export interface CoordinatorDeps {
     claims: string[];
   }) => Promise<void>;
 }
+
+/** Branches release tools open their release pull requests from. */
+const RELEASE_BRANCH = /^(release-please--|changeset-release\/|release\/)/;
 
 function defaultDeps(): CoordinatorDeps {
   return {
@@ -224,6 +238,18 @@ function defaultDeps(): CoordinatorDeps {
       for (const pr of getPrsByRepo().get(project)?.values() ?? [])
         if (pr.url === url) return pr.state;
       return undefined;
+    },
+    releasePrs: (project) => {
+      const out: ReleasePr[] = [];
+      for (const [branch, pr] of getPrsByRepo().get(project) ?? [])
+        if (RELEASE_BRANCH.test(branch))
+          out.push({
+            url: pr.url,
+            title: pr.title,
+            state: pr.state,
+            updatedAt: pr.updatedAt,
+          });
+      return out;
     },
     agentsPaused: (project) =>
       peekProjectSettings(project)?.agentsPaused === true,
@@ -755,6 +781,15 @@ export async function buildResponseView(
     } catch {
       handReleasePr = undefined;
     }
+  // A fix released by hand, waiting for its release: what the PR cache
+  // says about the project's release pull requests.
+  let releasePrs: ReleasePr[] | undefined;
+  if (r?.handRelease && !r.release && r.merge?.status === "merged")
+    try {
+      releasePrs = d.releasePrs(incident.project);
+    } catch {
+      releasePrs = undefined;
+    }
   const setup =
     incident.state === "needs-you" &&
     incident.response?.needsYou?.kind === "setup"
@@ -775,6 +810,7 @@ export async function buildResponseView(
     liveActionRunIds: new Set(liveActions),
     models,
     ...(handReleasePr ? { handReleasePr } : {}),
+    ...(releasePrs ? { releasePrs } : {}),
   };
 }
 
@@ -927,12 +963,90 @@ async function applyStep(
     case "run-action":
       return runAction(view, step, d);
     case "start-watch":
-      return startWatch(view, d);
+      return startWatch(view, step, d);
     case "resolve":
       return resolveIncident(view, step, d);
     case "merge-note":
       return mergeNote(view, d);
+    case "actions-recheck":
+      return actionsRecheck(view, d);
   }
+}
+
+/**
+ * A waiting card whose pull request's checks GitHub Actions never ran:
+ * once Actions runs code for the repository again, Sessions re-runs those
+ * checks with its GitHub App, drops the card's stale reason and measures
+ * and verifies the same fix again: no new investigator round. Until then
+ * it only notes when it looked.
+ */
+async function actionsRecheck(
+  view: ResponseView,
+  d: CoordinatorDeps,
+): Promise<boolean> {
+  const { incident, settings } = view;
+  const r = incident.response!;
+  const pr = r.candidate?.pr;
+  if (!pr) return false;
+  let healthy = false;
+  try {
+    healthy = (await d.github.actionsHealthy?.(pr.ghRepo)) ?? false;
+  } catch (error) {
+    console.warn(
+      `[incidents] ${incident.id}: could not read GitHub Actions for ${pr.ghRepo}:`,
+      errorMessage(error),
+    );
+  }
+  if (!healthy) {
+    await write(incident.id, d, settings, guardOf(view), (c, base, at) => ({
+      incident: c,
+      response: patched(base, { actionsCheckedAt: at }),
+    }));
+    return false;
+  }
+  const lines: string[] = [];
+  const runs = pr.blockedRuns ?? [];
+  if (runs.length && d.github.rerunFailedJobs) {
+    try {
+      const credential = await d.github.appCredential(pr.ghRepo);
+      for (const id of runs)
+        try {
+          await d.github.rerunFailedJobs(pr.ghRepo, id, credential);
+        } catch (error) {
+          lines.push(
+            `could not re-run workflow run ${id}: ${errorMessage(error)}`,
+          );
+        }
+    } catch (error) {
+      lines.push(`could not re-run its checks: ${errorMessage(error)}`);
+    }
+  }
+  const ran = runs.length - lines.length;
+  const detail = [
+    `GitHub Actions runs for ${pr.ghRepo} again`,
+    ran > 0
+      ? `re-ran the checks of PR #${pr.number}`
+      : `PR #${pr.number}'s checks need a new run`,
+    ...lines,
+    "the verifier checks the fix again",
+  ].join("; ");
+  return applyTransition(
+    view,
+    {
+      step: "transition",
+      to: "fix-ready",
+      phase: "proving",
+      detail,
+      log: "policy",
+      patch: {
+        needsYou: undefined,
+        actionsCheckedAt: undefined,
+        candidate: patched(r.candidate!, { pr: undefined }),
+        reverify: { at: iso(d.now()), reason: detail },
+      },
+    },
+    d,
+  );
 }
 
 function setupProblem(
@@ -1196,6 +1310,9 @@ async function startAgent(
       baseBranch: d.defaultBranch(incident.project),
       notePath: await incidentNotePath(incident, d),
       earlierIncidents: await earlierIncidentsOf(incident, d),
+      ...(earlier || r.sendBack
+        ? { overlaps: await prOverlaps(incident, d) }
+        : {}),
       round,
       maxRounds: r.maxRounds,
       connections,
@@ -1228,6 +1345,24 @@ async function startAgent(
             },
           }
         : {}),
+    });
+  } else if (step.check) {
+    const candidate = r.candidate;
+    if (!candidate) throw new Error("The post-release check needs a fix");
+    prompt = buildPostReleasePrompt({
+      incident,
+      signal: primary,
+      candidate,
+      after: step.after ?? "the release",
+      releasedAt: r.release?.at ?? r.watch?.startedAt ?? iso(d.now()),
+      mode: access.mode,
+      connections,
+      recent: view.primaryRecent,
+      hypotheses: (["investigator", "verifier"] as const).flatMap((who) =>
+        (findingSetOf(r, who, round)?.blocks ?? []).flatMap((b) =>
+          b.kind === "hypothesis" ? [b.statement] : [],
+        ),
+      ),
     });
   } else {
     const candidate = r.candidate;
@@ -1262,6 +1397,7 @@ async function startAgent(
     if (!agents) throw new Error("The incident has no coordinator session");
     ({ sessionId, branch } = await agents.spawn({
       role,
+      ...(step.check ? { check: step.check } : {}),
       round,
       attempt,
       prompt,
@@ -1293,6 +1429,7 @@ async function startAgent(
     const superseded = supersede?.run.sessionId;
     const run: AgentRun = {
       role,
+      ...(step.check ? { check: step.check } : {}),
       round,
       attempt,
       sessionId,
@@ -1312,13 +1449,15 @@ async function startAgent(
       ...(supersede?.continues ? { prUrl: supersede.continues.prUrl } : {}),
     };
     const fresh = `${roleLabel(role)} started in a fresh session on ${label}, round ${round}`;
-    const started = !supersede
-      ? `${roleLabel(role)} started on ${label}, round ${round}`
-      : sharedCarry(supersede.carry)
-        ? `${fresh}: its branch is another incident's too (${supersede.carry!.branch})`
-        : supersede.moved
-          ? `${fresh}: the project's sandbox changed since its last session ran`
-          : `${fresh}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
+    const started = step.check
+      ? `Post-release check started on ${label}, after ${step.after ?? "the release"}`
+      : !supersede
+        ? `${roleLabel(role)} started on ${label}, round ${round}`
+        : sharedCarry(supersede.carry)
+          ? `${fresh}: its branch is another incident's too (${supersede.carry!.branch})`
+          : supersede.moved
+            ? `${fresh}: the project's sandbox changed since its last session ran`
+            : `${fresh}: its access was widened (${cappedList(supersede.widened.map((w) => w.item))})`;
     const detail = [
       started,
       ...(supersede?.continues
@@ -1340,6 +1479,18 @@ async function startAgent(
         ],
         retryRequested: undefined,
         parallelInvestigatorRetryAt: undefined,
+        ...(role === "verifier" && !step.check ? { reverify: undefined } : {}),
+        ...(step.check
+          ? {
+              postRelease: {
+                round,
+                status: "running" as const,
+                at,
+                sessionId,
+                after: step.after ?? "the release",
+              },
+            }
+          : {}),
         // The send-back reason went into the fresh session's brief.
         ...(role === "investigator" ? { sendBack: undefined } : {}),
       }),
@@ -1739,27 +1890,32 @@ async function messageAgent(
       );
     }
   }
-  const text = sendBack
-    ? buildSendBackMessage(
-        r.round,
-        r.maxRounds,
-        r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
-        // The send-back raised the round before this message, so the
-        // round sent back is the one before r.round.
-        run.role === "investigator"
-          ? previousFindingSet(r, "investigator", r.round)
-          : undefined,
-      )
-    : buildReminder(
-        // A run refused before every issue was kept has its first one.
-        run.reportIssues ?? [
-          {
-            problem: run.reportProblem ?? "missing",
-            error: run.reportError ?? "No incident-report block",
-          },
-        ],
-        run.role,
-      );
+  const answer = step.message === "answer" ? r.answer : undefined;
+  if (step.message === "answer" && !answer) return false;
+  const text = answer
+    ? buildAnswerMessage(answer.by, answer.note)
+    : sendBack
+      ? buildSendBackMessage(
+          r.round,
+          r.maxRounds,
+          r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
+          // The send-back raised the round before this message, so the
+          // round sent back is the one before r.round.
+          run.role === "investigator"
+            ? previousFindingSet(r, "investigator", r.round)
+            : undefined,
+          await prOverlaps(incident, d),
+        )
+      : buildReminder(
+          // A run refused before every issue was kept has its first one.
+          run.reportIssues ?? [
+            {
+              problem: run.reportProblem ?? "missing",
+              error: run.reportError ?? "No incident-report block",
+            },
+          ],
+          run.role,
+        );
   await agents.send(
     run.sessionId,
     text,
@@ -1773,6 +1929,20 @@ async function messageAgent(
     (c, base, at) => {
       const agentsNext = base.agents.map((a) => {
         if (a.sessionId !== run.sessionId) return a;
+        if (answer)
+          // The same round goes on: the report it gave is replaced by the
+          // one it writes after reading the answer.
+          return patched(a, {
+            status: "running",
+            turnSentAt: at,
+            endedAt: undefined,
+            report: undefined,
+            reportError: undefined,
+            reportProblem: undefined,
+            reportIssues: undefined,
+            reportWarnings: undefined,
+            reminded: false,
+          });
         return sendBack
           ? patched(a, {
               round: base.round,
@@ -1799,13 +1969,26 @@ async function messageAgent(
               reminded: true,
             });
       });
-      const detail = sendBack
-        ? `Sent the ${run.role} round ${roundOfMax(base.round, base.maxRounds)}`
-        : `Asked the ${run.role} for a valid report`;
+      const who = run.check ? "post-release check" : run.role;
+      const detail = answer
+        ? `Passed ${answer.by}'s answer to the ${who}`
+        : sendBack
+          ? `Sent the ${run.role} round ${roundOfMax(base.round, base.maxRounds)}`
+          : `Asked the ${who} for a valid report`;
       const response = ledger(
         patched(base, {
           agents: agentsNext,
           ...(sendBack ? { sendBack: undefined } : {}),
+          ...(answer ? { answer: undefined } : {}),
+          ...(answer && run.check && base.postRelease
+            ? {
+                postRelease: patched(base.postRelease, {
+                  status: "running",
+                  reasons: undefined,
+                  checks: undefined,
+                }),
+              }
+            : {}),
         }),
         at,
         {
@@ -1835,8 +2018,12 @@ async function recordReport(
   const reported = report
     ? report.role === "investigator"
       ? `Investigator reported: ${report.summary}`
-      : `Verifier: ${report.verdict === "certain" ? "certain" : "not certain"}`
-    : plainReportProblem(run.role, step.problem);
+      : report.role === "post-release"
+        ? `Post-release check: ${report.verdict.replace("-", " ")}`
+        : `Verifier: ${report.verdict === "certain" ? "certain" : "not certain"}`
+    : run.check
+      ? "The post-release check did not return a valid report"
+      : plainReportProblem(run.role, step.problem);
   const detail =
     report && step.reread && step.prUrl
       ? `Found the investigator's pull request ${step.prUrl}. ${reported}`
@@ -2184,15 +2371,66 @@ async function applyTransition(
         if ("error" in result) return result;
         moved = result;
       }
+      const response = patched({ ...base, phase: step.phase }, step.patch);
       return {
         incident: moved,
-        response: patched({ ...base, phase: step.phase }, step.patch),
+        response: step.log
+          ? ledger(response, at, {
+              actor: "sessions",
+              kind: step.log,
+              detail: step.detail,
+            })
+          : response,
       };
     },
   );
   if (next?.state === "closed-without-action")
     void enqueue(incident.id, () => settleAgentPrs(incident.id, d));
   return next !== null;
+}
+
+/** The most open pull requests compared for overlapping files. */
+const OVERLAP_PRS_MAX = 5;
+
+/**
+ * The incident's open pull requests that change the same files (incident
+ * notes and runbooks aside), pairwise: two fixes for one place, which can't
+ * both go out as they are. Best effort: a pull request whose files can't
+ * be read is left out.
+ */
+async function prOverlaps(
+  incident: Incident,
+  d: CoordinatorDeps,
+): Promise<PrOverlap[]> {
+  const prs = openAgentPrs(incident, d).slice(0, OVERLAP_PRS_MAX);
+  if (prs.length < 2) return [];
+  const files: Array<{ number: number; paths: Set<string> }> = [];
+  for (const pr of prs) {
+    const parsed = parsePrUrl(pr.url);
+    if (!parsed) continue;
+    try {
+      const paths = prFilePaths(
+        await d.github.files(parsed.ghRepo, parsed.number),
+      );
+      if (paths)
+        files.push({
+          number: pr.number,
+          paths: new Set(paths.filter((f) => !globMatch(KNOWLEDGE_GLOB, f))),
+        });
+    } catch {
+      // Left out.
+    }
+  }
+  const out: PrOverlap[] = [];
+  for (let i = 0; i < files.length; i++)
+    for (let j = i + 1; j < files.length; j++) {
+      const a = files[i]!;
+      const b = files[j]!;
+      const shared = [...a.paths].filter((f) => b.paths.has(f));
+      if (shared.length)
+        out.push({ numbers: [a.number, b.number], files: shared.sort() });
+    }
+  return out;
 }
 
 /** The pull requests the incident's agents opened that the PR cache does
@@ -2238,7 +2476,7 @@ async function needsYou(
       b.phase === "needs-you"
         ? (b.needsYou?.resumePhase ?? "investigating")
         : b.phase;
-    const response = ledger(
+    let response = ledger(
       patched(
         {
           ...b,
@@ -2265,6 +2503,18 @@ async function needsYou(
         detail: `Needs you: ${step.reason}`,
       },
     );
+    // The agents' options Sessions can't do now are left off the card and
+    // named here once, when the card is raised.
+    if (!step.failedAgainAt)
+      for (const line of agentOptionsFor(
+        { state: "needs-you", response },
+        settings,
+      ).dropped)
+        response = ledger(response, at, {
+          actor: "sessions",
+          kind: "policy",
+          detail: line,
+        });
     if (c.state === "needs-you") return { incident: c, response };
     let from: Incident = c;
     if (step.via && c.state !== step.via) {
@@ -2568,10 +2818,11 @@ async function runAction(
 
 async function startWatch(
   view: ResponseView,
+  step: Extract<ResponseStep, { step: "start-watch" }>,
   d: CoordinatorDeps,
 ): Promise<boolean> {
   const { incident, settings } = view;
-  const deadline = iso(view.now + settings.watchMs);
+  const deadline = iso(view.now + (step.ms ?? settings.watchMs));
   const names = incident.signalIds
     .map((id) => view.signals.get(id)?.name)
     .filter((n): n is string => !!n);
@@ -2842,7 +3093,8 @@ function needsAttention(
         working ||
         r?.needsYou?.kind === "setup" ||
         waitingMayBeStale(incident) ||
-        waitingOnChecks(incident)
+        waitingOnChecks(incident) ||
+        waitingOnActions(incident)
       );
     case "done":
       return working;
@@ -2933,6 +3185,8 @@ export function liveActionRunIds(): ReadonlySet<string> {
 export type DecisionError = { error: string; status: 404 | 409 | 400 };
 
 const REFUSALS: Record<OwnerDecision, string> = {
+  merge: "Nothing Sessions can merge now",
+  answer: "No agent is waiting for an answer",
   stop: "Nothing to stop",
   "deploy-now": "No veto window is open",
   approve: "Nothing verified to approve",
@@ -3012,8 +3266,10 @@ function decisionAllowed(
     case "release-watch":
       return (
         c.state === "needs-you" &&
-        r.needsYou?.kind === "unproven" &&
-        handReleaseAvailable(r)
+        handReleaseAvailable(r) &&
+        (r.needsYou?.kind === "unproven" ||
+          r.needsYou?.kind === "rounds" ||
+          offersOption(c, settings, "release-watch"))
       );
     case "send-back":
       return c.state === "needs-you" || c.state === "veto";
@@ -3031,6 +3287,16 @@ function decisionAllowed(
     case "close-prs":
     case "keep-prs":
       return c.state === "closed-without-action" && !!r.openPrs?.length;
+    // Only as an agent's option the card offers, which Sessions checked it
+    // can do now (options.ts).
+    case "merge":
+      return (
+        c.state === "needs-you" &&
+        !mergeBlocked(r, settings) &&
+        offersOption(c, settings, "merge")
+      );
+    case "answer":
+      return c.state === "needs-you" && offersOption(c, settings, "answer");
   }
 }
 
@@ -3099,6 +3365,7 @@ function decisionMove(
     cancelled: ReadonlySet<string>;
     /** Close it: the pull requests GitHub would not close. */
     stillOpen: ReadonlySet<string>;
+    settings: IncidentProjectSettings;
   },
 ): Mutation {
   const { by } = input;
@@ -3173,10 +3440,73 @@ function decisionMove(
         }),
       );
     }
+    case "merge": {
+      // An agent's Merge it: through the merge gate like Deploy the fix,
+      // then the deploy action; a project without one waits for the
+      // release instead, as a hand release does.
+      const candidate = base.candidate!;
+      const prUrl = (candidate.prUrl ?? candidate.pr?.url)!;
+      const number = candidate.pr?.number ?? parsePrUrl(prUrl)?.number ?? 0;
+      const deploys = !!projectAction(input.settings, "deploy");
+      return move(
+        "deploying",
+        deploys
+          ? `${by} chose to merge PR #${number}`
+          : `${by} chose to merge PR #${number}; Sessions waits for the release after it merges`,
+        patched(base, {
+          phase: "merging",
+          mergingSince: at,
+          veto: undefined,
+          ...(base.merge?.status === "refused" ? { merge: undefined } : {}),
+          candidate: patched(candidate, { pr: undefined }),
+          ...(deploys
+            ? {}
+            : {
+                handRelease: {
+                  by,
+                  at,
+                  prUrl,
+                  number,
+                  merger: "sessions" as const,
+                },
+              }),
+        }),
+      );
+    }
+    case "answer": {
+      // decisionAllowed checked an agent offered it; the answer goes to
+      // that session as its next prompt, in this round.
+      const own = agentOptionsFor(c, input.settings);
+      const sessionId = own.sessionId!;
+      const run = base.agents.find((a) => a.sessionId === sessionId);
+      const role = own.role ?? "investigator";
+      const check = run?.check === "post-release";
+      const to = check
+        ? "watching"
+        : role === "verifier"
+          ? "fix-ready"
+          : "investigating";
+      const phase: ResponsePhase = check
+        ? "watching"
+        : role === "verifier"
+          ? "verifying"
+          : "investigating";
+      return move(
+        to,
+        `${by} answered the ${check ? "post-release check" : role}`,
+        patched(base, {
+          phase,
+          answer: { by, at, note: input.note, sessionId, role },
+          // A fresh watch for the check's next look.
+          ...(check ? { watch: undefined } : {}),
+        }),
+      );
+    }
     case "send-back": {
       // The round's verifier findings go along: a send-back that kept only
       // the card's reason lost what the verifier found.
       const verifier = verifierFindingsOf(base, base.round);
+      const earlier = earlierVerifierFindings(base, base.round, verifier);
       return move(
         "investigating",
         `Sent back by ${by}`,
@@ -3194,6 +3524,7 @@ function decisionMove(
               ? { answering: base.needsYou.reason }
               : {}),
             ...(verifier ? { verifier } : {}),
+            ...(earlier.length ? { earlier } : {}),
           },
           handRelease: undefined,
           candidate: undefined,
@@ -3282,13 +3613,19 @@ async function ownerDecision(
   const incident = await d.getIncident(incidentId);
   if (!incident) return { error: "Not found", status: 404 };
   const text = (note ?? "").trim();
-  // Only Send it back reads the note; any other decision ignores one.
+  // Only Send it back and Answer read the note; any other decision
+  // ignores one.
   if (decision === "send-back" && !text)
     return {
       error: "Send it back needs a note for the investigator",
       status: 400,
     };
-  if (decision === "send-back" && text.length > SEND_BACK_NOTE_MAX)
+  if (decision === "answer" && !text)
+    return { error: "Type your answer for the agent", status: 400 };
+  if (
+    (decision === "send-back" || decision === "answer") &&
+    text.length > SEND_BACK_NOTE_MAX
+  )
     return {
       error: `The note is too long: ${SEND_BACK_NOTE_MAX.toLocaleString("en-US")} characters at most`,
       status: 400,
@@ -3349,6 +3686,7 @@ async function ownerDecision(
         note: text,
         cancelled,
         stillOpen,
+        settings,
       });
       if ("error" in moved) return moved;
       const detail = `${by}: ${decision}`;

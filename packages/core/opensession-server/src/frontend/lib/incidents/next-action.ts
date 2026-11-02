@@ -8,6 +8,7 @@ import {
   recoveredCloseAt,
 } from "../../../shared/incident-recovery";
 import {
+  type AgentOption,
   type AgentRun,
   type AutonomyLevel,
   describeIndependence,
@@ -116,6 +117,12 @@ export interface ChoiceCard {
   /** The typed answer: Send it back with that note. Null when Send it
    *  back is not offered. */
   freeText: AskFreeText | null;
+  /** The agent's own options are the card's: what stopped, said above
+   *  them, since the question is the agent's. */
+  reason?: string;
+  /** Card decisions kept off the options (the agent offered its own),
+   *  reachable from the card's … menu. */
+  menu?: OwnerDecision[];
 }
 
 export type NextCard = ShellCard | ChoiceCard | null;
@@ -458,6 +465,15 @@ export function nextCard(input: {
           buttons,
         });
       }
+      // The agent's own options for this decision: only those, never
+      // beside the card's own.
+      if (next.agentOptions?.length)
+        return agentChoiceCard(
+          next.reason,
+          next.agentQuestion,
+          next.agentOptions,
+          decisions,
+        );
       const suggested = suggestedSteps(r, decisions);
       if (decisions.length >= 2 || (suggested.length && decisions.length))
         return choiceCard(next.reason, decisions, suggested);
@@ -476,7 +492,10 @@ export function nextCard(input: {
         tone: "green",
         eyebrow: "Watching",
         headline: `Watching until ${clockTime(next.deadline)}, then it closes`,
-        body: "Nothing for you to do",
+        body:
+          r.postRelease?.round === r.round && r.postRelease.status === "running"
+            ? "Checking production after the release. Nothing for you to do"
+            : "Nothing for you to do",
         buttons: next.options.includes("roll-back")
           ? [decisionButton("roll-back", "soft")]
           : [],
@@ -625,6 +644,67 @@ function choiceCard(
     card.groups = [
       { label: SUGGESTED_LABEL, count: suggested.length },
       { count: decisions.length, quiet: true },
+    ];
+  return card;
+}
+
+/** The label over the option the agent recommends. */
+export const RECOMMENDED_LABEL = "Recommended";
+
+/** The note field an agent's Answer option asks for. */
+export const ANSWER_NOTE: AskNoteField = {
+  label: "Your answer",
+  placeholder: "What should the agent know?",
+  maxLength: SEND_BACK_NOTE_MAX,
+};
+
+/**
+ * The needs-you card with the agent's own options and nothing else of the
+ * card's: the agent's question, its options in its order (the recommended
+ * one first, labelled), each posting its decision. Send it back starts
+ * with the agent's note; Answer asks for the answer. The typed field stays
+ * Send it back. Close without action, when the agent didn't offer it, is
+ * in the card's … menu.
+ */
+function agentChoiceCard(
+  reason: string,
+  question: string | undefined,
+  options: AgentOption[],
+  decisions: OwnerDecision[],
+): ChoiceCard {
+  const picks: Record<string, ChoicePick> = {};
+  const notes: Record<string, AskNoteField> = {};
+  for (const o of options) {
+    picks[o.label] = { kind: "decision", decision: o.decision };
+    if (o.decision === "send-back") {
+      const field: AskNoteField = { ...DECISION_NOTE["send-back"]! };
+      if (o.note) field.initial = o.note;
+      notes[o.label] = field;
+    }
+    if (o.decision === "answer") notes[o.label] = ANSWER_NOTE;
+  }
+  const offered = new Set(options.map((o) => o.decision));
+  const card: ChoiceCard = {
+    mode: "choice",
+    eyebrow: "Needs you",
+    decisions: options.map((o) => o.decision),
+    question: {
+      header: "Needs you",
+      question: question ?? reason,
+      options: options.map((o) => ({ label: o.label, description: o.detail })),
+      multiSelect: false,
+    },
+    notes,
+    picks,
+    freeText: decisions.includes("send-back") ? TELL_INVESTIGATOR : null,
+  };
+  if (question) card.reason = reason;
+  const menu = decisions.filter((d) => d === "close" && !offered.has(d));
+  if (menu.length) card.menu = menu;
+  if (options[0]?.recommended)
+    card.groups = [
+      { label: RECOMMENDED_LABEL, count: 1 },
+      ...(options.length > 1 ? [{ count: options.length - 1 }] : []),
     ];
   return card;
 }

@@ -9,11 +9,14 @@ import {
   FINDING_ID,
   FINDING_KINDS,
   FINDINGS_LIMITS,
+  OWNER_OPTION_ACTIONS,
   type FindingBlock,
   type FindingBlockOf,
   type FindingKind,
   type LogExcerptOf,
   type MarkerRef,
+  type OwnerOption,
+  type OwnerOptionAction,
   type SignalWindow,
 } from "../../../shared/findings";
 import { cleanReportText } from "../response/reports";
@@ -591,11 +594,78 @@ function parseQuestion(
     return null;
   }
   const wouldAnswer = cleanText(value.wouldAnswer, true) ?? "";
-  return {
+  const body: Body<"question"> = {
     kind: "question",
     text: clip(text, L.statement, "text", note),
     wouldAnswer: clip(wouldAnswer, L.prose, "wouldAnswer", note),
   };
+  if (value.options === undefined) return body;
+  const options = parseOptions(value.options, note);
+  return options.length ? { ...body, options } : body;
+}
+
+function isOptionAction(value: unknown): value is OwnerOptionAction {
+  return (OWNER_OPTION_ACTIONS as readonly unknown[]).includes(value);
+}
+
+/** The actions an option's `pr` belongs to. */
+const PR_ACTIONS: ReadonlySet<OwnerOptionAction> = new Set([
+  "merge",
+  "release-watch",
+]);
+
+/**
+ * A question's options for the owner: at most `L.options`, each with a
+ * label, a detail and an action from the closed set. A bad option is left
+ * off with a note; the question stays. Whether Sessions can do an option
+ * now is decided when the card shows it, not here.
+ */
+function parseOptions(value: unknown, note: Note): OwnerOption[] {
+  if (!Array.isArray(value)) {
+    note("options must be a list; ignored.");
+    return [];
+  }
+  const out: OwnerOption[] = [];
+  const labels = new Set<string>();
+  value.forEach((raw, i) => {
+    const n = i + 1;
+    const off = (why: string) => note(`option ${n} left off: ${why}`);
+    if (!isRecord(raw)) return off("it must be an object.");
+    const label = cleanText(raw.label);
+    if (!label) return off("label is required.");
+    if (!isOptionAction(raw.action))
+      return off(`action must be one of: ${OWNER_OPTION_ACTIONS.join(", ")}.`);
+    const action = raw.action;
+    const key = label.toLowerCase();
+    if (labels.has(key)) return off("another option has the same label.");
+    const option: OwnerOption = {
+      label: clip(label, L.optionLabel, `option ${n} label`, note),
+      detail: clip(
+        cleanText(raw.detail, true) ?? "",
+        L.optionDetail,
+        `option ${n} detail`,
+        note,
+      ),
+      action,
+    };
+    if (raw.pr !== undefined) {
+      const pr = prNumber(raw.pr);
+      if (!PR_ACTIONS.has(action))
+        note(`option ${n}: pr is only for merge and release-watch; ignored.`);
+      else if (!pr) return off("pr must be a PR number.");
+      else option.pr = pr;
+    }
+    if (raw.note !== undefined) {
+      const text = cleanText(raw.note, true);
+      if (action !== "send-back")
+        note(`option ${n}: note is only for send-back; ignored.`);
+      else if (text)
+        option.note = clip(text, L.prose, `option ${n} note`, note);
+    }
+    labels.add(key);
+    out.push(option);
+  });
+  return capped(out, L.options, "options", note);
 }
 
 function parseBody(
@@ -694,8 +764,25 @@ export function validateFindings(
   });
   if (blocks.length > L.blocks)
     notes.push(`Kept the first ${L.blocks} blocks.`);
+  const kept = blocks.slice(0, L.blocks);
+  // One decision at a time: only the first question's options reach the
+  // card.
+  let offered = false;
+  for (const draft of kept) {
+    const block = draft.block;
+    if (block.kind !== "question" || !block.options?.length) continue;
+    if (!offered) {
+      offered = true;
+      continue;
+    }
+    notes.push(
+      `Block \`${block.id}\`: options left off: only one question may offer options.`,
+    );
+    const { options: _options, ...rest } = block;
+    draft.block = rest as typeof block;
+  }
   return {
-    blocks: blocks.slice(0, L.blocks),
+    blocks: kept,
     notes: capNotes(notes),
     cleared: input.blocks.length === 0,
   };

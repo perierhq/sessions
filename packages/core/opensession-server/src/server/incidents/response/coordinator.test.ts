@@ -251,7 +251,11 @@ function prVerdict(pr: PrShape, merged: boolean): PrMergeVerdict {
     checks: {
       ...v.checks,
       pending: (pr.pending ?? []).map((name) => ({ name })),
-      failing: (pr.failing ?? []).map((name) => ({ name })),
+      failing: (pr.failing ?? []).map((name) => ({
+        name,
+        // An Actions job, so its workflow run can be re-run.
+        url: "https://github.com/acme/web/actions/runs/77/job/7701",
+      })),
     },
   } as PrMergeVerdict;
 }
@@ -332,7 +336,7 @@ async function world(
   const agents: IncidentAgents = {
     async spawn(input) {
       spawns.push(input);
-      const key = `r${input.round}:${input.role}:a${input.attempt}`;
+      const key = `r${input.round}:${input.role}${input.check ? `:${input.check}` : ""}:a${input.attempt}`;
       const known = requests.get(key);
       if (known)
         return { sessionId: known, branch: works.get(known)?.branch ?? "" };
@@ -500,6 +504,7 @@ async function world(
     },
     agentsPaused: () => settings.agentsPaused,
     ready: () => true,
+    releasePrs: () => [],
   };
   const incident = await createIncident({
     project: "acme",
@@ -541,6 +546,24 @@ async function world(
     finish(id: string, text: string, over: Partial<AgentLive> = {}) {
       live.set(id, { ...live.get(id)!, status: "done", ...over });
       texts.set(id, text);
+    },
+    /** The post-release check, finished with `verdict`, then the loop. */
+    async finishCheck(
+      verdict: "confirmed" | "not-confirmed" | "regressed" = "confirmed",
+    ) {
+      const i = await getIncident(incident.id);
+      const id = i?.response?.postRelease?.sessionId;
+      if (!id) throw new Error("No post-release check is running");
+      w.finish(
+        id,
+        fence({
+          role: "post-release",
+          verdict,
+          reasons: ["Searches on acme.example.test pass since the release"],
+        }),
+      );
+      await advanceIncident(incident.id, deps);
+      await advanceIncident(incident.id, deps);
     },
     live(id: string, over: Partial<AgentLive>) {
       live.set(id, { ...live.get(id)!, ...over });
@@ -1682,6 +1705,7 @@ test("upstream block: certain → veto → merged as the App → deployed → wa
   expect(i?.response?.ledger.map((e) => e.kind)).toEqual(
     expect.arrayContaining(["veto", "merge", "action"]),
   );
+  await w.finishCheck();
   w.evaluate("sig-a", "ok");
   await advanceIncident(w.incident.id, w.deps);
   i = await getIncident(w.incident.id);
@@ -3204,6 +3228,7 @@ test("kill switch before a manual rollback ran: needs you, the release is still 
 test("manual rollback after resolution reopens the incident, rounds uncapped", async () => {
   const w = await world();
   await w.toWatching();
+  await w.finishCheck();
   w.evaluate("sig-a", "ok");
   await advanceIncident(w.incident.id, w.deps);
   const resolved = await getIncident(w.incident.id);
@@ -3897,11 +3922,23 @@ test("I'll release it myself: Sessions waits for the merge, then watches the sig
   expect(i?.state).toBe("watching");
   expect(w.merges).toEqual([]);
   expect(w.actions).toEqual([]);
-  w.clock += 60_000;
+  // The check confirms it; the watch lasts its whole window (no failed
+  // check in it), then it resolves.
+  await w.finishCheck();
   w.evaluate("sig-a", "ok");
+  w.clock += 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("watching");
+  w.clock += 600_000;
   await advanceIncident(w.incident.id, w.deps);
   i = await getIncident(w.incident.id);
   expect(i?.state).toBe("resolved");
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      "Sessions can't see acme's releases, so the watch starts at the merge of PR #12",
+      "Post-release check confirmed the fix in production: Searches on acme.example.test pass since the release",
+    ]),
+  );
 });
 
 test("a waiting card whose pull request can't be read again waits the full interval before the next read", async () => {
@@ -3957,7 +3994,7 @@ test("I'll release it myself: a fix still failing after the watch comes back to 
   const i = await getIncident(w.incident.id);
   expect(i?.state).toBe("needs-you");
   expect(i?.response?.needsYou?.reason).toContain(
-    "Search is still failing after PR #12 was merged",
+    "Search is still failing after PR #12 went out",
   );
   expect(w.actions).toEqual([]);
 });
@@ -4168,4 +4205,233 @@ test("a send-back is not logged as finished before the agent's new turn has run"
   w.finish("child-1", fence(investigatorReport));
   await advanceIncident(w.incident.id, w.deps);
   expect(await finished()).toEqual(["Investigator finished round 2"]);
+});
+
+// ── The agents' own options ────────────────────────────────────────────────
+
+/** The verifier's set for round 1 with a question offering `options`. */
+async function offerOptions(id: string, options: unknown[]) {
+  await updateIncident(id, (c) => ({
+    ...c,
+    response: {
+      ...c.response!,
+      findingSets: [
+        {
+          role: "verifier",
+          round: 1,
+          attempt: 1,
+          sessionId: "child-2",
+          source: "tool",
+          updatedAt: new Date(START).toISOString(),
+          calls: 1,
+          notes: [],
+          blocks: [
+            {
+              id: "ship",
+              kind: "question",
+              size: "full",
+              text: "CI is green in my session. How should PR #12 go out?",
+              wouldAnswer: "",
+              options: options as never,
+            },
+          ],
+        },
+      ],
+    },
+  }));
+}
+
+test("agent options: the card offers only the agent's, and names the ones left off", async () => {
+  const w = await world({ pr: { failing: ["ci"] } });
+  await advanceIncident(w.incident.id, w.deps);
+  await offerOptions(w.incident.id, [
+    { label: "Yes, merge it", detail: "", action: "merge", pr: 12 },
+    { label: "I'll restore billing", detail: "", action: "answer" },
+    { label: "Close it", detail: "", action: "close" },
+  ]);
+  await toUnproven(w);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.next).toMatchObject({
+    kind: "needs-you",
+    agentQuestion: "CI is green in my session. How should PR #12 go out?",
+    agentOptions: [
+      { label: "I'll restore billing", decision: "answer" },
+      { label: "Close it", decision: "close" },
+    ],
+  });
+  expect(i?.response?.ledger.map((e) => e.detail)).toContain(
+    'Left off the verifier\'s option "Yes, merge it": check ci fails on PR #12',
+  );
+  // Merge it isn't on the card, so the server refuses it.
+  expect(
+    await applyOwnerDecision(w.incident.id, "merge", "Bo", undefined, w.deps),
+  ).toMatchObject({ status: 409 });
+});
+
+test("agent options: Merge it on a project without a deploy action merges, waits for the release, checks production, resolves", async () => {
+  const w = await world();
+  w.settings.actions = [];
+  await advanceIncident(w.incident.id, w.deps);
+  await offerOptions(w.incident.id, [
+    { label: "Yes, merge it", detail: "Then watch", action: "merge", pr: 12 },
+    { label: "Close it", detail: "", action: "close" },
+  ]);
+  await toUnproven(w);
+  expect((await getIncident(w.incident.id))?.response?.next).toMatchObject({
+    agentOptions: [{ label: "Yes, merge it", recommended: true }, {}],
+  });
+  expect(
+    await applyOwnerDecision(w.incident.id, "merge", "Bo", undefined, w.deps),
+  ).toMatchObject({ state: "deploying" });
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  // Merged through the gate as the App; no deploy action ran.
+  expect(w.merges).toEqual([{ ghRepo: "acme/web", n: 12, sha: "abc1234" }]);
+  expect(w.actions).toEqual([]);
+  expect(i?.state).toBe("watching");
+  expect(i?.response?.release?.source).toBe("merge");
+  expect(i?.response?.postRelease?.status).toBe("running");
+  expect(w.spawns.at(-1)).toMatchObject({
+    role: "verifier",
+    check: "post-release",
+  });
+  expect(w.spawns.at(-1)?.prompt).toContain(
+    "You are the post-release check. The fix is live.",
+  );
+  await w.finishCheck();
+  w.clock += 600_001;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("resolved");
+  expect(i?.events.findLast((e) => e.kind === "state")?.detail).toContain(
+    "the post-release check confirmed it",
+  );
+});
+
+test("post-release: a regressed verdict goes to the owner with its evidence, never rolled back", async () => {
+  const w = await world();
+  await w.toWatching();
+  await w.finishCheck("regressed");
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.needsYou).toMatchObject({
+    kind: "post-release",
+    reason:
+      "After the release, production looks worse: Searches on acme.example.test pass since the release",
+  });
+  expect(w.actions.map((a) => a.actionId)).toEqual(["deploy"]);
+});
+
+test("agent options: Answer goes to the asking agent as its next prompt, without a new round", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  await offerOptions(w.incident.id, [
+    { label: "I'll restore billing", detail: "", action: "answer" },
+    { label: "Close it", detail: "", action: "close" },
+  ]);
+  await toUnproven(w);
+  expect(
+    await applyOwnerDecision(w.incident.id, "answer", "Bo", "", w.deps),
+  ).toMatchObject({ status: 400 });
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "answer",
+      "Bo",
+      "Billing is fixed; CI runs again",
+      w.deps,
+    ),
+  ).toMatchObject({ state: "fix-ready" });
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(w.sends.at(-1)).toMatchObject({ id: "child-2" });
+  expect(w.sends.at(-1)?.message).toContain("Bo answered your question");
+  expect(w.sends.at(-1)?.message).toContain("Billing is fixed; CI runs again");
+  expect(i?.response?.round).toBe(1);
+  expect(i?.response?.answer).toBeUndefined();
+  const asked = i?.response?.agents.find((a) => a.sessionId === "child-2");
+  expect(asked?.status).toBe("running");
+  expect(asked?.report).toBeUndefined();
+});
+
+test("send back: overlapping open PRs of the incident are named for the next round", async () => {
+  const w = await world();
+  await toUnproven(w);
+  // Another of the incident's agents opened #13 on the same file.
+  await updateIncident(w.incident.id, (c) => ({
+    ...c,
+    response: {
+      ...c.response!,
+      agents: [
+        ...c.response!.agents,
+        {
+          ...c.response!.agents[0]!,
+          sessionId: "child-9",
+          status: "done",
+          prUrl: "https://github.com/acme/web/pull/13",
+        },
+      ],
+    },
+  }));
+  w.prs.set(13, {
+    state: "OPEN",
+    headSha: "def5678",
+    files: ["src/search.ts", "docs/incidents/runbook.md"],
+  });
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "CI is back",
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  const message = w.sends.at(-1)?.message ?? "";
+  expect(message).toContain(
+    "Open pull requests of this incident that change the same files",
+  );
+  expect(message).toContain("#12 and #13: src/search.ts");
+  expect(message).not.toContain("#12 and #13: src/search.ts, docs");
+});
+
+test("GitHub Actions comes back: the checks are re-run and the same round is verified again", async () => {
+  const blocked = "the job was not started because of billing";
+  const w = await world({ pr: { failing: ["ci"], actionsBlocked: blocked } });
+  await w.runToVerifier();
+  expect(
+    (await getIncident(w.incident.id))?.response?.candidate?.pr?.blockedRuns,
+  ).toEqual([77]);
+  const reruns: number[] = [];
+  let healthy = false;
+  w.deps.github = {
+    ...w.deps.github!,
+    actionsHealthy: async () => healthy,
+    rerunFailedJobs: async (_repo: string, id: number) => {
+      reruns.push(id);
+      // GitHub starts the checks again.
+      w.setPr({ pending: ["ci"] });
+    },
+  };
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(reruns).toEqual([]);
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  healthy = true;
+  w.clock += 600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(reruns).toEqual([77]);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("fix-ready");
+  expect(i?.response?.needsYou).toBeUndefined();
+  expect(i?.response?.round).toBe(1);
+  expect(i?.response?.ledger.map((e) => e.detail)).toContain(
+    "GitHub Actions runs for acme/web again; re-ran the checks of PR #12; the verifier checks the fix again",
+  );
+  // The checks pass: the verifier looks, in the same round.
+  w.setPr({});
+  w.clock += 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.spawns.map((s) => s.role)).toEqual(["investigator", "verifier"]);
+  expect((await getIncident(w.incident.id))?.response?.round).toBe(1);
 });

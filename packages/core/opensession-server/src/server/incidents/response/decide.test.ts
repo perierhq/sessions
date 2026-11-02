@@ -22,6 +22,7 @@ import type { AgentLive } from "./agents";
 import {
   currentAgent,
   decideNextStep,
+  earlierVerifierFindings,
   manualRollbackAvailable,
   needsYouOptions,
   nextActionFor,
@@ -31,6 +32,7 @@ import {
   waitingMayBeStale,
 } from "./decide";
 import { defaultProjectSettings } from "./project-settings";
+import { agentOptionsFor } from "./options";
 import type { ResponseView } from "./steps";
 
 const NOW = Date.parse("2026-10-20T12:00:00.000Z");
@@ -1272,11 +1274,21 @@ test("verification: certain pins the SHA; not certain sends back, then stops at 
       },
     },
   });
+  // The rounds card keeps the verdict and the head it reviewed.
   expect(decideNextStep(verifying(2, doubt))).toEqual({
     step: "needs-you",
     kind: "rounds",
     reason:
       "Not certain after 2 rounds: The 403 also happens with the new agent",
+    patch: {
+      verdict: {
+        round: 2,
+        at: iso(0),
+        verdict: "not-certain",
+        reasons: ["The 403 also happens with the new agent"],
+        verifiedSha: "abc1234",
+      },
+    },
   });
 });
 
@@ -1645,6 +1657,13 @@ function watching(
         actionRuns: [actionRun({ actionId: "deploy", status: "ok" })],
         watch,
         agents: verifiedAgents,
+        // The post-release check has had its say (tests below cover it).
+        postRelease: {
+          round: 1,
+          status: "skipped",
+          at: iso(-60_000),
+          after: "Deploy at 11:58 UTC",
+        },
         ...over,
       }),
     ),
@@ -3517,4 +3536,863 @@ test("a card that holds Deploy the fix back for failing checks reads the pull re
     }),
   );
   expect(waitingOnChecks(green)).toBe(false);
+});
+
+// ── Live problem at proof time, and the round-limit card ───────────────────
+
+test("proving: a failing baseline with an after-deploy check still goes on as after-release", () => {
+  const failing = {
+    ...proofResult({ round: 1, baseline: "fails", candidate: "after-deploy" }),
+    at: iso(-30_000),
+  };
+  const step = decideNextStep(
+    view({
+      incident: incident(
+        "fix-ready",
+        response({
+          phase: "proving",
+          candidate: candidate({ check: afterDeployCheck, pr: prSnapshot() }),
+          proof: failing,
+        }),
+      ),
+    }),
+  );
+  expect(step).toMatchObject({
+    step: "transition",
+    phase: "verifying",
+    patch: { proof: { ...failing, deferred: "after-release" } },
+  });
+  if (step.step !== "transition") throw new Error("expected transition");
+  expect(step.detail).toContain("the problem was happening");
+});
+
+test("verifying: an after-release fix whose problem was live still reaches the unproven card", () => {
+  const v = deferredVerifying({
+    ...goodVerifier,
+    verdict: "not-certain",
+    reasons: ["Only the release can show it"],
+  });
+  v.incident.response!.proof!.baseline.verdict = "fails";
+  const step = decideNextStep(v);
+  expect(step).toMatchObject({ step: "needs-you", kind: "unproven" });
+  if (step.step !== "needs-you") throw new Error("expected needs-you");
+  expect(step.reason).toContain("the problem was happening");
+});
+
+test("the round-limit card keeps the reviewed head and offers the hand release", () => {
+  const v = deferredVerifying(
+    {
+      ...goodVerifier,
+      verdict: "not-certain",
+      reasons: ["A claim can't be checked"],
+      claims: [{ ...goodVerifier.claims[0]!, status: "refuted" }],
+    },
+    2,
+  );
+  const step = decideNextStep(v);
+  expect(step).toMatchObject({
+    step: "needs-you",
+    kind: "rounds",
+    patch: { verdict: { verdict: "not-certain", verifiedSha: "abc1234" } },
+  });
+  const r = response({
+    phase: "needs-you",
+    round: 2,
+    candidate: candidate({ pr: prSnapshot() }),
+    verdict: {
+      round: 2,
+      at: iso(0),
+      verdict: "not-certain",
+      reasons: ["x"],
+      verifiedSha: "abc1234",
+    },
+  });
+  expect(needsYouOptions("rounds", r)).toEqual([
+    "release-watch",
+    "send-back",
+    "resolve",
+    "close",
+  ]);
+});
+
+// ── The agents' own options on the card ────────────────────────────────────
+
+function offering(
+  options: unknown[],
+  over: Partial<IncidentResponse> = {},
+  kind: "unproven" | "rounds" | "question" | "setup" = "unproven",
+): Incident {
+  return incident(
+    "needs-you",
+    response({
+      phase: "needs-you",
+      candidate: candidate({ pr: prSnapshot() }),
+      verdict: {
+        round: 1,
+        at: iso(0),
+        verdict: "not-certain",
+        reasons: ["Only the release can show it"],
+        verifiedSha: "abc1234",
+      },
+      agents: [
+        run("investigator", { status: "done", round: over.round ?? 1 }),
+        run("verifier", { status: "done", round: over.round ?? 1 }),
+      ],
+      needsYou: {
+        kind,
+        reason: "The fix can only be proven after release: x",
+        since: iso(0),
+        resumePhase: "verifying",
+      },
+      findingSets: [
+        {
+          role: "verifier",
+          round: over.round ?? 1,
+          attempt: 1,
+          sessionId: "child-2",
+          source: "tool",
+          updatedAt: iso(0),
+          calls: 1,
+          notes: [],
+          blocks: [
+            {
+              id: "ship",
+              kind: "question",
+              size: "full",
+              text: "How should PR #12 go out?",
+              wouldAnswer: "",
+              options: options as never,
+            },
+          ],
+        },
+      ],
+      ...over,
+    }),
+  );
+}
+
+const noDeploy: IncidentProjectSettings = {
+  ...defaultSettings,
+  actions: [rollbackAction],
+};
+
+test("needs-you: the agent's options ride on the card, recommended first", () => {
+  const next = nextActionFor(
+    offering([
+      { label: "Yes, merge it", detail: "Then watch", action: "merge", pr: 12 },
+      { label: "I'll fix billing", detail: "", action: "answer" },
+      { label: "Close it", detail: "", action: "close" },
+    ]),
+    noDeploy,
+  );
+  expect(next).toMatchObject({
+    kind: "needs-you",
+    agentQuestion: "How should PR #12 go out?",
+    agentOptions: [
+      {
+        label: "Yes, merge it",
+        action: "merge",
+        decision: "merge",
+        role: "verifier",
+        recommended: true,
+        pr: 12,
+      },
+      { label: "I'll fix billing", action: "answer", decision: "answer" },
+      { label: "Close it", action: "close", decision: "close" },
+    ],
+  });
+  if (next.kind !== "needs-you") throw new Error("expected needs-you");
+  expect(next.agentOptions?.[1]?.recommended).toBeUndefined();
+  // The card's own options stay for its menu.
+  expect(next.options).toContain("close");
+});
+
+test("needs-you: an option Sessions can't do now is left off, never shown", () => {
+  const failing = offering(
+    [
+      { label: "Yes, merge it", detail: "", action: "merge" },
+      { label: "Merge #99", detail: "", action: "merge", pr: 99 },
+      { label: "Another round", detail: "", action: "send-back", note: "x" },
+      { label: "Close it", detail: "", action: "close" },
+    ],
+    {
+      round: 2,
+      candidate: candidate({ pr: prSnapshot({ failingChecks: ["ci"] }) }),
+    },
+  );
+  const out = agentOptionsFor(failing, noDeploy);
+  expect(out.options.map((o) => o.label)).toEqual(["Close it"]);
+  expect(out.options[0]?.recommended).toBeUndefined();
+  expect(out.dropped).toEqual([
+    'Left off the verifier\'s option "Yes, merge it": check ci fails on PR #12',
+    "Left off the verifier's option \"Merge #99\": PR #99 isn't this round's fix",
+    'Left off the verifier\'s option "Another round": no round is left',
+  ]);
+});
+
+test("needs-you: with every option left off, the card offers its own", () => {
+  const next = nextActionFor(
+    offering([{ label: "Merge #99", detail: "", action: "merge", pr: 99 }]),
+    noDeploy,
+  );
+  expect(next).not.toHaveProperty("agentOptions");
+  expect(next).toMatchObject({ options: expect.arrayContaining(["close"]) });
+});
+
+test("needs-you: an agent's own question or a setup card takes no options", () => {
+  for (const kind of ["question", "setup"] as const)
+    expect(
+      agentOptionsFor(
+        offering(
+          [{ label: "Close it", detail: "", action: "close" }],
+          {},
+          kind,
+        ),
+        noDeploy,
+      ).options,
+    ).toEqual([]);
+});
+
+test("needs-you: an answer needs the asking session to still be on the incident", () => {
+  const gone = offering(
+    [{ label: "I'll do it", detail: "", action: "answer" }],
+    {
+      agents: [
+        run("investigator", { status: "done" }),
+        run("verifier", { status: "done", supersededBy: "child-9" }),
+      ],
+    },
+  );
+  expect(agentOptionsFor(gone, noDeploy).dropped).toEqual([
+    "Left off the verifier's option \"I'll do it\": the agent that asked no longer works on this incident",
+  ]);
+});
+
+// ── The post-release check ─────────────────────────────────────────────────
+
+const green = () => new Map([["sig-a", evaluation("ok", iso(-60_000))]]);
+const watchNow = { startedAt: iso(-120_000), deadline: iso(480_000) };
+
+test("post-release: the check starts with the watch, and green waits for it", () => {
+  const v = watching(watchNow, green(), { postRelease: undefined });
+  expect(decideNextStep(v)).toEqual({
+    step: "start-agent",
+    role: "verifier",
+    round: 1,
+    attempt: 1,
+    check: "post-release",
+    after: "Deploy at 11:58 UTC",
+  });
+  const running = watching(watchNow, green(), {
+    postRelease: {
+      round: 1,
+      status: "running",
+      at: iso(-60_000),
+      sessionId: "check-1",
+      after: "Deploy at 11:58 UTC",
+    },
+    agents: [
+      ...verifiedAgents,
+      run("verifier", { sessionId: "check-1", check: "post-release" }),
+    ],
+  });
+  expect(decideNextStep(running)).toEqual({ step: "none" });
+});
+
+function checked(
+  report: unknown,
+  status: AgentRun["status"] = "done",
+  over: Partial<AgentRun> = {},
+): ResponseView {
+  return watching(watchNow, green(), {
+    postRelease: {
+      round: 1,
+      status: "running",
+      at: iso(-60_000),
+      sessionId: "check-1",
+      after: "Deploy at 11:58 UTC",
+    },
+    agents: [
+      ...verifiedAgents,
+      run("verifier", {
+        sessionId: "check-1",
+        check: "post-release",
+        status,
+        ...(report ? { report: report as never } : {}),
+        ...over,
+      }),
+    ],
+  });
+}
+
+test("post-release: its report is read with its own parser, and the verdict recorded", () => {
+  const v = checked(undefined);
+  v.agents = new Map([
+    [
+      "check-1",
+      {
+        status: "done",
+        costUsd: 0,
+        tokens: 0,
+        finalText: fence({
+          role: "post-release",
+          verdict: "confirmed",
+          reasons: ["Searches pass since the release"],
+        }),
+      },
+    ],
+  ]);
+  expect(decideNextStep(v)).toMatchObject({
+    step: "record-report",
+    sessionId: "check-1",
+    report: { role: "post-release", verdict: "confirmed" },
+  });
+  const confirmed = decideNextStep(
+    checked({
+      role: "post-release",
+      verdict: "confirmed",
+      reasons: ["Searches pass since the release"],
+      checks: [],
+    }),
+  );
+  expect(confirmed).toMatchObject({
+    step: "transition",
+    phase: "watching",
+    detail:
+      "Post-release check confirmed the fix in production: Searches pass since the release",
+    patch: { postRelease: { status: "confirmed" } },
+  });
+});
+
+test("post-release: confirmed and green resolves; doubt goes to the owner, never a rollback", () => {
+  const confirmed = watching(watchNow, green(), {
+    postRelease: {
+      round: 1,
+      status: "confirmed",
+      at: iso(-30_000),
+      after: "Deploy at 11:58 UTC",
+      reasons: [],
+    },
+  });
+  expect(decideNextStep(confirmed)).toEqual({
+    step: "resolve",
+    fixedBy: "agents",
+    detail:
+      "Search back to normal after the release; the post-release check confirmed it",
+  });
+  for (const status of ["not-confirmed", "regressed"] as const) {
+    const step = decideNextStep(
+      watching(watchNow, green(), {
+        postRelease: {
+          round: 1,
+          status,
+          at: iso(-30_000),
+          after: "Deploy at 11:58 UTC",
+          reasons: ["The old error is back in the logs"],
+        },
+      }),
+    );
+    expect(step).toMatchObject({ step: "needs-you", kind: "post-release" });
+    if (step.step !== "needs-you") throw new Error("expected needs-you");
+    expect(step.reason).toContain("The old error is back in the logs");
+  }
+});
+
+test("post-release: bounded; errors, time and the budget skip it and the watch decides", () => {
+  expect(decideNextStep(checked(undefined, "error"))).toMatchObject({
+    step: "transition",
+    patch: { postRelease: { status: "skipped" } },
+  });
+  expect(
+    decideNextStep(
+      checked(undefined, "running", { turnSentAt: iso(-31 * 60_000) }),
+    ),
+  ).toEqual({
+    step: "cancel-agents",
+    reason: "The post-release check ran out of time",
+    for: "timeout",
+  });
+  const broke = watching(watchNow, green(), {
+    postRelease: undefined,
+    costUsd: 25,
+  });
+  expect(decideNextStep(broke)).toMatchObject({
+    step: "transition",
+    detail: expect.stringContaining("Post-release check skipped"),
+    patch: { postRelease: { status: "skipped" } },
+  });
+});
+
+test("post-release: a rollback-first fix has nothing new to check", () => {
+  const v = watching(watchNow, green(), {
+    postRelease: undefined,
+    candidate: candidate({ pr: prSnapshot(), rollbackFirst: true }),
+  });
+  expect(decideNextStep(v)).toMatchObject({ step: "resolve" });
+});
+
+// ── A fix released by hand: wait for the release, watch the base rate ──────
+
+function handReleased(
+  over: Partial<IncidentResponse> = {},
+  v: Partial<ResponseView> = {},
+) {
+  return view({
+    incident: incident(
+      "deploying",
+      response({
+        phase: "deploying",
+        candidate: candidate({ pr: prSnapshot() }),
+        verdict: { ...certainVerdict, verdict: "not-certain" },
+        merge: { ...mergedRecord, method: "by-hand", at: iso(-60 * 60_000) },
+        handRelease: {
+          by: "Ada",
+          at: iso(-2 * 3_600_000),
+          prUrl: "https://github.com/acme/web/pull/12",
+          number: 12,
+        },
+        agents: verifiedAgents,
+        ...over,
+      }),
+    ),
+    ...v,
+  });
+}
+
+test("hand release: with a release hook, the watch waits for the release", () => {
+  const hook = { ...defaultSettings, actions: [], releaseHookSecret: "s3cret" };
+  expect(decideNextStep(handReleased({}, { settings: hook }))).toEqual({
+    step: "none",
+  });
+  expect(
+    decideNextStep(
+      handReleased(
+        {},
+        {
+          settings: {
+            ...hook,
+            releases: [
+              { at: iso(-10 * 60_000), source: "hook", ref: "v1.4.1" },
+            ],
+          },
+        },
+      ),
+    ),
+  ).toMatchObject({
+    step: "transition",
+    phase: "deploying",
+    patch: {
+      release: { at: iso(-10 * 60_000), source: "hook", ref: "v1.4.1" },
+    },
+  });
+  // A merged release pull request counts too.
+  expect(
+    decideNextStep(
+      handReleased(
+        {},
+        {
+          settings: { ...defaultSettings, actions: [] },
+          releasePrs: [
+            {
+              url: "https://github.com/acme/web/pull/40",
+              title: "chore(main): release web 1.4.1",
+              state: "MERGED",
+              updatedAt: iso(-5 * 60_000),
+            },
+          ],
+        },
+      ),
+    ),
+  ).toMatchObject({ patch: { release: { source: "release-pr" } } });
+  // A day without a release asks the owner.
+  expect(
+    decideNextStep(
+      handReleased(
+        { merge: { ...mergedRecord, at: iso(-25 * 3_600_000) } },
+        { settings: hook },
+      ),
+    ),
+  ).toMatchObject({ step: "needs-you", kind: "no-action" });
+});
+
+test("hand release: no visible release starts the watch at the merge, sized from the signal's spells", () => {
+  const settings = { ...defaultSettings, actions: [] };
+  expect(decideNextStep(handReleased({}, { settings }))).toMatchObject({
+    step: "transition",
+    patch: { release: { at: iso(-60 * 60_000), source: "merge" } },
+  });
+  const spells = [-10, -8, -6, -4].flatMap((h) => [
+    { at: iso(h * 3_600_000), result: "fail" as const, detail: "search: slow" },
+    {
+      at: iso(h * 3_600_000 + 60_000),
+      result: "fail" as const,
+      detail: "search: slow",
+    },
+    {
+      at: iso(h * 3_600_000 + 120_000),
+      result: "fail" as const,
+      detail: "search: slow",
+    },
+    { at: iso(h * 3_600_000 + 180_000), result: "ok" as const, detail: "ok" },
+  ]);
+  expect(
+    decideNextStep(
+      handReleased(
+        { release: { at: iso(-60 * 60_000), source: "merge" } },
+        { settings, primaryRecent: spells },
+      ),
+    ),
+  ).toEqual({ step: "start-watch", ms: 6 * 3_600_000 });
+});
+
+function handWatching(
+  recent: Array<{ at: string; result: "ok" | "fail"; detail: string }>,
+  over: Partial<IncidentResponse> = {},
+  now = NOW,
+) {
+  const v = handReleased(
+    {
+      phase: "watching",
+      release: { at: iso(-60 * 60_000), source: "merge" },
+      watch: { startedAt: iso(-60 * 60_000), deadline: iso(5 * 3_600_000) },
+      openedOn: { at: iso(-5 * 3_600_000), detail: "search: slow" },
+      postRelease: {
+        round: 1,
+        status: "confirmed",
+        at: iso(-50 * 60_000),
+        after: "the merge at 11:00 UTC",
+      },
+      ...over,
+    },
+    {
+      settings: { ...defaultSettings, actions: [] },
+      primaryRecent: recent,
+      evaluations: green(),
+      now,
+    },
+  );
+  v.incident.state = "watching";
+  return v;
+}
+
+test("hand release: each failure is saved with its detail; another part doesn't count", () => {
+  const other = [
+    {
+      at: iso(-30 * 60_000),
+      result: "fail" as const,
+      detail: "betterfare: down",
+    },
+    {
+      at: iso(-29 * 60_000),
+      result: "fail" as const,
+      detail: "betterfare: down",
+    },
+    {
+      at: iso(-28 * 60_000),
+      result: "fail" as const,
+      detail: "betterfare: down",
+    },
+  ];
+  const step = decideNextStep(handWatching(other));
+  expect(step).toMatchObject({
+    step: "transition",
+    phase: "watching",
+    patch: {
+      watchFailures: other.map((o) => ({
+        at: o.at,
+        detail: "betterfare: down",
+        samePart: false,
+      })),
+    },
+  });
+  if (step.step !== "transition") throw new Error("expected transition");
+  expect(step.detail).toContain("another part");
+  // Recorded, another part: the watch goes on, green, and green is not
+  // enough before its end.
+  const recorded = handWatching(other, {
+    watchFailures: other.map((o) => ({
+      at: o.at,
+      detail: o.detail,
+      samePart: false,
+    })),
+  });
+  expect(decideNextStep(recorded)).toEqual({ step: "none" });
+});
+
+test("hand release: the same part failing as long as the rule counts goes to the owner", () => {
+  const same = [
+    { at: iso(-30 * 60_000), result: "fail" as const, detail: "search: slow" },
+    { at: iso(-29 * 60_000), result: "fail" as const, detail: "search: slow" },
+    { at: iso(-28 * 60_000), result: "fail" as const, detail: "search: slow" },
+  ];
+  const step = decideNextStep(
+    handWatching(same, {
+      watchFailures: same.map((o) => ({
+        at: o.at,
+        detail: o.detail,
+        samePart: true,
+      })),
+    }),
+  );
+  expect(step).toMatchObject({ step: "needs-you", kind: "post-release" });
+  if (step.step !== "needs-you") throw new Error("expected needs-you");
+  expect(step.reason).toContain("(search: slow), so the fix didn't hold");
+});
+
+test("hand release: passing the whole base-rate watch resolves", () => {
+  const step = decideNextStep(handWatching([], {}, NOW + 6 * 3_600_000));
+  expect(step).toEqual({
+    step: "resolve",
+    fixedBy: "agents-with-you",
+    detail:
+      "Search passed the 6 h watch after the release; the post-release check confirmed it",
+  });
+});
+
+test("merge it: Sessions merges a hand release it was asked to merge", () => {
+  const v = view({
+    incident: incident(
+      "deploying",
+      response({
+        phase: "merging",
+        candidate: candidate({ pr: prSnapshot() }),
+        verdict: certainVerdict,
+        mergingSince: iso(-1_000),
+        handRelease: {
+          by: "Ada",
+          at: iso(-1_000),
+          prUrl: "https://github.com/acme/web/pull/12",
+          number: 12,
+          merger: "sessions",
+        },
+        agents: verifiedAgents,
+      }),
+    ),
+    settings: { ...defaultSettings, actions: [] },
+  });
+  expect(decideNextStep(v)).toEqual({ step: "merge" });
+});
+
+// ── An answer to an agent's question ───────────────────────────────────────
+
+test("answer: it goes to the asking session once it is idle, in the same round", () => {
+  const answering = (status: AgentLive["status"]) =>
+    view({
+      incident: incident(
+        "investigating",
+        response({
+          phase: "investigating",
+          agents: [
+            run("investigator", {
+              status: "done",
+              report: {
+                ...goodInvestigator,
+                candidate: null,
+                noCandidateReason: "CI can't run",
+              },
+            }),
+          ],
+          answer: {
+            by: "Ada",
+            at: iso(-1_000),
+            note: "Billing is fixed",
+            sessionId: "child-1",
+            role: "investigator",
+          },
+        }),
+      ),
+      agents: live({ "child-1": status }),
+    });
+  expect(decideNextStep(answering("done"))).toEqual({
+    step: "message-agent",
+    sessionId: "child-1",
+    message: "answer",
+  });
+  expect(decideNextStep(answering("error"))).toMatchObject({
+    step: "needs-you",
+    kind: "agent-error",
+    patch: { answer: undefined },
+  });
+});
+
+// ── GitHub Actions comes back ──────────────────────────────────────────────
+
+function actionsDown(over: Partial<IncidentResponse> = {}) {
+  return view({
+    incident: incident(
+      "needs-you",
+      response({
+        phase: "needs-you",
+        candidate: candidate({
+          pr: prSnapshot({
+            failingChecks: ["ci"],
+            actionsBlocked: "the job was not started because of billing",
+            blockedRuns: [77],
+          }),
+        }),
+        proof: proofResult({
+          round: 2,
+          baseline: "fails",
+          candidate: "after-deploy",
+        }),
+        round: 2,
+        needsYou: {
+          kind: "rounds",
+          reason: "Not certain after 2 rounds: CI can't run",
+          since: iso(-11 * 60_000),
+          resumePhase: "verifying",
+        },
+        ...over,
+      }),
+      { resumeState: "fix-ready" },
+    ),
+  });
+}
+
+test("actions: a waiting card looks every 10 min whether Actions runs again", () => {
+  expect(decideNextStep(actionsDown())).toEqual({ step: "actions-recheck" });
+  expect(
+    decideNextStep(actionsDown({ actionsCheckedAt: iso(-60_000) })),
+  ).not.toEqual({ step: "actions-recheck" });
+});
+
+test("actions: re-run checks are waited for, then the same round is verified again", () => {
+  const base = {
+    phase: "proving" as const,
+    round: 2,
+    proof: proofResult({
+      round: 2,
+      baseline: "fails",
+      candidate: "after-deploy",
+    }),
+    reverify: { at: iso(-60_000), reason: "GitHub Actions runs again" },
+    agents: [
+      run("investigator", { round: 2, status: "done" }),
+      run("verifier", {
+        round: 2,
+        status: "done",
+        startedAt: iso(-3_600_000),
+        report: {
+          ...goodVerifier,
+          verdict: "not-certain" as const,
+          reasons: ["CI"],
+        },
+      }),
+    ],
+  };
+  const pending = view({
+    incident: incident(
+      "fix-ready",
+      response({
+        ...base,
+        candidate: candidate({
+          check: afterDeployCheck,
+          pr: prSnapshot({ pendingChecks: ["ci"] }),
+        }),
+      }),
+    ),
+  });
+  expect(decideNextStep(pending)).toEqual({ step: "none" });
+  const reverifying = view({
+    incident: incident(
+      "fix-ready",
+      response({
+        ...base,
+        phase: "verifying",
+        candidate: candidate({ check: afterDeployCheck, pr: prSnapshot() }),
+      }),
+    ),
+  });
+  expect(decideNextStep(reverifying)).toEqual({
+    step: "start-agent",
+    role: "verifier",
+    round: 2,
+    attempt: 2,
+  });
+});
+
+test("send-back: every earlier round's open verifier findings, once each, newest words", () => {
+  const verifierSet = (round: number, questions: string[]) => ({
+    role: "verifier" as const,
+    round,
+    attempt: 1,
+    sessionId: `v${round}`,
+    source: "tool" as const,
+    updatedAt: iso(0),
+    calls: 1,
+    notes: [],
+    blocks: questions.map((text, i) => ({
+      id: `q${i}`,
+      kind: "question" as const,
+      size: "full" as const,
+      text,
+      wouldAnswer: "",
+    })),
+  });
+  const r = response({
+    round: 3,
+    agents: [
+      run("verifier", {
+        round: 1,
+        sessionId: "v1",
+        status: "done",
+        report: {
+          ...goodVerifier,
+          verdict: "not-certain",
+          reasons: ["Too narrow"],
+          claims: [
+            {
+              text: "Covers 11 s calls",
+              status: "refuted",
+              evidence: "16 s seen",
+            },
+            {
+              text: "Upstream returns 403",
+              status: "verified",
+              evidence: "ok",
+            },
+          ],
+        },
+      }),
+      run("verifier", {
+        round: 2,
+        sessionId: "v2",
+        status: "done",
+        report: {
+          ...goodVerifier,
+          verdict: "not-certain",
+          reasons: ["CI is red"],
+        },
+      }),
+    ],
+    findingSets: [
+      verifierSet(1, ["PR #13 is the better fix?", "Who repins acme?"]),
+      verifierSet(2, ["Who repins acme?"]),
+    ],
+  });
+  const current = {
+    round: 3,
+    reasons: ["CI is red"],
+    claims: [],
+    questions: [],
+    hypotheses: [],
+  };
+  expect(earlierVerifierFindings(r, 3, current)).toEqual([
+    {
+      round: 1,
+      reasons: ["Too narrow"],
+      claims: [
+        { text: "Covers 11 s calls", status: "refuted", evidence: "16 s seen" },
+      ],
+      questions: [{ text: "PR #13 is the better fix?", wouldAnswer: "" }],
+      hypotheses: [],
+    },
+    {
+      round: 2,
+      reasons: [],
+      claims: [],
+      questions: [{ text: "Who repins acme?", wouldAnswer: "" }],
+      hypotheses: [],
+    },
+  ]);
 });

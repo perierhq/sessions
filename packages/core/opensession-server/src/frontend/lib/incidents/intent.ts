@@ -45,6 +45,11 @@ export function intentPlan(
       kind: "on-card",
       message: `Pick ${DECISION_COPY["send-back"].label} on the card and write the investigator a note`,
     };
+  if (intent === "answer")
+    return {
+      kind: "on-card",
+      message: "Write your answer on the card",
+    };
   if (intent === "stop")
     return {
       kind: "confirm",

@@ -52,6 +52,15 @@ export const DECISION_COPY: Readonly<
     description:
       "Sessions waits for the pull request to merge, then watches the signal",
   },
+  merge: {
+    label: "Merge it",
+    description:
+      "Sessions merges the fix, deploys it or waits for the release, then checks production",
+  },
+  answer: {
+    label: "Answer",
+    description: "Your answer goes to the agent that asked",
+  },
 };
 
 const DECISIONS: ReadonlySet<string> = new Set(OWNER_DECISIONS);

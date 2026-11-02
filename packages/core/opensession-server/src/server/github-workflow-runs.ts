@@ -196,7 +196,50 @@ export async function listCheckRunAnnotations(
     .filter(Boolean);
 }
 
-const ACTIONS_JOB_URL = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
+export const ACTIONS_JOB_URL = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
+
+/** The workflow runs of Actions checks, from their job URLs. */
+export function actionsRunIds(
+  checks: ReadonlyArray<{ url?: string }>,
+): number[] {
+  const ids = new Set<number>();
+  for (const check of checks) {
+    const m = ACTIONS_JOB_URL.exec(check.url ?? "");
+    if (m) ids.add(Number(m[1]));
+  }
+  return [...ids];
+}
+
+/**
+ * Whether GitHub Actions runs code for the repository again: its newest
+ * finished workflow run has a job that got to a step. A run GitHub refused
+ * (a billing or spending limit) has jobs without steps.
+ */
+export async function actionsRunsAgain(
+  repo: string,
+  deps: {
+    runs: (repo: string) => Promise<WorkflowRun[]>;
+    jobs: (repo: string, runId: number) => Promise<WorkflowRunJob[]>;
+  } = { runs: listRecentRuns, jobs: listWorkflowRunJobs },
+): Promise<boolean> {
+  const newest = (await deps.runs(repo))
+    .filter((r) => r.status === "completed")
+    .sort((a, b) => b.createdAt - a.createdAt)[0];
+  if (!newest) return false;
+  const jobs = await deps.jobs(repo, newest.id);
+  return jobs.some((j) => (j.steps ?? 0) > 0);
+}
+
+/** The repository's newest workflow runs, any workflow and branch. */
+export async function listRecentRuns(repo: string): Promise<WorkflowRun[]> {
+  const body = await githubRest(
+    repo,
+    `/repos/${repo}/actions/runs?per_page=10`,
+    "incident:actions-runs",
+  );
+  const runs = Array.isArray(body?.workflow_runs) ? body.workflow_runs : [];
+  return runs.map(toRun);
+}
 /** At most this many workflow runs are read for one pull request. */
 const ACTIONS_RUNS_MAX = 5;
 

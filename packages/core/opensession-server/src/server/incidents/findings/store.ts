@@ -59,12 +59,17 @@ function bytes(value: FindingsSet | readonly FindingsSet[]): number {
   return Buffer.byteLength(JSON.stringify(value));
 }
 
+/** A round's post-release check comes after its verifier. */
+function slotOrder(s: FindingsSet): number {
+  return s.check ? 2 : ROLE_ORDER[s.role];
+}
+
 function bySetOrder(a: FindingsSet, b: FindingsSet): number {
-  return a.round - b.round || ROLE_ORDER[a.role] - ROLE_ORDER[b.role];
+  return a.round - b.round || slotOrder(a) - slotOrder(b);
 }
 
 /**
- * Puts `next` in its (role, round) slot. A newer attempt replaces the slot;
+ * Puts `next` in its (role, round) slot, a post-release check's apart. A newer attempt replaces the slot;
  * an older one is refused. `saved.calls` counts this attempt's calls (the
  * caller passes 0). Blocks are dropped from the end while the set is over
  * 64 KB; the oldest rounds' sets go first while there are more than 12 sets
@@ -76,7 +81,10 @@ export function upsertFindingSet(
 ): UpsertResult {
   const current = [...(sets ?? [])];
   const existing = current.find(
-    (s) => s.role === next.role && s.round === next.round,
+    (s) =>
+      s.role === next.role &&
+      s.round === next.round &&
+      (s.check ?? null) === (next.check ?? null),
   );
   if (existing && existing.attempt > next.attempt)
     return {

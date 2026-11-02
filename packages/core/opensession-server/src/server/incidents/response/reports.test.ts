@@ -7,6 +7,7 @@ import {
   effectiveVerdict,
   extractReportBlock,
   parseInvestigatorReport,
+  parsePostReleaseReport,
   parseVerifierReport,
   reportFindingsInput,
 } from "./reports";
@@ -1142,4 +1143,94 @@ test("effective verdict: a deferred proof stands on the verifier accepting proof
     verdict: "not-certain",
     reasons: ["The verifier did not accept proving this after release"],
   });
+});
+
+const claims = [
+  { text: "The app sends its own User-Agent to api.example.test." },
+];
+
+test("post-release: a confirmed report with checks of the listed claims", () => {
+  const warnings: string[] = [];
+  const out = parsePostReleaseReport(
+    fence({
+      role: "post-release",
+      verdict: "confirmed",
+      reasons: ["Searches on api.example.test pass since the release."],
+      checks: [
+        {
+          text: "the app sends its own user-agent to api.example.test",
+          status: "verified",
+          evidence: "Request log shows the new header after the release",
+        },
+        {
+          text: "No errors in the logs after the release",
+          status: "verified",
+          evidence: "0 errors in 20 minutes",
+        },
+      ],
+    }),
+    { claims, warnings },
+  );
+  expect(out).toEqual({
+    role: "post-release",
+    verdict: "confirmed",
+    reasons: ["Searches on api.example.test pass since the release."],
+    checks: [
+      {
+        text: "The app sends its own User-Agent to api.example.test.",
+        status: "verified",
+        evidence: "Request log shows the new header after the release",
+      },
+      {
+        text: "No errors in the logs after the release",
+        status: "verified",
+        evidence: "0 errors in 20 minutes",
+      },
+    ],
+  });
+  expect(warnings).toEqual([]);
+});
+
+test("post-release: refused without a verdict, synonyms read toward doubt", () => {
+  const missing = parsePostReleaseReport(fence({ role: "post-release" }), {
+    claims,
+  });
+  expect("error" in missing && missing.error).toBe(
+    "The verdict field must be one of confirmed, not-confirmed, regressed",
+  );
+  const warnings: string[] = [];
+  const odd = parsePostReleaseReport(
+    fence({ role: "post-release", verdict: "maybe" }),
+    { claims, warnings },
+  );
+  expect("verdict" in odd && odd.verdict).toBe("not-confirmed");
+  expect("reasons" in odd && odd.reasons).toEqual([
+    "The post-release check gave no reason.",
+  ]);
+  const worse = parsePostReleaseReport(
+    fence({ role: "post-release", verdict: "Worse", reasons: ["500s"] }),
+    { claims },
+  );
+  expect("verdict" in worse && worse.verdict).toBe("regressed");
+});
+
+test("post-release: a confirmation with a refuted check is not confirmed", () => {
+  const out = parsePostReleaseReport(
+    fence({
+      role: "post-release",
+      verdict: "confirmed",
+      checks: [
+        {
+          text: "The app sends its own User-Agent to api.example.test.",
+          status: "refuted",
+          evidence: "Still the default header",
+        },
+      ],
+    }),
+    { claims },
+  );
+  expect("verdict" in out && out.verdict).toBe("not-confirmed");
+  expect("reasons" in out && out.reasons[0]).toBe(
+    "Refuted in production: The app sends its own User-Agent to api.example.test.",
+  );
 });
