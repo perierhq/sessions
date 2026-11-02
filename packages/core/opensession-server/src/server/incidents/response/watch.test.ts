@@ -58,10 +58,10 @@ test("the watch lasts three of the signal's usual gaps, bounded", () => {
 });
 
 test("only the part the incident opened on counts", () => {
-  expect(samePart("search: slow", "search: slow, betterfare: down")).toBe(true);
-  expect(samePart("search: slow", "betterfare: slow")).toBe(false);
+  expect(samePart("search: slow", "search: slow, billing: down")).toBe(true);
+  expect(samePart("search: slow", "billing: slow")).toBe(false);
   expect(samePart("HTTP 503", "HTTP 500")).toBe(true);
-  expect(samePart("", "betterfare: slow")).toBe(true);
+  expect(samePart("", "billing: slow")).toBe(true);
 });
 
 test("a release after the merge: the hook or a merged release pull request", () => {

@@ -3441,8 +3441,8 @@ test("a different part failing is shown apart from the incident's cause, without
       },
     },
     primaryRecent: [
-      { at: iso(-6 * 60_000), result: "fail", detail: "betterfare: down" },
-      { at: iso(-5 * 60_000), result: "fail", detail: "betterfare: down" },
+      { at: iso(-6 * 60_000), result: "fail", detail: "billing: down" },
+      { at: iso(-5 * 60_000), result: "fail", detail: "billing: down" },
     ],
   };
   const step = decideNextStep(other);
@@ -3451,10 +3451,10 @@ test("a different part failing is shown apart from the incident's cause, without
     to: null,
     phase: "needs-you",
     detail:
-      "A different part failed at 11:55 UTC: betterfare: down. This incident is about search",
+      "A different part failed at 11:55 UTC: billing: down. This incident is about search",
     patch: {
       needsYou: { ...r.needsYou!, failedAgainAt: iso(-5 * 60_000) },
-      otherFailures: [{ at: iso(-5 * 60_000), detail: "betterfare: down" }],
+      otherFailures: [{ at: iso(-5 * 60_000), detail: "billing: down" }],
     },
   });
   // Handled: nothing more until the signal fails again.
@@ -3469,7 +3469,7 @@ test("a different part failing is shown apart from the incident's cause, without
   // The card keeps its own reason and lists the other part apart.
   expect(nextActionFor(handled, defaultSettings)).toMatchObject({
     reason: expect.stringContaining(
-      "Only the release can show it. Another part failed meanwhile: betterfare: down at 11:55 UTC.",
+      "Only the release can show it. Another part failed meanwhile: billing: down at 11:55 UTC.",
     ),
   });
 });
@@ -3483,14 +3483,14 @@ test("without a recorded opening check, the one in the recent checks at the open
     ...back,
     primaryRecent: [
       { at: iso(-21 * 60_000), result: "fail", detail: "search: slow" },
-      { at: iso(-5 * 60_000), result: "fail", detail: "betterfare: down" },
+      { at: iso(-5 * 60_000), result: "fail", detail: "billing: down" },
     ],
   });
   expect(step).toMatchObject({
     step: "transition",
     phase: "needs-you",
     detail:
-      "A different part failed at 11:55 UTC: betterfare: down. This incident is about search",
+      "A different part failed at 11:55 UTC: billing: down. This incident is about search",
   });
 });
 
@@ -3718,6 +3718,13 @@ test("needs-you: an option Sessions can't do now is left off, never shown", () =
     {
       round: 2,
       candidate: candidate({ pr: prSnapshot({ failingChecks: ["ci"] }) }),
+      verdict: {
+        round: 2,
+        at: iso(0),
+        verdict: "not-certain",
+        reasons: ["CI is red"],
+        verifiedSha: "abc1234",
+      },
     },
   );
   const out = agentOptionsFor(failing, noDeploy);
@@ -3814,6 +3821,25 @@ test("needs-you: merge and hand release need a reviewed, open pull request Actio
     }),
   ).toEqual([
     'Left off the verifier\'s option "Merge it": there is no pull request to merge',
+    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
+  ]);
+});
+
+test("needs-you: an earlier round's reviewed head is not this round's", () => {
+  // Round 2, before its verifier ruled: round 1's verdict was carried on.
+  const out = agentOptionsFor(
+    offering(
+      [
+        { label: "Merge it", detail: "", action: "merge" },
+        { label: "I'll release it", detail: "", action: "release-watch" },
+      ],
+      { round: 2, maxRounds: 3 },
+    ),
+    noDeploy,
+  );
+  expect(out.options).toEqual([]);
+  expect(out.dropped).toEqual([
+    "Left off the verifier's option \"Merge it\": the verifier hasn't reviewed its head",
     "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
   ]);
 });
@@ -4179,17 +4205,17 @@ test("hand release: each failure is saved with its detail; another part doesn't 
     {
       at: iso(-30 * 60_000),
       result: "fail" as const,
-      detail: "betterfare: down",
+      detail: "billing: down",
     },
     {
       at: iso(-29 * 60_000),
       result: "fail" as const,
-      detail: "betterfare: down",
+      detail: "billing: down",
     },
     {
       at: iso(-28 * 60_000),
       result: "fail" as const,
-      detail: "betterfare: down",
+      detail: "billing: down",
     },
   ];
   const step = decideNextStep(handWatching(other));
@@ -4199,7 +4225,7 @@ test("hand release: each failure is saved with its detail; another part doesn't 
     patch: {
       watchFailures: other.map((o) => ({
         at: o.at,
-        detail: "betterfare: down",
+        detail: "billing: down",
         samePart: false,
       })),
     },
@@ -4236,6 +4262,82 @@ test("hand release: the same part failing as long as the rule counts goes to the
   expect(step).toMatchObject({ step: "needs-you", kind: "post-release" });
   if (step.step !== "needs-you") throw new Error("expected needs-you");
   expect(step.reason).toContain("(search: slow), so the fix didn't hold");
+});
+
+test("hand release: an earlier round's release doesn't start this one's watch", () => {
+  const hook = { ...defaultSettings, actions: [], releaseHookSecret: "s3cret" };
+  // Round 1's release, before this hand release was chosen.
+  const old = { at: iso(-3 * 3_600_000), source: "hook" as const };
+  expect(
+    decideNextStep(handReleased({ release: old }, { settings: hook })),
+  ).toEqual({ step: "none" });
+  // Its own release starts the watch.
+  expect(
+    decideNextStep(
+      handReleased(
+        { release: { at: iso(-10 * 60_000), source: "hook" } },
+        { settings: hook },
+      ),
+    ),
+  ).toMatchObject({ step: "start-watch" });
+});
+
+test("hand release: more failures than the watch keeps still let it move on", () => {
+  // 25 failures of another part, the newest 20 recorded.
+  const other = Array.from({ length: 25 }, (_, n) => ({
+    at: iso((-50 + n) * 60_000),
+    result: "fail" as const,
+    detail: "billing: down",
+  }));
+  const kept = other.slice(-20).map((o) => ({
+    at: o.at,
+    detail: o.detail,
+    samePart: false,
+  }));
+  expect(decideNextStep(handWatching(other, { watchFailures: kept }))).toEqual({
+    step: "none",
+  });
+  // Only a failure after the newest recorded one is new.
+  const later = {
+    at: iso(-20 * 60_000),
+    result: "fail" as const,
+    detail: "billing: down",
+  };
+  const step = decideNextStep(
+    handWatching([...other, later], { watchFailures: kept }),
+  );
+  expect(step).toMatchObject({ step: "transition" });
+  if (step.step !== "transition") throw new Error("expected transition");
+  expect(step.patch?.watchFailures?.map((f) => f.at)).toEqual([
+    ...kept.slice(1).map((f) => f.at),
+    later.at,
+  ]);
+  // A same-part spell counts even when its failures were trimmed off.
+  const same = [-30, -29, -28].map((m) => ({
+    at: iso(m * 60_000),
+    result: "fail" as const,
+    detail: "search: slow",
+  }));
+  const trimmed = Array.from({ length: 20 }, (_, n) => ({
+    at: iso((-27 * 60 + n * 30) * 1000),
+    detail: "billing: down",
+    samePart: false,
+  }));
+  expect(
+    decideNextStep(
+      handWatching(
+        [
+          ...same,
+          ...trimmed.map((t) => ({
+            at: t.at,
+            result: "fail" as const,
+            detail: t.detail,
+          })),
+        ],
+        { watchFailures: trimmed },
+      ),
+    ),
+  ).toMatchObject({ step: "needs-you", kind: "post-release" });
 });
 
 test("hand release: passing the whole base-rate watch resolves", () => {

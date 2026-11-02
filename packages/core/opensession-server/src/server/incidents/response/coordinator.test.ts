@@ -3835,7 +3835,7 @@ test("the fix loop records the failed check the incident opened on", async () =>
   w.deps.recent = () => [
     { at: at(-120_000), result: "fail", detail: "search: slow" },
     { at: at(-60_000), result: "fail", detail: "search: slow" },
-    { at: at(60_000), result: "fail", detail: "betterfare: down" },
+    { at: at(60_000), result: "fail", detail: "billing: down" },
   ];
   await advanceIncident(w.incident.id, w.deps);
   const i = await getIncident(w.incident.id);
@@ -4321,6 +4321,64 @@ test("post-release: a regressed verdict goes to the owner with its evidence, nev
       "After the release, production looks worse: Searches on acme.example.test pass since the release",
   });
   expect(w.actions.map((a) => a.actionId)).toEqual(["deploy"]);
+});
+
+test("post-release: an answer to the check's question reaches the check, and its old verdict doesn't raise the card again", async () => {
+  const w = await world();
+  await w.toWatching();
+  await w.finishCheck("not-confirmed");
+  const before = await getIncident(w.incident.id);
+  const checkId = before?.response?.postRelease?.sessionId;
+  expect(before?.response?.needsYou?.kind).toBe("post-release");
+  // The check asks the owner, with an Answer option.
+  await updateIncident(w.incident.id, (c) => ({
+    ...c,
+    response: {
+      ...c.response!,
+      findingSets: [
+        {
+          role: "verifier",
+          check: "post-release",
+          round: 1,
+          attempt: 1,
+          sessionId: checkId!,
+          source: "tool",
+          updatedAt: new Date(w.clock).toISOString(),
+          calls: 1,
+          notes: [],
+          blocks: [
+            {
+              id: "cache",
+              kind: "question",
+              size: "full",
+              text: "Was the search cache flushed after the release?",
+              wouldAnswer: "",
+              options: [
+                { label: "I'll tell you", detail: "", action: "answer" },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  }));
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "answer",
+      "Bo",
+      "Yes, at 12:10",
+      w.deps,
+    ),
+  ).toMatchObject({ state: "watching" });
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(w.sends.at(-1)).toMatchObject({ id: checkId });
+  expect(w.sends.at(-1)?.message).toContain("Yes, at 12:10");
+  expect(i?.state).toBe("watching");
+  expect(i?.response?.answer).toBeUndefined();
+  expect(i?.response?.postRelease?.status).toBe("running");
 });
 
 test("agent options: Answer goes to the asking agent as its next prompt, without a new round", async () => {

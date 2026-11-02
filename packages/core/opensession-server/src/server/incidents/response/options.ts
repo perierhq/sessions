@@ -61,6 +61,12 @@ function prNumberOf(r: IncidentResponse): number | undefined {
   return url ? (parsePrUrl(url)?.number ?? undefined) : undefined;
 }
 
+/** Whether this round's verifier reviewed the head: an earlier round's
+ *  verdict carried on by a send-back is a head it rejected. */
+function reviewedThisRound(r: IncidentResponse): boolean {
+  return !!r.verdict?.verifiedSha && r.verdict.round === r.round;
+}
+
 /**
  * Why Sessions can't merge the round's pull request for the owner now,
  * as a clause; undefined when it can: a fix with a pull request the
@@ -75,7 +81,7 @@ export function mergeBlocked(
   const c = r.candidate;
   if (!c?.plan.pr || c.rollbackFirst)
     return "there is no pull request to merge";
-  if (!r.verdict?.verifiedSha) return "the verifier hasn't reviewed its head";
+  if (!reviewedThisRound(r)) return "the verifier hasn't reviewed its head";
   const pr = c.pr;
   const n = prNumberOf(r);
   const name = n === undefined ? "the pull request" : `PR #${n}`;
@@ -100,7 +106,7 @@ export function handReleaseOpen(r: IncidentResponse): boolean {
     !!c?.plan.pr &&
     !c.rollbackFirst &&
     !!(c.prUrl ?? c.pr?.url) &&
-    !!r.verdict?.verifiedSha &&
+    reviewedThisRound(r) &&
     c.pr?.state !== "MERGED" &&
     c.pr?.state !== "CLOSED"
   );

@@ -3400,6 +3400,8 @@ function decisionMove(
           phase: "needs-you",
           veto: undefined,
           handRelease: undefined,
+          release: undefined,
+          watchFailures: undefined,
           needsYou: {
             kind: "stopped",
             reason,
@@ -3437,6 +3439,8 @@ function decisionMove(
           mergingSince: at,
           veto: undefined,
           handRelease: { by, at, prUrl, number },
+          release: undefined,
+          watchFailures: undefined,
         }),
       );
     }
@@ -3469,6 +3473,8 @@ function decisionMove(
                   number,
                   merger: "sessions" as const,
                 },
+                release: undefined,
+                watchFailures: undefined,
               }),
         }),
       );
@@ -3497,8 +3503,21 @@ function decisionMove(
         patched(base, {
           phase,
           answer: { by, at, note: input.note, sessionId, role },
-          // A fresh watch for the check's next look.
-          ...(check ? { watch: undefined } : {}),
+          // A fresh watch for the check's next look, and the check is
+          // running again: the answer reaches it only while it runs, and
+          // its old verdict would raise the same card straight back.
+          ...(check
+            ? {
+                watch: undefined,
+                ...(base.postRelease
+                  ? {
+                      postRelease: patched(base.postRelease, {
+                        status: "running" as const,
+                      }),
+                    }
+                  : {}),
+              }
+            : {}),
         }),
       );
     }
@@ -3527,6 +3546,8 @@ function decisionMove(
             ...(earlier.length ? { earlier } : {}),
           },
           handRelease: undefined,
+          release: undefined,
+          watchFailures: undefined,
           candidate: undefined,
           proof: undefined,
           verdict: undefined,

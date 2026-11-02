@@ -578,6 +578,8 @@ export function sendBack(
         sendBack: why,
         verdict,
         handRelease: undefined,
+        release: undefined,
+        watchFailures: undefined,
         proof: undefined,
         decision: undefined,
         veto: undefined,
@@ -1115,6 +1117,8 @@ function starting(view: ResponseView): ResponseStep | undefined {
         documentingSince: undefined,
         openPrs: undefined,
         handRelease: undefined,
+        release: undefined,
+        watchFailures: undefined,
       },
     };
   }
@@ -1749,6 +1753,8 @@ function nextRound(
     mergingSince: undefined,
     ownerRollback: undefined,
     handRelease: undefined,
+    release: undefined,
+    watchFailures: undefined,
   };
 }
 
@@ -2126,7 +2132,10 @@ function awaitingRelease(
 ): ResponseStep {
   const { settings } = view;
   const r = view.incident.response!;
-  if (r.release) return { step: "start-watch", ms: watchLength(view) };
+  // Only a release seen for this hand release counts, never an earlier
+  // round's.
+  if (r.release && Date.parse(r.release.at) >= Date.parse(hand.at))
+    return { step: "start-watch", ms: watchLength(view) };
   const mergedAt = r.merge?.at ?? hand.at;
   const mergedMs = Date.parse(mergedAt);
   const src = {
@@ -2385,9 +2394,15 @@ function handWatch(view: ResponseView): ResponseStep {
   const watch = r.watch!;
   const started = Date.parse(watch.startedAt);
   const opened = openedDetail(view);
-  const seen = new Set((r.watchFailures ?? []).map((f) => f.at));
+  // Failures after the newest one recorded: the list is trimmed to
+  // WATCH_FAILURES_MAX, so a set of what it holds would read the trimmed
+  // ones as new on every tick.
+  const recorded = Math.max(
+    started,
+    ...(r.watchFailures ?? []).map((f) => Date.parse(f.at)),
+  );
   const fresh = failuresSince(view.primaryRecent, started).filter(
-    (o) => !seen.has(o.at),
+    (o) => Date.parse(o.at) > recorded,
   );
   const name = primaryName(view);
   if (fresh.length) {
@@ -2418,13 +2433,10 @@ function handWatch(view: ResponseView): ResponseStep {
   }
   // A spell of the same part, as long as the rule counts; other parts'
   // failures are read as passes here.
-  const same = new Set(
-    (r.watchFailures ?? []).filter((f) => f.samePart).map((f) => f.at),
-  );
   const counted = view.primaryRecent
     .filter((o) => o.lane === undefined && Date.parse(o.at) > started)
     .map((o) =>
-      o.result === "fail" && !same.has(o.at)
+      o.result === "fail" && !samePart(opened, o.detail.trim())
         ? { ...o, result: "ok" as const }
         : o,
     );

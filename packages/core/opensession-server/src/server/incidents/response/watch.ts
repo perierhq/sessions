@@ -76,7 +76,7 @@ export function baseRateWatchMs(
 }
 
 /** The parts a status page's worst-lane detail names as failing
- *  ("search: slow, betterfare: down"), lower-cased; empty when the detail
+ *  ("search: slow, billing: down"), lower-cased; empty when the detail
  *  is not such a list (a plain check's "HTTP 503"). */
 export function failingParts(detail: string): string[] {
   const pieces = detail.split(", ");
