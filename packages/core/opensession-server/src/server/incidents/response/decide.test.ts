@@ -3768,6 +3768,103 @@ test("needs-you: an answer needs the asking session to still be on the incident"
   ]);
 });
 
+test("needs-you: merge and hand release need a reviewed, open pull request Actions can run on", () => {
+  const both = [
+    { label: "Merge it", detail: "", action: "merge" },
+    { label: "I'll release it", detail: "", action: "release-watch" },
+  ];
+  const dropped = (over: Partial<IncidentResponse>) =>
+    agentOptionsFor(offering(both, over), noDeploy).dropped;
+  expect(dropped({ verdict: undefined })).toEqual([
+    'Left off the verifier\'s option "Merge it": the verifier hasn\'t reviewed its head',
+    'Left off the verifier\'s option "I\'ll release it": there is no reviewed, open pull request to release',
+  ]);
+  expect(
+    dropped({ candidate: candidate({ pr: prSnapshot({ state: "MERGED" }) }) }),
+  ).toEqual([
+    'Left off the verifier\'s option "Merge it": PR #12 is already merged',
+    'Left off the verifier\'s option "I\'ll release it": there is no reviewed, open pull request to release',
+  ]);
+  expect(
+    dropped({ candidate: candidate({ pr: prSnapshot({ state: "CLOSED" }) }) }),
+  ).toEqual([
+    'Left off the verifier\'s option "Merge it": PR #12 is closed',
+    'Left off the verifier\'s option "I\'ll release it": there is no reviewed, open pull request to release',
+  ]);
+  // Actions refusing to run stops the merge, not a release by hand.
+  const refused = agentOptionsFor(
+    offering(both, {
+      candidate: candidate({
+        pr: prSnapshot({
+          failingChecks: ["ci"],
+          actionsBlocked: "the spending limit is reached",
+        }),
+      }),
+    }),
+    noDeploy,
+  );
+  expect(refused.dropped).toEqual([
+    'Left off the verifier\'s option "Merge it": GitHub Actions can\'t run on PR #12',
+  ]);
+  expect(refused.options.map((o) => o.action)).toEqual(["release-watch"]);
+  // A rollback-first fix has no pull request to merge or release.
+  expect(
+    dropped({ candidate: candidate({ rollbackFirst: true, pr: prSnapshot() }) }),
+  ).toEqual([
+    'Left off the verifier\'s option "Merge it": there is no pull request to merge',
+    'Left off the verifier\'s option "I\'ll release it": there is no reviewed, open pull request to release',
+  ]);
+});
+
+test("needs-you: the post-release check's options come before the verifier's", () => {
+  const base = offering([{ label: "Merge it", detail: "", action: "merge" }]);
+  const r = base.response!;
+  const withCheck: Incident = {
+    ...base,
+    response: {
+      ...r,
+      agents: [
+        ...r.agents,
+        run("verifier", { status: "done", sessionId: "child-3" }),
+      ],
+      findingSets: [
+        ...(r.findingSets ?? []),
+        {
+          role: "verifier",
+          check: "post-release",
+          round: 1,
+          attempt: 1,
+          sessionId: "child-3",
+          source: "tool",
+          updatedAt: iso(0),
+          calls: 1,
+          notes: [],
+          blocks: [
+            {
+              id: "after",
+              kind: "question",
+              size: "full",
+              text: "Search still fails for one tenant. What now?",
+              wouldAnswer: "",
+              options: [
+                { label: "Another round", detail: "", action: "send-back" },
+                { label: "Merge #99", detail: "", action: "merge", pr: 99 },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const out = agentOptionsFor(withCheck, noDeploy);
+  expect(out.question).toBe("Search still fails for one tenant. What now?");
+  expect(out.sessionId).toBe("child-3");
+  expect(out.options.map((o) => o.label)).toEqual(["Another round"]);
+  expect(out.dropped).toEqual([
+    'Left off the post-release check\'s option "Merge #99": PR #99 isn\'t this round\'s fix',
+  ]);
+});
+
 // ── The post-release check ─────────────────────────────────────────────────
 
 const green = () => new Map([["sig-a", evaluation("ok", iso(-60_000))]]);
