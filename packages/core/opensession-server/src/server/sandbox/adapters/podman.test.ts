@@ -706,6 +706,37 @@ describe("podman firewall invariants", () => {
     expect(fake.state.running).toBe(true);
   });
 
+  test("a resume counts as activity: an idle sweep waiting on the start lock leaves the pod it woke running", async () => {
+    // The archive sweep wakes a sleeping pod to check its working copy. Its
+    // session has been idle for days, and the idle sweep (every 5 minutes)
+    // can land while the wake holds the start lock: it must not stop the
+    // pod the wake just started.
+    const fake = fakePodman();
+    const id = sessionId();
+    const names = podmanNames(id);
+    let provider!: PodmanProvider;
+    let sweeping: Promise<string[]> | undefined;
+    const run = interceptOnce(
+      fake,
+      (argv) => argv[0] === "start" && argv.at(-1) === names.infra,
+      async () => {
+        sweeping = sweepIdlePodmanSandboxes(Date.now(), provider);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+    );
+    provider = new PodmanProvider(deps(fake));
+    await provider.ensure({ sessionId: id });
+    await provider.pause(names.pod);
+    const stale = readRemoteState("podman", names.pod)!;
+    writeRemoteState({ ...stale, lastActivityAt: "2020-01-01T00:00:00.000Z" });
+    provider = new PodmanProvider(deps(fake, { run }));
+    const woken = await provider.resume(names.pod);
+    expect(woken?.wokeFromSleep).toBe(true);
+    expect(await sweeping).not.toContain(names.pod);
+    expect(fake.state.running).toBe(true);
+    expect(await woken!.status()).toBe("running");
+  });
+
   test("a workload restarted out of band is re-verified before the next exec", async () => {
     const fake = fakePodman();
     const provider = new PodmanProvider(deps(fake));

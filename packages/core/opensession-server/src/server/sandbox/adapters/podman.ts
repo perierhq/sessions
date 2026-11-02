@@ -1265,8 +1265,13 @@ export class PodmanProvider implements SandboxProvider {
     return result.results;
   }
 
-  /** Start a stopped pod behind its firewall (any wake path). */
+  /** Start a stopped pod behind its firewall (any wake path). A wake is
+   *  activity, recorded before the start lock is taken: an idle sweep
+   *  waiting on that lock rereads it and leaves the pod running. Without
+   *  it, a pod idle for days (the archive sweep waking it to check its
+   *  working copy) was stopped again as soon as it had started. */
   private async wake(names: PodmanNames): Promise<boolean> {
+    touchRemoteState(this.id, names.pod);
     const callbackBaseUrl = this.d.callbackBaseUrl();
     const egress = await this.egressInput(callbackBaseUrl);
     return this.startLocked(names, egress, callbackBaseUrl);
