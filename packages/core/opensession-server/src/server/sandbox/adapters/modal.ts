@@ -203,12 +203,19 @@ const cache = globalThis as typeof globalThis & {
   __opensessionModalApp?: AppCache;
 };
 
-async function modalClient(): Promise<ModalClient> {
+function currentModalCredentials() {
   const settings = modalSettings(getSandboxConnection(PROVIDER)?.settings);
-  const credentials = modalCredentials(
-    sandboxProviderCredential(PROVIDER)?.apiKey,
-    settings.tokenId,
-  );
+  return {
+    settings,
+    credentials: modalCredentials(
+      sandboxProviderCredential(PROVIDER)?.apiKey,
+      settings.tokenId,
+    ),
+  };
+}
+
+async function modalClient(): Promise<ModalClient> {
+  const { settings, credentials } = currentModalCredentials();
   if (!credentials)
     throw new Error(
       "Modal is not connected: add a token id and secret in Workspace > Sandboxes",
@@ -975,6 +982,18 @@ export class ModalProvider implements SandboxProvider {
     options: { strict?: boolean } = {},
   ): Promise<void> {
     const state = readState(sandboxId);
+    if (!state && !options.strict && !currentModalCredentials().credentials) {
+      // No state here (a record from the retired Modal provider, or a
+      // prewarm) and no connection to reach Modal with. Modal itself ends
+      // every container within MAX_LIFETIME_MS, and no sleep image is
+      // recorded for it: nothing is left to destroy. Throwing would keep
+      // the session's record, and the sweep would try again every pass.
+      // A strict destroy still needs Modal to confirm it.
+      console.log(
+        `[sandbox:modal] destroy(${sandboxId}): no record here and Modal is not connected; nothing to destroy`,
+      );
+      return;
+    }
     try {
       const c = await modalClient();
       // Prewarms and qualification containers carry Modal's own id.

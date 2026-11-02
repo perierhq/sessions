@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { resolveRequestedSandboxGpu, sandboxGpu } from "../config";
 import {
   modalCredentials,
@@ -78,5 +78,32 @@ describe("Modal credentials and ids", () => {
   test("ids are stable per session", () => {
     expect(modalSandboxId("abc")).toBe(modalSandboxId("abc"));
     expect(modalSandboxId("abc").startsWith("md-")).toBe(true);
+  });
+});
+
+describe("Modal destroy", () => {
+  test("a Sandbox this host holds no record of, with Modal not connected, leaves nothing to destroy", async () => {
+    // A session record from the retired Modal provider names Modal's own
+    // container id (`sb-…`) and has no state here. Modal ends every
+    // container within a day; without a connection nothing can reach it,
+    // and a destroy that throws would keep the record forever.
+    const { ModalProvider } = await import("./modal");
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await new ModalProvider().destroy("sb-acmeLegacy0000000000000");
+      // A strict destroy needs Modal to confirm it.
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          new ModalProvider().destroy("sb-acmeLegacy0000000000000", {
+            strict: true,
+          }),
+        ).rejects.toThrow(/not connected/);
+      } finally {
+        warn.mockRestore();
+      }
+    } finally {
+      log.mockRestore();
+    }
   });
 });
