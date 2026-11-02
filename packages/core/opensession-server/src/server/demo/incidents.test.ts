@@ -22,6 +22,8 @@ import {
   listSignals,
 } from "../incidents/signal-store";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
+import { nextActionFor } from "../incidents/response/decide";
+import { defaultProjectSettings } from "../incidents/response/project-settings";
 import { DEMO_REPO_ID } from "./fixtures";
 import {
   DEMO_INCIDENT_AUTHOR,
@@ -79,8 +81,16 @@ test("seeds signals in every state and incidents the engine leaves alone", async
   const needsYou = incidents.find((i) => i.state === "needs-you")!;
   expect(needsYou.response?.next).toMatchObject({
     kind: "needs-you",
-    options: ["approve", "send-back", "stop"],
+    needsYou: "post-release",
+    agentOptions: [
+      { action: "send-back", decision: "send-back", recommended: true },
+      { action: "mark-fixed", decision: "resolve" },
+    ],
   });
+  // The stored card is the one Sessions would raise for it.
+  expect(needsYou.response?.next).toEqual(
+    nextActionFor(needsYou, defaultProjectSettings(DEMO_REPO_ID)),
+  );
 });
 
 test("a second boot adds nothing; the veto moves forward near its end", async () => {
@@ -159,7 +169,8 @@ test("demo findings are well-formed", async () => {
         new TextEncoder().encode(JSON.stringify(set)).length,
       ).toBeLessThanOrEqual(65536);
       const run = incident.response!.agents.find(
-        (a) => a.role === set.role && a.round === set.round,
+        (a) =>
+          a.role === set.role && a.round === set.round && a.check === set.check,
       );
       expect(set.sessionId).toBe(run!.sessionId);
       const windows: SignalWindow[] = [];
@@ -239,12 +250,21 @@ test("demo findings are well-formed", async () => {
   });
 
   const needsYouSets = needsYou.response!.findingSets!;
-  expect(needsYouSets.map((s) => s.role)).toEqual(["investigator"]);
-  expect(needsYouSets[0]!.blocks.map((b) => b.kind)).toEqual([
+  expect(needsYouSets.map((s) => [s.role, s.check])).toEqual([
+    ["investigator", undefined],
+    ["verifier", "post-release"],
+  ]);
+  expect(needsYouSets[1]!.blocks.map((b) => b.kind)).toEqual([
     "hypothesis",
     "question",
   ]);
-  expect(needsYouSets[0]!.blocks[1]).toMatchObject({
-    text: "Can the migration be applied before the deploy?",
+  expect(needsYouSets[0]!.blocks.map((b) => b.kind)).toEqual([
+    "hypothesis",
+    "timeline",
+  ]);
+  // The check's question carries the options the card offers.
+  expect(needsYouSets[1]!.blocks[1]).toMatchObject({
+    kind: "question",
+    options: [{ action: "send-back" }, { action: "mark-fixed" }],
   });
 });

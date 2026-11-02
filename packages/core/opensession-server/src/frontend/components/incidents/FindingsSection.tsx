@@ -5,6 +5,7 @@ import type { Incident, StripLane } from "../../../shared/incidents";
 import type { IncidentCauseView } from "../../lib/incidents/cause";
 import type { DetailTarget } from "../../lib/incidents/details";
 import {
+  afterReleasePage,
   asksInNext,
   changedKeys,
   FINDINGS_HIGHLIGHT_MS,
@@ -18,7 +19,12 @@ import {
   roundChangesCopy,
 } from "../../lib/incidents/findings";
 import type { StripLaneMeta } from "../../lib/incidents/strip-layout";
+import { DOT_BG } from "../../lib/incidents/tone";
 import {
+  FINDINGS_AFTER_HEAD,
+  FINDINGS_AFTER_LABEL,
+  FINDINGS_AFTER_REASON,
+  FINDINGS_AFTER_STATUS,
   FINDINGS_SECTION_BYLINE,
   FINDINGS_ROUND_LINK,
   FINDINGS_ROUNDS,
@@ -26,6 +32,7 @@ import {
   FINDINGS_UNDER_WAY,
   INCIDENT_SECTION_LABEL,
 } from "../../lib/incident-classes";
+import { cn } from "../../ui/cn";
 import { PlainButton } from "../../ui/plain-button";
 import { FindingsGrid } from "./findings/FindingsGrid";
 import { FindingsSheets } from "./findings/FindingsSheets";
@@ -104,6 +111,8 @@ export function FindingsSection({
   const highlighted = useChangedBlocks(page?.items ?? null, !reduceMotion);
   const [sheet, setSheet] = useState<FindingsSheetState | null>(null);
   const headingId = useId();
+  const afterId = useId();
+  const after = afterReleasePage(incident);
 
   if (!page) return <IncidentCause cause={cause} waiting={waiting} />;
 
@@ -159,6 +168,42 @@ export function FindingsSection({
         signalName={signalName}
         onOpenSource={openSource}
       />
+      {after ? (
+        <section aria-labelledby={afterId} className="flex min-w-0 flex-col">
+          <div className={FINDINGS_AFTER_HEAD}>
+            <h3 id={afterId} className={FINDINGS_AFTER_LABEL}>
+              {FINDINGS_COPY.afterRelease}
+            </h3>
+            <p className={FINDINGS_AFTER_STATUS}>
+              <span
+                aria-hidden
+                className={cn(
+                  "size-2 shrink-0 rounded-full",
+                  DOT_BG[after.tone],
+                )}
+              />
+              <span className="min-w-0">{after.status}</span>
+            </p>
+            {after.reason ? (
+              <p className={FINDINGS_AFTER_REASON}>{after.reason}</p>
+            ) : null}
+            {after.page ? (
+              <p className={FINDINGS_SECTION_BYLINE}>{after.page.byline}</p>
+            ) : null}
+          </div>
+          {after.page ? (
+            <FindingsGrid
+              page={after.page}
+              incident={incident}
+              highlighted={NONE}
+              animate={!reduceMotion}
+              meta={meta}
+              signalName={signalName}
+              onOpenSource={openSource}
+            />
+          ) : null}
+        </section>
+      ) : null}
       <FindingsSheets
         incident={incident}
         sheet={sheet}

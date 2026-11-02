@@ -2,7 +2,7 @@
 // actions), shared by the server and the frontend. Types, constant lists
 // and small pure helpers only.
 
-import type { FindingsSet } from "./findings";
+import type { FindingsSet, OwnerOption, OwnerOptionAction } from "./findings";
 import type { HttpSource, ObservationResult } from "./incidents";
 
 export const AUTONOMY_LEVELS = [
@@ -324,6 +324,50 @@ export interface VerifierReport {
   proofAccepted: boolean;
 }
 
+/** What the post-release check found in production once the fix was out:
+ *  `confirmed` (it behaves as designed), `not-confirmed` (it couldn't
+ *  show that, or the fix isn't live), `regressed` (worse, or broken in a
+ *  new way). */
+export type PostReleaseVerdict = "confirmed" | "not-confirmed" | "regressed";
+export const POST_RELEASE_VERDICTS: readonly PostReleaseVerdict[] = [
+  "confirmed",
+  "not-confirmed",
+  "regressed",
+];
+export interface PostReleaseReport {
+  role: "post-release";
+  verdict: PostReleaseVerdict;
+  reasons: string[];
+  checks: ClaimCheck[];
+}
+
+/**
+ * The read-only check Sessions runs in production once the fix is live:
+ * started (`running`), its verdict, or `skipped` when it could not run or
+ * finish (the budget, no model, an error); the watch alone decides then.
+ */
+/** The release a hand-released fix's watch starts from. */
+export interface IncidentReleaseSeen {
+  at: string;
+  source: "hook" | "release-pr" | "merge";
+  ref?: string;
+}
+
+/** Failures a watch keeps. */
+export const WATCH_FAILURES_MAX = 20;
+
+export interface PostReleaseCheck {
+  round: number;
+  status: "running" | "skipped" | PostReleaseVerdict;
+  at: string;
+  sessionId?: string;
+  /** The release it checked: the deploy action's run, a release Sessions
+   *  recorded, or the merge itself. */
+  after: string;
+  reasons?: string[];
+  checks?: ClaimCheck[];
+}
+
 export type AgentWorkspace =
   | { kind: "sandbox"; provider: string }
   | { kind: "host"; user: string };
@@ -358,11 +402,14 @@ export interface PastRound {
   round: number;
   startedAt: string;
   endedAt?: string;
-  report?: InvestigatorReport | VerifierReport;
+  report?: InvestigatorReport | VerifierReport | PostReleaseReport;
 }
 
 export interface AgentRun {
   role: AgentRole;
+  /** A post-release check: a verifier session started after the fix was
+   *  live. Its report is on `IncidentResponse.postRelease`, not here. */
+  check?: "post-release";
   round: number;
   attempt: number;
   sessionId: string;
@@ -381,7 +428,7 @@ export interface AgentRun {
   prUrl?: string;
   error?: string;
   cancelledFor?: CancelReason;
-  report?: InvestigatorReport | VerifierReport;
+  report?: InvestigatorReport | VerifierReport | PostReleaseReport;
   /** The parser's detail on a refused report; for the agent and logs. */
   reportError?: string;
   /** What the owner is told about a refused report. */
@@ -466,6 +513,9 @@ export interface PrSnapshot {
   /** Every check failed because GitHub Actions did not run it (a billing
    *  or spending limit, say): why, as GitHub put it. */
   actionsBlocked?: string;
+  /** With `actionsBlocked`: the workflow runs of those checks, which
+   *  Sessions re-runs once GitHub Actions works again. */
+  blockedRuns?: number[];
   fetchedAt: string;
 }
 
@@ -534,6 +584,7 @@ export const NEEDS_YOU_KINDS = [
   "interrupted",
   "no-action",
   "setup",
+  "post-release",
 ] as const;
 export type NeedsYouKind = (typeof NEEDS_YOU_KINDS)[number];
 
@@ -552,13 +603,36 @@ export const OWNER_DECISIONS = [
   "close-prs",
   "keep-prs",
   "release-watch",
+  "merge",
+  "answer",
 ] as const;
 export type OwnerDecision = (typeof OWNER_DECISIONS)[number];
 
+/** The decision each agent option posts. */
+export const OPTION_DECISION: Readonly<
+  Record<OwnerOptionAction, OwnerDecision>
+> = Object.freeze({
+  merge: "merge",
+  "release-watch": "release-watch",
+  "send-back": "send-back",
+  close: "close",
+  "mark-fixed": "resolve",
+  answer: "answer",
+});
+
+/** An agent's option as the card offers it: Sessions checked that it can
+ *  do it now. `recommended` marks the agent's first option. */
+export interface AgentOption extends OwnerOption {
+  decision: OwnerDecision;
+  role: AgentRole;
+  recommended?: true;
+}
+
 /**
- * Send it back is the one decision that carries a note: what the
- * investigator should do differently in its next round. Every other
- * decision is complete on its own. The longest note the server keeps.
+ * Send it back and Answer carry a note: what the investigator should do
+ * differently in its next round, or the answer to an agent's question.
+ * Every other decision is complete on its own. The longest note the server
+ * keeps.
  */
 export const SEND_BACK_NOTE_MAX = 2000;
 
@@ -579,6 +653,11 @@ export type NextAction =
       /** A setup problem: where it is fixed. */
       fix?: SetupFix;
       options: OwnerDecision[];
+      /** The agent's own options for this decision. When there are any,
+       *  the card offers only these; `options` stay for its menu. */
+      agentOptions?: AgentOption[];
+      /** The agent's question the options answer. */
+      agentQuestion?: string;
     }
   | { kind: "watching"; deadline: string; options: OwnerDecision[] }
   | { kind: "info"; detail: string; rule?: string }
@@ -648,8 +727,17 @@ export interface VerifierFindings {
   hypotheses: string[];
 }
 
+/** What earlier rounds' verifiers found that no later verifier said again
+ *  or settled, oldest first (`earlierVerifierFindings`). */
+export type EarlierVerifierFindings = VerifierFindings[];
+
 export type SendBackReason =
-  | { kind: "not-certain"; reasons: string[]; verifier?: VerifierFindings }
+  | {
+      kind: "not-certain";
+      reasons: string[];
+      verifier?: VerifierFindings;
+      earlier?: EarlierVerifierFindings;
+    }
   | {
       kind: "owner";
       by: string;
@@ -658,6 +746,7 @@ export type SendBackReason =
       answering?: string;
       /** The verifier's findings, when the round sent back had one. */
       verifier?: VerifierFindings;
+      earlier?: EarlierVerifierFindings;
     }
   | { kind: "rolled-back"; detail: string }
   | { kind: "reopened"; detail: string }
@@ -692,8 +781,43 @@ export interface IncidentResponse {
   ownerRollback?: { by: string; at: string };
   sendBack?: SendBackReason;
   /** The owner releases the candidate's pull request by hand: Sessions
-   *  merges and deploys nothing, waits for the merge, then watches. */
-  handRelease?: { by: string; at: string; prUrl: string; number: number };
+   *  merges and deploys nothing, waits for the merge, then watches. With
+   *  `merger: "sessions"` (the owner chose an agent's Merge option on a
+   *  project with no deploy action) Sessions merges it through the merge
+   *  gate and then waits for the release the same way. */
+  handRelease?: {
+    by: string;
+    at: string;
+    prUrl: string;
+    number: number;
+    merger?: "sessions";
+  };
+  /** The owner's answer to an agent's question, on its way to that
+   *  agent's session as its next prompt (no new round). */
+  answer?: {
+    by: string;
+    at: string;
+    note: string;
+    sessionId: string;
+    role: AgentRole;
+  };
+  /** A waiting card whose pull request's checks GitHub Actions never ran:
+   *  when Sessions last looked whether Actions works for the repository
+   *  again. */
+  actionsCheckedAt?: string;
+  /** The round's fix is verified again (a new verifier attempt, no new
+   *  investigator round): GitHub Actions came back and its checks ran. */
+  reverify?: { at: string; reason: string };
+  /** The read-only check of production after the fix went out. */
+  postRelease?: PostReleaseCheck;
+  /** A fix released by hand: the release the watch started from, once
+   *  Sessions saw one after the merge (the release hook, a merged release
+   *  pull request), or the merge itself when no release can be seen. */
+  release?: IncidentReleaseSeen;
+  /** Failed checks of the incident's signal during the watch, with what
+   *  each said; `samePart` when it is the part the incident opened on.
+   *  Newest last, at most WATCH_FAILURES_MAX. */
+  watchFailures?: Array<{ at: string; detail: string; samePart: boolean }>;
   retryRequested?: boolean;
   /** Rollback-first only: the investigator that studies the release in
    *  parallel is best effort. Set when it could not start (`unavailable`:

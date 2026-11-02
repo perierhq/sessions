@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { actionsNotRunning, type WorkflowRunJob } from "./github-workflow-runs";
+import {
+  actionsNotRunning,
+  actionsRunIds,
+  actionsRunsAgain,
+  type WorkflowRun,
+  type WorkflowRunJob,
+} from "./github-workflow-runs";
 
 const job = (id: number, steps: number): WorkflowRunJob => ({
   id,
@@ -55,4 +61,65 @@ test("a job that ran a step, or a check that is not an Actions job, is the code'
     ),
   ).toBeUndefined();
   expect(await actionsNotRunning("acme/web", [], deps)).toBeUndefined();
+});
+
+test("the refused checks' workflow runs, once each, from their job URLs", () => {
+  expect(
+    actionsRunIds([
+      ...checks,
+      { url: "https://github.com/acme/web/actions/runs/9/job/90" },
+      { url: "https://ci.example.test/1" },
+      {},
+    ]),
+  ).toEqual([7, 9]);
+});
+
+const wfRun = (id: number, status: string, createdAt: number): WorkflowRun => ({
+  id,
+  name: "ci",
+  status,
+  conclusion: status === "completed" ? "success" : "",
+  url: `https://github.com/acme/web/actions/runs/${id}`,
+  headBranch: "main",
+  headSha: "abc1234",
+  event: "push",
+  runNumber: id,
+  runAttempt: 1,
+  createdAt,
+});
+
+test("Actions runs again when its newest finished run has a job that got to a step", async () => {
+  const asked: number[] = [];
+  const runs = async () => [
+    wfRun(1, "completed", 100),
+    wfRun(2, "completed", 300),
+    wfRun(3, "in_progress", 400),
+  ];
+  expect(
+    await actionsRunsAgain("acme/web", {
+      runs,
+      jobs: async (_repo, id) => {
+        asked.push(id);
+        return [job(20, 0), job(21, 2)];
+      },
+    }),
+  ).toBe(true);
+  // The newest finished run, never one still running.
+  expect(asked).toEqual([2]);
+  // Still refused: every job of the newest run stopped before a step.
+  expect(
+    await actionsRunsAgain("acme/web", {
+      runs,
+      jobs: async () => [job(20, 0)],
+    }),
+  ).toBe(false);
+  // No finished run yet: nothing shows Actions works again.
+  expect(
+    await actionsRunsAgain("acme/web", {
+      runs: async () => [wfRun(3, "queued", 400)],
+      jobs: async () => {
+        throw new Error("not asked");
+      },
+    }),
+  ).toBe(false);
 });

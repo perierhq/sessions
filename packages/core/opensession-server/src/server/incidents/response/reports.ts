@@ -30,6 +30,9 @@ import {
   type EvidenceRow,
   type InvestigatorReport,
   NEXT_STEP_KINDS,
+  POST_RELEASE_VERDICTS,
+  type PostReleaseReport,
+  type PostReleaseVerdict,
   NEXT_STEP_TARGETS,
   NEXT_STEP_TITLE_MAX,
   NEXT_STEP_WHY_MAX,
@@ -1223,6 +1226,127 @@ export function parseVerifierReport(
     claims: expected.map((t) => checks.get(t)!),
     proofAccepted,
   };
+}
+
+const POST_RELEASE_SYNONYMS: Record<string, PostReleaseVerdict> = {
+  ok: "confirmed",
+  fixed: "confirmed",
+  verified: "confirmed",
+  "not-fixed": "not-confirmed",
+  unconfirmed: "not-confirmed",
+  "cant-tell": "not-confirmed",
+  "not-live": "not-confirmed",
+  worse: "regressed",
+  broken: "regressed",
+  regression: "regressed",
+};
+
+/**
+ * The post-release check's report: `{role: "post-release", verdict,
+ * reasons, checks}`. Refused only without the block or a verdict. An
+ * unknown verdict is read as not-confirmed; a check of a listed claim is
+ * kept like the verifier's (unknown status or no evidence: unverifiable),
+ * and a check of anything else keeps its own text.
+ */
+export function parsePostReleaseReport(
+  report: string,
+  ctx: { claims: Claim[]; warnings?: string[] },
+): PostReleaseReport | ReportRejection {
+  const parsed = parseBlock(report);
+  if ("error" in parsed) return rejected([parsed], false);
+  const value = parsed.value;
+  const repaired: string[] = [];
+  if (enumKey(value.role) !== "post-release")
+    repaired.push(`role was ${shownValue(value.role)}; read as post-release`);
+  const key = enumKey(value.verdict);
+  if (key === null)
+    return rejected(
+      [
+        reject(
+          "verdict",
+          `The verdict field must be one of ${POST_RELEASE_VERDICTS.join(", ")}`,
+        ),
+      ],
+      false,
+    );
+  let verdict: PostReleaseVerdict = (
+    POST_RELEASE_VERDICTS as readonly string[]
+  ).includes(key)
+    ? (key as PostReleaseVerdict)
+    : (POST_RELEASE_SYNONYMS[key] ?? "not-confirmed");
+  if (value.verdict !== verdict)
+    repaired.push(
+      `verdict was ${shownValue(value.verdict)}; read as ${verdict}`,
+    );
+  const reasons: string[] = [];
+  for (const [i, r] of listOf(
+    value.reasons,
+    "reasons",
+    REASONS_MAX,
+    repaired,
+  ).entries()) {
+    const t = cleanText(r, true);
+    if (t) reasons.push(fitted(t, 500, `Reason ${i + 1}`, repaired));
+  }
+  if (verdict !== "confirmed" && reasons.length === 0) {
+    repaired.push(`A ${verdict} verdict gave no reason`);
+    reasons.push("The post-release check gave no reason.");
+  }
+  const byKey = new Map(ctx.claims.map((c) => [claimKey(c.text), c.text]));
+  const checks: ClaimCheck[] = [];
+  for (const [i, item] of listOf(
+    value.checks,
+    "checks",
+    VERIFIER_CLAIMS_MAX,
+    repaired,
+  ).entries()) {
+    const at = `Check ${i + 1}`;
+    if (!isRecord(item)) {
+      repaired.push(`${at} was not an object; dropped`);
+      continue;
+    }
+    const quoted = cleanText(item.text);
+    if (!quoted) {
+      repaired.push(`${at} had no text; dropped`);
+      continue;
+    }
+    const text =
+      byKey.get(claimKey(quoted)) ?? fitted(quoted, 500, at, repaired);
+    let status = normaliseStatus(item.status);
+    if (status === null) {
+      repaired.push(
+        `${at} had status ${shownValue(item.status)}; recorded as unverifiable`,
+      );
+      status = "unverifiable";
+    }
+    let evidence = cleanText(item.evidence, true);
+    if (!evidence) {
+      evidence = NO_EVIDENCE;
+      if (status === "verified") {
+        status = "unverifiable";
+        repaired.push(`${at} had no evidence; recorded as unverifiable`);
+      }
+    }
+    const src = keptSource(item.source, at, repaired);
+    checks.push({
+      text,
+      status,
+      evidence: fitted(evidence, 1000, `${at}'s evidence`, repaired),
+      ...(src ? { source: src } : {}),
+    });
+  }
+  // A confirmation that one of its own checks refutes is not one.
+  if (verdict === "confirmed" && checks.some((c) => c.status === "refuted")) {
+    repaired.push(
+      "A confirmed verdict had a refuted check; read as not-confirmed",
+    );
+    verdict = "not-confirmed";
+    reasons.unshift(
+      `Refuted in production: ${checks.find((c) => c.status === "refuted")!.text}`,
+    );
+  }
+  ctx.warnings?.push(...repaired);
+  return { role: "post-release", verdict, reasons, checks };
 }
 
 export interface KnowledgeCheck {

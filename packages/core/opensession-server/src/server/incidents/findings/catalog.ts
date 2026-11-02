@@ -6,6 +6,7 @@
 import type { AgentRole } from "../../../shared/incident-response";
 import {
   FINDINGS_LIMITS,
+  OWNER_OPTION_ACTIONS,
   type FindingBlock,
   type FindingKind,
   type FindingRef,
@@ -64,7 +65,7 @@ export const FINDINGS_CATALOG: ReadonlyArray<{
   {
     kind: "question",
     use: "what you don't know yet, or what you need the owner to do or decide",
-    fields: "text (the question), wouldAnswer (what would answer it)",
+    fields: `text (the question), wouldAnswer (what would answer it), options (optional, up to ${L.options}): the owner's choices for this decision, each {"label": "…", "detail": "…", "action": "…"}; see Options below`,
   },
 ];
 
@@ -180,9 +181,86 @@ export const FINDINGS_EXAMPLE: { blocks: unknown[] } = {
 
 const KEEP = '{"id": "…", "keep": true}';
 
+/** What each option action does, in `OWNER_OPTION_ACTIONS` order. */
+export const OPTION_ACTIONS_CATALOG: ReadonlyArray<{
+  action: (typeof OWNER_OPTION_ACTIONS)[number];
+  does: string;
+}> = [
+  {
+    action: "merge",
+    does: "Sessions merges this round's pull request through its merge gate, then runs the project's deploy action or, without one, waits for the release; then it checks production. Give \"pr\" (the number) when you name it",
+  },
+  {
+    action: "release-watch",
+    does: "the owner merges and releases the pull request; Sessions waits for it and then watches and checks production",
+  },
+  {
+    action: "send-back",
+    does: 'another round for the investigator; put the note you suggest in "note" (the owner can edit it)',
+  },
+  { action: "close", does: "close the incident without action" },
+  {
+    action: "mark-fixed",
+    does: "close the incident as fixed by hand",
+  },
+  {
+    action: "answer",
+    does: "the owner types an answer and it comes back to you as your next message, in this round; for a question only they can answer",
+  },
+];
+
+/** A question block that offers options. It passes `validateFindings`
+ *  with no notes. */
+export const OPTIONS_EXAMPLE = {
+  id: "ship",
+  kind: "question",
+  text: "CI can't start on acme/web until its Actions billing is fixed. How should PR #12 go out?",
+  wouldAnswer: "The owner's choice.",
+  options: [
+    {
+      label: "Yes, merge it",
+      detail:
+        "The tests passed in my session; Sessions merges #12 and checks production after the release.",
+      action: "merge",
+      pr: 12,
+    },
+    {
+      label: "I'll fix billing first",
+      detail: "Tell me when CI can run and I'll check the results.",
+      action: "answer",
+    },
+    {
+      label: "Close it",
+      detail: "The problem stopped on its own.",
+      action: "close",
+    },
+  ],
+} as const;
+
+/** How an agent offers the owner options: the "### Options" part of the
+ *  findings brief. */
+export function optionsBrief(): string[] {
+  return [
+    "### Options",
+    "",
+    "When the next step is a decision only the owner can make, offer the choices on one question block as options. The incident's card then shows only your options, with a field to type something else, instead of its own buttons.",
+    "Offer only real choices: 2 to 4, the one you recommend first. Each option's label says what happens in a few words (\"Yes, merge it\", \"I'll restore billing\"); detail says what follows and why, in one sentence. Don't restate the card's question in them.",
+    `Each option has one action: ${OWNER_OPTION_ACTIONS.join(", ")}.`,
+    ...OPTION_ACTIONS_CATALOG.map((a) => `- ${a.action}: ${a.does}.`),
+    "Sessions leaves off any option it can't do right now (a failing check, a pull request that isn't this incident's, no round left) and tells you here; when none is left the card shows its usual choices.",
+    "Only one question block may offer options. Leave options off when you have no decision to ask for.",
+    "",
+    "A question with options:",
+    "```json",
+    JSON.stringify(OPTIONS_EXAMPLE, null, 2),
+    "```",
+    "",
+  ];
+}
+
 /** The "## Findings" section of a brief, built from the catalogs and
  *  `FINDINGS_LIMITS`. */
-export function findingsBrief(role: AgentRole): string[] {
+export function findingsBrief(role: AgentRole | "post-release"): string[] {
   const days = L.windowMs / 86_400_000;
   const out = [
     "## Findings",
@@ -195,14 +273,18 @@ export function findingsBrief(role: AgentRole): string[] {
       `In a later round, carry the previous round's blocks forward instead of starting over: keep one unchanged with ${KEEP}, or send it again under the same id to edit it.`,
       'Don\'t write "Round 2:" or what changed into prose; the page marks new and changed blocks against the round before.',
     );
-  else
+  else if (role === "verifier")
     out.push(
       "Your blocks show as \"from the verifier\". They follow the investigator's; add only what you checked yourself, such as a compare of before and after, and refer to the investigator's blocks by id.",
       "Your claim checks set each hypothesis's status; you don't set it.",
     );
+  else
+    out.push(
+      'Your blocks show on their own, as "after release", below the round\'s findings. Show what production does now: a signal window or a compare from before the release to after it, the log lines around the release, and the claims you checked.',
+    );
   out.push(
     `Prefer a few precise blocks: 3 to 8, at most ${L.blocks}.`,
-    "Anything you need the owner to do or decide goes in a question block: the page shows open questions with the owner's decision.",
+    "Anything you need the owner to do or decide goes in a question block: the page shows open questions with the owner's decision. To offer the choices themselves, add options (see Options).",
     "Cite real data: every chart, quote and change must point at something Sessions can load, and a block whose data can't be found is dropped.",
     "Quote log lines exactly as the tool printed them; lines that aren't in the result are dropped.",
     `If you never called show_findings, put the same list under "findings" in your incident-report block. They count toward the block's ${REPORT_BLOCK_MAX_BYTES / 1024} KB, so keep them short there.`,
@@ -220,6 +302,7 @@ export function findingsBrief(role: AgentRole): string[] {
     "Don't write clock times in prose (statement, text, why, question): the page shows times in the reader's zone, so refer to a timeline event (\"at the first failed check\") instead.",
     `Limits: title at most ${L.title} characters; prose fields at most ${L.prose}; a statement or question at most ${L.statement}; timeline events at most ${L.eventText} characters; marker labels and compare labels at most ${L.markerLabel}; a log at most ${L.logLines} lines of ${L.logLineChars} characters; a signal window at most ${days} days.`,
     "",
+    ...optionsBrief(),
     "Example:",
     "```json",
     JSON.stringify(FINDINGS_EXAMPLE, null, 2),

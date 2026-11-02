@@ -324,3 +324,22 @@ test("plain text shows the question as typed and loads nothing", () => {
   expect(markdown).not.toContain("<img");
   expect(markdown).toContain("Image from example.test");
 });
+
+test("a menu adds a … button on the status row, 44px on a phone", () => {
+  const question = [{ question: "How should it go out?" }];
+  const without = renderToStaticMarkup(
+    <AskCard questions={question} onAnswer={() => {}} />,
+  );
+  expect(without).not.toContain('aria-label="More choices"');
+  const html = renderToStaticMarkup(
+    <AskCard
+      questions={question}
+      onAnswer={() => {}}
+      menu={[{ key: "close", label: "Close without action", onSelect() {} }]}
+    />,
+  );
+  const button = html.match(/<button[^>]*aria-label="More choices"[^>]*>/);
+  expect(button?.[0]).toContain('type="button"');
+  expect(button?.[0]).toContain("phone:min-h-11");
+  expect(button?.[0]).toContain("phone:min-w-11");
+});

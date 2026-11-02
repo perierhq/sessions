@@ -2,8 +2,8 @@
  * Demo incidents (OPENSESSION_DEMO=1 only, called from startDemo, which
  * refuses to run without an isolated OPENSESSION_STATE_DIR). Seeds the demo
  * project with signals, a few hours of observations and incidents in the
- * states the incident views draw: a fix deploying after a veto, one that
- * needs the owner, a flaky heads-up and resolved ones. The demo's signal
+ * states the incident views draw: a fix deploying after a veto, a released
+ * fix whose post-release check needs the owner, a flaky heads-up and resolved ones. The demo's signal
  * checks never leave the machine: they answer with the same scripted results
  * the history was made from, so the states hold while the demo runs. A dev
  * instance runs no signal scheduler, so {@link tickDemoSignals} records
@@ -11,10 +11,11 @@
  * source. Idempotent: a second boot keeps what is there, fills the time it
  * was down and moves the veto's deadline forward again.
  */
-import type {
-  AgentRun,
-  IncidentResponse,
-  LedgerEntry,
+import {
+  type AgentRun,
+  type IncidentResponse,
+  type LedgerEntry,
+  OPTION_DECISION,
 } from "../../shared/incident-response";
 import type {
   FixedBy,
@@ -40,7 +41,14 @@ import {
 import { ingestObservations } from "../incidents/signal-runtime";
 import { createSignal, listSignals } from "../incidents/signal-store";
 import { runSignalSource, type SourceRun } from "../incidents/sources";
-import { DEMO_REPLICA_CLAIM, demoFindingSets } from "./findings";
+import {
+  DEMO_CHECK_SESSION,
+  DEMO_CHECKOUT_DOUBT,
+  DEMO_CHECKOUT_OPTIONS,
+  DEMO_CHECKOUT_QUESTION,
+  DEMO_REPLICA_CLAIM,
+  demoFindingSets,
+} from "./findings";
 import { DEMO_GH_REPO, DEMO_PR_NUMBER, DEMO_REPO_ID } from "./fixtures";
 
 const MINUTE_MS = 60_000;
@@ -519,15 +527,20 @@ function vetoResponse(
   });
 }
 
+/** The checkout fix went out; the post-release check could not confirm it
+ *  in production and offers the owner its options. */
 function needsYouResponse(
   openedAt: number,
   now: number,
   signalId: string,
 ): IncidentResponse {
   const found = openedAt + 22 * MINUTE_MS;
-  const since = openedAt + 41 * MINUTE_MS;
-  const reason =
-    "The fix changes the payments schema, and schema changes need you";
+  const verified = openedAt + 30 * MINUTE_MS;
+  const released = openedAt + 41 * MINUTE_MS;
+  const checked = openedAt + 52 * MINUTE_MS;
+  const after = `the release at ${hhmmUtc(released)} UTC`;
+  const doubt = DEMO_CHECKOUT_DOUBT;
+  const reason = `After the release, the fix couldn't be confirmed in production: ${doubt}`;
   return baseResponse(openedAt + MINUTE_MS, now, {
     phase: "needs-you",
     agents: [
@@ -544,42 +557,94 @@ function needsYouResponse(
         notePath: "docs/incidents/checkout-currency.md",
         runbookPaths: [],
       }),
-      agent("verifier", found, since, 0.5, {
+      agent("verifier", found, verified, 0.5, {
         role: "verifier",
-        verdict: "certain",
-        reasons: ["The column rename matches the 502s"],
+        verdict: "not-certain",
+        reasons: ["Only the release can show the column read in production"],
         claims: [],
         proofAccepted: true,
       }),
+      {
+        ...agent("verifier", released, checked, 0.3, {
+          role: "post-release",
+          verdict: "not-confirmed",
+          reasons: [doubt],
+          checks: [],
+        }),
+        check: "post-release",
+        sessionId: DEMO_CHECK_SESSION,
+      },
     ],
     findingSets: demoFindingSets({
       kind: "needs-you",
       signalId,
       openedAt,
       now,
+      checkedAt: checked,
     }),
     verdict: {
       round: 1,
-      at: iso(since),
-      verdict: "certain",
-      reasons: ["The column rename matches the 502s"],
+      at: iso(verified),
+      verdict: "not-certain",
+      reasons: ["Only the release can show the column read in production"],
     },
-    decision: { kind: "ask", reason, rule: "Schema changes need you" },
+    release: { at: iso(released), source: "hook" },
+    postRelease: {
+      round: 1,
+      status: "not-confirmed",
+      at: iso(checked),
+      sessionId: DEMO_CHECK_SESSION,
+      after,
+      reasons: [doubt],
+      checks: [
+        {
+          text: "Checkout reads the renamed currency column",
+          status: "verified",
+          evidence: "USD carts check out; no 502 for them since the release",
+        },
+        {
+          text: "Every currency's cart checks out",
+          status: "refuted",
+          evidence: "EUR carts answer 502 on /checkout/confirm",
+        },
+      ],
+    },
     needsYou: {
-      kind: "policy",
+      kind: "post-release",
       reason,
-      since: iso(since),
-      resumePhase: "merging",
+      since: iso(checked),
+      resumePhase: "watching",
     },
-    costUsd: 1.6,
+    costUsd: 1.9,
+    ledger: [
+      ledger(released, "sessions", "release", `Saw ${after}`),
+      ledger(
+        checked,
+        "verifier",
+        "verdict",
+        `Post-release check could not confirm the fix in production: ${doubt}`,
+        0.3,
+      ),
+    ],
     next: {
       kind: "needs-you",
       reason,
-      needsYou: "policy",
-      rule: "Schema changes need you",
-      options: ["approve", "send-back", "stop"],
+      needsYou: "post-release",
+      options: ["send-back", "resolve", "close"],
+      agentQuestion: DEMO_CHECKOUT_QUESTION,
+      agentOptions: DEMO_CHECKOUT_OPTIONS.map((option, i) => ({
+        ...option,
+        decision: OPTION_DECISION[option.action],
+        role: "verifier" as const,
+        ...(i === 0 ? { recommended: true as const } : {}),
+      })),
     },
   });
+}
+
+/** "14:05", in UTC. */
+function hhmmUtc(ms: number): string {
+  return new Date(ms).toISOString().slice(11, 16);
 }
 
 interface PastSpec {
@@ -729,16 +794,28 @@ async function seedIncidents(
     return {
       ...incident,
       state: "needs-you",
-      resumeState: "fix-ready",
+      resumeState: "watching",
       updatedAt: iso(now),
       response,
       events: [
         ...incident.events,
         marker(
-          Date.parse(response.needsYou!.since),
+          Date.parse(response.verdict!.at),
           "fix-ready",
           "Fix ready",
-          "needs-you",
+          "fix-ready",
+        ),
+        marker(
+          Date.parse(response.release!.at),
+          "released",
+          "Released",
+          "watching",
+        ),
+        event(
+          Date.parse(response.needsYou!.since),
+          "state",
+          "The post-release check couldn't confirm the fix",
+          { to: "needs-you" },
         ),
       ],
     };

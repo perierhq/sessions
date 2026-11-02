@@ -742,3 +742,124 @@ describe("parseRefInput", () => {
     ).toBe("string");
   });
 });
+
+describe("question options", () => {
+  const question = {
+    id: "billing",
+    kind: "question",
+    text: "Who restores GitHub Actions billing for acme?",
+    wouldAnswer: "The account owner.",
+  };
+
+  test("keeps up to four options with their action, pr and note", () => {
+    const { block, notes } = only([
+      {
+        ...question,
+        options: [
+          {
+            label: "Yes, merge it",
+            detail: "Merge #12 and watch the release",
+            action: "merge",
+            pr: 12,
+          },
+          {
+            label: "Look at the cache instead",
+            detail: "Another round on the cache",
+            action: "send-back",
+            note: "Check the cache settings on api.example.test",
+          },
+          { label: "I'll restore it", action: "answer" },
+          { label: "Close it", detail: "Nothing to fix", action: "close" },
+          { label: "Mark it fixed", action: "mark-fixed" },
+        ],
+      },
+    ]);
+    expect(block?.kind === "question" && block.options).toEqual([
+      {
+        label: "Yes, merge it",
+        detail: "Merge #12 and watch the release",
+        action: "merge",
+        pr: 12,
+      },
+      {
+        label: "Look at the cache instead",
+        detail: "Another round on the cache",
+        action: "send-back",
+        note: "Check the cache settings on api.example.test",
+      },
+      { label: "I'll restore it", detail: "", action: "answer" },
+      { label: "Close it", detail: "Nothing to fix", action: "close" },
+    ]);
+    expect(notes).toEqual(["Block `billing`: kept the first 4 options."]);
+  });
+
+  test("leaves off a bad option with a note and keeps the question", () => {
+    const { block, notes } = only([
+      {
+        ...question,
+        options: [
+          { label: "Deploy everything", action: "deploy" },
+          { label: "", action: "close" },
+          { label: "Merge", action: "merge", pr: "twelve" },
+          { label: "Close", action: "close", pr: 3, note: "x" },
+          { label: "close", action: "close" },
+        ],
+      },
+    ]);
+    expect(block?.kind).toBe("question");
+    expect(block?.kind === "question" && block.options).toEqual([
+      { label: "Close", detail: "", action: "close" },
+    ]);
+    expect(notes).toEqual([
+      "Block `billing`: option 1 left off: action must be one of: merge, release-watch, send-back, close, mark-fixed, answer.",
+      "Block `billing`: option 2 left off: label is required.",
+      "Block `billing`: option 3 left off: pr must be a PR number.",
+      "Block `billing`: option 4: pr is only for merge and release-watch; ignored.",
+      "Block `billing`: option 4: note is only for send-back; ignored.",
+      "Block `billing`: option 5 left off: another option has the same label.",
+    ]);
+  });
+
+  test("options that aren't a list are ignored", () => {
+    const { block, notes } = only([{ ...question, options: "merge" }]);
+    expect(block && "options" in block).toBe(false);
+    expect(notes).toEqual([
+      "Block `billing`: options must be a list; ignored.",
+    ]);
+  });
+
+  test("cuts long labels and details", () => {
+    const { block, notes } = only([
+      {
+        ...question,
+        options: [
+          { label: "m".repeat(70), detail: "d".repeat(250), action: "close" },
+        ],
+      },
+    ]);
+    const option = block?.kind === "question" ? block.options?.[0] : undefined;
+    expect(option?.label.length).toBe(60);
+    expect(option?.detail.length).toBe(200);
+    expect(notes).toEqual([
+      "Block `billing`: option 1 label cut to 60 characters.",
+      "Block `billing`: option 1 detail cut to 200 characters.",
+    ]);
+  });
+
+  test("only the first question may offer options", () => {
+    const out = run([
+      { ...question, options: [{ label: "Close", action: "close" }] },
+      {
+        ...question,
+        id: "second",
+        options: [{ label: "Merge", action: "merge" }],
+      },
+    ]);
+    const second = out.blocks[1];
+    expect(second && !second.kept && second.block.kind).toBe("question");
+    expect(second && "options" in second.block).toBe(false);
+    expect(out.notes).toEqual([
+      "Block `second`: options left off: only one question may offer options.",
+    ]);
+  });
+});

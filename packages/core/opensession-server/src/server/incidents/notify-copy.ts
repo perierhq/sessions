@@ -59,6 +59,7 @@ export const NEEDS_YOU_PUSH: Record<NeedsYouKind, string> = {
   interrupted: "The response was interrupted and needs a decision",
   "no-action": "No action fits. Agents need a decision",
   setup: "Setup needs attention before agents can continue",
+  "post-release": "Production after the release needs a look",
 };
 
 /** One line of state. A heads-up never says "is down": nothing is yet. */

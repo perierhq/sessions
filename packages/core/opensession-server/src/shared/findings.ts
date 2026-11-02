@@ -3,7 +3,14 @@
 // block to data the server checked. Shared by the server and the frontend.
 // Types, constant lists, copy and small pure helpers only.
 
-import type { AgentRole, IncidentResponse } from "./incident-response";
+import type {
+  AgentRole,
+  IncidentResponse,
+  PostReleaseCheck,
+} from "./incident-response";
+
+/** Where the post-release check stands, as the page says it. */
+export type PostReleaseStatus = PostReleaseCheck["status"];
 
 export const FINDING_KINDS = [
   "hypothesis",
@@ -41,6 +48,10 @@ export const FINDINGS_LIMITS = {
   sets: 12,
   notes: 20,
   quoteMinChars: 8,
+  /** Owner options on one question block. */
+  options: 4,
+  optionLabel: 60,
+  optionDetail: 200,
   /** How much of one tool result a quote or `contains` is checked against:
    *  only the first 1 MB (UTF-8) is searched, and a cut is noted. */
   sourceBytes: 1024 * 1024,
@@ -50,6 +61,37 @@ export const FINDINGS_LIMITS = {
 export const FINDING_ID = new RegExp(
   `^[a-z0-9][a-z0-9-]{0,${FINDINGS_LIMITS.idMax - 1}}$`,
 );
+
+/**
+ * What an agent may offer the owner as one option of the current
+ * decision, each mapped onto something Sessions already does: `merge` the
+ * round's pull request (then the project's deploy action, or wait for the
+ * release), `release-watch` (the owner merges and releases, Sessions
+ * watches), `send-back` with a note, `close` without action, `mark-fixed`
+ * (resolve), and `answer`: the owner's typed answer goes back to the agent
+ * that asked, as its next prompt, without a new round.
+ */
+export const OWNER_OPTION_ACTIONS = [
+  "merge",
+  "release-watch",
+  "send-back",
+  "close",
+  "mark-fixed",
+  "answer",
+] as const;
+export type OwnerOptionAction = (typeof OWNER_OPTION_ACTIONS)[number];
+
+/** One option an agent offers on a question block. `pr` names the pull
+ *  request a `merge` or `release-watch` is about (one of the incident's);
+ *  `note` is a `send-back`'s prefilled note. The first option is the one
+ *  the agent recommends. */
+export interface OwnerOption {
+  label: string;
+  detail: string;
+  action: OwnerOptionAction;
+  pr?: number;
+  note?: string;
+}
 
 /** Where a quoted tool result came from. */
 export type Provenance =
@@ -137,7 +179,14 @@ export type FindingBlockOf<R extends { type: string }, T> = BlockBase &
       }
     | { kind: "claims" }
     | { kind: "compare"; sides: [CompareSideOf<T>, CompareSideOf<T>] }
-    | { kind: "question"; text: string; wouldAnswer: string }
+    | {
+        kind: "question";
+        text: string;
+        wouldAnswer: string;
+        /** What the owner may choose; the Next card offers them instead
+         *  of its own options when Sessions can do each one now. */
+        options?: OwnerOption[];
+      }
   );
 export type CompareSideOf<T> = { label: string } & (
   | { signal: SignalWindow }
@@ -146,10 +195,12 @@ export type CompareSideOf<T> = { label: string } & (
 export type FindingBlock = FindingBlockOf<FindingRef, ToolRef>;
 export type CompareSide = CompareSideOf<ToolRef>;
 
-/** One agent's findings for one round. */
+/** One agent's findings for one round. A post-release check's set
+ *  (`check`) is its own slot beside the round's verifier set. */
 export interface FindingsSet {
   role: AgentRole;
   round: number;
+  check?: "post-release";
   attempt: number;
   sessionId: string;
   source: "tool" | "report";
@@ -183,13 +234,25 @@ export function claimKey(text: string): string {
     .replace(/[.\s]+$/, "");
 }
 
-/** The set `role` stored for `round`. */
+/** The set `role` stored for `round` (never a post-release check's). */
 export function findingSetOf(
   r: Pick<IncidentResponse, "findingSets"> | undefined,
   role: AgentRole,
   round: number,
 ): FindingsSet | undefined {
-  return r?.findingSets?.find((s) => s.role === role && s.round === round);
+  return r?.findingSets?.find(
+    (s) => s.role === role && s.round === round && !s.check,
+  );
+}
+
+/** The post-release check's set for `round`. */
+export function checkFindingSet(
+  r: Pick<IncidentResponse, "findingSets"> | undefined,
+  round: number,
+): FindingsSet | undefined {
+  return r?.findingSets?.find(
+    (s) => s.check === "post-release" && s.round === round,
+  );
 }
 
 /** The newest set of `role` from a round before `round`. */
@@ -200,7 +263,7 @@ export function previousFindingSet(
 ): FindingsSet | undefined {
   let best: FindingsSet | undefined;
   for (const s of r?.findingSets ?? []) {
-    if (s.role !== role || s.round >= round) continue;
+    if (s.role !== role || s.round >= round || s.check) continue;
     if (!best || s.round > best.round) best = s;
   }
   return best;
@@ -236,6 +299,9 @@ export const FINDINGS_COPY: Readonly<{
   heading: "Findings";
   showSource: "Show source";
   underWay: (round: number) => string;
+  afterRelease: "After release";
+  checkByline: (clock: string) => string;
+  check: Readonly<Record<PostReleaseStatus, string>>;
   byline: (role: AgentRole, clock: string) => string;
   earlierRow: (round: number) => string;
   markerNotes: "Dashed markers are the agent's notes, not checked data.";
@@ -244,6 +310,15 @@ export const FINDINGS_COPY: Readonly<{
   heading: "Findings",
   showSource: "Show source",
   underWay: (round: number) => `Round ${round} under way`,
+  afterRelease: "After release",
+  checkByline: (clock: string) => `from the post-release check, ${clock}`,
+  check: Object.freeze({
+    running: "Checking production after the release",
+    confirmed: "Confirmed in production",
+    "not-confirmed": "Not confirmed in production",
+    regressed: "Worse in production after the release",
+    skipped: "Not checked: the watch decided alone",
+  }),
   byline: (role: AgentRole, clock: string) => `from the ${role}, ${clock}`,
   earlierRow: (round: number) => `Round ${round} findings`,
   markerNotes: "Dashed markers are the agent's notes, not checked data.",

@@ -9,9 +9,10 @@ import type {
   AskQuestion,
 } from "../lib/types";
 import { Button } from "../ui/button";
+import { Menu } from "../ui/menu";
 import { Tooltip } from "../ui/tooltip";
 import { cn } from "../ui/cn";
-import { IconCheck, IconReturn, IconX } from "./icons";
+import { IconCheck, IconDotsHorizontal, IconReturn, IconX } from "./icons";
 import { useMarkdownRepo } from "./MarkdownBody";
 import {
   ASK_CARD_SHELL,
@@ -90,6 +91,12 @@ interface Props {
    * the agents' open questions).
    */
   context?: React.ReactNode;
+  /**
+   * Choices kept off the options, in a … menu on the status row (an
+   * incident card whose agent offered its own options keeps Close without
+   * action there). Each closes the card's turn like an answer.
+   */
+  menu?: ReadonlyArray<{ key: string; label: string; onSelect: () => void }>;
 }
 
 /**
@@ -165,6 +172,7 @@ export function AskCard({
   freeText = true,
   groups,
   context,
+  menu,
 }: Props) {
   const repo = useMarkdownRepo();
   const titleBase = React.useId();
@@ -412,6 +420,39 @@ export function AskCard({
               {lone.header}
             </span>
           </>
+        )}
+        {/* Same footprint as Dismiss: 28px on the row, 44px on a phone. */}
+        {menu && menu.length > 0 && (
+          <Menu.Root>
+            <Tooltip label="More choices">
+              <Menu.Trigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    icon={<IconDotsHorizontal size={18} />}
+                    aria-label="More choices"
+                    disabled={submitted}
+                    className="-my-1.5 -mr-1.5 ml-auto phone:min-h-11 phone:min-w-11"
+                  />
+                }
+              />
+            </Tooltip>
+            <Menu.Popup align="end">
+              {menu.map((item) => (
+                <Menu.Item
+                  key={item.key}
+                  onClick={() => {
+                    setSubmitted(true);
+                    item.onSelect();
+                  }}
+                >
+                  {item.label}
+                </Menu.Item>
+              ))}
+            </Menu.Popup>
+          </Menu.Root>
         )}
         {/* Negative margins keep the 28px target from growing the status
             row; on a phone it takes the full 44px. */}

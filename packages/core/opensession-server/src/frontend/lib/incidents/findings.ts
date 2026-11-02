@@ -2,6 +2,7 @@
 // in what order, how wide, with whose byline, plus the timeline's own
 // anchors and where each block's "Show source" leads. Pure.
 import {
+  checkFindingSet,
   type ClaimRow,
   claimKey,
   type FindingBlock,
@@ -150,6 +151,97 @@ export function earlierFindingRounds(
   const sets = incident.response?.findingSets ?? [];
   const round = pageRound(sets);
   return round === null ? [] : roundsBefore(sets, round);
+}
+
+/** The post-release check's part of the Findings section: where it
+ *  stands, why, and the blocks it showed. */
+export interface AfterReleaseView {
+  status: string;
+  tone: DotTone;
+  /** Its first reason, or why it was skipped. */
+  reason: string | null;
+  /** Its blocks as a page (round, byline, items); null without any. */
+  page: FindingsPageView | null;
+}
+
+const CHECK_TONE: Record<
+  NonNullable<IncidentResponse["postRelease"]>["status"],
+  DotTone
+> = {
+  running: "yellow",
+  confirmed: "green",
+  "not-confirmed": "blue",
+  regressed: "red",
+  skipped: "faint",
+};
+
+/**
+ * The page round's post-release check, below the round's findings: its
+ * status, its first reason and its own blocks, with a claims block built
+ * from the claims it checked in production. Null before a check started.
+ */
+export function afterReleasePage(
+  incident: Pick<Incident, "response">,
+): AfterReleaseView | null {
+  const response = incident.response;
+  const check = response?.postRelease;
+  if (!response || !check) return null;
+  const set = checkFindingSet(response, check.round);
+  const rows: ClaimRow[] = (check.checks ?? []).map((c) => ({
+    text: c.text,
+    status: c.status,
+    evidence: c.evidence,
+  }));
+  const byline = FINDINGS_COPY.checkByline(
+    clockTime(set?.updatedAt ?? check.at),
+  );
+  const drafts: Array<Omit<FindingItem, "span" | "ownByline">> = (
+    set?.blocks ?? []
+  ).map((block) => {
+    const item: Omit<FindingItem, "span" | "ownByline"> = {
+      key: `check:${block.id}`,
+      role: "verifier",
+      block,
+      byline,
+    };
+    if (block.kind === "claims") item.claims = rows;
+    if (block.kind === "hypothesis") item.status = "unchecked";
+    return item;
+  });
+  if (rows.length && !drafts.some((d) => d.block.kind === "claims"))
+    drafts.push({
+      key: "check:auto-claims",
+      role: "verifier",
+      block: {
+        id: "checked",
+        kind: "claims",
+        size: "full",
+        title: "Checked in production",
+      },
+      byline,
+      auto: true,
+      claims: rows,
+    });
+  const spans = findingSpans(drafts.map((d) => d.block.size));
+  const page: FindingsPageView | null = drafts.length
+    ? {
+        round: check.round,
+        byline: sentenceCase(byline),
+        underWay: null,
+        items: drafts.map((d, i) => ({
+          ...d,
+          span: spans[i]!,
+          ownByline: false,
+        })),
+        earlierRounds: [],
+      }
+    : null;
+  return {
+    status: FINDINGS_COPY.check[check.status],
+    tone: CHECK_TONE[check.status],
+    reason: check.reasons?.[0] ?? null,
+    page,
+  };
 }
 
 export function findingsPage(

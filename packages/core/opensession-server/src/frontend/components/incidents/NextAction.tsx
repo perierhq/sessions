@@ -50,6 +50,7 @@ import {
   NEXT_BUTTON_INERT,
   NEXT_BUTTONS,
   NEXT_EYEBROW,
+  NEXT_REASON,
 } from "../../lib/incident-classes";
 import { repoLabel } from "../../lib/repo-label";
 import type { ProjectSectionId } from "../../lib/project-settings/page-model";
@@ -307,8 +308,24 @@ export function NextAction({
   const deferPhase = useDeferredMergePhase(deferKey);
   const deferDeadline = useDeferredMergeDeadline(deferKey);
   const project = repoLabel(incident.project);
-  const findings = nextFindings(incident);
-  const context = findings ? <NextFindingsView findings={findings} /> : null;
+  const all = nextFindings(incident);
+  // The agent's question with options is the card's own question: it is
+  // not repeated under it.
+  const asked =
+    card?.mode === "choice" && card.reason ? card.question.question : null;
+  const findings = all
+    ? { ...all, asks: all.asks.filter((a) => a.text !== asked) }
+    : null;
+  const shown = findings ? <NextFindingsView findings={findings} /> : null;
+  const context =
+    card?.mode === "choice" && card.reason ? (
+      <>
+        <p className={NEXT_REASON}>{card.reason}</p>
+        {shown}
+      </>
+    ) : (
+      shown
+    );
   const incidentKey = apiSWRKey.incident(incident.id);
 
   const decide = async (
@@ -574,6 +591,18 @@ export function NextAction({
           notes={card.notes}
           groups={card.groups}
           context={context}
+          menu={card.menu?.map((decision) => ({
+            key: decision,
+            label: DECISION_COPY[decision].label,
+            onSelect: () =>
+              void decide(
+                decision,
+                DECISION_COPY[decision].label,
+                `menu:${decision}`,
+              ).then((ok) => {
+                if (!ok) setChoiceAttempt((n) => n + 1);
+              }),
+          }))}
           onAnswer={(answers, notes, typed) =>
             void onAnswer(answers, notes, typed)
           }

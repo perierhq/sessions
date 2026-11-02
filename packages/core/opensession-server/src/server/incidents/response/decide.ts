@@ -12,15 +12,20 @@ import type {
   NeedsYouKind,
   NextAction,
   OwnerDecision,
+  PostReleaseVerdict,
   ProofDeferral,
   ReportIssue,
   ResponsePhase,
   SendBackReason,
+  EarlierVerifierFindings,
   Verdict,
   VerifierFindings,
 } from "../../../shared/incident-response";
-import { findingSetOf } from "../../../shared/findings";
-import { roundOfMax } from "../../../shared/incident-response";
+import { claimKey, findingSetOf } from "../../../shared/findings";
+import {
+  WATCH_FAILURES_MAX,
+  roundOfMax,
+} from "../../../shared/incident-response";
 import {
   RECOVERED_MIN_PASSES,
   closesWhenRecovered,
@@ -37,6 +42,17 @@ import {
 import { recoveriesFor } from "../rules";
 import { KNOWLEDGE_GLOB, changeFacts, globMatch } from "./facts";
 import { assessAutoMerge } from "./merge";
+import { agentOptionsFor, handReleaseOpen } from "./options";
+import {
+  baseRateWatchMs,
+  failingParts,
+  failuresSince,
+  releaseAfter,
+  releaseObservable,
+  samePart,
+  spellLength,
+  spellStarts,
+} from "./watch";
 import { budgetProblem, evaluatePolicy, fullyDown } from "./policy";
 import { projectAction, releaseToRollBack } from "./project-settings";
 import {
@@ -44,6 +60,7 @@ import {
   checkKnowledge,
   effectiveVerdict,
   parseInvestigatorReport,
+  parsePostReleaseReport,
   parseVerifierReport,
   plainReportProblem,
   reportFindingsInput,
@@ -58,6 +75,8 @@ import {
   PR_CHECKS_WAIT_MS,
   PR_REFRESH_MS,
   ROLLBACK_FIRST_WINDOW_MS,
+  CHECK_MAX_MS,
+  RELEASE_WAIT_MS,
   type ResponseStep,
   type ResponseView,
 } from "./steps";
@@ -71,7 +90,14 @@ export function currentAgent(
   r: IncidentResponse,
   role: AgentRole,
 ): AgentRun | undefined {
-  return r.agents.findLast((a) => a.role === role);
+  return r.agents.findLast((a) => a.role === role && !a.check);
+}
+
+/** The round's post-release check, newest attempt. */
+export function postReleaseRun(r: IncidentResponse): AgentRun | undefined {
+  return r.agents.findLast(
+    (a) => a.check === "post-release" && a.round === r.round,
+  );
 }
 
 /** The incident's signals that still exist and are not a provider's. */
@@ -210,15 +236,7 @@ export function approveBlocked(
 /** Whether the owner may release the candidate's pull request by hand and
  *  have Sessions watch after: a verified head on an open pull request. */
 export function handReleaseAvailable(r: IncidentResponse): boolean {
-  const c = r.candidate;
-  return (
-    !!c?.plan.pr &&
-    !c.rollbackFirst &&
-    !!(c.prUrl ?? c.pr?.url) &&
-    !!r.verdict?.verifiedSha &&
-    c.pr?.state !== "MERGED" &&
-    c.pr?.state !== "CLOSED"
-  );
+  return handReleaseOpen(r);
 }
 
 /** Whether `kind`'s card would offer Deploy the fix, before asking whether
@@ -276,6 +294,15 @@ export function needsYouOptions(
       // action, or checks that can't run) and have Sessions watch after.
       return [
         ...approve,
+        ...(handReleaseAvailable(r) ? (["release-watch"] as const) : []),
+        "send-back",
+        "resolve",
+        "close",
+      ];
+    case "rounds":
+      // The rounds are used up, and the owner may still ship the reviewed
+      // head by hand and have Sessions watch after.
+      return [
         ...(handReleaseAvailable(r) ? (["release-watch"] as const) : []),
         "send-back",
         "resolve",
@@ -341,6 +368,10 @@ function workingDetail(r: IncidentResponse): string {
         ? `Merging PR #${r.candidate.pr.number}`
         : "Merging the fix";
     case "deploying":
+      if (r.handRelease && !r.watch)
+        return r.release
+          ? "Starting the watch"
+          : `Waiting for the release of PR #${r.handRelease.number}`;
       return `Running ${runningActionLabel(r)}`;
     case "rolling-back":
       return "Rolling back";
@@ -363,6 +394,7 @@ export function nextActionFor(
       return { kind: "info", detail: "This incident needs you" };
     const { kind, fix } = r.needsYou;
     const rule = kind === "policy" ? r.decision?.rule : undefined;
+    const own = agentOptionsFor(incident, settings);
     return {
       kind: "needs-you",
       reason: needsYouReason(r, settings),
@@ -370,6 +402,12 @@ export function nextActionFor(
       ...(rule ? { rule } : {}),
       ...(kind === "setup" && fix ? { fix } : {}),
       options: needsYouOptions(kind, r, settings),
+      ...(own.options.length
+        ? {
+            agentOptions: own.options,
+            ...(own.question ? { agentQuestion: own.question } : {}),
+          }
+        : {}),
     };
   }
   if (isTerminalIncidentState(incident.state))
@@ -443,7 +481,7 @@ export function verifierFindingsOf(
   reasons?: string[],
 ): VerifierFindings | undefined {
   const report = r.agents.findLast(
-    (a) => a.role === "verifier" && a.round === round,
+    (a) => a.role === "verifier" && !a.check && a.round === round,
   )?.report;
   const set = findingSetOf(r, "verifier", round);
   if (report?.role !== "verifier" && !set) return undefined;
@@ -471,6 +509,53 @@ export function verifierFindingsOf(
 }
 
 /**
+ * What the verifiers of rounds before `round` found that is still open:
+ * their reasons, questions and hypotheses and the claims they could not
+ * verify, oldest round first. A text a later verifier (or `current`, the
+ * round sent back) said again is kept only there, so each finding appears
+ * once, in its newest words.
+ */
+export function earlierVerifierFindings(
+  r: IncidentResponse,
+  round: number,
+  current?: VerifierFindings,
+): EarlierVerifierFindings {
+  const seen = new Set<string>();
+  const fresh = (text: string) => {
+    const key = claimKey(text);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  };
+  if (current) {
+    current.reasons.forEach(fresh);
+    current.claims.forEach((c) => fresh(c.text));
+    current.questions.forEach((q) => fresh(q.text));
+    current.hypotheses.forEach(fresh);
+  }
+  const out: VerifierFindings[] = [];
+  for (let n = round - 1; n >= 1; n--) {
+    const v = verifierFindingsOf(r, n);
+    if (!v) continue;
+    const kept: VerifierFindings = {
+      round: n,
+      reasons: v.reasons.filter(fresh),
+      claims: v.claims.filter((c) => c.status !== "verified" && fresh(c.text)),
+      questions: v.questions.filter((q) => fresh(q.text)),
+      hypotheses: v.hypotheses.filter(fresh),
+    };
+    if (
+      kept.reasons.length ||
+      kept.claims.length ||
+      kept.questions.length ||
+      kept.hypotheses.length
+    )
+      out.push(kept);
+  }
+  return out.reverse();
+}
+
+/**
  * Send the work back for another round, or ask the owner once the rounds
  * are used up. Shared by verification, failed checks and rollbacks.
  */
@@ -493,6 +578,8 @@ export function sendBack(
         sendBack: why,
         verdict,
         handRelease: undefined,
+        release: undefined,
+        watchFailures: undefined,
         proof: undefined,
         decision: undefined,
         veto: undefined,
@@ -504,6 +591,7 @@ export function sendBack(
     step: "needs-you",
     kind: "rounds",
     reason: `Not certain after ${r.round} rounds: ${firstReason}`,
+    ...(verdict ? { patch: { verdict } } : {}),
   };
 }
 
@@ -587,7 +675,7 @@ function actionsDownWait(view: ResponseView): ResponseStep | undefined {
     return undefined;
   if (!(view.now - Date.parse(pr.fetchedAt) < ACTIONS_RECHECK_MS))
     return { step: "fetch-pr", purpose: "recheck" };
-  if (pr.actionsBlocked) return NONE;
+  if (pr.actionsBlocked) return actionsBack(view) ?? NONE;
   return {
     step: "transition",
     to: view.incident.resumeState ?? "fix-ready",
@@ -595,6 +683,37 @@ function actionsDownWait(view: ResponseView): ResponseStep | undefined {
     detail: `GitHub Actions runs for ${pr.ghRepo} again`,
     patch: { needsYou: undefined },
   };
+}
+
+/**
+ * A waiting card whose pull request's checks GitHub Actions never ran (a
+ * billing or spending limit): any card on an open fix, not only the setup
+ * card, since a card raised before Actions stopped keeps waiting too. The
+ * tick reads such an incident; `actionsBack` decides.
+ */
+export function waitingOnActions(incident: Incident): boolean {
+  const r = incident.response;
+  const pr = r?.candidate?.pr;
+  return (
+    incident.state === "needs-you" &&
+    !!r?.needsYou &&
+    r.needsYou.kind !== "question" &&
+    !!r.candidate?.plan.pr &&
+    pr?.state === "OPEN" &&
+    !!pr.actionsBlocked
+  );
+}
+
+/** Every ACTIONS_RECHECK_MS, whether GitHub Actions works for the
+ *  repository again (`actions-recheck`). */
+function actionsBack(view: ResponseView): ResponseStep | undefined {
+  const { incident } = view;
+  if (!waitingOnActions(incident)) return undefined;
+  const r = incident.response!;
+  const last = Date.parse(r.actionsCheckedAt ?? r.needsYou!.since);
+  return view.now - last >= ACTIONS_RECHECK_MS
+    ? { step: "actions-recheck" }
+    : undefined;
 }
 
 /**
@@ -690,19 +809,7 @@ export function failedCheckAt(
   return best;
 }
 
-/** The parts a status page's worst-lane detail names as failing
- *  ("search: slow, betterfare: down"), lower-cased; empty when the detail
- *  is not such a list (a plain check's "HTTP 503"). */
-export function failingParts(detail: string): string[] {
-  const pieces = detail.split(", ");
-  const parts: string[] = [];
-  for (const piece of pieces) {
-    const at = piece.indexOf(": ");
-    if (at <= 0) return [];
-    parts.push(piece.slice(0, at).trim().toLowerCase());
-  }
-  return parts;
-}
+export { failingParts };
 
 /** A waiting card brought up to date (see waitingMayBeStale): a proof that
  *  stopped is measured again, and an unproven fix says when its signal
@@ -869,6 +976,7 @@ function guards(view: ResponseView): ResponseStep | undefined {
       };
     return (
       actionsDownWait(view) ??
+      actionsBack(view) ??
       setupChanged(view) ??
       staleWaiting(view) ??
       checksRecheck(view) ??
@@ -1009,6 +1117,8 @@ function starting(view: ResponseView): ResponseStep | undefined {
         documentingSince: undefined,
         openPrs: undefined,
         handRelease: undefined,
+        release: undefined,
+        watchFailures: undefined,
       },
     };
   }
@@ -1079,6 +1189,7 @@ function reports(view: ResponseView): ResponseStep | undefined {
   const runs = [
     currentAgent(r, "investigator"),
     currentAgent(r, "verifier"),
+    postReleaseRun(r),
   ].filter((a): a is AgentRun => a !== undefined);
 
   // 12. A finished agent's report; on a Retry, one refused for want of a
@@ -1146,6 +1257,28 @@ function reports(view: ResponseView): ResponseStep | undefined {
         },
         text,
       );
+    }
+    if (run.check) {
+      const warnings: string[] = [];
+      const parsed = parsePostReleaseReport(text, {
+        claims: r.candidate?.claims ?? [],
+        warnings,
+      });
+      return "error" in parsed
+        ? {
+            ...refused(run, parsed.issues),
+            error: parsed.error,
+            problem: parsed.problem,
+          }
+        : withFindings(
+            {
+              step: "record-report",
+              sessionId: run.sessionId,
+              report: parsed,
+              ...(warnings.length ? { warnings } : {}),
+            },
+            text,
+          );
     }
     const warnings: string[] = [];
     const parsed = parseVerifierReport(text, {
@@ -1225,6 +1358,34 @@ function restart(
   );
 }
 
+/**
+ * The owner's answer waiting for `run`: sent once its session is idle,
+ * never while it still works; a session that stopped can't read it, and the
+ * owner hears so.
+ */
+function answerStep(
+  view: ResponseView,
+  run: AgentRun,
+): ResponseStep | undefined {
+  const answer = view.incident.response?.answer;
+  if (!answer || answer.sessionId !== run.sessionId) return undefined;
+  const status = statusOf(view, run);
+  if (status === "done")
+    return {
+      step: "message-agent",
+      sessionId: run.sessionId,
+      message: "answer",
+    };
+  if (status === "error" || status === "cancelled")
+    return {
+      step: "needs-you",
+      kind: "agent-error",
+      reason: `The ${run.check ? "post-release check" : run.role} stopped before it could read your answer`,
+      patch: { answer: undefined },
+    };
+  return NONE;
+}
+
 function agentProblem(
   view: ResponseView,
   run: AgentRun,
@@ -1271,6 +1432,8 @@ function investigation(view: ResponseView): ResponseStep {
       round: r.round,
       attempt: (inv?.attempt ?? 0) + 1,
     };
+  const answered = answerStep(view, inv);
+  if (answered) return answered;
   const status = statusOf(view, inv);
 
   // 15. A new round for the same investigator.
@@ -1407,8 +1570,15 @@ function proving(view: ResponseView): ResponseStep {
   const r = view.incident.response!;
   // 20.
   if (r.proof?.round !== r.round) return { step: "run-proof" };
-  const deferred =
-    r.proof.baseline.verdict === "fails" ? undefined : proofDeferral(view);
+  // A fix that can only be proven after release goes on to the verifier
+  // whatever the baseline says: a failing one only shows the problem is
+  // live, which is what an unreleased fix leaves it.
+  const live = r.proof.baseline.verdict === "fails";
+  const deferred = live
+    ? r.candidate?.check.kind === "after-deploy"
+      ? "after-release"
+      : undefined
+    : proofDeferral(view);
   if (r.proof.baseline.verdict === "passes" && !deferred)
     return {
       step: "needs-you",
@@ -1417,6 +1587,14 @@ function proving(view: ResponseView): ResponseStep {
     };
   if (!r.candidate?.pr || stale(r.candidate.pr.fetchedAt, view.now))
     return { step: "fetch-pr", purpose: "verify" };
+  // 20a. Checks Sessions re-ran (GitHub Actions came back): the verifier
+  // looks again once they finish, or after PR_CHECKS_WAIT_MS.
+  if (
+    r.reverify &&
+    r.candidate.pr.pendingChecks.length > 0 &&
+    view.now - Date.parse(r.reverify.at) < PR_CHECKS_WAIT_MS
+  )
+    return NONE;
   // 20b. GitHub Actions ran none of the checks (a billing or spending
   // limit, say): no verifier can be certain and no merge can pass until
   // the owner fixes it, so they are asked once instead.
@@ -1432,7 +1610,7 @@ function proving(view: ResponseView): ResponseStep {
       step: "transition",
       to: null,
       phase: "verifying",
-      detail: `Proof measured: the problem is not happening now and ${DEFERRAL_WHY[deferred]}, so the verifier judges what it can prove`,
+      detail: `Proof measured: ${live ? `the problem was happening at ${hhmmUtc(Date.parse(r.proof.at))} UTC` : "the problem is not happening now"} and ${DEFERRAL_WHY[deferred]}, so the verifier judges what it can prove`,
       patch: { proof: { ...r.proof, deferred } },
     };
   return {
@@ -1447,7 +1625,7 @@ function verifying(view: ResponseView): ResponseStep {
   const r = view.incident.response!;
   // 21. The current round's verifier.
   const ver = r.agents.findLast(
-    (a) => a.role === "verifier" && a.round === r.round,
+    (a) => a.role === "verifier" && !a.check && a.round === r.round,
   );
   if (restart(view, ver, r.retryRequested === true) || !ver)
     return {
@@ -1456,6 +1634,21 @@ function verifying(view: ResponseView): ResponseStep {
       round: r.round,
       attempt: (ver?.attempt ?? 0) + 1,
     };
+  // The checks ran again since this verifier looked: a new attempt, in
+  // the same round.
+  if (
+    r.reverify &&
+    ver &&
+    Date.parse(ver.startedAt) < Date.parse(r.reverify.at)
+  )
+    return {
+      step: "start-agent",
+      role: "verifier",
+      round: r.round,
+      attempt: ver.attempt + 1,
+    };
+  const answered = answerStep(view, ver);
+  if (answered) return answered;
   const problem = agentProblem(view, ver);
   if (problem) return problem;
   const at = iso(view.now);
@@ -1508,7 +1701,7 @@ function verifying(view: ResponseView): ResponseStep {
     return {
       step: "needs-you",
       kind: "unproven",
-      reason: `${deferred === "intermittent" ? "The problem comes and goes, so the fix" : "The fix"} can only be proven after release: ${reasons[0]}`,
+      reason: `${deferred === "intermittent" ? "The problem comes and goes, so the fix" : "The fix"} can only be proven after release${r.proof.baseline.verdict === "fails" ? ` (the problem was happening at ${hhmmUtc(Date.parse(r.proof.at))} UTC)` : ""}: ${reasons[0]}`,
       patch: {
         verdict: {
           round: r.round,
@@ -1520,15 +1713,24 @@ function verifying(view: ResponseView): ResponseStep {
       },
     };
   const verifier = verifierFindingsOf(r, r.round, reasons);
+  const earlier = earlierVerifierFindings(r, r.round, verifier);
   return sendBack(
     view,
-    { kind: "not-certain", reasons, ...(verifier ? { verifier } : {}) },
+    {
+      kind: "not-certain",
+      reasons,
+      ...(verifier ? { verifier } : {}),
+      ...(earlier.length ? { earlier } : {}),
+    },
     reasons[0]!,
     {
       round: r.round,
       at,
       verdict: "not-certain",
       reasons,
+      // The head it reviewed: at the round limit the owner may still
+      // release it by hand.
+      verifiedSha: r.candidate.pr.headSha,
     },
   );
 }
@@ -1551,6 +1753,8 @@ function nextRound(
     mergingSince: undefined,
     ownerRollback: undefined,
     handRelease: undefined,
+    release: undefined,
+    watchFailures: undefined,
   };
 }
 
@@ -1720,7 +1924,11 @@ function vetoStep(view: ResponseView): ResponseStep {
 function mergingStep(view: ResponseView): ResponseStep {
   const r = view.incident.response!;
   const n = prRef(r);
-  if (r.handRelease && r.merge?.status !== "merged")
+  if (
+    r.handRelease &&
+    r.handRelease.merger !== "sessions" &&
+    r.merge?.status !== "merged"
+  )
     return handReleaseStep(view, r.handRelease);
   if (r.merge?.status === "merged")
     return {
@@ -1873,8 +2081,8 @@ function interrupted(run: ActionRun): ResponseStep {
 function deployingStep(view: ResponseView): ResponseStep {
   const { settings } = view;
   const r = view.incident.response!;
-  // The owner released it: nothing to run, the watch is the proof.
-  if (r.handRelease) return { step: "start-watch" };
+  // Released by hand: nothing to run. The watch starts at the release.
+  if (r.handRelease) return awaitingRelease(view, r.handRelease);
   const c = r.candidate;
   if (!c)
     return {
@@ -1912,11 +2120,360 @@ function deployingStep(view: ResponseView): ResponseStep {
   return { step: "start-watch" };
 }
 
+/**
+ * A fix released by hand, merged: the watch starts at its release, once
+ * Sessions sees one after the merge (the release hook, a merged release
+ * pull request). A project where no release can be seen starts it at the
+ * merge. A day without a release asks the owner.
+ */
+function awaitingRelease(
+  view: ResponseView,
+  hand: NonNullable<IncidentResponse["handRelease"]>,
+): ResponseStep {
+  const { settings } = view;
+  const r = view.incident.response!;
+  // Only a release seen for this hand release counts, never an earlier
+  // round's.
+  if (r.release && Date.parse(r.release.at) >= Date.parse(hand.at))
+    return { step: "start-watch", ms: watchLength(view) };
+  const mergedAt = r.merge?.at ?? hand.at;
+  const mergedMs = Date.parse(mergedAt);
+  const src = {
+    releases: settings.releases,
+    hook: !!settings.releaseHookSecret,
+    releasePrs: view.releasePrs ?? [],
+  };
+  const n = `PR #${hand.number}`;
+  const seen = releaseAfter(src, mergedMs);
+  if (seen)
+    return {
+      step: "transition",
+      to: null,
+      phase: "deploying",
+      detail: `${n} went out${seen.ref ? ` in ${seen.ref}` : ""} at ${hhmmUtc(Date.parse(seen.at))} UTC (${seen.source === "hook" ? "the release hook" : "its release pull request"})`,
+      log: "release",
+      patch: { release: seen },
+    };
+  if (!releaseObservable(src))
+    return {
+      step: "transition",
+      to: null,
+      phase: "deploying",
+      detail: `Sessions can't see ${view.incident.project}'s releases, so the watch starts at the merge of ${n}`,
+      log: "release",
+      patch: { release: { at: mergedAt, source: "merge" } },
+    };
+  if (view.now - mergedMs >= RELEASE_WAIT_MS)
+    return {
+      step: "needs-you",
+      kind: "no-action",
+      reason: `${n} was merged at ${hhmmUtc(mergedMs)} UTC and no release came in ${Math.round(RELEASE_WAIT_MS / 3_600_000)} h. Release it, then mark it fixed or send it back`,
+    };
+  return NONE;
+}
+
+/** How long the watch lasts: a hand release watches for a few of the
+ *  signal's usual gaps between failures; anything else the project's
+ *  window. */
+function watchLength(view: ResponseView): number {
+  const r = view.incident.response!;
+  if (!r.handRelease) return view.settings.watchMs;
+  return baseRateWatchMs(
+    view.primaryRecent,
+    primarySignal(view)?.rule,
+    view.settings.watchMs,
+  );
+}
+
+/** The failed check the incident opened on, as Sessions has it. */
+function openedDetail(view: ResponseView): string {
+  const { incident } = view;
+  return (
+    incident.response?.openedOn?.detail ??
+    failedCheckAt(view.primaryRecent, Date.parse(incident.openedAt))?.detail ??
+    ""
+  );
+}
+
+/** Whether no post-release check runs for this round's fix: a rollback
+ *  has nothing new to check. */
+function noCheck(view: ResponseView): boolean {
+  const r = view.incident.response!;
+  if (!r.candidate || r.candidate.rollbackFirst) return true;
+  if (r.handRelease) return false;
+  const steps = changeFacts({
+    plan: r.candidate.plan,
+    settings: view.settings,
+    prFiles: [],
+  });
+  return (
+    !("error" in steps) &&
+    steps.steps.length > 0 &&
+    steps.steps.every((s) => s.kind === "rollback")
+  );
+}
+
+/** What went out, for the check's brief and the record. */
+function releasedWhat(view: ResponseView): { at: string; after: string } {
+  const r = view.incident.response!;
+  if (r.release) {
+    const at = r.release.at;
+    const when = `${hhmmUtc(Date.parse(at))} UTC`;
+    return {
+      at,
+      after:
+        r.release.source === "merge"
+          ? `the merge at ${when}`
+          : `${r.release.ref ? `${r.release.ref}, ` : ""}released at ${when}`,
+    };
+  }
+  const run = r.actionRuns.findLast(
+    (a) => a.round === r.round && a.purpose === "plan" && a.status === "ok",
+  );
+  const at = run?.endedAt ?? r.watch?.startedAt ?? iso(view.now);
+  return {
+    at,
+    after: run
+      ? `${run.label}${run.ref ? ` of ${run.ref}` : ""} at ${hhmmUtc(Date.parse(at))} UTC`
+      : `the release at ${hhmmUtc(Date.parse(at))} UTC`,
+  };
+}
+
+/** The round's post-release check record. */
+function checkOf(r: IncidentResponse) {
+  return r.postRelease?.round === r.round ? r.postRelease : undefined;
+}
+
+/**
+ * 28a. The post-release check: a read-only verifier session that looks at
+ * production once the fix is live. Started with the watch; its verdict is
+ * recorded; a not-confirmed or regressed one goes to the owner with its
+ * evidence (never a rollback). It is bounded: the budget, no model, an
+ * error, no report or CHECK_MAX_MS skip it, and the watch decides alone.
+ * Undefined when there is nothing to do for it now.
+ */
+function postReleaseStep(view: ResponseView): ResponseStep | undefined {
+  const r = view.incident.response!;
+  if (noCheck(view)) return undefined;
+  const check = checkOf(r);
+  const skip = (reason: string): ResponseStep => ({
+    step: "transition",
+    to: null,
+    phase: "watching",
+    detail: `Post-release check skipped: ${reason}. The watch decides`,
+    log: "policy",
+    patch: {
+      postRelease: {
+        round: r.round,
+        status: "skipped",
+        at: iso(view.now),
+        after: check?.after ?? releasedWhat(view).after,
+        ...(check?.sessionId ? { sessionId: check.sessionId } : {}),
+        reasons: [reason],
+      },
+    },
+  });
+  if (!check) {
+    const problem = budgetProblem({
+      incidentCostUsd: r.costUsd,
+      monthCostUsd: view.monthCostUsd + r.costUsd,
+      budget: view.settings.budget,
+    });
+    if (problem) return skip(problem.reason);
+    if ("error" in view.models) return skip(view.models.error);
+    const prior = postReleaseRun(r);
+    return {
+      step: "start-agent",
+      role: "verifier",
+      round: r.round,
+      attempt: (prior?.attempt ?? 0) + 1,
+      check: "post-release",
+      after: releasedWhat(view).after,
+    };
+  }
+  if (check.status !== "running") return undefined;
+  const run = postReleaseRun(r);
+  if (!run) return undefined;
+  const answered = answerStep(view, run);
+  if (answered) return answered;
+  const status = statusOf(view, run);
+  if (status === "waiting") return agentProblem(view, run);
+  if (status === "error")
+    return skip(
+      `it stopped (${view.agents.get(run.sessionId)?.error ?? run.error ?? "an error"})`,
+    );
+  if (status === "cancelled")
+    return skip(
+      run.cancelledFor === "timeout" ? "it ran out of time" : "it was stopped",
+    );
+  if (status === "running") {
+    if (view.now - Date.parse(run.turnSentAt) > CHECK_MAX_MS)
+      return {
+        step: "cancel-agents",
+        reason: "The post-release check ran out of time",
+        for: "timeout",
+      };
+    return undefined;
+  }
+  if (run.reportError && run.reminded)
+    return skip("it did not return a valid report");
+  const report = run.report;
+  if (report?.role !== "post-release") return undefined;
+  const words: Record<PostReleaseVerdict, string> = {
+    confirmed: "confirmed the fix in production",
+    "not-confirmed": "could not confirm the fix in production",
+    regressed: "found production worse after the release",
+  };
+  return {
+    step: "transition",
+    to: null,
+    phase: "watching",
+    detail: `Post-release check ${words[report.verdict]}${report.reasons[0] ? `: ${report.reasons[0]}` : ""}`,
+    log: "verdict",
+    patch: {
+      postRelease: {
+        ...check,
+        status: report.verdict,
+        at: iso(view.now),
+        reasons: report.reasons,
+        checks: report.checks,
+      },
+    },
+  };
+}
+
+/** The check's word goes to the owner when it isn't a confirmation. */
+function checkDoubt(view: ResponseView): ResponseStep | undefined {
+  const check = checkOf(view.incident.response!);
+  if (check?.status !== "not-confirmed" && check?.status !== "regressed")
+    return undefined;
+  const reason = check.reasons?.[0] ?? "it gave no reason";
+  return {
+    step: "needs-you",
+    kind: "post-release",
+    reason:
+      check.status === "regressed"
+        ? `After the release, production looks worse: ${reason}`
+        : `After the release, the fix couldn't be confirmed in production: ${reason}`,
+  };
+}
+
+/** Whether the post-release check still has its say: running, or not
+ *  started yet where one runs. */
+function checkPending(view: ResponseView): boolean {
+  if (noCheck(view)) return false;
+  const check = checkOf(view.incident.response!);
+  return !check || check.status === "running";
+}
+
+/** A word on the check for the resolve line. */
+function checkedWord(r: IncidentResponse): string {
+  return checkOf(r)?.status === "confirmed"
+    ? "; the post-release check confirmed it"
+    : "";
+}
+
+/** "6 h", "40 min". */
+function spanWords(ms: number): string {
+  const hours = Math.round(ms / 3_600_000);
+  return hours >= 1
+    ? `${hours} h`
+    : `${Math.max(1, Math.round(ms / 60_000))} min`;
+}
+
+/**
+ * 28b. A hand-released fix's watch: it lasts a few of the signal's usual
+ * gaps (watchLength). Each failed check is recorded with what it said; a
+ * spell of the part the incident opened on, as long as the signal's rule
+ * counts, means the fix didn't hold and goes to the owner. Other parts'
+ * failures are recorded and don't count. Passing the whole watch, with
+ * the check confirmed or skipped, is fixed.
+ */
+function handWatch(view: ResponseView): ResponseStep {
+  const r = view.incident.response!;
+  const watch = r.watch!;
+  const started = Date.parse(watch.startedAt);
+  const opened = openedDetail(view);
+  // Failures after the newest one recorded: the list is trimmed to
+  // WATCH_FAILURES_MAX, so a set of what it holds would read the trimmed
+  // ones as new on every tick.
+  const recorded = Math.max(
+    started,
+    ...(r.watchFailures ?? []).map((f) => Date.parse(f.at)),
+  );
+  const fresh = failuresSince(view.primaryRecent, started).filter(
+    (o) => Date.parse(o.at) > recorded,
+  );
+  const name = primaryName(view);
+  if (fresh.length) {
+    const rows = fresh.map((o) => ({
+      at: o.at,
+      detail: o.detail.trim(),
+      samePart: samePart(opened, o.detail),
+    }));
+    const shown = rows
+      .slice(-3)
+      .map(
+        (f) =>
+          `${hhmmUtc(Date.parse(f.at))} UTC${f.detail ? ` (${f.detail})` : ""}${f.samePart ? "" : ", another part"}`,
+      )
+      .join("; ");
+    return {
+      step: "transition",
+      to: null,
+      phase: "watching",
+      detail: `${name} failed during the watch at ${shown}`,
+      log: "policy",
+      patch: {
+        watchFailures: [...(r.watchFailures ?? []), ...rows].slice(
+          -WATCH_FAILURES_MAX,
+        ),
+      },
+    };
+  }
+  // A spell of the same part, as long as the rule counts; other parts'
+  // failures are read as passes here.
+  const counted = view.primaryRecent
+    .filter((o) => o.lane === undefined && Date.parse(o.at) > started)
+    .map((o) =>
+      o.result === "fail" && !samePart(opened, o.detail.trim())
+        ? { ...o, result: "ok" as const }
+        : o,
+    );
+  if (spellStarts(counted, spellLength(primarySignal(view)?.rule)).length) {
+    const last = (r.watchFailures ?? []).findLast((f) => f.samePart);
+    return {
+      step: "needs-you",
+      kind: "post-release",
+      reason: `${name} failed again at ${last ? `${hhmmUtc(Date.parse(last.at))} UTC` : "the watch"} after PR #${r.handRelease!.number} went out${last?.detail ? ` (${last.detail})` : ""}, so the fix didn't hold. Send it back, or mark it fixed if this is something else`,
+    };
+  }
+  if (!(view.now >= Date.parse(watch.deadline))) return NONE;
+  // Still failing at the end, by the signal's own word.
+  const state = view.evaluations.get(view.incident.primarySignalId)?.state;
+  if (state && PROBLEM_STATES.has(state))
+    return {
+      step: "needs-you",
+      kind: "post-release",
+      reason: `${name} is still ${state} after PR #${r.handRelease!.number} went out. If it isn't live yet, release it, then mark it fixed or send it back`,
+    };
+  if (checkPending(view)) return NONE;
+  return {
+    step: "resolve",
+    fixedBy: "agents-with-you",
+    detail: `${name} passed the ${spanWords(Date.parse(watch.deadline) - started)} watch after the release${checkedWord(r)}`,
+  };
+}
+
 // 28. Resolved when every own signal is back after the watch started.
 function watchingStep(view: ResponseView): ResponseStep {
   const { settings } = view;
   const r = view.incident.response!;
-  if (!r.watch) return { step: "start-watch" };
+  if (!r.watch) return { step: "start-watch", ms: watchLength(view) };
+  const checked = postReleaseStep(view) ?? checkDoubt(view);
+  if (checked) return checked;
+  if (r.handRelease) return handWatch(view);
+
   const own = ownSignalIds(view);
   const watched = own.length ? own : [view.incident.primarySignalId];
   const started = Date.parse(r.watch.startedAt);
@@ -1924,32 +2481,17 @@ function watchingStep(view: ResponseView): ResponseStep {
     const e = view.evaluations.get(id);
     return e?.state === "ok" && Date.parse(e.since) >= started;
   });
-  if (green) {
+  if (green && !checkPending(view)) {
     const names = watched.map((id) => view.signals.get(id)?.name ?? id);
     return {
       step: "resolve",
       fixedBy: r.ownerTouched ? "agents-with-you" : "agents",
-      detail: `${names.join(", ")} back to normal after the release`,
+      detail: `${names.join(", ")} back to normal after the release${checkedWord(r)}`,
     };
   }
   if (!(view.now >= Date.parse(r.watch.deadline))) return NONE;
   const name = primaryName(view);
   const state = primaryState(view);
-  // Released by hand: passing the whole watch is fixed too, and nothing
-  // Sessions did is there to roll back.
-  if (r.handRelease) {
-    if (watched.every((id) => view.evaluations.get(id)?.state === "ok"))
-      return {
-        step: "resolve",
-        fixedBy: "agents-with-you",
-        detail: `${watched.map((id) => view.signals.get(id)?.name ?? id).join(", ")} passed through the watch after the release`,
-      };
-    return {
-      step: "needs-you",
-      kind: "no-action",
-      reason: `${name} is still ${state} after PR #${r.handRelease.number} was merged. If it isn't released yet, release it, then mark it fixed or send it back`,
-    };
-  }
   const steps = r.candidate
     ? changeFacts({ plan: r.candidate.plan, settings, prFiles: [] })
     : { error: "" };

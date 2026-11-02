@@ -269,7 +269,7 @@ function findingLines(set: FindingsSet | undefined, prose: boolean): string[] {
 /** The "## Findings" section: the catalog brief, then the blocks this
  *  agent may keep or refer to, as data. */
 function findingsSection(
-  role: AgentRole,
+  role: AgentRole | "post-release",
   list: { title: string; lines: string[] } | null,
 ): string[] {
   const out = findingsBrief(role);
@@ -308,6 +308,8 @@ export interface InvestigatorPromptInput {
   /** Earlier incidents on this incident's signals, newest first, at most
    *  EARLIER_INCIDENTS_MAX: facts from Sessions' own record. */
   earlierIncidents?: EarlierIncident[];
+  /** The incident's open pull requests that change the same files. */
+  overlaps?: PrOverlap[];
 }
 
 /** One earlier incident on the same signals, as the brief states it: no
@@ -543,6 +545,7 @@ export function buildInvestigatorPrompt(
     );
   else if (input.sendBack)
     out.push(sendBackHead(round, maxRounds, input.sendBack), "");
+  out.push(...overlapLines(input.overlaps ?? []));
 
   if (input.rollbackFirst) {
     const ref = input.rollbackFirst.ref ?? "no ref";
@@ -764,8 +767,10 @@ export function buildSendBackMessage(
   maxRounds: number,
   why: SendBackReason,
   previous?: FindingsSet,
+  overlaps: readonly PrOverlap[] = [],
 ): string {
-  const text = `${sendBackHead(round, maxRounds, why)}\n\n${SEND_BACK_TAIL}`;
+  const overlap = overlapLines(overlaps);
+  const text = `${sendBackHead(round, maxRounds, why)}\n\n${overlap.length ? `${overlap.join("\n")}\n` : ""}${SEND_BACK_TAIL}`;
   if (!previous?.blocks.length) return text;
   return `${text}\n\nYour round ${previous.round} findings stay on the page until you call show_findings for this round. Keep a block with {"id": "…", "keep": true}.`;
 }
@@ -773,9 +778,63 @@ export function buildSendBackMessage(
 const WEIGH_VERIFIER =
   "Weigh the verifier's findings before your own last round: if they show a better fix (another open pull request, a case your fix misses), take it, and say in your report which fix you chose and why.";
 
+/** Two or more of the incident's open pull requests that change the same
+ *  files (incident notes aside). */
+export interface PrOverlap {
+  numbers: number[];
+  files: string[];
+}
+
+/** The overlapping pull requests, as a data block and what to do. */
+export function overlapLines(overlaps: readonly PrOverlap[]): string[] {
+  if (!overlaps.length) return [];
+  return [
+    ...dataBlock(
+      "Open pull requests of this incident that change the same files",
+      overlaps.map(
+        (o) =>
+          `- ${o.numbers.map((n) => `#${n}`).join(" and ")}: ${o.files
+            .slice(0, 5)
+            .map((f) => dataText(f, 200))
+            .join(
+              ", ",
+            )}${o.files.length > 5 ? ` and ${o.files.length - 5} more` : ""}`,
+      ),
+    ),
+    "They can't both go out as they are. Read them, choose one fix (or fold one into the other), and say in your report which you chose and why; the owner closes the other.",
+    "",
+  ];
+}
+
+/** Findings of earlier rounds' verifiers that are still open, oldest
+ *  first: one data block per round. */
+function earlierVerifierLines(list: readonly VerifierFindings[]): string[] {
+  const out: string[] = [];
+  for (const v of list) {
+    const lines = verifierBody(v, true);
+    if (lines.length)
+      out.push(
+        ...dataBlock(
+          `What the verifier found in round ${v.round} that no later round settled`,
+          lines,
+        ),
+      );
+  }
+  return out.length ? [...out, WEIGH_VERIFIER] : [];
+}
+
 /** What the round's verifier found, as a data block; its reasons only when
  *  the head does not list them already. */
 function verifierLines(v: VerifierFindings, reasons: boolean): string[] {
+  const lines = verifierBody(v, reasons);
+  if (!lines.length) return [];
+  return [
+    ...dataBlock(`What the verifier found in round ${v.round}`, lines),
+    WEIGH_VERIFIER,
+  ];
+}
+
+function verifierBody(v: VerifierFindings, reasons: boolean): string[] {
   const lines: string[] = [];
   if (reasons && v.reasons.length)
     lines.push("Reasons:", ...v.reasons.map((r) => `- ${dataText(r)}`));
@@ -800,14 +859,11 @@ function verifierLines(v: VerifierFindings, reasons: boolean): string[] {
       "Its hypotheses:",
       ...v.hypotheses.map((h) => `- ${dataText(h, 200)}`),
     );
-  if (!lines.length) return [];
-  return [
-    ...dataBlock(`What the verifier found in round ${v.round}`, lines),
-    WEIGH_VERIFIER,
-  ];
+  return lines;
 }
 
-/** Why the work came back, as a data block. */
+/** Why the work came back, as a data block, with every earlier round's
+ *  verifier findings no later round settled. */
 function sendBackHead(
   round: number,
   maxRounds: number,
@@ -818,7 +874,10 @@ function sendBackHead(
   let head: string;
   switch (why.kind) {
     case "not-certain": {
-      const found = why.verifier ? verifierLines(why.verifier, false) : [];
+      const found = [
+        ...earlierVerifierLines(why.earlier ?? []),
+        ...(why.verifier ? verifierLines(why.verifier, false) : []),
+      ];
       head = [
         block(
           `The verifier was not certain (round ${roundOfMax(round, maxRounds)}). Their reasons`,
@@ -829,7 +888,10 @@ function sendBackHead(
       break;
     }
     case "owner": {
-      const found = why.verifier ? verifierLines(why.verifier, true) : [];
+      const found = [
+        ...earlierVerifierLines(why.earlier ?? []),
+        ...(why.verifier ? verifierLines(why.verifier, true) : []),
+      ];
       head = why.answering
         ? [
             block(
@@ -1040,6 +1102,121 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
   return out.join("\n");
 }
 
+// ── Post-release check ─────────────────────────────────────────────────────
+
+export interface PostReleasePromptInput {
+  incident: Incident;
+  signal: Signal;
+  candidate: CandidateState;
+  /** What went out and when, in words: "the deploy action at …", "a
+   *  release Sessions recorded at …", "the merge at …". */
+  after: string;
+  /** When it went out (ISO). */
+  releasedAt: string;
+  mode: "ask" | "code";
+  connections?: ConnectionsBrief;
+  /** The primary signal's recent checks. */
+  recent: Observation[];
+  /** The round's hypotheses, from the investigator's and the verifier's
+   *  findings. */
+  hypotheses: string[];
+}
+
+/** The most recent checks the post-release brief lists. */
+const CHECK_SAMPLES = 15;
+
+/**
+ * The post-release check's brief: the fix is live; check, read-only, that
+ * production now behaves as the fix said it would, with the access the
+ * incident's verifier has, and say confirmed, not-confirmed or regressed.
+ */
+export function buildPostReleasePrompt(input: PostReleasePromptInput): string {
+  const { incident, candidate } = input;
+  const signal = redactSignal(input.signal);
+  const prUrl = candidate.prUrl ?? candidate.pr?.url;
+  const recent = mainLane(input.recent, RING_FOR_FAILURES).slice(
+    -CHECK_SAMPLES,
+  );
+  const out: string[] = [];
+  out.push(`# Check production after the fix for incident ${incident.id}`, "");
+  out.push(
+    "You are the post-release check. The fix is live. Check, read-only, that production now behaves as the fix said it would. Do not edit, commit, push, deploy, restart or roll back anything: Sessions and the owner decide what happens next from your report.",
+    "",
+    DATA_NOTE,
+    "",
+    ...dataBlock("Incident title", [dataText(incident.title)]),
+    "",
+    "## What went out",
+    "",
+    ...(prUrl ? [`- PR: ${prUrl}`] : []),
+    `- Live since ${input.releasedAt}: ${dataText(input.after, 200)}`,
+    "",
+    ...describeSignal(signal),
+    "",
+    ...dataBlock(
+      "The signal's latest checks, oldest first (at · result · detail)",
+      recent.length ? recent.map(sampleLine) : ["- none yet"],
+    ),
+    "",
+  );
+  out.push(...connectionLines(input.connections));
+  out.push(
+    "## What to check",
+    "",
+    "1. Is the fix really live? Find what production runs now (a version endpoint, the deployed image or tag, the logs after the release). If it isn't live, say not-confirmed and say so.",
+    "2. The signal's own check, from production: run it or read its latest results above, and any check the fix declared.",
+    "3. Each claim and hypothesis below, as production shows it now.",
+    "4. The logs around the release: new errors, or the old failure coming back.",
+    "Use what your access gives you (host commands, fetches through the production egress, borrowed credentials, log connections). Prefer a few precise checks; filter large logs in the command and keep only the lines that matter.",
+    "",
+    "Say confirmed only if the fix is live and every check you could make shows it working. Say regressed if production is worse than before or broken in a new way. Otherwise say not-confirmed. Sessions never rolls back on your word: the owner decides.",
+    "",
+  );
+  if (candidate.check.kind === "after-deploy")
+    out.push(
+      ...dataBlock("How the investigator said the fix shows after release", [
+        dataText(candidate.check.reason),
+      ]),
+      "",
+    );
+  out.push(
+    ...dataBlock(
+      "The claims the fix rests on",
+      candidate.claims.length
+        ? candidate.claims.map((c) => `- ${dataText(c.text, 500)}`)
+        : ["- none"],
+    ),
+    "",
+  );
+  if (input.hypotheses.length)
+    out.push(
+      ...dataBlock(
+        "The round's hypotheses",
+        input.hypotheses.map((h) => `- ${dataText(h, 300)}`),
+      ),
+      "",
+    );
+  out.push(...findingsSection("post-release", null));
+  out.push(
+    "## Report",
+    "",
+    `End your final message with exactly one fenced block tagged ${REPORT_FENCE}. verdict is confirmed, not-confirmed or regressed; give at least one reason unless it is confirmed. List what you checked in checks, each claim above with its text unchanged; status is verified, refuted or unverifiable, with what you saw as evidence.`,
+    "Write each reason as one plain sentence the owner can read without the code.",
+    "",
+    jsonBlock(REPORT_FENCE, {
+      role: "post-release",
+      verdict: "confirmed",
+      reasons: ["What production shows now, in one sentence"],
+      checks: candidate.claims.map((c) => ({
+        text: dataText(c.text, 500),
+        status: "verified",
+        evidence: "What you saw",
+      })),
+    }),
+  );
+  return out.join("\n");
+}
+
 /** The rules a report is refused for, as `reportRules` words them: the
  *  same table the parser refuses by. */
 function refusalLines(role: AgentRole): string[] {
@@ -1096,4 +1273,16 @@ export function buildReminder(
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** The owner's answer to an agent's question: its next prompt, in the
+ *  same round. */
+export function buildAnswerMessage(by: string, note: string): string {
+  return [
+    ...dataBlock(`${dataText(by, 120)} answered your question`, [
+      dataText(note, 2000),
+    ]),
+    "",
+    "This is the same round. Take the answer into account, finish your work, update your findings if the answer changes them, and end with your incident-report block as your brief describes.",
+  ].join("\n");
 }

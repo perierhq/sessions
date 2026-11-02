@@ -22,6 +22,7 @@ import {
   type Provenance,
   type SignalMarker,
   type ToolRef,
+  checkFindingSet,
   claimKey,
   droppedLinesCopy,
   findingSetOf,
@@ -222,7 +223,9 @@ async function applyInOrder(
   // findings as the new round's; a final report still lands on its round.
   if (req.source === "tool" && run.round < (response?.round ?? run.round))
     return refusal(ROUND_OVER);
-  const current = findingSetOf(response, req.role, run.round);
+  const current = run.check
+    ? checkFindingSet(response, run.round)
+    : findingSetOf(response, req.role, run.round);
   if (
     req.onlyIfNoToolSet &&
     current?.source === "tool" &&
@@ -231,7 +234,10 @@ async function applyInOrder(
     return refusal("");
 
   const keepFrom = new Map<string, FindingBlock>();
-  const previous = previousFindingSet(response, req.role, run.round);
+  // A post-release check starts its own page: nothing to carry.
+  const previous = run.check
+    ? undefined
+    : previousFindingSet(response, req.role, run.round);
   for (const block of previous?.blocks ?? []) keepFrom.set(block.id, block);
   for (const block of current?.blocks ?? []) keepFrom.set(block.id, block);
   const nowMs = d.now();
@@ -257,6 +263,7 @@ async function applyInOrder(
   const next: FindingsSet = {
     role: req.role,
     round: run.round,
+    ...(run.check ? { check: run.check } : {}),
     attempt: run.attempt,
     sessionId: req.sessionId,
     source: req.source,
@@ -446,9 +453,39 @@ class Resolver {
       case "timeline":
         return { pending: draft };
       case "claims":
-      case "question":
         return { block: draft };
+      case "question":
+        return { block: await this.questionOptions(draft, note) };
     }
+  }
+
+  /** A question's options: one naming a pull request this incident's
+   *  agents didn't open is left off with a note. */
+  private async questionOptions(
+    draft: Draft<"question">,
+    note: Note,
+  ): Promise<FindingBlock> {
+    if (!draft.options?.length) return draft;
+    const checked = await Promise.all(
+      draft.options.map(async (option) =>
+        option.pr === undefined
+          ? option
+          : resolveRef(
+              { type: "pr", number: option.pr },
+              this.scope,
+              this.refDeps,
+            ),
+      ),
+    );
+    const options = draft.options.filter((option, i) => {
+      const ref = checked[i];
+      if (typeof ref !== "string") return true;
+      note(`option ${i + 1} left off: ${ref}`);
+      return false;
+    });
+    if (options.length) return { ...draft, options };
+    const { options: _options, ...rest } = draft;
+    return rest;
   }
 
   /** Hypothesis evidence and timeline refs; a ref that fails is left off

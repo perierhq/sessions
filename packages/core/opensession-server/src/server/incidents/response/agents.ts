@@ -257,6 +257,8 @@ export async function ensureCoordinatorSession(
 
 export interface SpawnAgentInput {
   role: AgentRole;
+  /** A post-release check: its own session beside the round's verifier. */
+  check?: "post-release";
   round: number;
   attempt: number;
   prompt: string;
@@ -427,7 +429,7 @@ export function createIncidentAgents(
               }
             : {}),
         },
-        `incident:${incident.id}:r${input.round}:${input.role}:a${input.attempt}`,
+        `incident:${incident.id}:r${input.round}:${input.role}${input.check ? `:${input.check}` : ""}:a${input.attempt}`,
         {
           descendantPolicy: (base): AutomationDescendantPolicy => {
             const policy = incidentDescendantPolicy(access, base);

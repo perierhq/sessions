@@ -553,6 +553,8 @@ test("a snapshot whose every check failed asks whether GitHub Actions ran at all
     failingChecks: ["test"],
     actionsBlocked:
       "the job was not started because the spending limit is reached",
+    // The refused runs, which are re-run once Actions works again.
+    blockedRuns: [7],
   });
   expect(asked).toEqual([["acme/web", ["test"]]]);
   // A check still running or passing: the code ran somewhere, nothing asked.

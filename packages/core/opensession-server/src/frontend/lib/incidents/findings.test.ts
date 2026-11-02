@@ -15,6 +15,7 @@ import type {
 import type { Incident } from "../../../shared/incidents";
 import { clockTime } from "../time";
 import {
+  afterReleasePage,
   asksInNext,
   blockSource,
   changedKeys,
@@ -1007,4 +1008,81 @@ test("what changed counts only the blocks the section shows", () => {
   });
   expect(roundChanges(open(r))?.added).toBe(1);
   expect(roundChanges(open(r), { withoutAsks: true })?.added).toBe(0);
+});
+
+test("after release: the check's status, reason and blocks, with what it checked as claims", () => {
+  const checkSet: FindingsSet = {
+    role: "verifier",
+    round: 1,
+    check: "post-release",
+    attempt: 1,
+    sessionId: "os-check",
+    source: "tool",
+    updatedAt: T("13:10"),
+    calls: 1,
+    notes: [],
+    blocks: [
+      {
+        id: "after",
+        kind: "question",
+        size: "full",
+        text: "Is the old 403 gone for good?",
+        wouldAnswer: "A day of clean checks.",
+      },
+    ],
+  };
+  const response: IncidentResponse = {
+    phase: "watching",
+    round: 1,
+    maxRounds: 2,
+    agents: [],
+    actionRuns: [],
+    costUsd: 0,
+    ownerTouched: false,
+    next: { kind: "working", detail: "" },
+    ledger: [],
+    droppedLedger: 0,
+    startedAt: T("12:00"),
+    updatedAt: T("13:12"),
+    findingSets: [checkSet],
+    postRelease: {
+      round: 1,
+      status: "confirmed",
+      at: T("13:12"),
+      after: "Deploy at 13:00 UTC",
+      reasons: ["Searches on api.example.test pass since the release"],
+      checks: [
+        {
+          text: "The app sends its own User-Agent",
+          status: "verified",
+          evidence: "Request log after the release",
+        },
+      ],
+    },
+  };
+  const incident = { response };
+  const view = afterReleasePage(incident);
+  expect(view?.status).toBe("Confirmed in production");
+  expect(view?.tone).toBe("green");
+  expect(view?.reason).toBe(
+    "Searches on api.example.test pass since the release",
+  );
+  expect(view?.page?.byline).toBe(
+    `From the post-release check, ${clockTime(T("13:10"))}`,
+  );
+  expect(view?.page?.items.map((i) => i.key)).toEqual([
+    "check:after",
+    "check:auto-claims",
+  ]);
+  expect(view?.page?.items[1]?.claims).toEqual([
+    {
+      text: "The app sends its own User-Agent",
+      status: "verified",
+      evidence: "Request log after the release",
+    },
+  ]);
+  // The round's own page never shows the check's blocks.
+  expect(findingsPage({ state: "watching", response })).toBeNull();
+  const { postRelease: _postRelease, ...unchecked } = response;
+  expect(afterReleasePage({ response: unchecked })).toBeNull();
 });
