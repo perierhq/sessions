@@ -1147,7 +1147,7 @@ describe("podman disk check", () => {
         "60",
         "/bin/bash",
         "-c",
-        SCRIPT,
+        `ls -A /home/ubuntu/ >/dev/null || { echo "cannot read the home volume" >&2; exit 3; }\n${SCRIPT}`,
       ],
     ]);
     expect(verbs(fake.calls)).not.toContain(`start ${names.workload}`);

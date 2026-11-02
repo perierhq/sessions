@@ -1443,14 +1443,11 @@ export class PodmanProvider implements SandboxProvider {
     if ((await this.run(["image", "exists", image])).exitCode !== 0)
       throw new Error(`the sandbox image ${image} is missing`);
     const timeoutSec = Math.max(1, Math.ceil(opts.timeoutMs / 1000));
+    // A home the check cannot list (a mount or label problem) must fail it:
+    // the script reads a working copy it cannot see as absent.
+    const cmd = `ls -A ${PODMAN_WORKLOAD_HOME}/ >/dev/null || { echo "cannot read the home volume" >&2; exit 3; }\n${script}`;
     const result = await this.run(
-      diskCheckArgs({
-        volume: names.volume,
-        image,
-        cwd,
-        timeoutSec,
-        cmd: script,
-      }),
+      diskCheckArgs({ volume: names.volume, image, cwd, timeoutSec, cmd }),
       { timeoutMs: opts.timeoutMs + 30_000 },
     );
     // 125 and up: podman itself failed (no such volume, a bad mount), not

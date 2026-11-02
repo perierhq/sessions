@@ -1,5 +1,11 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -414,6 +420,29 @@ describe("banking a Sandbox's work before retention destroys it", () => {
       expect(check(work)).toBe("work 0 1 1");
 
       expect(check(join(root, "missing"))).toBe("none");
+
+      // Never "none" when the working copy is there but cannot be read: a
+      // clean verdict destroys the Sandbox.
+      const exit = (cwd: string) =>
+        Bun.spawnSync(["bash", "-c", SANDBOX_WORK_CHECK_SCRIPT], {
+          env: { ...process.env, OS_CWD: cwd },
+        }).exitCode;
+      const locked = join(root, "locked");
+      mkdirSync(locked);
+      chmodSync(locked, 0o000);
+      try {
+        if (process.getuid?.() !== 0) {
+          expect(check(locked)).not.toBe("none");
+          expect(exit(locked)).not.toBe(0);
+        }
+      } finally {
+        chmodSync(locked, 0o755);
+      }
+      const broken = join(root, "broken");
+      mkdirSync(join(broken, ".git"), { recursive: true });
+      writeFileSync(join(broken, ".git", "HEAD"), "not a ref\n");
+      expect(check(broken)).not.toBe("none");
+      expect(exit(broken)).not.toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

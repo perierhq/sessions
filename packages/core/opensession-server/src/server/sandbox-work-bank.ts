@@ -79,11 +79,22 @@ export type SandboxWorkBankDeps = {
  * other local branches not on any remote nor on HEAD>`. `.ports.conf`
  * describes this machine's processes and is never checkpointed, so it is
  * not work; the private seed files are gitignored.
+ *
+ * `none` and `work 0 0 0` let the Sandbox be destroyed, so a working copy
+ * that is there but cannot be read (a directory it cannot enter, a `.git`
+ * git rejects, a failing `git status`) exits non-zero instead.
  */
 export const SANDBOX_WORK_CHECK_SCRIPT = [
-  'cd "$OS_CWD" 2>/dev/null || { echo none; exit 0; }',
-  "git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo none; exit 0; }",
-  "dirty=$(git status --porcelain --untracked-files=normal -- . ':(exclude).ports.conf' | wc -l | tr -d ' ')",
+  'if ! cd "$OS_CWD" 2>/dev/null; then',
+  '  [ -e "$OS_CWD" ] && { echo "cannot enter $OS_CWD" >&2; exit 3; }',
+  "  echo none; exit 0",
+  "fi",
+  "if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then",
+  "  [ -e .git ] && { git rev-parse --is-inside-work-tree 2>&1 | head -n 3 >&2; exit 3; }",
+  "  echo none; exit 0",
+  "fi",
+  "status=$(git status --porcelain --untracked-files=normal -- . ':(exclude).ports.conf') || exit 3",
+  "dirty=$(printf '%s' \"$status\" | grep -c . || true)",
   "ahead=$(git rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)",
   "other=$(git rev-list --count --branches --not --remotes HEAD 2>/dev/null || echo 0)",
   'echo "work $dirty $ahead $other"',
