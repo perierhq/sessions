@@ -96,11 +96,12 @@ export const PODMAN_CHROME_SHA256 = {
 } as const;
 export const PODMAN_CHROME_DIR = "/opt/chrome-headless-shell";
 /** The shared libraries the headless shell links against on Ubuntu 24.04
- *  (from `ldd`; it needs no GTK, Cairo or CUPS), and a font family so
- *  pages render text. */
+ *  (from `ldd` on both builds; the amd64 one also wants the ATK bridge; it
+ *  needs no GTK, Cairo or CUPS), and a font family so pages render text. */
 export const PODMAN_BROWSER_PACKAGES = [
   "libasound2t64",
   "libatk1.0-0t64",
+  "libatk-bridge2.0-0t64",
   "libatspi2.0-0t64",
   "libdbus-1-3",
   "libexpat1",
