@@ -204,6 +204,51 @@ test("needs you offers the top option only", () => {
   ]);
 });
 
+test("needs you with the agent's options offers the agent's first, which the card offers", () => {
+  const prev = inc("investigating", [ev("investigating")]);
+  const response = {
+    next: {
+      kind: "needs-you",
+      reason: "Not proven before release",
+      needsYou: "unproven",
+      options: ["approve", "release-watch", "send-back", "resolve", "close"],
+      agentOptions: [
+        {
+          label: "Yes, merge it",
+          detail: "",
+          action: "merge",
+          decision: "merge",
+          role: "verifier",
+          recommended: true,
+        },
+        {
+          label: "Close it",
+          detail: "",
+          action: "close",
+          decision: "close",
+          role: "verifier",
+        },
+      ],
+    },
+    needsYou: {
+      kind: "unproven",
+      reason: "x",
+      since: iso(NOW),
+      resumePhase: "deciding",
+    },
+  } as IncidentResponse;
+  const planned = planIncidentNotification(
+    step(prev, "needs-you", "sessions", { response }),
+    prev,
+    facts(),
+    NOW,
+  );
+  expect(planned?.event.push?.actions?.[0]).toMatchObject({
+    action: "answer",
+    url: "/incidents/inc-1?intent=merge",
+  });
+});
+
 test("heads-up is quiet and never says down", () => {
   const p = planIncidentNotification(
     inc("heads-up", [ev("heads-up")]),

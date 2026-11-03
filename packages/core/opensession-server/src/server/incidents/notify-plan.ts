@@ -8,10 +8,11 @@
 // (the inbox model turns repeats into replaces); at night only "needs you
 // while fully down" alerts, the rest is held for one alert after the night.
 // Every button opens the incident page, which asks before it acts.
-import type {
-  IncidentResponse,
-  NeedsYouKind,
-  OwnerDecision,
+import {
+  type IncidentResponse,
+  type NeedsYouKind,
+  needsYouCardDecisions,
+  type OwnerDecision,
 } from "../../shared/incident-response";
 import type {
   Incident,
@@ -231,7 +232,9 @@ function needsYouPushBody(incident: Incident): string {
 function topOption(incident: Incident): OwnerDecision | undefined {
   const next = incident.response?.next;
   if (next?.kind !== "needs-you") return undefined;
-  return next.options.find((option) => option !== "stop");
+  // What the card offers, the agent's own options first: anything else the
+  // server refuses while the card is up.
+  return needsYouCardDecisions(next).find((option) => option !== "stop");
 }
 
 function pushHints(
