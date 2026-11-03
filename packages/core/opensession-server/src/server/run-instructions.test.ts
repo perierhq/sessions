@@ -139,6 +139,7 @@ describe("buildRunInstructions", () => {
       "## Waiting",
       "## Tools",
       "## Background work",
+      "## Browser",
       "## Portals",
       "## Media",
     ]);
@@ -207,7 +208,11 @@ describe("buildRunInstructions", () => {
     // `pkill -f`, which on a shared host also matches other sessions'
     // processes. Linking child sessions in a report adds ~100: a PR summary
     // without them left the person hunting for the session that owns each PR.
-    expect(prompt.length).toBeLessThan(5_450);
+    // "Browser" adds ~110: agents drove agent-browser from whatever they
+    // remembered of it; the shipped `browser` skill carries the rest. Its
+    // connector line adds ~130: a site is slower and less exact than the
+    // MCP server or API the run already holds for the same service.
+    expect(prompt.length).toBeLessThan(5_700);
   });
 
   test("tells a code run it may start dev servers in its workspace", () => {
@@ -278,6 +283,30 @@ describe("buildRunInstructions", () => {
       buildRunInstructions({ isAsk: false, hasSession: false }),
     ])
       expect(prompt).not.toContain("## Background work");
+  });
+
+  test("sends a run to the browser skill before its first agent-browser call", () => {
+    const line =
+      "Before your first `agent-browser` command, read the `browser` skill.";
+    for (const prompt of [
+      buildRunInstructions({ isAsk: false, hasSession: true }),
+      buildRunInstructions({ isAsk: false, hasSession: true, sandboxed: true }),
+      buildRunInstructions({ isAsk: false, hasSession: false }),
+    ]) {
+      expect(prompt).toContain("## Browser");
+      expect(prompt).toContain(line);
+    }
+    // Ask mode is read-only and cannot drive a browser.
+    expect(
+      buildRunInstructions({ isAsk: true, hasSession: true }),
+    ).not.toContain("## Browser");
+  });
+
+  test("sends a run to a connector before a website for the same service", () => {
+    const prompt = buildRunInstructions({ isAsk: false, hasSession: true });
+    expect(prompt).toContain(
+      "When a connected MCP server, integration tool or API covers a service, use it instead of driving that service's website.",
+    );
   });
 
   test("asks for visual proof by default only where walkthroughs are mounted", () => {

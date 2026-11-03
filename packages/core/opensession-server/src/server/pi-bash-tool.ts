@@ -19,6 +19,7 @@ import {
 } from "./systemd-scopes";
 import { sessionUnitDescription } from "./session-ownership";
 import { runRemoteCommand, type RemoteWorkspace } from "./remote-workspace";
+import { BROWSER_HANDOFF_USAGE, parseBrowserHandoff } from "./browser-handoff";
 
 // ── Custom bash tool (the env-hygiene invariant) ─────────────────────────────
 
@@ -260,6 +261,10 @@ export function makePiBashTool(input: {
    *  incident agent in a host worktree, incidents/response/host-agents.ts).
    *  Ignored for a remote workspace. */
   runAs?: string;
+  /** Answers `agent-browser handoff "<what>"` (browser-handoff.ts): raises
+   *  the run's question card and returns the reply. Absent when nobody can
+   *  answer this run. */
+  handoff?: (what: string) => Promise<string>;
   __testHooks?: PiBashTestHooks;
 }): ToolDefinition<any, any, any> {
   const hooks = input.__testHooks ?? {};
@@ -316,6 +321,18 @@ export function makePiBashTool(input: {
     async execute(_toolCallId, params, signal, onUpdate) {
       const command = String((params as { command?: unknown })?.command ?? "");
       if (!command.trim()) throw new Error("Empty command");
+      // A browser hand-off is a question for the person, not a command:
+      // answered here, before any policy screen, since nothing runs.
+      const handoff = parseBrowserHandoff(command);
+      if (handoff) {
+        const text = !handoff.what
+          ? BROWSER_HANDOFF_USAGE
+          : input.handoff
+            ? await input.handoff(handoff.what)
+            : "Nobody can answer a hand-off in this run. Don't retry the step or " +
+              "work around it. Say in your reply what the person needs to do.";
+        return { content: [{ type: "text", text }], details: {} };
+      }
       if (input.askReadOnly) {
         const reason = askBashDenyReason(command, {
           workspace: input.cwd,

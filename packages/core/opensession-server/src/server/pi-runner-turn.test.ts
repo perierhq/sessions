@@ -217,6 +217,8 @@ function scriptedSdk(script: Script) {
           log.push(`steer:${text}`);
           fake.queue.push(text);
           fake.pendingMessageCount = fake.queue.length;
+          // Pi announces every change to its steering queue.
+          listener({ type: "queue_update", steering: [...fake.queue] });
         },
         clearQueue: () => {
           log.push("clearQueue");
@@ -1216,6 +1218,85 @@ describe("runPi turn characterization (scripted fake SDK)", () => {
   });
 
   // ── 14. Cancel before the session exists ─────────────────────────────────
+  // ── Stall watchdog ───────────────────────────────────────────────────────
+  const withStallMinutes = async (
+    minutes: { steer: number; stop: number },
+    body: () => Promise<void>,
+  ) => {
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        enabled: true,
+        stallSteerMinutes: minutes.steer,
+        stallStopMinutes: minutes.stop,
+      }),
+    );
+    try {
+      await body();
+    } finally {
+      writeFileSync(cfgPath, JSON.stringify({ enabled: true }));
+    }
+  };
+
+  test("a turn with no events is steered once, then stopped with a clear reason", async () => {
+    await withStallMinutes({ steer: 0.001, stop: 0.001 }, async () => {
+      const turn = await runTurn({
+        onPrompt: async (ctx) => {
+          ctx.emit({ type: "message_start", message: { role: "assistant" } });
+          // The provider goes quiet: no deltas, no end.
+          await waitFor(
+            () => ctx.log.some((line) => line.startsWith("steer:")),
+            "the stall steer",
+          );
+          await ctx.untilAborted();
+          ctx.emit(assistantEnd([], { stopReason: "aborted" }));
+        },
+      });
+      // Its own nudge (and pi's queue_update for it) is not progress: one
+      // nudge, then the stop.
+      expect(turn.log.filter((line) => line.startsWith("steer:"))).toHaveLength(
+        1,
+      );
+      const steer = turn.log.find((line) => line.startsWith("steer:"))!;
+      // Fenced like every other injection, so it never reads as the person.
+      expect(steer).toContain("<opensession:context");
+      expect(steer).toContain("no reply text and no tool call");
+      const terminal = turn.events.at(-1)!;
+      expect(terminal.type).toBe("error");
+      expect(String(terminal.content)).toContain("made no progress");
+      expect(terminal.usageLimitExhausted).toBeUndefined();
+      // The undelivered nudge does not start another engine run.
+      expect(turn.log).not.toContain("agent.continue");
+      expect(isPiSessionBusy(key)).toBe(false);
+    });
+  });
+
+  test("a quiet tool call is never steered or stopped", async () => {
+    await withStallMinutes({ steer: 0.001, stop: 0.001 }, async () => {
+      const turn = await runTurn({
+        onPrompt: async (ctx) => {
+          ctx.emit({
+            type: "tool_execution_start",
+            toolCallId: "t1",
+            toolName: "bash",
+            args: { command: "sleep 1" },
+          });
+          await Bun.sleep(300);
+          ctx.emit({
+            type: "tool_execution_end",
+            toolCallId: "t1",
+            result: { content: [{ type: "text", text: "ok" }] },
+          });
+          ctx.emit(assistantEnd([{ type: "text", text: "done" }]));
+        },
+        lastAssistantText: () => "done",
+      });
+      expect(turn.log.some((line) => line.startsWith("steer:"))).toBe(false);
+      expect(turn.log).not.toContain("abort");
+      expect(turn.events.at(-1)!.type).toBe("done");
+    });
+  });
+
   test("a cancel while createAgentSession is pending never prompts and ends quietly", async () => {
     const turn = await runTurn({
       beforeCreate: () => {

@@ -263,6 +263,19 @@ export function buildRunInstructions(input: {
         "also matches other sessions' processes.",
     );
   }
+  // Runs drove agent-browser from whatever they remembered of it: stale refs,
+  // fixed sleeps, whole-page snapshots, retries against bot walls. The
+  // shipped `browser` skill (.agents/skills/browser) carries the how-to; the
+  // prompt only says when to read it, so the prefix stays small. The
+  // connector line stands on its own: runs opened a service's website for
+  // work its MCP server or API, already in the run, does faster and exactly.
+  if (!input.isAsk) {
+    parts.push(
+      "## Browser\nBefore your first `agent-browser` command, read the `browser` skill. " +
+        "When a connected MCP server, integration tool or API covers a service, use it " +
+        "instead of driving that service's website.",
+    );
+  }
   if (!input.isAsk && inproc["opensession-portals"]) {
     parts.push(
       "## Portals\nStart a Portal (`start_declared_portal` for one the repository declares, else " +

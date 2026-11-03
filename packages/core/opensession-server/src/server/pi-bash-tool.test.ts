@@ -310,3 +310,66 @@ describe("org command policy on unattended runs", () => {
     expect(h.spawned).toHaveLength(0);
   });
 });
+
+describe("browser hand-off", () => {
+  const tool = (
+    h: ReturnType<typeof hooks>,
+    handoff?: (what: string) => Promise<string>,
+  ) =>
+    makePiBashTool({
+      cwd: "/tmp",
+      env: { PATH: "/usr/bin:/bin" },
+      gated: false,
+      unattended: false,
+      ...(handoff ? { handoff } : {}),
+      __testHooks: h.hooks,
+    });
+
+  test("asks the person and returns their reply without running a shell", async () => {
+    const h = hooks();
+    const asked: string[] = [];
+    const result = await run(
+      tool(h, async (what) => {
+        asked.push(what);
+        return "The person says it is done.";
+      }),
+      `agent-browser handoff "Sign in to acme.example.test"`,
+    );
+    expect(asked).toEqual(["Sign in to acme.example.test"]);
+    expect(result.content[0]!.text).toBe("The person says it is done.");
+    expect(h.spawned).toHaveLength(0);
+  });
+
+  test("says how to use it when the request is missing", async () => {
+    const h = hooks();
+    let asked = 0;
+    const result = await run(
+      tool(h, async () => {
+        asked++;
+        return "";
+      }),
+      "agent-browser handoff",
+    );
+    expect(result.content[0]!.text).toContain(
+      'agent-browser handoff "<what the person should do>"',
+    );
+    expect(asked).toBe(0);
+    expect(h.spawned).toHaveLength(0);
+  });
+
+  test("a run nobody can answer says so instead of waiting", async () => {
+    const h = hooks();
+    const result = await run(tool(h), `agent-browser handoff "Sign in"`);
+    expect(result.content[0]!.text).toContain("Nobody can answer");
+    expect(h.spawned).toHaveLength(0);
+  });
+
+  test("a hand-off inside a longer command reaches the shell", async () => {
+    const h = hooks();
+    await run(
+      tool(h, async () => "unused"),
+      `agent-browser handoff "x" && agent-browser snapshot`,
+    );
+    expect(h.spawned).toHaveLength(1);
+  });
+});

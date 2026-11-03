@@ -30,6 +30,9 @@ export interface PiPromptDriveInput {
   images: ImageInput[] | undefined;
   unsubscribe: () => void;
   auditBase: Record<string, unknown>;
+  /** The stall watchdog stopped the turn (pi-stall-watchdog.ts): settle
+   *  as it is, with no steer drain and no empty-finish retry. */
+  stopped?: () => boolean;
 }
 
 /**
@@ -56,6 +59,7 @@ export async function* drivePiPrompt(
     images,
     unsubscribe,
     auditBase,
+    stopped = () => false,
   } = input;
   // prompt() resolves after the full accepted run (steers + retries
   // included) — the authoritative end; pre-flight failures reject. A cancel
@@ -112,6 +116,7 @@ export async function* drivePiPrompt(
       if (
         promptOutcome.ok &&
         !signal.aborted &&
+        !stopped() &&
         session.pendingMessageCount > 0 &&
         steerDrains < 2
       ) {
@@ -128,6 +133,7 @@ export async function* drivePiPrompt(
       if (
         promptOutcome.ok &&
         !signal.aborted &&
+        !stopped() &&
         emptyFinishRetries < 1 &&
         outcome.lastStopReason === "stop" &&
         outcome.lastAssistantRenderableBlocks === 0

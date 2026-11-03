@@ -8,6 +8,7 @@ import type { MergeGuard, PrivateTermsGuard } from "./command-policy";
 import type { RunAgentOpts } from "./agent-runner";
 import type { PiSdk } from "./pi-runtime-binding";
 import type { PiMcpBridge } from "./pi-mcp-bridge";
+import { makeBrowserHandoff } from "./browser-handoff";
 import {
   splitMcpMigrationBoundary,
   type createMcpRuntime,
@@ -160,7 +161,12 @@ export function buildPiToolset(input: {
   // command saves there (screenshots) are readable by the file tools too.
   const guardedOps = remote
     ? makeRemoteToolOps(remote, hostSkillRoots())
-    : makeGuardedToolOps(cwd, opts.scratchDir ? [opts.scratchDir] : []);
+    : makeGuardedToolOps(
+        cwd,
+        opts.scratchDir ? [opts.scratchDir] : [],
+        // A support session loads its project's skills only.
+        opts.projectSkillsOnly ? [] : hostSkillRoots(),
+      );
   const commandEnv = remote
     ? remoteCommandEnv(
         bashEnv,
@@ -237,6 +243,11 @@ export function buildPiToolset(input: {
           ...(opts.bashRunAs && !remote ? { runAs: opts.bashRunAs } : {}),
           mergeGuard,
           privateTermsGuard,
+          // The run's own question card answers a browser hand-off; a run
+          // with no ask handler has nobody to answer it.
+          ...(opts.onAskUser
+            ? { handoff: makeBrowserHandoff(opts.onAskUser) }
+            : {}),
           runSignal: abort.signal,
           onAudit: (event) =>
             audit({

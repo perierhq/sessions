@@ -292,6 +292,18 @@ describe("remote commands", () => {
     });
     expect(parseRemoteCommandOutput("killed", 10)).toBeNull();
   });
+
+  // The wrapper counts bytes (wc -c); a check mark is three of them and one
+  // character. Whole output must not read as truncated.
+  test("multi-byte output that fits is not reported as truncated", () => {
+    const text = "✓ Example Domain\n";
+    const parsed = parseRemoteCommandOutput(
+      `${text}\n__OPENSESSION_EXIT__ 0 ${Buffer.byteLength(text)} 0\n`,
+      40_000,
+    );
+    expect(parsed?.output).toBe(`${text}`);
+    expect(parsed?.droppedChars).toBe(0);
+  });
 });
 
 describe("remote command environment", () => {

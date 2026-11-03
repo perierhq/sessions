@@ -130,6 +130,10 @@ export function makeGuardedToolOps(
   /** More directories the tools may use: the session scratch dir, which the
    *  runner exports to bash as $OPENSESSION_SCRATCH and $TMPDIR. */
   extraRoots: readonly string[] = [],
+  /** Directories the read tool may also open, never write: the server's
+   *  shipped and instance skills (hostSkillRoots), which a run is told to
+   *  read and which live outside its workspace. */
+  readOnlyRoots: readonly string[] = [],
 ) {
   let realRoot: string;
   try {
@@ -137,18 +141,23 @@ export function makeGuardedToolOps(
   } catch {
     realRoot = resolve(cwd);
   }
-  const realExtraRoots = extraRoots.flatMap((root) => {
-    // A root that is itself a symlink could point anywhere; only a real
-    // directory counts. It is resolved once, here, before any command runs.
-    try {
-      if (!lstatSync(root).isDirectory()) return [];
-      return [realpathSync(root)];
-    } catch {
-      return [];
-    }
-  });
+  // A root that is itself a symlink could point anywhere; only a real
+  // directory counts. It is resolved once, here, before any command runs.
+  const realDirs = (roots: readonly string[]) =>
+    roots.flatMap((root) => {
+      try {
+        if (!lstatSync(root).isDirectory()) return [];
+        return [realpathSync(root)];
+      } catch {
+        return [];
+      }
+    });
+  const realExtraRoots = realDirs(extraRoots);
+  const realReadRoots = [...realExtraRoots, ...realDirs(readOnlyRoots)];
   const guard = (p: string) =>
     assertContainedPiPath(p, realRoot, realExtraRoots);
+  const readGuard = (p: string) =>
+    assertContainedPiPath(p, realRoot, realReadRoots);
   const exists = async (p: string) => {
     guard(p);
     try {
@@ -162,15 +171,15 @@ export function makeGuardedToolOps(
     guard,
     read: {
       readFile: async (p: string) => {
-        guard(p);
+        readGuard(p);
         return fsReadFile(p);
       },
       access: async (p: string) => {
-        guard(p);
+        readGuard(p);
         await fsAccess(p, fsConstants.R_OK);
       },
       detectImageMimeType: async (p: string) => {
-        guard(p);
+        readGuard(p);
         return sniffImageMime(p);
       },
     },

@@ -2595,6 +2595,32 @@ describe("local-tool path containment", () => {
     await expect(ops.edit.access("/etc/hosts")).rejects.toThrow(/outside/);
   });
 
+  // The run instructions send a run to the browser skill; on this machine
+  // the shipped and instance skills live outside its workspace.
+  test("read-only roots can be read, never written", async () => {
+    const skills = mkdtempSync(join(tmpdir(), "pi-guard-skills-"));
+    try {
+      mkdirSync(join(skills, "browser"));
+      writeFileSync(join(skills, "browser", "SKILL.md"), "skill body");
+      const ops = makeGuardedToolOps(ws, [], [skills]);
+      expect(
+        (
+          await ops.read.readFile(join(skills, "browser", "SKILL.md"))
+        ).toString(),
+      ).toBe("skill body");
+      await ops.read.access(join(skills, "browser", "SKILL.md"));
+      await expect(
+        ops.write.writeFile(join(skills, "browser", "SKILL.md"), "x"),
+      ).rejects.toThrow(/outside/);
+      await expect(
+        ops.edit.writeFile(join(skills, "browser", "SKILL.md"), "x"),
+      ).rejects.toThrow(/outside/);
+      await expect(ops.read.readFile("/etc/passwd")).rejects.toThrow(/outside/);
+    } finally {
+      rmSync(skills, { recursive: true, force: true });
+    }
+  });
+
   test("the session scratch dir is a second root; elsewhere stays refused", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "pi-guard-scratch-"));
     try {

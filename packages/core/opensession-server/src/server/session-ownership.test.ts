@@ -22,6 +22,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   __setOwnershipRuntimeForTest,
+  AGENT_BROWSER_MAX_OUTPUT,
+  agentBrowserShimScript,
   CONTAINER_PS_FORMAT,
   containersMemory,
   containerShimDir,
@@ -814,7 +816,7 @@ describe("agent-browser shim", () => {
     const file = join(bin, "agent-browser");
     writeFileSync(
       file,
-      '#!/bin/sh\nprintf "%s\\n" "$@" "session=$AGENT_BROWSER_SESSION" "tmp=$TMPDIR" "idle=$AGENT_BROWSER_IDLE_TIMEOUT_MS" "shots=$AGENT_BROWSER_SCREENSHOT_DIR"\n',
+      '#!/bin/sh\nprintf "%s\\n" "$@" "session=$AGENT_BROWSER_SESSION" "tmp=$TMPDIR" "idle=$AGENT_BROWSER_IDLE_TIMEOUT_MS" "shots=$AGENT_BROWSER_SCREENSHOT_DIR" "boundaries=$AGENT_BROWSER_CONTENT_BOUNDARIES" "max=$AGENT_BROWSER_MAX_OUTPUT" "downloads=$AGENT_BROWSER_DOWNLOAD_PATH"\n',
     );
     chmodSync(file, 0o755);
   }
@@ -882,6 +884,35 @@ describe("agent-browser shim", () => {
     expect(a).toContain(`shots=${scratch}`);
   });
 
+  test("marks page content, caps it below the bash tool's cap, and keeps downloads in scratch", async () => {
+    fakeAgentBrowser();
+    const scratch = "/home/acme/.opensession/session-scratch/os-1";
+    const out = await runBrowser(["snapshot"], {
+      ...sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
+      OPENSESSION_SCRATCH: scratch,
+    });
+    expect(out).toContain("boundaries=1");
+    // Under the bash tool's 40k tail cap, so a big snapshot loses its tail
+    // with agent-browser's own note instead of its head.
+    expect(out).toContain(`max=${AGENT_BROWSER_MAX_OUTPUT}`);
+    expect(AGENT_BROWSER_MAX_OUTPUT).toBeLessThan(40_000);
+    expect(out).toContain(`downloads=${scratch}`);
+  });
+
+  test("keeps the caller's own output and download settings", async () => {
+    fakeAgentBrowser();
+    const out = await runBrowser(["snapshot"], {
+      ...sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
+      OPENSESSION_SCRATCH: "/srv/acme-scratch",
+      AGENT_BROWSER_CONTENT_BOUNDARIES: "0",
+      AGENT_BROWSER_MAX_OUTPUT: "500",
+      AGENT_BROWSER_DOWNLOAD_PATH: "/srv/acme-downloads",
+    });
+    expect(out).toContain("boundaries=0");
+    expect(out).toContain("max=500");
+    expect(out).toContain("downloads=/srv/acme-downloads");
+  });
+
   test("keeps the caller's own session and idle timeout", async () => {
     fakeAgentBrowser();
     const env = {
@@ -895,6 +926,174 @@ describe("agent-browser shim", () => {
     expect(out).toContain("session=mine");
     expect(out).toContain("idle=5000");
     expect(out).toContain("shots=/srv/acme-shots");
+  });
+
+  // The bash tool answers `agent-browser handoff "<what>"` itself; a
+  // hand-off that reaches the shim was inside a longer command or a script.
+  test("a hand-off that reaches the shim says how to run it", async () => {
+    fakeAgentBrowser();
+    const proc = Bun.spawn(
+      [join(containerShimDir(), "agent-browser"), "handoff", "Sign in"],
+      {
+        env: sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    expect(await proc.exited).toBe(2);
+    expect(await new Response(proc.stdout).text()).toBe("");
+    expect(await new Response(proc.stderr).text()).toContain(
+      'agent-browser handoff "<what the person should do>"',
+    );
+  });
+
+  describe("human-check hint", () => {
+    /** A fake agent-browser whose `eval` answers like the probe on a page
+     *  with (or without) a bot wall, and whose other commands exit with
+     *  FAKE_EXIT. Every call is logged to FAKE_LOG. */
+    function fakeWithProbe(): string {
+      const log = join(bin, "calls.log");
+      const file = join(bin, "agent-browser");
+      writeFileSync(
+        file,
+        [
+          "#!/bin/sh",
+          'printf "%s %s\\n" "$1" "$#" >> "$FAKE_LOG"',
+          'if [ "$1" = eval ]; then',
+          '  [ -n "${FAKE_HUMAN_CHECK:-}" ] && printf \'"opensession-human-check:%s"\\n\' "$FAKE_HUMAN_CHECK"',
+          "  exit 0",
+          "fi",
+          'echo "did $1"',
+          'exit "${FAKE_EXIT:-0}"',
+          "",
+        ].join("\n"),
+      );
+      chmodSync(file, 0o755);
+      return log;
+    }
+
+    async function browse(
+      args: string[],
+      extra: Record<string, string> = {},
+    ): Promise<{ code: number; out: string; err: string; calls: string[] }> {
+      const log = fakeWithProbe();
+      const proc = Bun.spawn(
+        [join(containerShimDir(), "agent-browser"), ...args],
+        {
+          env: {
+            ...sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
+            FAKE_LOG: log,
+            ...extra,
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const code = await proc.exited;
+      return {
+        code,
+        out: await new Response(proc.stdout).text(),
+        err: await new Response(proc.stderr).text(),
+        calls: readFileSync(log, "utf8").trim().split("\n"),
+      };
+    }
+
+    test("after a navigation onto a bot wall, tells the agent to hand off", async () => {
+      for (const command of [
+        ["open", "https://example.test"],
+        ["click", "@e3"],
+        ["reload"],
+      ]) {
+        const result = await browse(command, {
+          FAKE_HUMAN_CHECK: "turnstile",
+        });
+        expect(result.code).toBe(0);
+        expect(result.out).toBe(`did ${command[0]}\n`);
+        expect(result.calls).toHaveLength(2);
+        // The probe goes to this session's browser as one argument.
+        expect(result.calls[1]).toBe("eval 2");
+        expect(result.err).toContain("CAPTCHA or bot check (turnstile)");
+        expect(result.err).toContain("agent-browser handoff");
+        rmSync(join(bin, "calls.log"), { force: true });
+      }
+    });
+
+    test("stays quiet on an ordinary page", async () => {
+      const result = await browse(["open", "https://example.test"]);
+      expect(result.code).toBe(0);
+      expect(result.calls).toHaveLength(2);
+      expect(result.err).toBe("");
+    });
+
+    test("probes only after a navigation that worked, in this session's browser", async () => {
+      for (const [args, extra] of [
+        [["snapshot", "-i"], {}],
+        [["get", "title"], {}],
+        [["open", "https://example.test", "--json"], {}],
+        [["--session", "other", "open", "https://example.test"], {}],
+        [["open", "https://example.test"], { AGENT_BROWSER_JSON: "1" }],
+        [["open", "https://example.test"], { FAKE_EXIT: "1" }],
+      ] as const) {
+        const result = await browse([...args], {
+          FAKE_HUMAN_CHECK: "recaptcha",
+          ...extra,
+        });
+        expect(result.calls).toHaveLength(1);
+        expect(result.err).toBe("");
+        expect(result.code).toBe(extra.FAKE_EXIT === "1" ? 1 : 0);
+        rmSync(join(bin, "calls.log"), { force: true });
+      }
+    });
+
+    test("finds the subcommand behind global flags", async () => {
+      const result = await browse(
+        ["--max-output", "500", "--headed", "open", "https://example.test"],
+        { FAKE_HUMAN_CHECK: "recaptcha" },
+      );
+      expect(result.calls).toHaveLength(2);
+      expect(result.err).toContain("(recaptcha)");
+    });
+  });
+
+  // The Podman image keeps the real binary off PATH and names it instead
+  // (podman-image.ts); the rest of the shim is the host's.
+  test("an image shim runs a fixed binary, or says it is missing", async () => {
+    fakeAgentBrowser();
+    const shim = join(bin, "image-shim");
+    writeFileSync(
+      shim,
+      agentBrowserShimScript({ real: join(bin, "agent-browser") }),
+    );
+    chmodSync(shim, 0o755);
+    const scratch = "/home/ubuntu/.opensession/session-scratch/os-1";
+    const proc = Bun.spawn([shim, "get", "url"], {
+      env: {
+        PATH: "/usr/bin:/bin",
+        OPENSESSION_SESSION_ID: "os-1",
+        OPENSESSION_SCRATCH: scratch,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await proc.exited).toBe(0);
+    const out = (await new Response(proc.stdout).text()).trim().split("\n");
+    expect(out.slice(0, 2)).toEqual(["get", "url"]);
+    expect(out.find((line) => line.startsWith("session="))).toMatch(
+      /^session=os-[0-9]+$/,
+    );
+    expect(out).toContain(`downloads=${scratch}`);
+    const gone = join(bin, "gone-shim");
+    writeFileSync(gone, agentBrowserShimScript({ real: join(bin, "nope") }));
+    chmodSync(gone, 0o755);
+    const missing = Bun.spawn([gone, "open"], {
+      env: { PATH: "/usr/bin:/bin" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await missing.exited).toBe(127);
+    expect(await new Response(missing.stderr).text()).toContain(
+      "agent-browser: command not found",
+    );
   });
 
   test("outside a session it reaches agent-browser unchanged", async () => {
@@ -914,6 +1113,9 @@ describe("agent-browser shim", () => {
       "tmp=/var/acme-tmp",
       "idle=",
       "shots=",
+      "boundaries=",
+      "max=",
+      "downloads=",
     ]);
   });
 });
