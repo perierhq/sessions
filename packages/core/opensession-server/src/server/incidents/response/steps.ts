@@ -82,6 +82,23 @@ export interface ResponseView {
    *  release pull requests the PR cache knows (release-please and the
    *  like), with the time each was last updated. */
   releasePrs?: ReleasePr[];
+  /** Only while the incident waits on its owner: its agents' pull
+   *  requests (any round's) as the PR cache has them, the ones it doesn't
+   *  know left out. */
+  prs?: KnownPr[];
+}
+
+/** One of the incident's pull requests as the PR cache has it. */
+export interface KnownPr {
+  url: string;
+  number: number;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  /** When GitHub last changed it; for a merged pull request, its merge
+   *  (a later comment only moves it later). */
+  updatedAt: string;
+  headSha?: string;
+  /** The round whose agent opened it. */
+  round: number;
 }
 
 /** A release pull request of the project, as the PR cache has it. */

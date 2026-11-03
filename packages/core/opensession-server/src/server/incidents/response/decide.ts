@@ -41,8 +41,9 @@ import {
 } from "../../../shared/incidents";
 import { recoveriesFor } from "../rules";
 import { KNOWLEDGE_GLOB, changeFacts, globMatch } from "./facts";
-import { assessAutoMerge } from "./merge";
+import { assessAutoMerge, parsePrUrl } from "./merge";
 import { agentOptionsFor, handReleaseOpen } from "./options";
+import { movedPrs } from "./outside";
 import {
   baseRateWatchMs,
   failingParts,
@@ -868,6 +869,101 @@ function staleWaiting(view: ResponseView): ResponseStep | undefined {
   };
 }
 
+/**
+ * The incident's own pull request (any round's) merged outside Sessions
+ * while the card waited on the owner: what the card said about it (its
+ * checks, the verifier's doubt) is no longer the question, so the card
+ * goes and the release watch takes over, as after "I'll release it
+ * myself": the release when Sessions can see one, then the base-rate
+ * watch and the post-release check. No verified head is needed: the
+ * owner already shipped it. One closed without merging leaves the card.
+ */
+function movedOutside(view: ResponseView): ResponseStep | undefined {
+  const { incident } = view;
+  const r = incident.response;
+  const ny = r?.needsYou;
+  if (!r || !ny || !view.prs) return undefined;
+  const { merged, closed } = movedPrs(incident, view.prs);
+  const settled = [
+    ...(r.settledPrs ?? []),
+    ...merged.slice(0, 1).map((p) => p.url),
+    ...closed.map((p) => p.url),
+  ];
+  const pr = merged[0];
+  if (pr) {
+    const c = r.candidate;
+    const same = !!c && (c.prUrl ?? c.pr?.url) === pr.url;
+    return {
+      step: "transition",
+      to: "deploying",
+      phase: "deploying",
+      detail: `Merged outside Sessions: #${pr.number}`,
+      log: "merge",
+      patch: {
+        handRelease: {
+          by: incident.owner,
+          at: pr.updatedAt,
+          prUrl: pr.url,
+          number: pr.number,
+        },
+        merge: {
+          ghRepo: parsePrUrl(pr.url)?.ghRepo ?? c?.pr?.ghRepo ?? "",
+          number: pr.number,
+          sha: pr.headSha ?? (same ? (c?.pr?.headSha ?? "") : ""),
+          status: "merged",
+          method: "outside",
+          at: pr.updatedAt,
+        },
+        // The fix that went out is this pull request; another round's
+        // claims are not its.
+        ...(c
+          ? {
+              candidate: same
+                ? {
+                    ...c,
+                    ...(c.pr
+                      ? { pr: { ...c.pr, state: "MERGED" as const } }
+                      : {}),
+                  }
+                : { ...c, prUrl: pr.url, pr: undefined, claims: [] },
+            }
+          : {}),
+        settledPrs: settled,
+        release: undefined,
+        watch: undefined,
+        watchFailures: undefined,
+        veto: undefined,
+        mergingSince: undefined,
+      },
+    };
+  }
+  if (!closed.length) return undefined;
+  const gone = new Set(closed.map((p) => p.url));
+  const numbers = closed.map((p) => `#${p.number}`).join(", ");
+  const prs = (ny.prs ?? []).filter((p) => !gone.has(p.url));
+  const { prs: _prs, ...rest } = ny;
+  const c = r.candidate;
+  const candidateClosed = !!c?.pr && gone.has(c.pr.url);
+  return {
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail: `Closed without being merged: ${numbers}`,
+    log: "merge",
+    patch: {
+      needsYou: {
+        ...rest,
+        reason: `${ny.reason.replace(/\.$/, "")}. ${closed.length === 1 ? `PR ${numbers} was` : `PRs ${numbers} were`} closed without being merged.`,
+        ...(prs.length ? { prs } : {}),
+      },
+      ...(candidateClosed
+        ? { candidate: { ...c!, pr: { ...c!.pr!, state: "CLOSED" as const } } }
+        : {}),
+      settledPrs: settled,
+    },
+  };
+}
+
 function guards(view: ResponseView): ResponseStep | undefined {
   const { incident, settings } = view;
   const r = incident.response;
@@ -975,6 +1071,7 @@ function guards(view: ResponseView): ResponseStep | undefined {
         patch: { needsYou: undefined },
       };
     return (
+      movedOutside(view) ??
       actionsDownWait(view) ??
       actionsBack(view) ??
       setupChanged(view) ??

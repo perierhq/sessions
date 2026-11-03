@@ -810,6 +810,10 @@ export interface IncidentResponse {
     number: number;
     merger?: "sessions";
   };
+  /** Pull requests of this incident (their URLs) that were merged or
+   *  closed outside Sessions and that it already acted on, so a later card
+   *  doesn't act on them again. */
+  settledPrs?: string[];
   /** The owner's answer to an agent's question, on its way to that
    *  agent's session as its next prompt (no new round). */
   answer?: {

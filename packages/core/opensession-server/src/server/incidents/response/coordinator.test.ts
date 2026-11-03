@@ -4028,6 +4028,65 @@ test("I'll release it myself: a pull request closed without merging comes back t
   });
 });
 
+test("a pull request merged outside Sessions while the card waits goes to the release watch", async () => {
+  const w = await world();
+  await toUnproven(w);
+  __setCoordinatorDepsForTest(w.deps);
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+  w.clock += 60_000;
+  const mergedAt = new Date(w.clock).toISOString();
+  w.deps.pullRequest = (_project, url) =>
+    url.endsWith("/12")
+      ? { state: "MERGED", updatedAt: mergedAt, headSha: "abc1234" }
+      : undefined;
+  w.deps.prState = () => "MERGED";
+  expect(await runResponseTick(w.clock, w.deps)).toContain(w.incident.id);
+  await __waitForCoordinatorForTest();
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("watching");
+  expect(i?.response?.needsYou).toBeUndefined();
+  expect(i?.response?.merge).toMatchObject({
+    number: 12,
+    status: "merged",
+    method: "outside",
+    at: mergedAt,
+  });
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      "Merged outside Sessions: #12",
+      "Sessions can't see acme's releases, so the watch starts at the merge of PR #12",
+    ]),
+  );
+  // Sessions merged and deployed nothing.
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+});
+
+test("a pull request closed without merging while the card waits leaves the card", async () => {
+  const w = await world();
+  await toUnproven(w);
+  w.clock += 60_000;
+  w.deps.pullRequest = (_project, url) =>
+    url.endsWith("/12")
+      ? { state: "CLOSED", updatedAt: new Date(w.clock).toISOString() }
+      : undefined;
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.needsYou?.prs).toBeUndefined();
+  expect(i?.response?.needsYou?.reason).toEndWith(
+    "PR #12 was closed without being merged.",
+  );
+  expect(i?.response?.next).toMatchObject({
+    options: expect.not.arrayContaining(["release-watch", "approve"]),
+  });
+  expect(i?.response?.ledger.at(-1)?.detail).toBe(
+    "Closed without being merged: #12",
+  );
+  __setCoordinatorDepsForTest(w.deps);
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+});
+
 test("a proof that stopped is measured again when the signal fails again, instead of saying it stopped", async () => {
   const w = await world();
   w.evaluate("sig-a", "ok");

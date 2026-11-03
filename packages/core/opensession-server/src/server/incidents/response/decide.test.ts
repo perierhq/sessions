@@ -4597,3 +4597,181 @@ test("send-back: every earlier round's open verifier findings, once each, newest
     },
   ]);
 });
+
+// ── Pull requests merged or closed outside Sessions while it waits ──────────
+
+const PR11 = "https://github.com/acme/web/pull/11";
+const PR12 = "https://github.com/acme/web/pull/12";
+
+function waitingOnOwner(
+  prs: ResponseView["prs"],
+  over: Partial<IncidentResponse> = {},
+) {
+  return view({
+    incident: incident(
+      "needs-you",
+      response({
+        phase: "needs-you",
+        round: 2,
+        candidate: candidate({
+          round: 2,
+          pr: prSnapshot({ failingChecks: ["ci"] }),
+        }),
+        agents: [
+          run("investigator", { round: 1, status: "done", prUrl: PR11 }),
+          run("investigator", {
+            round: 2,
+            status: "done",
+            sessionId: "child-3",
+            prUrl: PR12,
+          }),
+        ],
+        needsYou: {
+          kind: "rounds",
+          reason: "Not certain after 2 rounds: the only check is red on PR #12",
+          since: iso(-3_600_000),
+          resumePhase: "verifying",
+          prs: [{ url: PR12, number: 12, sessionId: "child-3" }],
+        },
+        ...over,
+      }),
+    ),
+    prs,
+  });
+}
+
+test("waiting on the owner: its pull request merged outside Sessions goes to the release watch, verified or not", () => {
+  const v = waitingOnOwner([
+    {
+      url: PR11,
+      number: 11,
+      state: "CLOSED",
+      updatedAt: iso(-7_200_000),
+      round: 1,
+    },
+    {
+      url: PR12,
+      number: 12,
+      state: "MERGED",
+      updatedAt: iso(-60_000),
+      headSha: "def5678",
+      round: 2,
+    },
+  ]);
+  expect(decideNextStep(v)).toEqual({
+    step: "transition",
+    to: "deploying",
+    phase: "deploying",
+    detail: "Merged outside Sessions: #12",
+    log: "merge",
+    patch: {
+      handRelease: { by: "Ada", at: iso(-60_000), prUrl: PR12, number: 12 },
+      merge: {
+        ghRepo: "acme/web",
+        number: 12,
+        sha: "def5678",
+        status: "merged",
+        method: "outside",
+        at: iso(-60_000),
+      },
+      candidate: candidate({
+        round: 2,
+        pr: prSnapshot({ failingChecks: ["ci"], state: "MERGED" }),
+      }),
+      settledPrs: [PR12],
+      release: undefined,
+      watch: undefined,
+      watchFailures: undefined,
+      veto: undefined,
+      mergingSince: undefined,
+    },
+  });
+  // Another round's pull request: its claims are not the round's.
+  const older = waitingOnOwner([
+    {
+      url: PR11,
+      number: 11,
+      state: "MERGED",
+      updatedAt: iso(-60_000),
+      round: 1,
+    },
+    { url: PR12, number: 12, state: "OPEN", updatedAt: iso(-60_000), round: 2 },
+  ]);
+  expect(decideNextStep(older)).toMatchObject({
+    detail: "Merged outside Sessions: #11",
+    patch: {
+      candidate: { prUrl: PR11, pr: undefined, claims: [] },
+      handRelease: { number: 11, prUrl: PR11 },
+    },
+  });
+});
+
+test("waiting on the owner: a merge Sessions already acted on, or one before the card, is not acted on again", () => {
+  const merged = {
+    url: PR12,
+    number: 12,
+    state: "MERGED" as const,
+    updatedAt: iso(-60_000),
+    round: 2,
+  };
+  expect(
+    decideNextStep(waitingOnOwner([merged], { settledPrs: [PR12] })),
+  ).toEqual({ step: "none" });
+  expect(
+    decideNextStep(waitingOnOwner([{ ...merged, updatedAt: iso(-7_200_000) }])),
+  ).toEqual({ step: "none" });
+  // A question card: the agent waits on its own question.
+  const asking = waitingOnOwner([merged]);
+  asking.incident.response!.needsYou!.kind = "question";
+  expect(decideNextStep(asking)).not.toMatchObject({
+    detail: "Merged outside Sessions: #12",
+  });
+});
+
+test("waiting on the owner: its pull request closed without merging leaves the card", () => {
+  const v = waitingOnOwner([
+    {
+      url: PR12,
+      number: 12,
+      state: "CLOSED",
+      updatedAt: iso(-60_000),
+      round: 2,
+    },
+  ]);
+  const step = decideNextStep(v);
+  expect(step).toEqual({
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail: "Closed without being merged: #12",
+    log: "merge",
+    patch: {
+      needsYou: {
+        kind: "rounds",
+        reason:
+          "Not certain after 2 rounds: the only check is red on PR #12. PR #12 was closed without being merged.",
+        since: iso(-3_600_000),
+        resumePhase: "verifying",
+      },
+      candidate: candidate({
+        round: 2,
+        pr: prSnapshot({ failingChecks: ["ci"], state: "CLOSED" }),
+      }),
+      settledPrs: [PR12],
+    },
+  });
+  // Once settled, nothing more.
+  const settled = waitingOnOwner(
+    [
+      {
+        url: PR12,
+        number: 12,
+        state: "CLOSED",
+        updatedAt: iso(-60_000),
+        round: 2,
+      },
+    ],
+    { settledPrs: [PR12] },
+  );
+  expect(decideNextStep(settled)).toEqual({ step: "none" });
+});

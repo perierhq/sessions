@@ -137,10 +137,12 @@ import { productionRunOnProblem, runnerLabel } from "./runners";
 import {
   FINAL_TEXT_GRACE_MS,
   PARALLEL_INVESTIGATOR_RETRY_MS,
+  type KnownPr,
   type ReleasePr,
   type ResponseStep,
   type ResponseView,
 } from "./steps";
+import { type PrLookup, knownPrs, prsMovedOutside } from "./outside";
 
 export const RESPONSE_TICK_MS = 5_000;
 export const MAX_STEPS_PER_ADVANCE = 8;
@@ -191,6 +193,12 @@ export interface CoordinatorDeps {
   /** The project's release pull requests the PR cache knows (release
    *  branches such as release-please's). Cheap: no GitHub call. */
   releasePrs: (project: string) => ReleasePr[];
+  /** A pull request as the PR cache has it (state, last update, head);
+   *  undefined when it doesn't know it. Cheap: no GitHub call. */
+  pullRequest: (
+    project: string,
+    url: string,
+  ) => Pick<KnownPr, "state" | "updatedAt" | "headSha"> | undefined;
   /** Saves the findings an accepted report carries, unless the run already
    *  showed some with `show_findings` this round. Never throws. */
   applyReportFindings: (req: {
@@ -238,6 +246,16 @@ function defaultDeps(): CoordinatorDeps {
     prState: (project, url) => {
       for (const pr of getPrsByRepo().get(project)?.values() ?? [])
         if (pr.url === url) return pr.state;
+      return undefined;
+    },
+    pullRequest: (project, url) => {
+      for (const pr of getPrsByRepo().get(project)?.values() ?? [])
+        if (pr.url === url)
+          return {
+            state: pr.state,
+            updatedAt: pr.updatedAt,
+            ...(pr.headRefOid ? { headSha: pr.headRefOid } : {}),
+          };
       return undefined;
     },
     releasePrs: (project) => {
@@ -796,6 +814,12 @@ export async function buildResponseView(
     incident.response?.needsYou?.kind === "setup"
       ? await setupReadiness(incident.project, models, d)
       : undefined;
+  // Waiting on the owner: its pull requests as the PR cache has them, for
+  // one merged or closed outside Sessions.
+  const prs =
+    incident.state === "needs-you" && r
+      ? knownPrs(r, (url) => d.pullRequest(incident.project, url))
+      : undefined;
 
   return {
     now,
@@ -812,6 +836,7 @@ export async function buildResponseView(
     models,
     ...(handReleasePr ? { handReleasePr } : {}),
     ...(releasePrs ? { releasePrs } : {}),
+    ...(prs ? { prs } : {}),
   };
 }
 
@@ -3072,6 +3097,7 @@ function needsAttention(
   incident: Incident,
   settings?: IncidentProjectSettings,
   recovering = false,
+  lookup?: PrLookup,
 ): boolean {
   const r = incident.response;
   const working = (r?.agents ?? []).some(
@@ -3095,7 +3121,8 @@ function needsAttention(
         r?.needsYou?.kind === "setup" ||
         waitingMayBeStale(incident) ||
         waitingOnChecks(incident) ||
-        waitingOnActions(incident)
+        waitingOnActions(incident) ||
+        (!!lookup && !!r && prsMovedOutside(incident, knownPrs(r, lookup)))
       );
     case "done":
       return working;
@@ -3128,7 +3155,14 @@ export async function runResponseTick(
         await d.settings(incident.project).catch(() => undefined),
       );
     const recovering = d.evaluation(incident.primarySignalId)?.state === "ok";
-    if (!needsAttention(incident, settingsOf.get(incident.project), recovering))
+    if (
+      !needsAttention(
+        incident,
+        settingsOf.get(incident.project),
+        recovering,
+        (url) => d.pullRequest(incident.project, url),
+      )
+    )
       continue;
     scheduleAdvance(incident.id);
     scheduled.push(incident.id);
