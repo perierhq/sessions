@@ -46,6 +46,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { statePath } from "./paths";
+import { BROWSER_HANDOFF_USAGE } from "./browser-handoff";
 import {
   SYSTEMD_USER_RUNTIME,
   systemdUserEnv,
@@ -874,6 +875,12 @@ export function agentBrowserShimScript(shimDir: string): string {
 # TMPDIR short enough for Chrome's socket. Any shell without
 # OPENSESSION_SESSION_ID reaches the real ${AGENT_BROWSER_CLI} as is.
 ${shimRealLookup(AGENT_BROWSER_CLI, shimDir)}if [ -n "\${OPENSESSION_SESSION_ID:-}" ]; then
+  # The bash tool answers a hand-off that is the whole command; one that
+  # gets here was part of a longer command or a script.
+  if [ "\${1:-}" = handoff ]; then
+    echo ${shellQuote(`agent-browser handoff asks the person through the session's question card, so it has to be the whole bash command. ${BROWSER_HANDOFF_USAGE}`)} >&2
+    exit 2
+  fi
   if [ -z "\${AGENT_BROWSER_SESSION:-}" ]; then
     AGENT_BROWSER_SESSION="os-$(printf '%s' "$OPENSESSION_SESSION_ID" | cksum | cut -d ' ' -f 1)"
     export AGENT_BROWSER_SESSION

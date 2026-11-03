@@ -8,6 +8,7 @@ import type { MergeGuard, PrivateTermsGuard } from "./command-policy";
 import type { RunAgentOpts } from "./agent-runner";
 import type { PiSdk } from "./pi-runtime-binding";
 import type { PiMcpBridge } from "./pi-mcp-bridge";
+import { makeBrowserHandoff } from "./browser-handoff";
 import {
   splitMcpMigrationBoundary,
   type createMcpRuntime,
@@ -237,6 +238,11 @@ export function buildPiToolset(input: {
           ...(opts.bashRunAs && !remote ? { runAs: opts.bashRunAs } : {}),
           mergeGuard,
           privateTermsGuard,
+          // The run's own question card answers a browser hand-off; a run
+          // with no ask handler has nobody to answer it.
+          ...(opts.onAskUser
+            ? { handoff: makeBrowserHandoff(opts.onAskUser) }
+            : {}),
           runSignal: abort.signal,
           onAudit: (event) =>
             audit({

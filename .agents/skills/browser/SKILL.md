@@ -116,15 +116,25 @@ snapshot to decide what to do next.
 
 ## When to hand a step to the person
 
-Stop and ask the person instead of working around it when the page needs:
+Hand the step to the person instead of working around it when the page
+needs:
 
 - a CAPTCHA, an "are you human" check or a bot wall: never try to solve one;
 - their own sign-in, a one-time code, a passkey or an SSO approval;
 - a payment, a purchase, a message sent in their name, or a deletion that
   the task did not clearly ask for.
 
-Say exactly what they need to do and what you will do after. They act in
-their own browser, not in yours.
+```bash
+agent-browser handoff "Sign in to acme.example.test and approve the export"
+```
+
+Run it as the whole bash command, with the request in quotes. It raises the
+session's question card with Done and Skip, waits for the person, and prints
+their answer. Say exactly what they should do; they act in their own
+browser, because this one runs on the server where they cannot see it. That
+also means a sign-in they complete does not reach this browser. After Done,
+take a fresh snapshot. After Skip, do not retry the step or find a way
+around it.
 
 ## Tabs, sessions and cleanup
 

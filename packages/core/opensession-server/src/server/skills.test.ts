@@ -253,6 +253,7 @@ describe("browser skill", () => {
       "$OPENSESSION_SCRATCH",
       "agent-browser close",
       "MCP",
+      'agent-browser handoff "',
     ])
       expect(body).toContain(rule);
     // Neutral, public text: no host, account or product names from outside

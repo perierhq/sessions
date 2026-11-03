@@ -927,6 +927,25 @@ describe("agent-browser shim", () => {
     expect(out).toContain("shots=/srv/acme-shots");
   });
 
+  // The bash tool answers `agent-browser handoff "<what>"` itself; a
+  // hand-off that reaches the shim was inside a longer command or a script.
+  test("a hand-off that reaches the shim says how to run it", async () => {
+    fakeAgentBrowser();
+    const proc = Bun.spawn(
+      [join(containerShimDir(), "agent-browser"), "handoff", "Sign in"],
+      {
+        env: sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    expect(await proc.exited).toBe(2);
+    expect(await new Response(proc.stdout).text()).toBe("");
+    expect(await new Response(proc.stderr).text()).toContain(
+      'agent-browser handoff "<what the person should do>"',
+    );
+  });
+
   test("outside a session it reaches agent-browser unchanged", async () => {
     fakeAgentBrowser();
     const { OPENSESSION_SESSION_ID: _id, ...outside } = sessionOwnershipEnv(
