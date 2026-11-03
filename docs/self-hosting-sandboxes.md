@@ -765,12 +765,14 @@ fix when one is missing:
 - Public ingress whose callback origin resolves to a public address. A
   `callbackBaseUrl` on the tailnet, a private range or loopback is refused,
   since the firewall would have to open that address to the sandbox.
-- Registry access and about 1.5 GB free on Podman's storage for the sandbox
+- Registry access and about 2 GB free on Podman's storage for the sandbox
   image (`localhost/opensession-sandbox:<tag>`, built from a pinned
   `ubuntu:24.04` at qualification; it carries the
-  workspace tools plus `ffmpeg` and ImageMagick, and pnpm through Node's
+  workspace tools plus `ffmpeg` and ImageMagick, pnpm through Node's
   corepack, which fetches a repository's `packageManager` version on first
-  use), and at least
+  use, and a headless Chromium (Chrome for Testing's headless shell) with
+  `agent-browser` behind the same per-session shim host sessions get, about
+  300 MB of the image), and at least
   5 GiB free there for sandboxes to start (see Disk limits).
 - SELinux enforcing is recommended. Without it qualification passes with a
   warning, and containers rely on namespaces and seccomp alone.

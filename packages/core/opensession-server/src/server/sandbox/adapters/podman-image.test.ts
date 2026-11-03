@@ -13,8 +13,16 @@ import {
   type PodmanRunner,
   type PodmanRunOpts,
 } from "./podman-cli";
+import { agentBrowserShimScript } from "../../session-ownership";
 import {
   ensurePodmanImage,
+  PODMAN_AGENT_BROWSER_BIN,
+  PODMAN_AGENT_BROWSER_SHA256,
+  PODMAN_AGENT_BROWSER_VERSION,
+  PODMAN_BROWSER_PACKAGES,
+  PODMAN_CHROME_DIR,
+  PODMAN_CHROME_SHA256,
+  PODMAN_CHROME_VERSION,
   PODMAN_BASE_IMAGE,
   PODMAN_BUN_SHA256,
   PODMAN_BUN_VERSION,
@@ -127,6 +135,73 @@ describe("podman image", () => {
     expect(lines).toContain("ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0");
     expect(lines.indexOf("ENV COREPACK_ENABLE_AUTO_PIN=0")).toBeLessThan(
       lines.indexOf("USER 1000:1000"),
+    );
+  });
+
+  test("bakes a headless Chromium and agent-browser, both checked by SHA-256", () => {
+    expect(PODMAN_CHROME_VERSION).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+    expect(PODMAN_AGENT_BROWSER_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(Object.keys(PODMAN_CHROME_SHA256).sort()).toEqual([
+      "linux-arm64",
+      "linux64",
+    ]);
+    for (const sum of [
+      ...Object.values(PODMAN_CHROME_SHA256),
+      PODMAN_AGENT_BROWSER_SHA256,
+    ]) {
+      expect(sum).toMatch(/^[0-9a-f]{64}$/);
+      expect(file).toContain(sum);
+    }
+    // Chrome for Testing's headless shell, the build agent-browser installs
+    // itself, for both architectures.
+    expect(file).toContain(
+      `https://storage.googleapis.com/chrome-for-testing-public/${PODMAN_CHROME_VERSION}/$plat/chrome-headless-shell-$plat.zip`,
+    );
+    expect(file).toContain(
+      `https://registry.npmjs.org/agent-browser/-/agent-browser-${PODMAN_AGENT_BROWSER_VERSION}.tgz`,
+    );
+    expect(file).toContain("x86_64) plat=linux64");
+    expect(file).toContain("aarch64|arm64) plat=linux-arm64");
+    expect(file).toContain("bin=agent-browser-linux-x64");
+    expect(file).toContain("bin=agent-browser-linux-arm64");
+    // The runtime libraries are installed with the rest, and the browser
+    // must start (it prints its version) before the image is accepted.
+    const install = lines.find((line) => line.includes("apt-get install"));
+    for (const pkg of PODMAN_BROWSER_PACKAGES)
+      expect(install).toContain(` ${pkg}`);
+    expect(file).toContain(
+      `${PODMAN_CHROME_DIR}/chrome-headless-shell --version`,
+    );
+    expect(file).toContain(
+      `test "$(${PODMAN_AGENT_BROWSER_BIN} --version | awk '{print $2}')" = "${PODMAN_AGENT_BROWSER_VERSION}"`,
+    );
+    expect(lines).toContain(
+      `ENV AGENT_BROWSER_EXECUTABLE_PATH=${PODMAN_CHROME_DIR}/chrome-headless-shell`,
+    );
+    // Sockets in the container's /tmp: a session home can be long enough
+    // to overflow a Unix socket path.
+    expect(lines).toContain("ENV AGENT_BROWSER_SOCKET_DIR=/tmp/agent-browser");
+  });
+
+  test("puts the same agent-browser shim host sessions get in front of it", () => {
+    const shim = agentBrowserShimScript({ real: PODMAN_AGENT_BROWSER_BIN });
+    const encoded = Buffer.from(shim).toString("base64");
+    expect(file).toContain(encoded);
+    expect(file).toContain(`base64 -d > /usr/local/bin/agent-browser`);
+    expect(file).toContain("chmod 0755 /usr/local/bin/agent-browser");
+    // The real binary is off PATH, so nothing reaches it around the shim.
+    expect(PODMAN_AGENT_BROWSER_BIN.startsWith("/usr/local/bin/")).toBe(false);
+    expect(shim).toContain(`real='${PODMAN_AGENT_BROWSER_BIN}'`);
+    expect(shim).toContain("AGENT_BROWSER_DOWNLOAD_PATH=$OPENSESSION_SCRATCH");
+  });
+
+  test("the browser pins change the image signature", () => {
+    const signature = podmanImageSignature();
+    expect(signature).toContain(
+      `agent-browser@${PODMAN_AGENT_BROWSER_VERSION}`,
+    );
+    expect(signature).toContain(
+      `chrome-headless-shell@${PODMAN_CHROME_VERSION}`,
     );
   });
 

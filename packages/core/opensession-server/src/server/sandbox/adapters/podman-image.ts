@@ -5,7 +5,8 @@
  * The workload never has root, so everything `bootstrapRemoteSandbox` would
  * install as root is baked at build time instead: the workspace packages
  * plus ffmpeg and ImageMagick, the pinned Node (with corepack's pnpm shim),
- * just and gh in /usr/local/bin, and the pinned bun in
+ * just and gh in /usr/local/bin, a headless Chromium and agent-browser
+ * behind the same per-session shim host sessions get, and the pinned bun in
  * /home/ubuntu/.bun owned by the image's uid 1000. Every download is a
  * release archive checked by SHA-256 (Node, gh and bun against their
  * published sums, just and bun against sums pinned here); no install
@@ -35,6 +36,7 @@ import {
   REMOTE_LINUX_PACKAGES,
   REMOTE_NODE_VERSION,
 } from "./bootstrap";
+import { agentBrowserShimScript } from "../../session-ownership";
 import {
   PODMAN_LONG_TIMEOUT_MS,
   PODMAN_PASTA_NETWORK,
@@ -72,12 +74,60 @@ export const PODMAN_JUST_SHA256 = {
     "e28e1f18cecd45d35f9fb39ef3651dd79c0623cb29a2f375ea7a1a185ac32dc9",
 } as const;
 
+/** agent-browser in the image: the version on the host, so the shim's
+ *  settings mean the same in both places. */
+export const PODMAN_AGENT_BROWSER_VERSION = "0.27.0";
+/** SHA-256 of the npm tarball `agent-browser-<version>.tgz` (it carries
+ *  every platform's binary; its published sha512 integrity matches). */
+export const PODMAN_AGENT_BROWSER_SHA256 =
+  "62ef3bc80c75fc68cd70a45ec4ce981a67a4a95737580b67e8a4709afc28d875";
+/** Where the real agent-browser goes: off PATH, so every call goes through
+ *  the shim in /usr/local/bin. */
+export const PODMAN_AGENT_BROWSER_BIN =
+  "/usr/local/lib/agent-browser/agent-browser";
+/** Chrome for Testing's headless shell, the browser `agent-browser install`
+ *  fetches, for both architectures. */
+export const PODMAN_CHROME_VERSION = "156.0.8078.80";
+/** SHA-256 of `chrome-headless-shell-<platform>.zip` for PODMAN_CHROME_VERSION. */
+export const PODMAN_CHROME_SHA256 = {
+  linux64: "547dcd374e02961bf998f6046a267644f8502225c36bb78ca307dab32a0b3eb4",
+  "linux-arm64":
+    "5bb6a00a4285c13303d3f72c5afdb70f144ea7a93eed462365a52b69631c9607",
+} as const;
+export const PODMAN_CHROME_DIR = "/opt/chrome-headless-shell";
+/** The shared libraries the headless shell links against on Ubuntu 24.04
+ *  (from `ldd`; it needs no GTK, Cairo or CUPS), and a font family so
+ *  pages render text. */
+export const PODMAN_BROWSER_PACKAGES = [
+  "libasound2t64",
+  "libatk1.0-0t64",
+  "libatspi2.0-0t64",
+  "libdbus-1-3",
+  "libexpat1",
+  "libgbm1",
+  "libglib2.0-0t64",
+  "libnspr4",
+  "libnss3",
+  "libx11-6",
+  "libxcb1",
+  "libxcomposite1",
+  "libxdamage1",
+  "libxext6",
+  "libxfixes3",
+  "libxkbcommon0",
+  "libxrandr2",
+  "fonts-liberation",
+] as const;
+
 /** The image's runtime signature: the base runtime's plus the image-only
  *  pins, so changing any of them names a new image. */
 export function podmanImageSignature(
   base: string = baseRuntimeSignature(),
 ): string {
-  return `${base}+bun@${PODMAN_BUN_VERSION}+just-release@${REMOTE_JUST_VERSION}`;
+  return (
+    `${base}+bun@${PODMAN_BUN_VERSION}+just-release@${REMOTE_JUST_VERSION}` +
+    `+agent-browser@${PODMAN_AGENT_BROWSER_VERSION}+chrome-headless-shell@${PODMAN_CHROME_VERSION}`
+  );
 }
 
 /** One `RUN` whose steps run under `set -eu` and stop at the first failure.
@@ -103,6 +153,16 @@ const ARCH_GH =
   'case "$(uname -m)" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; ' +
   '*) echo "unsupported architecture: $(uname -m)" >&2; exit 1;; esac';
 
+const ARCH_CHROME =
+  'case "$(uname -m)" in ' +
+  `x86_64) plat=linux64; sum=${PODMAN_CHROME_SHA256.linux64};; ` +
+  `aarch64|arm64) plat=linux-arm64; sum=${PODMAN_CHROME_SHA256["linux-arm64"]};; ` +
+  '*) echo "unsupported architecture: $(uname -m)" >&2; exit 1;; esac';
+const ARCH_AGENT_BROWSER =
+  'case "$(uname -m)" in x86_64) bin=agent-browser-linux-x64;; ' +
+  "aarch64|arm64) bin=agent-browser-linux-arm64;; " +
+  '*) echo "unsupported architecture: $(uname -m)" >&2; exit 1;; esac';
+
 /** The Containerfile, fed to `podman build` on stdin. */
 export function podmanContainerfile(
   signature: string = baseRuntimeSignature(),
@@ -115,7 +175,7 @@ export function podmanContainerfile(
     "ENV DEBIAN_FRONTEND=noninteractive",
     run([
       "apt-get update",
-      `apt-get install -y --no-install-recommends ${[...REMOTE_LINUX_PACKAGES, ...PODMAN_MEDIA_PACKAGES].join(" ")}`,
+      `apt-get install -y --no-install-recommends ${[...REMOTE_LINUX_PACKAGES, ...PODMAN_MEDIA_PACKAGES, ...PODMAN_BROWSER_PACKAGES].join(" ")}`,
       "apt-get clean",
       "rm -rf /var/lib/apt/lists/*",
       "command -v ffmpeg",
@@ -172,6 +232,43 @@ export function podmanContainerfile(
       'rm -rf "$tmp"',
       `test "$(/usr/local/bin/just --version | awk '{print $2}')" = "${REMOTE_JUST_VERSION}"`,
     ]),
+    // A headless Chromium for agent-browser. The headless shell has no
+    // window system and starts without GTK; `--version` proves its
+    // libraries load before the image is accepted.
+    run([
+      ARCH_CHROME,
+      'archive="chrome-headless-shell-$plat.zip"',
+      "tmp=$(mktemp -d)",
+      'cd "$tmp"',
+      `curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${PODMAN_CHROME_VERSION}/$plat/chrome-headless-shell-$plat.zip" -o "$archive"`,
+      `printf '%s  %s\\n' "$sum" "$archive" > expected`,
+      "sha256sum -c expected",
+      'unzip -q "$archive"',
+      `mv "chrome-headless-shell-$plat" ${PODMAN_CHROME_DIR}`,
+      "cd /",
+      'rm -rf "$tmp"',
+      `${PODMAN_CHROME_DIR}/chrome-headless-shell --version`,
+    ]),
+    // agent-browser's own binary for this architecture from its npm
+    // tarball (no install script), off PATH, with the session shim in
+    // front of it at /usr/local/bin/agent-browser.
+    run([
+      ARCH_AGENT_BROWSER,
+      `archive="agent-browser-${PODMAN_AGENT_BROWSER_VERSION}.tgz"`,
+      "tmp=$(mktemp -d)",
+      'cd "$tmp"',
+      `curl -fsSL "https://registry.npmjs.org/agent-browser/-/agent-browser-${PODMAN_AGENT_BROWSER_VERSION}.tgz" -o "$archive"`,
+      `printf '%s  %s\\n' "${PODMAN_AGENT_BROWSER_SHA256}" "$archive" > expected`,
+      "sha256sum -c expected",
+      'tar -xzf "$archive" "package/bin/$bin"',
+      `install -D -m 0755 "package/bin/$bin" ${PODMAN_AGENT_BROWSER_BIN}`,
+      "cd /",
+      'rm -rf "$tmp"',
+      `printf '%s' '${Buffer.from(agentBrowserShimScript({ real: PODMAN_AGENT_BROWSER_BIN })).toString("base64")}' | base64 -d > /usr/local/bin/agent-browser`,
+      "chmod 0755 /usr/local/bin/agent-browser",
+      `test "$(${PODMAN_AGENT_BROWSER_BIN} --version | awk '{print $2}')" = "${PODMAN_AGENT_BROWSER_VERSION}"`,
+      `test "$(/usr/local/bin/agent-browser --version | awk '{print $2}')" = "${PODMAN_AGENT_BROWSER_VERSION}"`,
+    ]),
     run([
       ARCH_BUN,
       'archive="bun-linux-$arch.zip"',
@@ -202,6 +299,11 @@ export function podmanContainerfile(
       'test -z "$(find / -xdev -type f -perm /6000 -print -quit)"',
     ]),
     `ENV PATH=${path}`,
+    // agent-browser drives the baked headless shell, and keeps its daemon
+    // sockets in the container's /tmp: a session home can be deep enough
+    // to overflow a Unix socket path.
+    `ENV AGENT_BROWSER_EXECUTABLE_PATH=${PODMAN_CHROME_DIR}/chrome-headless-shell`,
+    "ENV AGENT_BROWSER_SOCKET_DIR=/tmp/agent-browser",
     // corepack caches what it fetches in the persistent home, whatever
     // HOME a command runs with, never pins a version into a repository's
     // package.json, and never waits on a prompt.

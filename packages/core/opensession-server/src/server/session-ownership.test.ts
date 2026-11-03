@@ -23,6 +23,7 @@ import { join } from "path";
 import {
   __setOwnershipRuntimeForTest,
   AGENT_BROWSER_MAX_OUTPUT,
+  agentBrowserShimScript,
   CONTAINER_PS_FORMAT,
   containersMemory,
   containerShimDir,
@@ -1052,6 +1053,47 @@ describe("agent-browser shim", () => {
       expect(result.calls).toHaveLength(2);
       expect(result.err).toContain("(recaptcha)");
     });
+  });
+
+  // The Podman image keeps the real binary off PATH and names it instead
+  // (podman-image.ts); the rest of the shim is the host's.
+  test("an image shim runs a fixed binary, or says it is missing", async () => {
+    fakeAgentBrowser();
+    const shim = join(bin, "image-shim");
+    writeFileSync(
+      shim,
+      agentBrowserShimScript({ real: join(bin, "agent-browser") }),
+    );
+    chmodSync(shim, 0o755);
+    const scratch = "/home/ubuntu/.opensession/session-scratch/os-1";
+    const proc = Bun.spawn([shim, "get", "url"], {
+      env: {
+        PATH: "/usr/bin:/bin",
+        OPENSESSION_SESSION_ID: "os-1",
+        OPENSESSION_SCRATCH: scratch,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await proc.exited).toBe(0);
+    const out = (await new Response(proc.stdout).text()).trim().split("\n");
+    expect(out.slice(0, 2)).toEqual(["get", "url"]);
+    expect(out.find((line) => line.startsWith("session="))).toMatch(
+      /^session=os-[0-9]+$/,
+    );
+    expect(out).toContain(`downloads=${scratch}`);
+    const gone = join(bin, "gone-shim");
+    writeFileSync(gone, agentBrowserShimScript({ real: join(bin, "nope") }));
+    chmodSync(gone, 0o755);
+    const missing = Bun.spawn([gone, "open"], {
+      env: { PATH: "/usr/bin:/bin" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await missing.exited).toBe(127);
+    expect(await new Response(missing.stderr).text()).toContain(
+      "agent-browser: command not found",
+    );
   });
 
   test("outside a session it reaches agent-browser unchanged", async () => {
