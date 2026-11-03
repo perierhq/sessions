@@ -128,6 +128,11 @@ needs:
 agent-browser handoff "Sign in to acme.example.test and approve the export"
 ```
 
+After `open`, `click`, `reload` and other navigating commands, the session's
+`agent-browser` checks the page for a visible CAPTCHA or bot wall and, if it
+finds one, prints a note saying so. Treat that note as a stop sign for the
+page: hand it off or use another source.
+
 Run it as the whole bash command, with the request in quotes. It raises the
 session's question card with Done and Skip, waits for the person, and prints
 their answer. Say exactly what they should do; they act in their own

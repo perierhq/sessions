@@ -946,6 +946,114 @@ describe("agent-browser shim", () => {
     );
   });
 
+  describe("human-check hint", () => {
+    /** A fake agent-browser whose `eval` answers like the probe on a page
+     *  with (or without) a bot wall, and whose other commands exit with
+     *  FAKE_EXIT. Every call is logged to FAKE_LOG. */
+    function fakeWithProbe(): string {
+      const log = join(bin, "calls.log");
+      const file = join(bin, "agent-browser");
+      writeFileSync(
+        file,
+        [
+          "#!/bin/sh",
+          'printf "%s %s\\n" "$1" "$#" >> "$FAKE_LOG"',
+          'if [ "$1" = eval ]; then',
+          '  [ -n "${FAKE_HUMAN_CHECK:-}" ] && printf \'"opensession-human-check:%s"\\n\' "$FAKE_HUMAN_CHECK"',
+          "  exit 0",
+          "fi",
+          'echo "did $1"',
+          'exit "${FAKE_EXIT:-0}"',
+          "",
+        ].join("\n"),
+      );
+      chmodSync(file, 0o755);
+      return log;
+    }
+
+    async function browse(
+      args: string[],
+      extra: Record<string, string> = {},
+    ): Promise<{ code: number; out: string; err: string; calls: string[] }> {
+      const log = fakeWithProbe();
+      const proc = Bun.spawn(
+        [join(containerShimDir(), "agent-browser"), ...args],
+        {
+          env: {
+            ...sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
+            FAKE_LOG: log,
+            ...extra,
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const code = await proc.exited;
+      return {
+        code,
+        out: await new Response(proc.stdout).text(),
+        err: await new Response(proc.stderr).text(),
+        calls: readFileSync(log, "utf8").trim().split("\n"),
+      };
+    }
+
+    test("after a navigation onto a bot wall, tells the agent to hand off", async () => {
+      for (const command of [
+        ["open", "https://example.test"],
+        ["click", "@e3"],
+        ["reload"],
+      ]) {
+        const result = await browse(command, {
+          FAKE_HUMAN_CHECK: "turnstile",
+        });
+        expect(result.code).toBe(0);
+        expect(result.out).toBe(`did ${command[0]}\n`);
+        expect(result.calls).toHaveLength(2);
+        // The probe goes to this session's browser as one argument.
+        expect(result.calls[1]).toBe("eval 2");
+        expect(result.err).toContain("CAPTCHA or bot check (turnstile)");
+        expect(result.err).toContain("agent-browser handoff");
+        rmSync(join(bin, "calls.log"), { force: true });
+      }
+    });
+
+    test("stays quiet on an ordinary page", async () => {
+      const result = await browse(["open", "https://example.test"]);
+      expect(result.code).toBe(0);
+      expect(result.calls).toHaveLength(2);
+      expect(result.err).toBe("");
+    });
+
+    test("probes only after a navigation that worked, in this session's browser", async () => {
+      for (const [args, extra] of [
+        [["snapshot", "-i"], {}],
+        [["get", "title"], {}],
+        [["open", "https://example.test", "--json"], {}],
+        [["--session", "other", "open", "https://example.test"], {}],
+        [["open", "https://example.test"], { AGENT_BROWSER_JSON: "1" }],
+        [["open", "https://example.test"], { FAKE_EXIT: "1" }],
+      ] as const) {
+        const result = await browse([...args], {
+          FAKE_HUMAN_CHECK: "recaptcha",
+          ...extra,
+        });
+        expect(result.calls).toHaveLength(1);
+        expect(result.err).toBe("");
+        expect(result.code).toBe(extra.FAKE_EXIT === "1" ? 1 : 0);
+        rmSync(join(bin, "calls.log"), { force: true });
+      }
+    });
+
+    test("finds the subcommand behind global flags", async () => {
+      const result = await browse(
+        ["--max-output", "500", "--headed", "open", "https://example.test"],
+        { FAKE_HUMAN_CHECK: "recaptcha" },
+      );
+      expect(result.calls).toHaveLength(2);
+      expect(result.err).toContain("(recaptcha)");
+    });
+  });
+
   test("outside a session it reaches agent-browser unchanged", async () => {
     fakeAgentBrowser();
     const { OPENSESSION_SESSION_ID: _id, ...outside } = sessionOwnershipEnv(

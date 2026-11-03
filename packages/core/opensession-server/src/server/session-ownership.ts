@@ -849,6 +849,107 @@ export const AGENT_BROWSER_IDLE_TIMEOUT_MS = 30 * 60_000;
  *  head without one. */
 export const AGENT_BROWSER_MAX_OUTPUT = 30_000;
 
+/** The verdict prefix the human-check probe prints. */
+export const HUMAN_CHECK_MARK = "opensession-human-check:";
+
+/**
+ * Page JavaScript (agent-browser `eval`) that names a visible CAPTCHA or bot
+ * wall on the current page, as HUMAN_CHECK_MARK plus a kind, or prints "".
+ * It looks for a challenge frame from the common providers, their widget
+ * containers, an interstitial title, or challenge wording near the top of
+ * the page. Invisible badges and zero-size frames do not count. It runs in
+ * the page's own world, so a page could hide from it or fake it; it only
+ * adds advice, never blocks anything. No single quotes: the shim passes it
+ * in a single-quoted word.
+ */
+export const HUMAN_CHECK_PROBE = String.raw`(() => {
+  const mark = "${HUMAN_CHECK_MARK}";
+  const visible = (el) => {
+    const box = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return box.width >= 20 && box.height >= 20 && style.visibility !== "hidden" &&
+      style.display !== "none" && Number(style.opacity || 1) > 0.1;
+  };
+  const frames = [
+    ["recaptcha", /\/recaptcha\/(api2|enterprise)\/(anchor|bframe)/],
+    ["hcaptcha", /hcaptcha\.com\/.*(checkbox|challenge|hcaptcha\.html)/],
+    ["turnstile", /challenges\.cloudflare\.com\//],
+    ["arkose", /arkoselabs\.com|funcaptcha\.com/],
+    ["datadome", /captcha-delivery\.com/],
+    ["geetest", /geetest\.com/],
+  ];
+  for (const frame of document.querySelectorAll("iframe")) {
+    const src = frame.src || "";
+    for (const [kind, pattern] of frames)
+      if (pattern.test(src) && visible(frame)) return mark + kind;
+  }
+  const widgets = [
+    ["recaptcha", ".g-recaptcha"],
+    ["hcaptcha", ".h-captcha"],
+    ["turnstile", ".cf-turnstile"],
+    ["cloudflare", "#challenge-form, #challenge-running, #cf-challenge-running, .cf-browser-verification"],
+    ["perimeterx", "#px-captcha"],
+    ["captcha", "[id*=captcha i], [class*=captcha i]"],
+  ];
+  for (const [kind, selector] of widgets)
+    for (const el of document.querySelectorAll(selector))
+      if (!el.closest(".grecaptcha-badge") && visible(el)) return mark + kind;
+  const title = (document.title || "").trim();
+  if (/^(just a moment|attention required|verify you are (a )?human|are you a robot|human verification|pardon our interruption|security check)/i.test(title))
+    return mark + "interstitial";
+  const text = ((document.body && document.body.innerText) || "").slice(0, 4000);
+  if (/verify (that )?you are (a )?human|are you a robot|checking (if the site connection is secure|your browser before)|press (and|&) hold to confirm|unusual traffic from your (computer|network)/i.test(text))
+    return mark + "challenge-text";
+  return "";
+})()`;
+
+/** agent-browser 0.27 global flags that take a value, so the shim can find
+ *  the subcommand behind them. */
+const AGENT_BROWSER_VALUE_FLAGS = [
+  "--executable-path",
+  "--profile",
+  "--state",
+  "--session-name",
+  "--headers",
+  "--proxy",
+  "--proxy-bypass",
+  "--args",
+  "--user-agent",
+  "--extension",
+  "--init-script",
+  "--enable",
+  "--screenshot-dir",
+  "--screenshot-quality",
+  "--screenshot-format",
+  "--color-scheme",
+  "--download-path",
+  "--max-output",
+  "--allowed-domains",
+  "--action-policy",
+  "--confirm-actions",
+  "--engine",
+  "--config",
+  "--device",
+];
+
+/** The note after a navigation lands on a bot wall, around its kind. */
+const HUMAN_CHECK_NOTE_START = "Note: this page shows a CAPTCHA or bot check (";
+const HUMAN_CHECK_NOTE_END =
+  '). Do not try to solve it or get around it. Hand it to the person with agent-browser handoff "<what they should do>", or use another source.';
+
+/** Subcommands after which the page may have changed to a bot wall. */
+const HUMAN_CHECK_AFTER = [
+  "open",
+  "goto",
+  "navigate",
+  "click",
+  "dblclick",
+  "reload",
+  "back",
+  "forward",
+  "press",
+];
+
 /**
  * The `agent-browser` shim (see the module comment). POSIX sh. In a session,
  * unless the caller chose otherwise, it gives the session a browser of its
@@ -911,6 +1012,48 @@ ${shimRealLookup(AGENT_BROWSER_CLI, shimDir)}if [ -n "\${OPENSESSION_SESSION_ID:
   fi
   TMPDIR=/tmp
   export TMPDIR
+  # After a navigation, look for a CAPTCHA or bot wall and say to hand it
+  # to the person. Only for this session's own browser and plain output:
+  # another --session or --cdp is not this page, and --json output is
+  # parsed by whoever asked for it.
+  sub=
+  probe=1
+  skip=
+  for arg do
+    if [ -n "$skip" ]; then
+      skip=
+      continue
+    fi
+    case "$arg" in
+      --json|--session|--session=*|--cdp|--cdp=*|--provider|--provider=*|-p|--auto-connect|--help|-h)
+        probe=
+        ;;
+      ${AGENT_BROWSER_VALUE_FLAGS.join("|")})
+        skip=1
+        ;;
+      -*) ;;
+      *) [ -n "$sub" ] || sub=$arg ;;
+    esac
+  done
+  [ -z "\${AGENT_BROWSER_JSON:-}" ] || probe=
+  case "$sub" in
+    ${HUMAN_CHECK_AFTER.join("|")}) ;;
+    *) probe= ;;
+  esac
+  if [ -n "$probe" ]; then
+    "$real" "$@"
+    status=$?
+    if [ "$status" -eq 0 ]; then
+      verdict=$("$real" eval ${shellQuote(HUMAN_CHECK_PROBE)} 2>/dev/null) || verdict=
+      case "$verdict" in
+        *${HUMAN_CHECK_MARK}*)
+          kind=$(printf '%s\\n' "$verdict" | sed -n 's/.*${HUMAN_CHECK_MARK}\\([a-z-]*\\).*/\\1/p' | head -n 1)
+          echo ${shellQuote(HUMAN_CHECK_NOTE_START)}"$kind"${shellQuote(HUMAN_CHECK_NOTE_END)} >&2
+          ;;
+      esac
+    fi
+    exit "$status"
+  fi
 fi
 exec "$real" "$@"
 `;
