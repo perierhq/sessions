@@ -139,6 +139,7 @@ describe("buildRunInstructions", () => {
       "## Waiting",
       "## Tools",
       "## Background work",
+      "## Browser",
       "## Portals",
       "## Media",
     ]);
@@ -207,7 +208,9 @@ describe("buildRunInstructions", () => {
     // `pkill -f`, which on a shared host also matches other sessions'
     // processes. Linking child sessions in a report adds ~100: a PR summary
     // without them left the person hunting for the session that owns each PR.
-    expect(prompt.length).toBeLessThan(5_450);
+    // "Browser" adds ~110: agents drove agent-browser from whatever they
+    // remembered of it; the shipped `browser` skill carries the rest.
+    expect(prompt.length).toBeLessThan(5_570);
   });
 
   test("tells a code run it may start dev servers in its workspace", () => {
@@ -278,6 +281,23 @@ describe("buildRunInstructions", () => {
       buildRunInstructions({ isAsk: false, hasSession: false }),
     ])
       expect(prompt).not.toContain("## Background work");
+  });
+
+  test("sends a run to the browser skill before its first agent-browser call", () => {
+    const line =
+      "Before your first `agent-browser` command, read the `browser` skill.";
+    for (const prompt of [
+      buildRunInstructions({ isAsk: false, hasSession: true }),
+      buildRunInstructions({ isAsk: false, hasSession: true, sandboxed: true }),
+      buildRunInstructions({ isAsk: false, hasSession: false }),
+    ]) {
+      expect(prompt).toContain("## Browser");
+      expect(prompt).toContain(line);
+    }
+    // Ask mode is read-only and cannot drive a browser.
+    expect(
+      buildRunInstructions({ isAsk: true, hasSession: true }),
+    ).not.toContain("## Browser");
   });
 
   test("asks for visual proof by default only where walkthroughs are mounted", () => {

@@ -263,6 +263,15 @@ export function buildRunInstructions(input: {
         "also matches other sessions' processes.",
     );
   }
+  // Runs drove agent-browser from whatever they remembered of it: stale refs,
+  // fixed sleeps, whole-page snapshots, retries against bot walls. The
+  // shipped `browser` skill (.agents/skills/browser) carries the how-to; the
+  // prompt only says when to read it, so the prefix stays small.
+  if (!input.isAsk) {
+    parts.push(
+      "## Browser\nBefore your first `agent-browser` command, read the `browser` skill.",
+    );
+  }
   if (!input.isAsk && inproc["opensession-portals"]) {
     parts.push(
       "## Portals\nStart a Portal (`start_declared_portal` for one the repository declares, else " +

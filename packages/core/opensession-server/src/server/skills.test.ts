@@ -235,6 +235,32 @@ describe("expandSkillCommand", () => {
   });
 });
 
+describe("browser skill", () => {
+  // The run instructions tell every agent to read it before its first
+  // agent-browser command, so it must load under exactly that name and
+  // carry the rules the shim and the instructions point at.
+  test("ships under the name the run instructions use", () => {
+    const loaded = loadShippedSkills();
+    expect(loaded.diagnostics).toEqual([]);
+    const browser = loaded.skills.filter((skill) => skill.name === "browser");
+    expect(browser).toHaveLength(1);
+    const body = readFileSync(browser[0]!.filePath, "utf8");
+    for (const rule of [
+      "snapshot -i",
+      "wait --",
+      "fill @",
+      "wait --download",
+      "$OPENSESSION_SCRATCH",
+      "agent-browser close",
+      "MCP",
+    ])
+      expect(body).toContain(rule);
+    // Neutral, public text: no host, account or product names from outside
+    // this repository.
+    expect(body).not.toMatch(/https?:\/\/(?!example\.(com|test))/);
+  });
+});
+
 describe("searchSkills", () => {
   test("lists the skills opensession ships for every repo", () => {
     // Every session gets these whatever it is working on, so the menu must
@@ -249,6 +275,7 @@ describe("searchSkills", () => {
       "receipts",
       "vercel-react-best-practices",
       "vercel-composition-patterns",
+      "browser",
     ]) {
       const shipped = searchSkills(undefined, name).filter(
         (s) => s.name === name,
