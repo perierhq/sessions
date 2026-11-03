@@ -116,7 +116,9 @@ import {
   piSystemEntry,
   piTurnRepairEntries,
 } from "./pi-events";
-import { drivePiPrompt } from "./pi-prompt-loop";
+import { drivePiPrompt, type PiPromptOutcome } from "./pi-prompt-loop";
+import { PiStallWatchdog, readPiStallConfig } from "./pi-stall-watchdog";
+import { wrapContext } from "./prompt-context";
 import {
   piCaughtTerminal,
   piEmptyReplyEntry,
@@ -911,23 +913,56 @@ async function* runPiAttempt(
       abortRetry: () => liveSession.abortRetry(),
       auditBase,
     });
-    const unsubscribe = session.subscribe(events.handle);
+    // A turn that goes quiet (a hung provider stream) is nudged once, then
+    // stopped with a reason instead of showing "running" until someone
+    // notices (pi-stall-watchdog.ts).
+    const stallConfig = readPiStallConfig();
+    const stall = stallConfig
+      ? new PiStallWatchdog({
+          ...stallConfig,
+          onSteer: (note) => {
+            audit({ ...auditBase, direction: "in", kind: "stall_steer" });
+            steering.steer(wrapContext(note, "auto-continue"));
+          },
+          onStop: (reason) => {
+            audit({
+              ...auditBase,
+              direction: "in",
+              kind: "stall_stop",
+              reason,
+            });
+            void liveSession.abort().catch(() => {});
+          },
+        })
+      : undefined;
+    const unsubscribe = session.subscribe((ev) => {
+      stall?.observe(ev as { type: string; toolCallId?: unknown });
+      events.handle(ev);
+    });
     setupTiming.mark("before_prompt");
     setupTiming.end();
 
-    const { result: failed, emptyFinishRetries } = yield* drivePiPrompt({
-      session,
-      pump,
-      handle,
-      signal: abort.signal,
-      steering,
-      outcome: events.outcome,
-      promptForEngine,
-      walk,
-      images: opts.images,
-      unsubscribe,
-      auditBase,
-    });
+    stall?.start();
+    let driven: { result: PiPromptOutcome; emptyFinishRetries: number };
+    try {
+      driven = yield* drivePiPrompt({
+        session,
+        pump,
+        handle,
+        signal: abort.signal,
+        steering,
+        outcome: events.outcome,
+        promptForEngine,
+        walk,
+        images: opts.images,
+        unsubscribe,
+        auditBase,
+        stopped: () => stall?.stopReason !== undefined,
+      });
+    } finally {
+      stall?.dispose();
+    }
+    const { result: failed, emptyFinishRetries } = driven;
 
     // ── Terminal (at most one; user cancels end with none) ──────────────────
     if (
@@ -948,6 +983,26 @@ async function* runPiAttempt(
       // records the cancelled audit closer and clears the journal; the
       // already-fired session.abort() stopped the engine.
       ledger.reachedTerminal = true;
+      return;
+    }
+    if (stall?.stopReason) {
+      // The watchdog stopped a turn that went quiet. Its reason is the
+      // error, not pi's "aborted": never a usage limit, so the account walk
+      // neither sidelines nor rotates.
+      ledger.reachedTerminal = true;
+      ledger.end({
+        ok: false,
+        pi_session_id: ledger.piSessionId,
+        ...ledger.usageAuditFields(),
+        error: stall.stopReason,
+      });
+      yield {
+        type: "error",
+        content: stall.stopReason,
+        provider: PROVIDER,
+        model,
+        ...ledger.usageField(),
+      };
       return;
     }
     const settled = piOutcomeTerminal({

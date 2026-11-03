@@ -12,9 +12,14 @@
  * Shape:
  *   {
  *     "enabled": true,
- *     "pickerModels": []
+ *     "pickerModels": [],
  *         // Retired compatibility field. The picker has one shared model
  *         // catalog and the chosen engine is encoded only in the session id.
+ *     "stallSteerMinutes": 10,
+ *     "stallStopMinutes": 5
+ *         // Optional stall watchdog timing (pi-stall-watchdog.ts): a turn
+ *         // with no engine event for stallSteerMinutes is nudged, then
+ *         // stopped stallStopMinutes later. 0 steer minutes turns it off.
  *   }
  *
  * pi/anthropic/* turns always use pi's own Anthropic provider with a Claude
