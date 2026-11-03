@@ -315,8 +315,11 @@ test("production decisions need a signed-in person, never a claimed name", async
 });
 
 /** The card in the report: the investigator stopped, and the owner picks
- *  Try again, Mark as fixed or Close without action. */
-function seedAgentErrorNeedsYou(): Promise<Incident> {
+ *  Try again, Mark as fixed or Close without action. As `interrupted`, a
+ *  card that offers Send it back, Mark as fixed and Close without action. */
+function seedAgentErrorNeedsYou(
+  kind: "agent-error" | "interrupted" = "agent-error",
+): Promise<Incident> {
   return seed((c, at) => ({
     ...moved(c, "needs-you", at),
     response: {
@@ -345,7 +348,7 @@ function seedAgentErrorNeedsYou(): Promise<Incident> {
         },
       ],
       needsYou: {
-        kind: "agent-error",
+        kind,
         reason: "The investigator stopped: Session setup failed",
         since: at,
         resumePhase: "investigating",
@@ -373,8 +376,18 @@ test("Try again, Mark as fixed and Close without action need no note", async () 
   expect(close?.json).toMatchObject({ state: "closed-without-action" });
 });
 
-test("Send it back needs a note, and says so when it is missing or too long", async () => {
+test("Send it back is refused where the card doesn't offer it", async () => {
   const inc = await seedAgentErrorNeedsYou();
+  expect(
+    await call("POST", `/api/incidents/${inc.id}/decisions`, {
+      decision: "send-back",
+      note: "Check the sandbox resume policy first",
+    }),
+  ).toEqual({ status: 409, json: { error: "Nothing to send back" } });
+});
+
+test("Send it back needs a note, and says so when it is missing or too long", async () => {
+  const inc = await seedAgentErrorNeedsYou("interrupted");
   const path = `/api/incidents/${inc.id}/decisions`;
   const missing = {
     status: 400,
@@ -412,7 +425,7 @@ test("Send it back needs a note, and says so when it is missing or too long", as
 });
 
 test("a suggested next step is never a decision of its own", async () => {
-  const inc = await seedAgentErrorNeedsYou();
+  const inc = await seedAgentErrorNeedsYou("interrupted");
   const path = `/api/incidents/${inc.id}/decisions`;
   // The card maps each step onto an owner decision; the step kinds are
   // not decisions the route knows.

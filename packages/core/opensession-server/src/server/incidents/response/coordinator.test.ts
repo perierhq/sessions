@@ -3327,6 +3327,15 @@ test("sending back a round no agent worked in keeps the round and briefs the not
       : { kind: "sandbox" as const, provider: "daytona" };
   await advanceIncident(w.incident.id, w.deps);
   expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  // A setup card offers no Send it back; a card that does, raised before
+  // any agent worked in the round.
+  await updateIncident(w.incident.id, (c) => ({
+    ...c,
+    response: {
+      ...c.response!,
+      needsYou: { ...c.response!.needsYou!, kind: "interrupted" },
+    },
+  }));
   fail = false;
   expect(
     await applyOwnerDecision(
@@ -4067,6 +4076,8 @@ test("a proof that stopped is measured again when the signal fails again, instea
 
 test("the card names the open pull requests, and a send-back tells the agent why it came back", async () => {
   const w = await world();
+  // A round left after the send-back, so the card offers it.
+  w.settings.maxRounds = 3;
   w.evaluate("sig-a", "ok");
   w.deps.proof = async (input) => ({
     round: input.round,
@@ -4171,6 +4182,8 @@ test("the investigator's brief lists earlier incidents on its signals with their
 
 test("a send-back is not logged as finished before the agent's new turn has run", async () => {
   const w = await world();
+  // A round left after the send-back, so the card offers it.
+  w.settings.maxRounds = 3;
   w.evaluate("sig-a", "ok");
   w.deps.proof = async (input) => ({
     round: input.round,
@@ -4379,6 +4392,54 @@ test("post-release: an answer to the check's question reaches the check, and its
   expect(i?.state).toBe("watching");
   expect(i?.response?.answer).toBeUndefined();
   expect(i?.response?.postRelease?.status).toBe("running");
+});
+
+test("a decision the needs-you card doesn't offer is refused", async () => {
+  const w = await prNotSeen();
+  // The card offers Try again, Resolve and Close: no Send it back.
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "send-back",
+      "Bo",
+      "Open the pull request this time",
+      w.deps,
+    ),
+  ).toEqual({ error: "Nothing to send back", status: 409 });
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.round).toBe(1);
+});
+
+test("agent options: only the agent's options, the typed Send it back and the menu's Close are accepted", async () => {
+  const w = await world();
+  await advanceIncident(w.incident.id, w.deps);
+  await offerOptions(w.incident.id, [
+    { label: "I'll restore billing", detail: "", action: "answer" },
+    { label: "Close it", detail: "", action: "close" },
+  ]);
+  await toUnproven(w);
+  const next = (await getIncident(w.incident.id))?.response?.next;
+  expect(next).toMatchObject({
+    kind: "needs-you",
+    options: expect.arrayContaining(["send-back", "resolve", "close"]),
+    agentOptions: [{ decision: "answer" }, { decision: "close" }],
+  });
+  // The card's own Resolve is not on a card that offers the agent's.
+  expect(
+    await applyOwnerDecision(w.incident.id, "resolve", "Bo", undefined, w.deps),
+  ).toMatchObject({ status: 409 });
+  expect((await getIncident(w.incident.id))?.state).toBe("needs-you");
+  // Typing on the card still sends it back.
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "send-back",
+      "Bo",
+      "Restore billing first",
+      w.deps,
+    ),
+  ).toMatchObject({ state: "investigating" });
 });
 
 test("agent options: Answer goes to the asking agent as its next prompt, without a new round", async () => {

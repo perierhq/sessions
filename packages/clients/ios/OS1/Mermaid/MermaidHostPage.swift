@@ -6,7 +6,7 @@ import Foundation
 /// browser bundle and the `host.html` that drives it, both copied into the
 /// bundle by both targets. Shipping it rather than fetching it means diagrams
 /// draw offline, on the first launch, against any server — at the cost of
-/// 3.5MB of app and a copy to refresh when mermaid is upgraded (see the README
+/// 5.5MB of app and a copy to refresh when mermaid is upgraded (see the README
 /// next to the resource).
 enum MermaidHostPage {
     /// The local page to load, or nil if the resource is missing — in which

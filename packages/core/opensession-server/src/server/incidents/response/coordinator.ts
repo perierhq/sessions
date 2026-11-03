@@ -17,6 +17,7 @@ import {
   type IncidentProjectSettings,
   type IncidentResponse,
   type LedgerEntry,
+  needsYouCardDecisions,
   OWNER_DECISIONS,
   type OwnerDecision,
   type PastRound,
@@ -3230,6 +3231,17 @@ function decisionAllowed(
 ): boolean {
   const r = c.response;
   if (!r) return false;
+  // While the needs-you card is up, only what it offers: its own options,
+  // or the agent's (options.ts) with the typed Send it back and the menu's
+  // Close.
+  if (c.state === "needs-you" && r.needsYou) {
+    const next = nextActionFor(c, settings);
+    if (
+      next.kind === "needs-you" &&
+      !needsYouCardDecisions(next).includes(decision)
+    )
+      return false;
+  }
   switch (decision) {
     case "stop":
       return (

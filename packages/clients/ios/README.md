@@ -633,7 +633,7 @@ view — a row shows a plain `Image`, so lazy scrolling stays SwiftUI-fast and a
 diagram seen once costs nothing to see again. On iOS the picture is tappable
 into the full-screen viewer and pinch-zooms in place, like any other image.
 
-mermaid ships in the app (`Resources/mermaid/`, ~3.5MB) rather than being
+mermaid ships in the app (`Resources/mermaid/`, ~5.5MB) rather than being
 fetched, so diagrams draw offline and against any server; refresh that copy
 when the repo's mermaid dependency moves (see the README next to it).
 

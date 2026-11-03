@@ -44,7 +44,8 @@ import type { PiRuntimeBinding, PiSdk } from "./pi-runtime-binding";
 import type { PiMcpBridge } from "./pi-mcp-bridge";
 import { gatePstackSkills, skillSearchPaths } from "./skill-paths";
 import { mirrorRemoteContext, type RemoteWorkspace } from "./remote-workspace";
-import { PI_PROVIDER, PI_STATE_DIR, sanitizeId } from "./pi-common";
+import { PI_PROVIDER, PI_STATE_DIR } from "./pi-common";
+import { piRemoteContextDir, piSessionDir } from "./pi-session-files";
 import { GIT_COAUTHOR_ENV } from "./pi-github-env";
 import type { PiResolvedModel } from "./pi-model-routing";
 import type { PiAccountWalk } from "./pi-account-walk";
@@ -186,7 +187,7 @@ export async function preparePiResources(input: PiResourcesInput) {
   const context = remote
     ? await mirrorRemoteContext(
         remote,
-        `${PI_STATE_DIR}/remote-context/${sanitizeId(unifiedSessionId || runKey)}`,
+        piRemoteContextDir(unifiedSessionId || runKey),
       )
     : { dir: cwd, toRemote: (path: string) => path };
   const instructions = buildRunInstructions({
@@ -231,7 +232,8 @@ export async function preparePiResources(input: PiResourcesInput) {
   });
 
   const agentDir = `${PI_STATE_DIR}/agent`;
-  const sessionDir = `${PI_STATE_DIR}/sessions/${sanitizeId(unifiedSessionId || runKey)}`;
+  // A session's dir goes with the session (pi-session-files.ts).
+  const sessionDir = piSessionDir(unifiedSessionId || runKey);
   mkdirSync(agentDir, { recursive: true });
   mkdirSync(sessionDir, { recursive: true });
 
