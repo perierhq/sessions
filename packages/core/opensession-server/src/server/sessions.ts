@@ -18,6 +18,7 @@ import { slackIdToFirstName } from "./shared/user-mappings";
 import { isArchivedId, getArchiveReason } from "./archive";
 import { purgeDraftsForSessions } from "./drafts";
 import { removeSessionScratch } from "./session-scratch";
+import { removePiSessionFiles } from "./pi-session-files";
 import { releasePreviewPathLease } from "./preview-path-leases";
 import { getTitleOverride } from "./title-overrides";
 import { getStatusOverride } from "./status-overrides";
@@ -1775,6 +1776,11 @@ async function removeSessionArtifacts(session: UnifiedSession): Promise<void> {
   // async: a scratch hiccup must never block deletion.
   for (const id of [session.id, ...(session.aliasIds || [])])
     void removeSessionScratch(id);
+  // And neither should pi's own files for it: the native session jsonl every
+  // turn writes and a Sandbox session's mirrored context (pi-session-files.ts).
+  // The session's runs have stopped by now. Never throws.
+  for (const id of [session.id, ...(session.aliasIds || [])])
+    await removePiSessionFiles(id);
   // Its comment threads go with it. Best-effort for the same reason.
   void import("./comment-threads")
     .then(({ deleteSessionThreads }) => deleteSessionThreads(session.id))

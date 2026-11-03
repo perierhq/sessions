@@ -9,6 +9,8 @@
  *  - disk-gc.ts: reclaims rust target/ caches from worktrees we KEEP.
  *  - session-scratch.ts: per-session temp dirs (the shared-/tmp replacement),
  *    swept on this module's ticker with the same session snapshot.
+ *  - pi-session-files.ts: pi's files for sessions that no longer exist,
+ *    swept on the same ticker and snapshot.
  *  - this module: git/session-driven — done work is reaped; idle clean
  *    checkouts are parked while their branch + session remain revivable.
  *
@@ -81,6 +83,10 @@ import type { Repo } from "./config";
 import { configuredPaths } from "./config";
 import { stateDir } from "./paths";
 import { stopAllPortalServices } from "./portal-supervisor";
+import {
+  type PiSessionOwner,
+  sweepOrphanPiSessionFiles,
+} from "./pi-session-files";
 import {
   type ScratchSweepSession,
   sweepSessionScratch,
@@ -994,7 +1000,8 @@ let sweepTimer: ReturnType<typeof setInterval> | null = null;
 /** Start the hourly reap. Call once from the __opensessionBooted block. */
 export function startWorktreeReaper(
   getSessions: () => readonly (WorktreeActivitySession &
-    Partial<ScratchSweepSession>)[] = () => [],
+    Partial<ScratchSweepSession> &
+    Pick<PiSessionOwner, "aliasIds">)[] = () => [],
 ): void {
   if (sweepTimer) return;
   if (process.env.OPENSESSION_WORKTREE_REAPER === "0") {
@@ -1003,7 +1010,8 @@ export function startWorktreeReaper(
   }
   const run = () => {
     let sessions: readonly (WorktreeActivitySession &
-      Partial<ScratchSweepSession>)[];
+      Partial<ScratchSweepSession> &
+      Pick<PiSessionOwner, "aliasIds">)[];
     try {
       sessions = getSessions();
     } catch (e) {
@@ -1023,8 +1031,11 @@ export function startWorktreeReaper(
     // session snapshot; scratch outlives its session only up to the same
     // horizons the worktrees do.
     const scratchSessions = sessions.filter(
-      (s): s is WorktreeActivitySession & ScratchSweepSession =>
-        typeof s.id === "string",
+      (
+        s,
+      ): s is WorktreeActivitySession &
+        ScratchSweepSession &
+        Pick<PiSessionOwner, "aliasIds"> => typeof s.id === "string",
     );
     void sweepSessionScratch(scratchSessions)
       .then((removed) => {
@@ -1034,6 +1045,17 @@ export function startWorktreeReaper(
           );
       })
       .catch((e) => console.error("[session-scratch] sweep failed:", e));
+    // Pi's files for a session deleted while the server was down (normal
+    // deletes remove them directly). Archived sessions are in the snapshot,
+    // so their engine history stays.
+    void sweepOrphanPiSessionFiles(scratchSessions)
+      .then((removed) => {
+        if (removed.length)
+          console.log(
+            `[pi-files] swept ${removed.length} deleted session(s)' pi files`,
+          );
+      })
+      .catch((e) => console.error("[pi-files] sweep failed:", e));
   };
   setTimeout(run, FIRST_SWEEP_DELAY_MS);
   sweepTimer = setInterval(run, SWEEP_INTERVAL_MS);

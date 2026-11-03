@@ -153,6 +153,25 @@ describe("removeTombstonedSessionArtifacts", () => {
 
     expect(existsSync(path)).toBe(false);
   });
+
+  it("removes the session's pi transcript files with it", async () => {
+    const id = `os-deleted-pi-${crypto.randomUUID()}`;
+    writeSession(id, { title: "Deleted with pi files" });
+    const { piSessionDir } = await import("./pi-session-files");
+    const piDir = piSessionDir(id);
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(join(piDir, "2026-07-02T18-00-00_acme.jsonl"), "{}\n");
+
+    const { removeTombstonedSessionArtifacts } = await import(
+      `./sessions.ts?pi-files=${crypto.randomUUID()}`
+    );
+    await removeTombstonedSessionArtifacts({
+      id,
+      source: "opensession",
+    } as UnifiedSession);
+
+    expect(existsSync(piDir)).toBe(false);
+  });
 });
 
 describe("nativeSessionRow", () => {
