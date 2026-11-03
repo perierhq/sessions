@@ -161,7 +161,12 @@ export function buildPiToolset(input: {
   // command saves there (screenshots) are readable by the file tools too.
   const guardedOps = remote
     ? makeRemoteToolOps(remote, hostSkillRoots())
-    : makeGuardedToolOps(cwd, opts.scratchDir ? [opts.scratchDir] : []);
+    : makeGuardedToolOps(
+        cwd,
+        opts.scratchDir ? [opts.scratchDir] : [],
+        // A support session loads its project's skills only.
+        opts.projectSkillsOnly ? [] : hostSkillRoots(),
+      );
   const commandEnv = remote
     ? remoteCommandEnv(
         bashEnv,
