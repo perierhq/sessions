@@ -663,6 +663,24 @@ export type NextAction =
   | { kind: "info"; detail: string; rule?: string }
   | { kind: "done"; detail: string; options: OwnerDecision[] };
 
+/**
+ * The decisions a needs-you card offers. With the agent's own options, the
+ * card offers those, Send it back when its options have it (the card's
+ * typed note) and Close when they have it (the card's menu). Otherwise it
+ * offers its options. The web card shows these (frontend
+ * lib/incidents/next-action.ts), and the server accepts no other decision
+ * while the card is up (coordinator.ts decisionAllowed).
+ */
+export function needsYouCardDecisions(
+  next: Extract<NextAction, { kind: "needs-you" }>,
+): OwnerDecision[] {
+  if (!next.agentOptions?.length) return next.options;
+  const offered = new Set(next.agentOptions.map((o) => o.decision));
+  for (const d of ["send-back", "close"] as const)
+    if (next.options.includes(d)) offered.add(d);
+  return [...offered];
+}
+
 /** `month` is the UTC calendar month, `YYYY-MM`. */
 export interface ProjectSpend {
   month: string;
