@@ -19,6 +19,13 @@ paths = [
 regexTarget = "secret"
 regexes = ['''^C0EMPTY\-1789056158\.000010$''']
 
+[[rules.allowlists]]
+description = "Minified variable names in the vendored mermaid bundle (keyCount,v=m.atlasCount)"
+condition = "AND"
+paths = ['''(^|/)packages/clients/ios/Resources/mermaid/mermaid\.min\.js$''']
+regexTarget = "secret"
+regexes = ['''^v=m\.atlasCount$''']
+
 [[rules]]
 id = "curl-auth-header"
 
