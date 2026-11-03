@@ -217,6 +217,8 @@ function scriptedSdk(script: Script) {
           log.push(`steer:${text}`);
           fake.queue.push(text);
           fake.pendingMessageCount = fake.queue.length;
+          // Pi announces every change to its steering queue.
+          listener({ type: "queue_update", steering: [...fake.queue] });
         },
         clearQueue: () => {
           log.push("clearQueue");
@@ -1250,6 +1252,11 @@ describe("runPi turn characterization (scripted fake SDK)", () => {
           ctx.emit(assistantEnd([], { stopReason: "aborted" }));
         },
       });
+      // Its own nudge (and pi's queue_update for it) is not progress: one
+      // nudge, then the stop.
+      expect(turn.log.filter((line) => line.startsWith("steer:"))).toHaveLength(
+        1,
+      );
       const steer = turn.log.find((line) => line.startsWith("steer:"))!;
       // Fenced like every other injection, so it never reads as the person.
       expect(steer).toContain("<opensession:context");

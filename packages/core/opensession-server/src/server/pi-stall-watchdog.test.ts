@@ -1,7 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { describe, expect, test } from "bun:test";
+import { normalizePiConfig } from "./pi-config";
 import {
   PiStallWatchdog,
   PI_STALL_STEER_MINUTES,
@@ -93,6 +91,20 @@ describe("PiStallWatchdog", () => {
     expect(dog.stopReason).toBeUndefined();
   });
 
+  test("bookkeeping events are not progress", () => {
+    const { dog, clock, steers, stops } = watchdog();
+    dog.start();
+    clock.advance(10 * MIN);
+    expect(steers).toHaveLength(1);
+    // Pi answers the nudge's own enqueue with a queue_update.
+    dog.observe({ type: "queue_update" });
+    dog.observe({ type: "session_info_changed" });
+    dog.observe({ type: "entry_appended" });
+    clock.advance(5 * MIN);
+    expect(steers).toHaveLength(1);
+    expect(stops).toHaveLength(1);
+  });
+
   test("never fires while a tool call runs, however long it is quiet", () => {
     const { dog, clock, steers, stops } = watchdog();
     dog.start();
@@ -124,46 +136,35 @@ describe("PiStallWatchdog", () => {
 });
 
 describe("readPiStallConfig", () => {
-  const dirs: string[] = [];
-  afterEach(() => {
-    for (const dir of dirs.splice(0))
-      rmSync(dir, { recursive: true, force: true });
-  });
-  const config = (body: unknown) => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-stall-"));
-    dirs.push(dir);
-    const path = join(dir, "pi.json");
-    writeFileSync(path, JSON.stringify(body));
-    return path;
-  };
-
   test("defaults to 10 then 5 minutes", () => {
     expect(PI_STALL_STEER_MINUTES).toBe(10);
     expect(PI_STALL_STOP_MINUTES).toBe(5);
-    expect(readPiStallConfig(config({ enabled: true }))).toEqual({
-      steerAfterMs: 10 * MIN,
-      stopAfterMs: 5 * MIN,
-    });
-    expect(readPiStallConfig(join(tmpdir(), "missing-pi-stall.json"))).toEqual({
-      steerAfterMs: 10 * MIN,
-      stopAfterMs: 5 * MIN,
-    });
+    for (const config of [
+      normalizePiConfig({ enabled: true }),
+      null,
+      // Nonsense is dropped by pi-config and falls back to the defaults.
+      normalizePiConfig({ stallSteerMinutes: "ten", stallStopMinutes: -1 }),
+    ])
+      expect(readPiStallConfig(config)).toEqual({
+        steerAfterMs: 10 * MIN,
+        stopAfterMs: 5 * MIN,
+      });
   });
 
   test("reads both from pi.json, and 0 turns the watchdog off", () => {
     expect(
       readPiStallConfig(
-        config({ enabled: true, stallSteerMinutes: 20, stallStopMinutes: 2 }),
+        normalizePiConfig({
+          enabled: true,
+          stallSteerMinutes: 20,
+          stallStopMinutes: 2,
+        }),
       ),
     ).toEqual({ steerAfterMs: 20 * MIN, stopAfterMs: 2 * MIN });
     expect(
-      readPiStallConfig(config({ enabled: true, stallSteerMinutes: 0 })),
-    ).toBeNull();
-    // Nonsense falls back to the defaults.
-    expect(
       readPiStallConfig(
-        config({ stallSteerMinutes: "ten", stallStopMinutes: -1 }),
+        normalizePiConfig({ enabled: true, stallSteerMinutes: 0 }),
       ),
-    ).toEqual({ steerAfterMs: 10 * MIN, stopAfterMs: 5 * MIN });
+    ).toBeNull();
   });
 });

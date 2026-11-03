@@ -19,8 +19,7 @@
  * `stallStopMinutes`, default 5); `stallSteerMinutes: 0` turns it off.
  */
 
-import { piConfigPath } from "./pi-config";
-import { readJsonFileShared } from "./shared/json-file-cache";
+import { readPiEngineConfig, type PiEngineConfig } from "./pi-config";
 
 export const PI_STALL_STEER_MINUTES = 10;
 export const PI_STALL_STOP_MINUTES = 5;
@@ -40,25 +39,17 @@ export interface PiStallConfig {
   stopAfterMs: number;
 }
 
-/** The watchdog's timing from pi.json, or null when it is turned off. */
+/** The watchdog's timing from pi.json (pi-config.ts), or null when it is
+ *  turned off. */
 export function readPiStallConfig(
-  path: string = piConfigPath(),
+  config: Pick<
+    PiEngineConfig,
+    "stallSteerMinutes" | "stallStopMinutes"
+  > | null = readPiEngineConfig(),
 ): PiStallConfig | null {
-  let raw: Record<string, unknown> = {};
-  try {
-    const parsed = readJsonFileShared(path);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-      raw = parsed as Record<string, unknown>;
-  } catch {}
-  const minutes = (value: unknown, fallback: number) =>
-    typeof value === "number" && Number.isFinite(value) && value >= 0
-      ? value
-      : fallback;
-  const steer = minutes(raw.stallSteerMinutes, PI_STALL_STEER_MINUTES);
+  const steer = config?.stallSteerMinutes ?? PI_STALL_STEER_MINUTES;
   if (steer === 0) return null;
-  const stop =
-    minutes(raw.stallStopMinutes, PI_STALL_STOP_MINUTES) ||
-    PI_STALL_STOP_MINUTES;
+  const stop = config?.stallStopMinutes || PI_STALL_STOP_MINUTES;
   return { steerAfterMs: steer * 60_000, stopAfterMs: stop * 60_000 };
 }
 
@@ -71,6 +62,24 @@ function span(ms: number): string {
   const m = Math.round(ms / 6_000) / 10;
   return `${m} minute${m === 1 ? "" : "s"}`;
 }
+
+/** Engine events that mean the turn is moving. */
+const PROGRESS_EVENTS = new Set([
+  "agent_start",
+  "agent_end",
+  "turn_start",
+  "turn_end",
+  "message_start",
+  "message_update",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+  "compaction_start",
+  "compaction_end",
+  "auto_retry_start",
+  "auto_retry_end",
+]);
 
 export class PiStallWatchdog {
   private readonly steerAfterMs: number;
@@ -108,9 +117,13 @@ export class PiStallWatchdog {
     this.rearm();
   }
 
-  /** One engine event of the turn. */
+  /** One engine event of the turn. Only events that show the model or a
+   *  tool working count; bookkeeping (pi's queue_update for the nudge's own
+   *  enqueue, session info, custom entries) would otherwise reset the
+   *  watchdog and it would nudge forever without stopping. */
   observe(ev: { type: string; toolCallId?: unknown }): void {
     if (this.disposed || this.reason) return;
+    if (!PROGRESS_EVENTS.has(ev.type)) return;
     if (ev.type === "tool_execution_start" && ev.toolCallId != null)
       this.runningTools.add(String(ev.toolCallId));
     else if (ev.type === "tool_execution_end" && ev.toolCallId != null)

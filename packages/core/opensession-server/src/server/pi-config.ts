@@ -49,6 +49,10 @@ export interface PiEngineConfig {
   enabled: boolean;
   /** Retired compatibility field. Model selection is engine-neutral. */
   pickerModels: string[];
+  /** Stall watchdog minutes (pi-stall-watchdog.ts); absent = its default.
+   *  Only non-negative numbers are kept. */
+  stallSteerMinutes?: number;
+  stallStopMinutes?: number;
 }
 
 /** Pure normalization (exported for tests): raw JSON → typed config. Tolerant
@@ -76,7 +80,18 @@ export function normalizePiConfig(raw: unknown): PiEngineConfig {
   const pickerModels = Array.isArray(r.pickerModels)
     ? r.pickerModels.filter(isPiModelId)
     : [];
-  return { enabled: r.enabled === true, pickerModels };
+  const minutes = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? value
+      : undefined;
+  const stallSteerMinutes = minutes(r.stallSteerMinutes);
+  const stallStopMinutes = minutes(r.stallStopMinutes);
+  return {
+    enabled: r.enabled === true,
+    pickerModels,
+    ...(stallSteerMinutes !== undefined ? { stallSteerMinutes } : {}),
+    ...(stallStopMinutes !== undefined ? { stallStopMinutes } : {}),
+  };
 }
 
 let warnedObsoleteTransport = false;
