@@ -815,10 +815,15 @@ export function parseRemoteCommandOutput(
     .trim()
     .split(/\s+/);
   const output = stdout.slice(0, at);
-  const total = Number(size) || output.length;
+  const kept = output.length > outputCap ? output.slice(-outputCap) : output;
+  // The wrapper's size is bytes (wc -c), so compare bytes: counted in
+  // characters, any multi-byte output (agent-browser's check mark) read as
+  // a few characters dropped.
+  const keptBytes = Buffer.byteLength(kept);
+  const total = Number(size) || keptBytes;
   return {
-    output: output.length > outputCap ? output.slice(-outputCap) : output,
-    droppedChars: Math.max(0, total - Math.min(output.length, outputCap)),
+    output: kept,
+    droppedChars: Math.max(0, total - keptBytes),
     exitCode: code === undefined ? null : Number(code),
     timedOut: timedOut === "1",
   };
