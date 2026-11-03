@@ -22,6 +22,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   __setOwnershipRuntimeForTest,
+  AGENT_BROWSER_MAX_OUTPUT,
   CONTAINER_PS_FORMAT,
   containersMemory,
   containerShimDir,
@@ -814,7 +815,7 @@ describe("agent-browser shim", () => {
     const file = join(bin, "agent-browser");
     writeFileSync(
       file,
-      '#!/bin/sh\nprintf "%s\\n" "$@" "session=$AGENT_BROWSER_SESSION" "tmp=$TMPDIR" "idle=$AGENT_BROWSER_IDLE_TIMEOUT_MS" "shots=$AGENT_BROWSER_SCREENSHOT_DIR"\n',
+      '#!/bin/sh\nprintf "%s\\n" "$@" "session=$AGENT_BROWSER_SESSION" "tmp=$TMPDIR" "idle=$AGENT_BROWSER_IDLE_TIMEOUT_MS" "shots=$AGENT_BROWSER_SCREENSHOT_DIR" "boundaries=$AGENT_BROWSER_CONTENT_BOUNDARIES" "max=$AGENT_BROWSER_MAX_OUTPUT" "downloads=$AGENT_BROWSER_DOWNLOAD_PATH"\n',
     );
     chmodSync(file, 0o755);
   }
@@ -882,6 +883,35 @@ describe("agent-browser shim", () => {
     expect(a).toContain(`shots=${scratch}`);
   });
 
+  test("marks page content, caps it below the bash tool's cap, and keeps downloads in scratch", async () => {
+    fakeAgentBrowser();
+    const scratch = "/home/acme/.opensession/session-scratch/os-1";
+    const out = await runBrowser(["snapshot"], {
+      ...sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
+      OPENSESSION_SCRATCH: scratch,
+    });
+    expect(out).toContain("boundaries=1");
+    // Under the bash tool's 40k tail cap, so a big snapshot loses its tail
+    // with agent-browser's own note instead of its head.
+    expect(out).toContain(`max=${AGENT_BROWSER_MAX_OUTPUT}`);
+    expect(AGENT_BROWSER_MAX_OUTPUT).toBeLessThan(40_000);
+    expect(out).toContain(`downloads=${scratch}`);
+  });
+
+  test("keeps the caller's own output and download settings", async () => {
+    fakeAgentBrowser();
+    const out = await runBrowser(["snapshot"], {
+      ...sessionOwnershipEnv("os-1", `${bin}:/usr/bin:/bin`),
+      OPENSESSION_SCRATCH: "/srv/acme-scratch",
+      AGENT_BROWSER_CONTENT_BOUNDARIES: "0",
+      AGENT_BROWSER_MAX_OUTPUT: "500",
+      AGENT_BROWSER_DOWNLOAD_PATH: "/srv/acme-downloads",
+    });
+    expect(out).toContain("boundaries=0");
+    expect(out).toContain("max=500");
+    expect(out).toContain("downloads=/srv/acme-downloads");
+  });
+
   test("keeps the caller's own session and idle timeout", async () => {
     fakeAgentBrowser();
     const env = {
@@ -914,6 +944,9 @@ describe("agent-browser shim", () => {
       "tmp=/var/acme-tmp",
       "idle=",
       "shots=",
+      "boundaries=",
+      "max=",
+      "downloads=",
     ]);
   });
 });

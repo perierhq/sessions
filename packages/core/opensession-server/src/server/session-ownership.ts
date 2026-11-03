@@ -842,6 +842,11 @@ exec "$real" "$@"
 export const AGENT_BROWSER_CLI = "agent-browser";
 /** How long a session's idle browser keeps running before it shuts down. */
 export const AGENT_BROWSER_IDLE_TIMEOUT_MS = 30 * 60_000;
+/** Most characters of page output one agent-browser command prints. Below
+ *  the bash tool's 40k cap, which keeps the tail: a whole-page snapshot then
+ *  loses its end with agent-browser's own "truncated" note instead of its
+ *  head without one. */
+export const AGENT_BROWSER_MAX_OUTPUT = 30_000;
 
 /**
  * The `agent-browser` shim (see the module comment). POSIX sh. In a session,
@@ -853,10 +858,14 @@ export const AGENT_BROWSER_IDLE_TIMEOUT_MS = 30 * 60_000;
  * at TMPDIR/org.chromium.Chromium.XXXXXX/SingletonSocket, and with TMPDIR
  * at the session scratch that is longer than a Unix socket path may be, so
  * every launch failed with "Socket path too long". Screenshots taken without
- * a path stay in the session scratch (AGENT_BROWSER_SCREENSHOT_DIR). A
- * daemon keeps the environment of the command that started it, so the
- * setting has to be on every call (html-render/headless.ts starts its own
- * Chrome the same way).
+ * a path stay in the session scratch (AGENT_BROWSER_SCREENSHOT_DIR), and
+ * so do downloads (AGENT_BROWSER_DOWNLOAD_PATH). Page output comes wrapped
+ * in agent-browser's boundary markers (AGENT_BROWSER_CONTENT_BOUNDARIES), so
+ * the model can tell page text from the tool's own, and capped at
+ * AGENT_BROWSER_MAX_OUTPUT. A daemon keeps the environment of the command
+ * that started it, so the settings have to be on every call
+ * (html-render/headless.ts starts its own Chrome the same way). Every
+ * variable here is one agent-browser 0.27 reads.
  */
 export function agentBrowserShimScript(shimDir: string): string {
   return `#!/bin/sh
@@ -878,6 +887,20 @@ ${shimRealLookup(AGENT_BROWSER_CLI, shimDir)}if [ -n "\${OPENSESSION_SESSION_ID:
   if [ -z "\${AGENT_BROWSER_SCREENSHOT_DIR:-}" ] && [ -n "\${OPENSESSION_SCRATCH:-}" ]; then
     AGENT_BROWSER_SCREENSHOT_DIR=$OPENSESSION_SCRATCH
     export AGENT_BROWSER_SCREENSHOT_DIR
+  fi
+  if [ -z "\${AGENT_BROWSER_DOWNLOAD_PATH:-}" ] && [ -n "\${OPENSESSION_SCRATCH:-}" ]; then
+    AGENT_BROWSER_DOWNLOAD_PATH=$OPENSESSION_SCRATCH
+    export AGENT_BROWSER_DOWNLOAD_PATH
+  fi
+  # Page text arrives between markers, and a whole-page snapshot cannot
+  # flood the turn.
+  if [ -z "\${AGENT_BROWSER_CONTENT_BOUNDARIES:-}" ]; then
+    AGENT_BROWSER_CONTENT_BOUNDARIES=1
+    export AGENT_BROWSER_CONTENT_BOUNDARIES
+  fi
+  if [ -z "\${AGENT_BROWSER_MAX_OUTPUT:-}" ]; then
+    AGENT_BROWSER_MAX_OUTPUT=${AGENT_BROWSER_MAX_OUTPUT}
+    export AGENT_BROWSER_MAX_OUTPUT
   fi
   TMPDIR=/tmp
   export TMPDIR
