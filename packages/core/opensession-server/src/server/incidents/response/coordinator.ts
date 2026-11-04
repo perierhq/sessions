@@ -85,6 +85,7 @@ import {
   handReleaseAvailable,
   manualRollbackAvailable,
   nextActionFor,
+  releasedPatch,
   rereadsReport,
   roundRan,
   earlierVerifierFindings,
@@ -142,7 +143,13 @@ import {
   type ResponseStep,
   type ResponseView,
 } from "./steps";
-import { type PrLookup, knownPrs, prsMovedOutside } from "./outside";
+import {
+  type PrLookup,
+  knownPrs,
+  mergedFixFor,
+  mergedFixMoved,
+  prsMovedOutside,
+} from "./outside";
 
 export const RESPONSE_TICK_MS = 5_000;
 export const MAX_STEPS_PER_ADVANCE = 8;
@@ -816,10 +823,11 @@ export async function buildResponseView(
       : undefined;
   // Waiting on the owner: its pull requests as the PR cache has them, for
   // one merged or closed outside Sessions.
+  const lookup: PrLookup = (url) => d.pullRequest(incident.project, url);
   const prs =
-    incident.state === "needs-you" && r
-      ? knownPrs(r, (url) => d.pullRequest(incident.project, url))
-      : undefined;
+    incident.state === "needs-you" && r ? knownPrs(r, lookup) : undefined;
+  const mergedFix =
+    incident.state === "needs-you" ? mergedFixFor(incident, lookup) : undefined;
 
   return {
     now,
@@ -837,6 +845,7 @@ export async function buildResponseView(
     ...(handReleasePr ? { handReleasePr } : {}),
     ...(releasePrs ? { releasePrs } : {}),
     ...(prs ? { prs } : {}),
+    ...(mergedFix ? { mergedFix } : {}),
   };
 }
 
@@ -3122,7 +3131,10 @@ function needsAttention(
         waitingMayBeStale(incident) ||
         waitingOnChecks(incident) ||
         waitingOnActions(incident) ||
-        (!!lookup && !!r && prsMovedOutside(incident, knownPrs(r, lookup)))
+        (!!lookup &&
+          !!r &&
+          (prsMovedOutside(incident, knownPrs(r, lookup)) ||
+            mergedFixMoved(incident, lookup)))
       );
     case "done":
       return working;
@@ -3233,6 +3245,7 @@ const REFUSALS: Record<OwnerDecision, string> = {
   "close-prs": "No pull request is waiting for you",
   "keep-prs": "No pull request is waiting for you",
   "release-watch": "No verified pull request to release",
+  "released-watch": "No merged fix to watch",
 };
 
 const STOPPABLE_PHASES: ReadonlySet<ResponsePhase> = new Set([
@@ -3317,6 +3330,9 @@ function decisionAllowed(
           r.needsYou?.kind === "rounds" ||
           offersOption(c, settings, "release-watch"))
       );
+    case "released-watch":
+      // A fix merged already, which the card offers (checked above).
+      return c.state === "needs-you" && !!r.needsYou?.mergedFix;
     case "send-back":
       return c.state === "needs-you" || c.state === "veto";
     case "retry":
@@ -3487,6 +3503,19 @@ function decisionMove(
           handRelease: { by, at, prUrl, number },
           release: undefined,
           watchFailures: undefined,
+        }),
+      );
+    }
+    case "released-watch": {
+      // decisionAllowed checked the card offers the merged fix.
+      const fix = base.needsYou!.mergedFix!;
+      return move(
+        "deploying",
+        `${by} released PR #${fix.number}; Sessions watches the signal`,
+        patched(base, {
+          ...releasedPatch(c, fix, by),
+          phase: "deploying",
+          settledPrs: [...(base.settledPrs ?? []), fix.url],
         }),
       );
     }

@@ -3855,7 +3855,10 @@ test("the fix loop records the failed check the incident opened on", async () =>
 });
 
 /** An after-release fix the verifier could not prove: the unproven card. */
-async function toUnproven(w: Awaited<ReturnType<typeof world>>) {
+async function toUnproven(
+  w: Awaited<ReturnType<typeof world>>,
+  reasons = ["Only the release can show it"],
+) {
   w.evaluate("sig-a", "ok");
   w.deps.proof = async (input) => ({
     round: input.round,
@@ -3888,7 +3891,7 @@ async function toUnproven(w: Awaited<ReturnType<typeof world>>) {
     fence({
       ...goodVerifier,
       verdict: "not-certain",
-      reasons: ["Only the release can show it"],
+      reasons,
       proofAccepted: false,
     }),
   );
@@ -4058,6 +4061,82 @@ test("a pull request merged outside Sessions while the card waits goes to the re
     ]),
   );
   // Sessions merged and deployed nothing.
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+});
+
+test("I released it, watch: a fix the verifier named, merged meanwhile, is offered and goes to the release watch", async () => {
+  const w = await world();
+  await toUnproven(w, [
+    "Only the release can show it; PR #9 takes another way to the same fix",
+  ]);
+  // Not offered while nothing merged.
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "released-watch",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toEqual({ error: "No merged fix to watch", status: 409 });
+  __setCoordinatorDepsForTest(w.deps);
+  w.clock += 60_000;
+  const mergedAt = new Date(w.clock).toISOString();
+  w.deps.pullRequest = (_project, url) =>
+    url === "https://github.com/acme/web/pull/9"
+      ? { state: "MERGED", updatedAt: mergedAt, headSha: "fed9876" }
+      : url === "https://github.com/acme/web/pull/12"
+        ? { state: "OPEN", updatedAt: mergedAt }
+        : undefined;
+  expect(await runResponseTick(w.clock, w.deps)).toContain(w.incident.id);
+  await __waitForCoordinatorForTest();
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.next).toMatchObject({
+    kind: "needs-you",
+    options: [
+      "released-watch",
+      "approve",
+      "release-watch",
+      "send-back",
+      "resolve",
+      "close",
+    ],
+    reason: expect.stringContaining(
+      "PR #9, named in this round, is merged. If it's released, Sessions can watch the signal.",
+    ),
+  });
+  expect(i?.response?.ledger.at(-1)?.detail).toBe(
+    "PR #9, named in this round, is merged",
+  );
+  // Told once.
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "released-watch",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toMatchObject({ state: "deploying" });
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("watching");
+  expect(i?.response).toMatchObject({
+    merge: { number: 9, sha: "fed9876", status: "merged", at: mergedAt },
+    handRelease: { by: "Bo", number: 9 },
+    candidate: { prUrl: "https://github.com/acme/web/pull/9", claims: [] },
+    settledPrs: ["https://github.com/acme/web/pull/9"],
+  });
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      "Bo: released-watch",
+      "Sessions can't see acme's releases, so the watch starts at the merge of PR #9",
+    ]),
+  );
   expect(w.merges).toEqual([]);
   expect(w.actions).toEqual([]);
 });

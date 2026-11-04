@@ -922,7 +922,16 @@ test("closed without action with a code fix still open asks what to do with it",
 
 const agentCard = (
   agentOptions: AgentOption[],
-  over: { agentOptions?: undefined } = {},
+  over: {
+    agentOptions?: undefined;
+    options?: (
+      | "release-watch"
+      | "released-watch"
+      | "send-back"
+      | "resolve"
+      | "close"
+    )[];
+  } = {},
 ) => {
   const card = nextCard({
     ...base,
@@ -1034,4 +1043,32 @@ test("needs you: without agent options the card offers its own, as before", () =
     "Close without action",
   );
   expect(card.menu).toBeUndefined();
+});
+
+test("needs you: I released it, watch stays on the card after the agent's options; the card offers it among its own too", () => {
+  const card = agentCard([merge, another], {
+    options: ["released-watch", "send-back", "resolve", "close"],
+  });
+  expect(card.question.options?.map((o) => o.label)).toEqual([
+    "Yes, merge it",
+    "Look at the cache",
+    "I released it, watch",
+  ]);
+  expect(card.picks["I released it, watch"]).toEqual({
+    kind: "decision",
+    decision: "released-watch",
+  });
+  expect(card.decisions).toEqual(["merge", "send-back", "released-watch"]);
+  expect(card.groups).toEqual([
+    { label: "Recommended", count: 1 },
+    { count: 2 },
+  ]);
+  const own = agentCard([], {
+    agentOptions: undefined,
+    options: ["released-watch", "send-back", "resolve", "close"],
+  });
+  expect(own.picks["I released it, watch"]).toEqual({
+    kind: "decision",
+    decision: "released-watch",
+  });
 });

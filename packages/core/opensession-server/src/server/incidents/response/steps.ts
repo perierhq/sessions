@@ -9,6 +9,7 @@ import type {
   IncidentResponse,
   InvestigatorReport,
   LedgerKind,
+  MergedFix,
   NeedsYouKind,
   PostReleaseReport,
   PolicyDecision,
@@ -86,6 +87,9 @@ export interface ResponseView {
    *  requests (any round's) as the PR cache has them, the ones it doesn't
    *  know left out. */
   prs?: KnownPr[];
+  /** Only while the incident waits on its owner: a fix already merged the
+   *  owner may say they released (outside.ts `mergedFixFor`). */
+  mergedFix?: MergedFix;
 }
 
 /** One of the incident's pull requests as the PR cache has it. */
