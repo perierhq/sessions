@@ -1234,6 +1234,44 @@ test("the post-release check is read-only, says what went out, and asks for its 
   expect(text).not.toContain("s3cret");
 });
 
+test("the post-release brief judges only the part the incident opened on", () => {
+  const text = buildPostReleasePrompt({
+    incident,
+    signal,
+    candidate,
+    after: "Deploy of 9f9f9f9 at 12:10 UTC",
+    releasedAt: "2026-10-20T12:10:00.000Z",
+    mode: "ask",
+    openedOn: "search: slow",
+    recent: [
+      {
+        at: "2026-10-20T12:31:00.000Z",
+        result: "fail",
+        detail: "price-watches: slow",
+      },
+    ],
+    hypotheses: [],
+  });
+  expect(text).toContain("## The part this incident is about");
+  expect(text).toContain("search: slow");
+  expect(text).toContain(
+    "Judge only search. A failure of another part after the release is not this fix's failure",
+  );
+  // Without a part to tell apart, the section is left out.
+  const plain = buildPostReleasePrompt({
+    incident,
+    signal,
+    candidate,
+    after: "Deploy of 9f9f9f9 at 12:10 UTC",
+    releasedAt: "2026-10-20T12:10:00.000Z",
+    mode: "ask",
+    openedOn: "HTTP 503",
+    recent: [],
+    hypotheses: [],
+  });
+  expect(plain).not.toContain("## The part this incident is about");
+});
+
 test("the owner's notes follow a prompt as data, oldest first; none leave it as it is", () => {
   expect(withOwnerNotes("Brief", [])).toBe("Brief");
   const out = withOwnerNotes("Brief", [

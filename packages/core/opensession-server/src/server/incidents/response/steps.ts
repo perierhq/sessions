@@ -209,7 +209,14 @@ export type ResponseStep =
       /** How long it lasts; the project's watch window when absent. */
       ms?: number;
     }
-  | { step: "resolve"; fixedBy: FixedBy; detail: string }
+  | {
+      step: "resolve";
+      fixedBy: FixedBy;
+      detail: string;
+      /** The signal still fails on another part than the one the incident
+       *  opened on: its newest such failure, for an incident of its own. */
+      split?: { at: string; detail: string };
+    }
   | { step: "merge-note" }
   /** A card whose pull request's checks GitHub Actions never ran: look
    *  whether Actions works again, and if so re-run them and verify the fix

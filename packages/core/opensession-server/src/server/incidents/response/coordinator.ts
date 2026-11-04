@@ -63,7 +63,12 @@ import {
   updateIncident,
 } from "../incident-store";
 import { appendEvent, transitionIncident } from "../lifecycle";
-import { recentObservations } from "../observation-store";
+import { applyIncidentOps } from "../engine";
+import {
+  MAIN_LANE,
+  queryObservations,
+  recentObservations,
+} from "../observation-store";
 import { trailingPasses } from "../rules";
 import { getSignalEvaluation } from "../signal-runtime";
 import { getSignal, setSignalRunOnCheck } from "../signal-store";
@@ -85,6 +90,7 @@ import {
   currentAgent,
   decideNextStep,
   failedCheckAt,
+  failingParts,
   handReleaseAvailable,
   manualRollbackAvailable,
   nextActionFor,
@@ -212,6 +218,13 @@ export interface CoordinatorDeps {
   ) =>
     | Pick<KnownPr, "state" | "updatedAt" | "mergedAt" | "headSha">
     | undefined;
+  /** The newest failed main-lane check of a signal at or shortly before
+   *  `atMs`, from its stored history: the check an incident opened on when
+   *  the recent ones no longer reach back that far. */
+  openedCheck: (
+    signalId: string,
+    atMs: number,
+  ) => Promise<Observation | undefined>;
   /** Saves the findings an accepted report carries, unless the run already
    *  showed some with `show_findings` this round. Never throws. */
   applyReportFindings: (req: {
@@ -222,6 +235,9 @@ export interface CoordinatorDeps {
     claims: string[];
   }) => Promise<void>;
 }
+
+/** How far before an incident opened its opening check is looked for. */
+const OPENED_CHECK_SPAN_MS = 30 * 60_000;
 
 /** Branches release tools open their release pull requests from. */
 const RELEASE_BRANCH = /^(release-please--|changeset-release\/|release\/)/;
@@ -284,6 +300,12 @@ function defaultDeps(): CoordinatorDeps {
           });
       return out;
     },
+    openedCheck: async (signalId, atMs) =>
+      (
+        await queryObservations(signalId, atMs - OPENED_CHECK_SPAN_MS, atMs, {
+          lane: MAIN_LANE,
+        })
+      ).findLast((o) => o.result === "fail"),
     agentsPaused: (project) =>
       peekProjectSettings(project)?.agentsPaused === true,
     ready: () => serviceReadiness().phase === "ready" && !isShuttingDown(),
@@ -901,7 +923,10 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
     let incident = await d.getIncident(incidentId);
     if (!incident) return;
     const settings = await d.settings(incident.project);
-    if (i === 0) await retireSuperseded(incident, d);
+    if (i === 0) {
+      await retireSuperseded(incident, d);
+      incident = await recoverOpenedOn(incident, d, settings);
+    }
     incident = await syncAgents(incident, d, settings);
     for (const run of incident.response?.agents ?? [])
       sessionIndex.set(run.sessionId, incident.id);
@@ -921,6 +946,48 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
     }
     if (!more) return;
   }
+}
+
+/** Incidents whose opening check was looked up in the stored history and
+ *  not found: not looked up again while the process runs. */
+const openedOnMissing = new Set<string>();
+
+/**
+ * Records the check an incident opened on when its fix loop started
+ * without one (an incident older than `openedOn`, or one whose opening
+ * check the recent checks no longer reach), from the signal's stored
+ * history, so another part's failure is still told apart from it.
+ */
+async function recoverOpenedOn(
+  incident: Incident,
+  d: CoordinatorDeps,
+  settings: IncidentProjectSettings,
+): Promise<Incident> {
+  const r = incident.response;
+  if (!r || r.openedOn || !isOpenIncident(incident)) return incident;
+  if (openedOnMissing.has(incident.id)) return incident;
+  const openedMs = Date.parse(incident.openedAt);
+  if (failedCheckAt(d.recent(incident.primarySignalId), openedMs))
+    return incident;
+  let found: Observation | undefined;
+  try {
+    found = await d.openedCheck(incident.primarySignalId, openedMs);
+  } catch (error) {
+    console.warn(
+      `[incidents] ${incident.id}: opening check not read: ${errorMessage(error)}`,
+    );
+    return incident;
+  }
+  if (!found?.detail.trim()) {
+    openedOnMissing.add(incident.id);
+    return incident;
+  }
+  const openedOn = { at: found.at, detail: found.detail.trim() };
+  const next = await write(incident.id, d, settings, null, (c, base) => ({
+    incident: c,
+    response: base.openedOn ? base : { ...base, openedOn },
+  }));
+  return next ?? incident;
 }
 
 /**
@@ -1419,6 +1486,10 @@ async function startAgent(
       mode: access.mode,
       connections,
       recent: view.primaryRecent,
+      openedOn:
+        r.openedOn?.detail ??
+        failedCheckAt(view.primaryRecent, Date.parse(incident.openedAt))
+          ?.detail,
       hypotheses: (["investigator", "verifier"] as const).flatMap((who) =>
         (findingSetOf(r, who, round)?.blocks ?? []).flatMap((b) =>
           b.kind === "hypothesis" ? [b.statement] : [],
@@ -2955,7 +3026,85 @@ async function resolveIncident(
       };
     },
   );
-  return next !== null;
+  if (next === null) return false;
+  if (step.split) await splitOff(view, step.split, d);
+  return true;
+}
+
+/**
+ * The signal still fails on another part than the one the resolved
+ * incident opened on: that part gets an incident of its own, or joins the
+ * open one the signal already has. Never while the project pauses new
+ * incidents. Best effort: the resolve stands whatever happens here.
+ */
+async function splitOff(
+  view: ResponseView,
+  split: { at: string; detail: string },
+  d: CoordinatorDeps,
+): Promise<void> {
+  const { incident, settings } = view;
+  const signal = view.signals.get(incident.primarySignalId);
+  const evaluation = view.evaluations.get(incident.primarySignalId);
+  if (!signal || !evaluation) return;
+  try {
+    const open = (await d.listIncidents({ project: incident.project }))
+      .filter(
+        (i) =>
+          i.id !== incident.id &&
+          isOpenIncident(i) &&
+          i.signalIds.includes(signal.id),
+      )
+      .sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt))[0];
+    if (!open && settings.incidentsPaused) return;
+    const at = iso(d.now());
+    const parts = failingParts(split.detail);
+    const [touched] = await applyIncidentOps(
+      open
+        ? [
+            {
+              op: "event",
+              incidentId: open.id,
+              signalId: signal.id,
+              signalState: evaluation.state,
+              detail: split.detail,
+            },
+          ]
+        : [
+            {
+              op: "open",
+              incident: {
+                project: incident.project,
+                title: parts.length
+                  ? `${signal.name}, ${parts.join(", ")}`
+                  : signal.name,
+                state: "investigating",
+                severity: signal.severity,
+                owner: incident.owner,
+                openedBy: { kind: "rule", ref: signal.id },
+                signalIds: [signal.id],
+                primarySignalId: signal.id,
+                at,
+                detail: `${split.detail}, after ${incident.title} was fixed`,
+              },
+            },
+          ],
+      at,
+    );
+    if (!touched) return;
+    const detail = `${split.detail} went to an incident of its own, ${touched.id}`;
+    await write(incident.id, d, settings, null, (c, base, now) => ({
+      incident: event(c, "state", now, detail),
+      response: ledger(base, now, {
+        actor: "sessions",
+        kind: "policy",
+        detail,
+      }),
+    }));
+  } catch (error) {
+    console.warn(
+      `[incidents] ${incident.id}: ${split.detail} not split off: ${errorMessage(error)}`,
+    );
+  }
 }
 
 async function mergeNote(

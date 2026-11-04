@@ -9,6 +9,7 @@ import type {
 } from "../../../shared/incident-response";
 import type {
   Incident,
+  Observation,
   Signal,
   SignalEvaluation,
 } from "../../../shared/incidents";
@@ -4024,6 +4025,102 @@ test("I'll release it myself: a fix still failing after the watch comes back to 
   expect(back?.response?.settledPrs).toEqual([
     "https://github.com/acme/web/pull/12",
   ]);
+});
+
+test("I'll release it myself: another part failing after the release goes to an incident of its own; the fix resolves", async () => {
+  const w = await world();
+  const recent: Observation[] = [
+    {
+      at: new Date(START - 60_000).toISOString(),
+      result: "fail",
+      detail: "search: slow",
+    },
+  ];
+  w.deps.recent = () => recent;
+  await toUnproven(w);
+  expect((await getIncident(w.incident.id))?.response?.openedOn?.detail).toBe(
+    "search: slow",
+  );
+  w.deps.prState = () => "MERGED";
+  w.clock += 60_000;
+  await applyOwnerDecision(
+    w.incident.id,
+    "release-watch",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("watching");
+  // After the release another part fails, a spell; Search stays clear.
+  for (const m of [1, 2, 3])
+    recent.push({
+      at: new Date(w.clock + m * 60_000).toISOString(),
+      result: "fail",
+      detail: "price-watches: slow",
+    });
+  w.clock += 4 * 60_000;
+  w.evaluate("sig-a", "failing");
+  await w.finishCheck("confirmed");
+  let i = await getIncident(w.incident.id);
+  expect(i?.response?.postRelease).toMatchObject({
+    status: "confirmed",
+    otherParts: [{ detail: "price-watches: slow" }],
+  });
+  expect(i?.state).toBe("watching");
+  w.clock += 6 * 3_600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("resolved");
+  const others = (await listIncidents({ project: "acme" })).filter(
+    (o) => o.id !== w.incident.id,
+  );
+  expect(others).toHaveLength(1);
+  expect(others[0]).toMatchObject({
+    title: "Search, price-watches",
+    state: "investigating",
+    primarySignalId: "sig-a",
+    openedBy: { kind: "rule", ref: "sig-a" },
+  });
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining(
+        `price-watches: slow went to an incident of its own, ${others[0]!.id}`,
+      ),
+    ]),
+  );
+  // Resolving it again opens nothing more: the other part's incident is
+  // open, so a later split attaches to it.
+  expect(
+    (await listIncidents({ project: "acme" })).filter(
+      (o) => o.state !== "resolved",
+    ),
+  ).toHaveLength(1);
+});
+
+test("an incident whose opening check the recent checks no longer reach takes it from the stored history", async () => {
+  const w = await world();
+  const asked: number[] = [];
+  w.deps.openedCheck = async (_signal, atMs) => {
+    asked.push(atMs);
+    return {
+      at: new Date(atMs - 30_000).toISOString(),
+      result: "fail",
+      detail: "search: slow",
+    };
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.openedOn).toEqual({
+    at: new Date(START - 30_000).toISOString(),
+    detail: "search: slow",
+  });
+  expect(asked[0]).toBe(START);
+  // Looked up once.
+  await advanceIncident(w.incident.id, w.deps);
+  expect(asked).toHaveLength(1);
 });
 
 test("I'll release it myself: a pull request closed without merging comes back to the owner", async () => {

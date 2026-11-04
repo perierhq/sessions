@@ -2377,6 +2377,56 @@ function openedDetail(view: ResponseView): string {
   );
 }
 
+/** How many other parts the post-release record keeps. */
+const OTHER_PARTS_MAX = 3;
+
+/** The primary signal's failures after `sinceMs` on other parts than the
+ *  one the incident opened on: the newest of each, oldest first. Empty
+ *  when the incident's part can't be told. */
+function otherPartsSince(
+  view: ResponseView,
+  sinceMs: number,
+): Array<{ at: string; detail: string }> {
+  const opened = openedDetail(view);
+  const newest = new Map<string, string>();
+  for (const o of failuresSince(view.primaryRecent, sinceMs)) {
+    const detail = o.detail.trim();
+    if (!detail || samePart(opened, detail)) continue;
+    newest.delete(detail);
+    newest.set(detail, o.at);
+  }
+  return [...newest]
+    .map(([detail, at]) => ({ at, detail }))
+    .slice(-OTHER_PARTS_MAX);
+}
+
+/** The primary signal fails since `sinceMs` on other parts only: the
+ *  newest such failure while it is still a problem (for an incident of its
+ *  own), or `{}` once it is not. Undefined when the part the incident
+ *  opened on failed since, nothing failed, or the parts can't be told. */
+function otherPartOnly(
+  view: ResponseView,
+  sinceMs: number,
+): { split?: { at: string; detail: string } } | undefined {
+  const opened = openedDetail(view);
+  if (!failingParts(opened).length) return undefined;
+  const failed = failuresSince(view.primaryRecent, sinceMs);
+  if (!failed.length) return undefined;
+  if (failed.some((o) => samePart(opened, o.detail.trim()))) return undefined;
+  const state = view.evaluations.get(view.incident.primarySignalId)?.state;
+  if (!state || !PROBLEM_STATES.has(state)) return {};
+  const last = failed.at(-1)!;
+  return { split: { at: last.at, detail: last.detail.trim() } };
+}
+
+/** "; price-watches: slow still fails and goes to an incident of its
+ *  own" for a resolve line. */
+function splitWords(split: { detail: string } | undefined): string {
+  return split
+    ? `; ${split.detail} still fails, another part, and goes to an incident of its own`
+    : "";
+}
+
 /** Whether no post-release check runs for this round's fix: a rollback
  *  has nothing new to check. */
 function noCheck(view: ResponseView): boolean {
@@ -2506,11 +2556,17 @@ function postReleaseStep(view: ResponseView): ResponseStep | undefined {
     "not-confirmed": "could not confirm the fix in production",
     regressed: "found production worse after the release",
   };
+  // The check judges the part the incident opened on; other parts that
+  // failed after the release are noted and don't count against the fix.
+  const others = otherPartsSince(view, Date.parse(releasedWhat(view).at));
+  const noted = others.length
+    ? `. Other parts failed after the release and don't count against the fix: ${others.map((o) => o.detail).join("; ")}`
+    : "";
   return {
     step: "transition",
     to: null,
     phase: "watching",
-    detail: `Post-release check ${words[report.verdict]}${report.reasons[0] ? `: ${report.reasons[0]}` : ""}`,
+    detail: `Post-release check ${words[report.verdict]}${report.reasons[0] ? `: ${report.reasons[0].replace(/\.$/, "")}` : ""}${noted}`,
     log: "verdict",
     patch: {
       postRelease: {
@@ -2519,6 +2575,7 @@ function postReleaseStep(view: ResponseView): ResponseStep | undefined {
         at: iso(view.now),
         reasons: report.reasons,
         checks: report.checks,
+        ...(others.length ? { otherParts: others } : {}),
       },
     },
   };
@@ -2631,9 +2688,11 @@ function handWatch(view: ResponseView): ResponseStep {
     };
   }
   if (!(view.now >= Date.parse(watch.deadline))) return NONE;
-  // Still failing at the end, by the signal's own word.
+  // Still failing at the end, by the signal's own word, unless only
+  // other parts failed since the release: those go to their own incident.
   const state = view.evaluations.get(view.incident.primarySignalId)?.state;
-  if (state && PROBLEM_STATES.has(state))
+  const other = otherPartOnly(view, started);
+  if (state && PROBLEM_STATES.has(state) && !other)
     return {
       step: "needs-you",
       kind: "post-release",
@@ -2643,7 +2702,8 @@ function handWatch(view: ResponseView): ResponseStep {
   return {
     step: "resolve",
     fixedBy: "agents-with-you",
-    detail: `${name} passed the ${spanWords(Date.parse(watch.deadline) - started)} watch after the release${checkedWord(r)}`,
+    detail: `${name} passed the ${spanWords(Date.parse(watch.deadline) - started)} watch after the release${checkedWord(r)}${splitWords(other?.split)}`,
+    ...(other?.split ? { split: other.split } : {}),
   };
 }
 
@@ -2673,6 +2733,19 @@ function watchingStep(view: ResponseView): ResponseStep {
   }
   if (!(view.now >= Date.parse(r.watch.deadline))) return NONE;
   const name = primaryName(view);
+  // Only other parts than the one the incident opened on failed through
+  // the watch: the fix held; they go to an incident of their own.
+  const other = otherPartOnly(view, started);
+  const othersGreen = watched
+    .filter((id) => id !== view.incident.primarySignalId)
+    .every((id) => view.evaluations.get(id)?.state === "ok");
+  if (other && othersGreen && !checkPending(view))
+    return {
+      step: "resolve",
+      fixedBy: r.ownerTouched ? "agents-with-you" : "agents",
+      detail: `${name} stayed clear of ${failingParts(openedDetail(view)).join(", ")} through the watch after the release${checkedWord(r)}${splitWords(other.split)}`,
+      ...(other.split ? { split: other.split } : {}),
+    };
   const state = primaryState(view);
   const steps = r.candidate
     ? changeFacts({ plan: r.candidate.plan, settings, prFiles: [] })

@@ -1081,6 +1081,24 @@ test("after release: the check's status, reason and blocks, with what it checked
       evidence: "Request log after the release",
     },
   ]);
+  expect(view?.otherParts).toBeNull();
+  // Other parts that failed after the release are named apart.
+  expect(
+    afterReleasePage({
+      response: {
+        ...response,
+        postRelease: {
+          ...response.postRelease!,
+          otherParts: [
+            { at: T("13:05"), detail: "price-watches: slow" },
+            { at: T("13:08"), detail: "billing: down" },
+          ],
+        },
+      },
+    })?.otherParts,
+  ).toBe(
+    "Other parts failed after the release and don't count against the fix: price-watches: slow; billing: down",
+  );
   // The round's own page never shows the check's blocks.
   expect(findingsPage({ state: "watching", response })).toBeNull();
   const { postRelease: _postRelease, ...unchecked } = response;

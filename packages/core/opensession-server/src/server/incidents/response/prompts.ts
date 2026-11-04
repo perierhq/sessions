@@ -40,6 +40,7 @@ import { MCP_SEARCH_TOOL } from "@tellahq/opensession-protocol/tool-presentation
 import type { ConnectionProblem } from "../access/mcp";
 import { briefLine, findingsBrief } from "../findings/catalog";
 import { redactSignal } from "../signal-validation";
+import { failingParts } from "./watch";
 import {
   REPORT_FENCE,
   REPORT_REPAIRS,
@@ -1122,6 +1123,8 @@ export interface PostReleasePromptInput {
   /** The round's hypotheses, from the investigator's and the verifier's
    *  findings. */
   hypotheses: string[];
+  /** The failed check the incident opened on, when Sessions has it. */
+  openedOn?: string;
 }
 
 /** The most recent checks the post-release brief lists. */
@@ -1161,6 +1164,17 @@ export function buildPostReleasePrompt(input: PostReleasePromptInput): string {
     ),
     "",
   );
+  const parts = failingParts(input.openedOn ?? "");
+  if (parts.length)
+    out.push(
+      "## The part this incident is about",
+      "",
+      ...dataBlock("The failed check it opened on", [
+        dataText(input.openedOn!, 300),
+      ]),
+      `Judge only ${dataText(parts.join(", "), 200)}. A failure of another part after the release is not this fix's failure: don't say not-confirmed or regressed for it. Name it in a reason; Sessions opens an incident of its own for it.`,
+      "",
+    );
   out.push(...connectionLines(input.connections));
   out.push(
     "## What to check",

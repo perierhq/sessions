@@ -187,6 +187,9 @@ export function FindingsSection({
             {after.reason ? (
               <p className={FINDINGS_AFTER_REASON}>{after.reason}</p>
             ) : null}
+            {after.otherParts ? (
+              <p className={FINDINGS_AFTER_REASON}>{after.otherParts}</p>
+            ) : null}
             {after.page ? (
               <p className={FINDINGS_SECTION_BYLINE}>{after.page.byline}</p>
             ) : null}

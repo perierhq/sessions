@@ -366,6 +366,10 @@ export interface PostReleaseCheck {
   after: string;
   reasons?: string[];
   checks?: ClaimCheck[];
+  /** Other parts than the one the incident opened on that failed after
+   *  the release, newest failure of each: they don't count against the
+   *  fix and go to an incident of their own. */
+  otherParts?: Array<{ at: string; detail: string }>;
 }
 
 export type AgentWorkspace =
