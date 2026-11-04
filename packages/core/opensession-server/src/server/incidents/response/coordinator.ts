@@ -28,6 +28,7 @@ import {
   type ResponsePhase,
   SEND_BACK_NOTE_MAX,
   type SetupFix,
+  checkBudgetUsd,
   roundOfMax,
 } from "../../../shared/incident-response";
 import { findingSetOf, previousFindingSet } from "../../../shared/findings";
@@ -118,7 +119,7 @@ import {
 } from "./merge";
 import { independenceBetween, resolveRoleModels } from "./models";
 import { agentOptionsFor, mergeBlocked, offersOption } from "./options";
-import { budgetProblem } from "./policy";
+import { budgetProblem, usd } from "./policy";
 import {
   getProjectSettings,
   latestForwardRelease,
@@ -135,6 +136,7 @@ import {
   INCIDENT_DOCS_DIR,
   type PrOverlap,
   buildAnswerMessage,
+  buildCheckWrapUp,
   buildInvestigatorPrompt,
   buildPostReleasePrompt,
   buildReminder,
@@ -1567,6 +1569,7 @@ async function startAgent(
       mode: access.mode,
       connections,
       recent: view.primaryRecent,
+      budgetUsd: checkBudgetUsd(settings.budget),
       openedOn:
         r.openedOn?.detail ??
         failedCheckAt(view.primaryRecent, Date.parse(incident.openedAt))
@@ -2110,32 +2113,38 @@ async function messageAgent(
   }
   const answer = step.message === "answer" ? r.answer : undefined;
   if (step.message === "answer" && !answer) return false;
+  const wrapUp = step.message === "wrap-up";
   // Notes the owner added since the agents' last prompt go with this one.
   const notes = (r.ownerNotes ?? []).filter((n) => !n.sentAt);
   const message = answer
     ? buildAnswerMessage(answer.by, answer.note)
-    : sendBack
-      ? buildSendBackMessage(
-          r.round,
-          r.maxRounds,
-          r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
-          // The send-back raised the round before this message, so the
-          // round sent back is the one before r.round.
-          run.role === "investigator"
-            ? previousFindingSet(r, "investigator", r.round)
-            : undefined,
-          await prOverlaps(incident, d),
-        )
-      : buildReminder(
-          // A run refused before every issue was kept has its first one.
-          run.reportIssues ?? [
-            {
-              problem: run.reportProblem ?? "missing",
-              error: run.reportError ?? "No incident-report block",
+    : wrapUp
+      ? buildCheckWrapUp(checkBudgetUsd(settings.budget))
+      : sendBack
+        ? buildSendBackMessage(
+            r.round,
+            r.maxRounds,
+            r.sendBack ?? {
+              kind: "reopened",
+              detail: "The work was sent back",
             },
-          ],
-          run.role,
-        );
+            // The send-back raised the round before this message, so the
+            // round sent back is the one before r.round.
+            run.role === "investigator"
+              ? previousFindingSet(r, "investigator", r.round)
+              : undefined,
+            await prOverlaps(incident, d),
+          )
+        : buildReminder(
+            // A run refused before every issue was kept has its first one.
+            run.reportIssues ?? [
+              {
+                problem: run.reportProblem ?? "missing",
+                error: run.reportError ?? "No incident-report block",
+              },
+            ],
+            run.role,
+          );
   const text = withOwnerNotes(message, notes);
   await agents.send(
     run.sessionId,
@@ -2150,6 +2159,15 @@ async function messageAgent(
     (c, base, at) => {
       const agentsNext = base.agents.map((a) => {
         if (a.sessionId !== run.sessionId) return a;
+        if (wrapUp)
+          return patched(a, {
+            status: "running",
+            turnSentAt: at,
+            endedAt: undefined,
+            cancelledFor: undefined,
+            error: undefined,
+            wrappedUp: true,
+          });
         if (answer)
           // The same round goes on: the report it gave is replaced by the
           // one it writes after reading the answer.
@@ -2193,9 +2211,11 @@ async function messageAgent(
       const who = run.check ? "post-release check" : run.role;
       const detail = answer
         ? `Passed ${answer.by}'s answer to the ${who}`
-        : sendBack
-          ? `Sent the ${run.role} round ${roundOfMax(base.round, base.maxRounds)}`
-          : `Asked the ${who} for a valid report`;
+        : wrapUp
+          ? `Asked the post-release check to report from what it has: it reached its ${usd(checkBudgetUsd(settings.budget))} budget`
+          : sendBack
+            ? `Sent the ${run.role} round ${roundOfMax(base.round, base.maxRounds)}`
+            : `Asked the ${who} for a valid report`;
       const response = ledger(
         patched(base, {
           agents: agentsNext,
@@ -2388,7 +2408,7 @@ async function cancelAgents(
           response = ledger(response, at, {
             actor: "sessions",
             kind: step.for === "budget" ? "budget" : "agent-finished",
-            detail: `${roleLabel(run.role)} stopped: ${step.reason}`,
+            detail: `${run.check ? "Post-release check" : roleLabel(run.role)} stopped: ${step.reason}`,
             sessionId: run.sessionId,
           });
       return {

@@ -40,7 +40,7 @@ import { MCP_SEARCH_TOOL } from "@tellahq/opensession-protocol/tool-presentation
 import type { ConnectionProblem } from "../access/mcp";
 import { briefLine, findingsBrief } from "../findings/catalog";
 import { redactSignal } from "../signal-validation";
-import { failingParts } from "./watch";
+import { failingParts, samePart } from "./watch";
 import {
   REPORT_FENCE,
   REPORT_REPAIRS,
@@ -1125,15 +1125,55 @@ export interface PostReleasePromptInput {
   hypotheses: string[];
   /** The failed check the incident opened on, when Sessions has it. */
   openedOn?: string;
+  /** What the check may spend (IncidentBudget.perCheckUsd). */
+  budgetUsd: number;
 }
 
 /** The most recent checks the post-release brief lists. */
-const CHECK_SAMPLES = 15;
+const CHECK_SAMPLES = 10;
+/** The round's hypotheses the post-release brief lists. */
+const CHECK_HYPOTHESES = 3;
+
+/** What the signal's checks since the release say, for the post-release
+ *  brief: how many failed, the incident's own part, and other parts. */
+function watchLines(
+  recent: readonly Observation[],
+  releasedAt: string,
+  openedOn: string | undefined,
+): string[] {
+  const since = Date.parse(releasedAt);
+  const after = recent.filter((o) => !o.lane && Date.parse(o.at) > since);
+  const failed = after.filter((o) => o.result === "fail");
+  const lines = [
+    `- Since the release: ${after.length} ${after.length === 1 ? "check" : "checks"}, ${failed.length} failed.`,
+  ];
+  const parts = failingParts(openedOn ?? "");
+  if (!parts.length) return lines;
+  const own = failed.filter((o) => samePart(openedOn!, o.detail.trim()));
+  const last = own.at(-1);
+  lines.push(
+    last
+      ? `- ${parts.join(", ")}: failed ${own.length} ${own.length === 1 ? "time" : "times"} since the release, last at ${hhmmUtc(last.at)} UTC (${dataText(last.detail, 200)}).`
+      : `- ${parts.join(", ")}: no failure since the release.`,
+  );
+  const others = new Map<string, number>();
+  for (const o of failed)
+    if (!samePart(openedOn!, o.detail.trim()))
+      others.set(o.detail.trim(), (others.get(o.detail.trim()) ?? 0) + 1);
+  if (others.size)
+    lines.push(
+      `- Other parts that failed since the release: ${[...others]
+        .map(([detail, n]) => `${dataText(detail, 200)} (${n})`)
+        .join("; ")}.`,
+    );
+  return lines;
+}
 
 /**
- * The post-release check's brief: the fix is live; check, read-only, that
- * production now behaves as the fix said it would, with the access the
- * incident's verifier has, and say confirmed, not-confirmed or regressed.
+ * The post-release check's brief: the fix is live; starting from what the
+ * watch already shows, check, read-only and within its own budget, that
+ * the part the incident is about now works, and say confirmed,
+ * not-confirmed or regressed.
  */
 export function buildPostReleasePrompt(input: PostReleasePromptInput): string {
   const { incident, candidate } = input;
@@ -1142,10 +1182,13 @@ export function buildPostReleasePrompt(input: PostReleasePromptInput): string {
   const recent = mainLane(input.recent, RING_FOR_FAILURES).slice(
     -CHECK_SAMPLES,
   );
+  const parts = failingParts(input.openedOn ?? "");
   const out: string[] = [];
   out.push(`# Check production after the fix for incident ${incident.id}`, "");
   out.push(
-    "You are the post-release check. The fix is live. Check, read-only, that production now behaves as the fix said it would. Do not edit, commit, push, deploy, restart or roll back anything: Sessions and the owner decide what happens next from your report.",
+    "You are the post-release check. The fix is live. Confirm, read-only, that the part this incident is about works now. Start from what the watch already shows below and make only the few checks it leaves open. Do not edit, commit, push, deploy, restart or roll back anything: Sessions and the owner decide what happens next from your report.",
+    "",
+    `You have about ${usd(input.budgetUsd)} for this check. Prefer reading what is there over running new work, and stop as soon as you can decide. If you can't decide within it, say not-confirmed with the reason "budget".`,
     "",
     DATA_NOTE,
     "",
@@ -1156,15 +1199,19 @@ export function buildPostReleasePrompt(input: PostReleasePromptInput): string {
     ...(prUrl ? [`- PR: ${prUrl}`] : []),
     `- Live since ${input.releasedAt}: ${dataText(input.after, 200)}`,
     "",
-    ...describeSignal(signal),
+    "## What the watch shows",
     "",
     ...dataBlock(
-      "The signal's latest checks, oldest first (at · result · detail)",
+      `${signal.name}'s checks`,
+      watchLines(input.recent, input.releasedAt, input.openedOn),
+    ),
+    "",
+    ...dataBlock(
+      "Its latest checks, oldest first (at · result · detail)",
       recent.length ? recent.map(sampleLine) : ["- none yet"],
     ),
     "",
   );
-  const parts = failingParts(input.openedOn ?? "");
   if (parts.length)
     out.push(
       "## The part this incident is about",
@@ -1175,17 +1222,16 @@ export function buildPostReleasePrompt(input: PostReleasePromptInput): string {
       `Judge only ${dataText(parts.join(", "), 200)}. A failure of another part after the release is not this fix's failure: don't say not-confirmed or regressed for it. Name it in a reason; Sessions opens an incident of its own for it.`,
       "",
     );
+  out.push(...describeSignal(signal), "");
   out.push(...connectionLines(input.connections));
   out.push(
     "## What to check",
     "",
-    "1. Is the fix really live? Find what production runs now (a version endpoint, the deployed image or tag, the logs after the release). If it isn't live, say not-confirmed and say so.",
-    "2. The signal's own check, from production: run it or read its latest results above, and any check the fix declared.",
-    "3. Each claim and hypothesis below, as production shows it now.",
-    "4. The logs around the release: new errors, or the old failure coming back.",
-    "Use what your access gives you (host commands, fetches through the production egress, borrowed credentials, log connections). Prefer a few precise checks; filter large logs in the command and keep only the lines that matter.",
+    "1. Is the fix really live? One look: a version endpoint, the deployed tag or image, or the release. If it isn't live, say not-confirmed and say so.",
+    "2. The part this incident is about: the watch above, and only if it doesn't settle it, one run of the signal's own check from production.",
+    "3. Only if doubt is left: the claims below, and the logs right after the release for the old failure. Filter logs in the command and keep only the lines that matter.",
     "",
-    "Say confirmed only if the fix is live and every check you could make shows it working. Say regressed if production is worse than before or broken in a new way. Otherwise say not-confirmed. Sessions never rolls back on your word: the owner decides.",
+    "Say confirmed if the fix is live and the part works. Say regressed if production is worse than before or broken in a new way. Otherwise say not-confirmed. Sessions never rolls back on your word: the owner decides.",
     "",
   );
   if (candidate.check.kind === "after-deploy")
@@ -1204,11 +1250,12 @@ export function buildPostReleasePrompt(input: PostReleasePromptInput): string {
     ),
     "",
   );
-  if (input.hypotheses.length)
+  const hypotheses = input.hypotheses.slice(0, CHECK_HYPOTHESES);
+  if (hypotheses.length)
     out.push(
       ...dataBlock(
         "The round's hypotheses",
-        input.hypotheses.map((h) => `- ${dataText(h, 300)}`),
+        hypotheses.map((h) => `- ${dataText(h, 300)}`),
       ),
       "",
     );
@@ -1216,7 +1263,7 @@ export function buildPostReleasePrompt(input: PostReleasePromptInput): string {
   out.push(
     "## Report",
     "",
-    `End your final message with exactly one fenced block tagged ${REPORT_FENCE}. verdict is confirmed, not-confirmed or regressed; give at least one reason unless it is confirmed. List what you checked in checks, each claim above with its text unchanged; status is verified, refuted or unverifiable, with what you saw as evidence.`,
+    `End your final message with exactly one fenced block tagged ${REPORT_FENCE}. verdict is confirmed, not-confirmed or regressed; give at least one reason unless it is confirmed. List each claim above in checks with its text unchanged; status is verified, refuted or unverifiable, with what you saw as evidence.`,
     "Write each reason as one plain sentence the owner can read without the code.",
     "",
     jsonBlock(REPORT_FENCE, {
@@ -1231,6 +1278,15 @@ export function buildPostReleasePrompt(input: PostReleasePromptInput): string {
     }),
   );
   return out.join("\n");
+}
+
+/** The post-release check stopped at its budget: report now, from what it
+ *  has. */
+export function buildCheckWrapUp(budgetUsd: number): string {
+  return [
+    `This check reached its ${usd(budgetUsd)} budget. Stop checking: run nothing more.`,
+    'From what you have seen, end your reply with your incident-report block as your brief describes. If what you have does not settle it, say not-confirmed with the reason "budget".',
+  ].join(" ");
 }
 
 /** The rules a report is refused for, as `reportRules` words them: the

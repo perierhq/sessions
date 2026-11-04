@@ -25,6 +25,7 @@ import type {
 import { claimKey, findingSetOf } from "../../../shared/findings";
 import {
   WATCH_FAILURES_MAX,
+  checkBudgetUsd,
   roundOfMax,
 } from "../../../shared/incident-response";
 import {
@@ -59,7 +60,7 @@ import {
   spellLength,
   spellStarts,
 } from "./watch";
-import { budgetProblem, evaluatePolicy, fullyDown } from "./policy";
+import { budgetProblem, evaluatePolicy, fullyDown, usd } from "./policy";
 import { projectAction, releaseToRollBack } from "./project-settings";
 import {
   REPORT_RULES,
@@ -82,6 +83,7 @@ import {
   PR_REFRESH_MS,
   ROLLBACK_FIRST_WINDOW_MS,
   CHECK_MAX_MS,
+  CHECK_WRAP_UP_FACTOR,
   RELEASE_WAIT_MS,
   type ResponseStep,
   type ResponseView,
@@ -2529,6 +2531,22 @@ function postReleaseStep(view: ResponseView): ResponseStep | undefined {
   const answered = answerStep(view, run);
   if (answered) return answered;
   const status = statusOf(view, run);
+  // Its own budget: at it, it is stopped and asked once to report from
+  // what it has; past half again, or stopped once more, the watch decides.
+  const cap = checkBudgetUsd(view.settings.budget);
+  const capped = `The post-release check reached its ${usd(cap)} budget`;
+  if (status === "cancelled" && run.cancelledFor === "check-budget")
+    return run.wrappedUp
+      ? skip(
+          `not confirmed: it reached its ${usd(cap)} budget before it could decide`,
+        )
+      : { step: "message-agent", sessionId: run.sessionId, message: "wrap-up" };
+  const spent = view.agents.get(run.sessionId)?.costUsd ?? run.costUsd;
+  if (
+    (status === "running" || status === "waiting") &&
+    spent >= (run.wrappedUp ? cap * CHECK_WRAP_UP_FACTOR : cap)
+  )
+    return { step: "cancel-agents", reason: capped, for: "check-budget" };
   if (status === "waiting") return agentProblem(view, run);
   if (status === "error")
     return skip(

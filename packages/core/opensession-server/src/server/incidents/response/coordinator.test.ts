@@ -4696,6 +4696,34 @@ test("post-release: a regressed verdict goes to the owner with its evidence, nev
   expect(w.actions.map((a) => a.actionId)).toEqual(["deploy"]);
 });
 
+test("post-release: at its own budget the check is stopped and asked once to report; its report is used", async () => {
+  const w = await world();
+  await w.toWatching();
+  let i = await getIncident(w.incident.id);
+  const id = i?.response?.postRelease?.sessionId;
+  expect(id).toBeDefined();
+  w.live(id!, { costUsd: 2.4 });
+  w.clock += 5_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.cancels).toContain(id!);
+  expect(w.sends.at(-1)).toMatchObject({ id });
+  expect(w.sends.at(-1)?.message).toContain("reached its $2 budget");
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.agents.find((a) => a.sessionId === id)).toMatchObject({
+    status: "running",
+    wrappedUp: true,
+  });
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      "Post-release check stopped: The post-release check reached its $2 budget",
+      "Asked the post-release check to report from what it has: it reached its $2 budget",
+    ]),
+  );
+  await w.finishCheck("confirmed");
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.postRelease?.status).toBe("confirmed");
+});
+
 test("post-release: an answer to the check's question reaches the check, and its old verdict doesn't raise the card again", async () => {
   const w = await world();
   await w.toWatching();

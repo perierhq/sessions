@@ -126,6 +126,9 @@ export const RELEASE_WAIT_MS = 24 * 3_600_000;
 /** How long the post-release check may run before Sessions stops it and
  *  the watch decides alone. */
 export const CHECK_MAX_MS = 1_800_000;
+/** A post-release check asked to report at its budget is stopped for good
+ *  once it spends this many times its budget. */
+export const CHECK_WRAP_UP_FACTOR = 1.5;
 
 export type ResponseStep =
   | { step: "none" }
@@ -148,8 +151,9 @@ export type ResponseStep =
       step: "message-agent";
       sessionId: string;
       /** `answer`: the owner's answer to the agent's question, as its
-       *  next prompt in the same round. */
-      message: "send-back" | "reminder" | "answer";
+       *  next prompt in the same round. `wrap-up`: a post-release check
+       *  stopped at its budget, asked to report from what it has. */
+      message: "send-back" | "reminder" | "answer" | "wrap-up";
     }
   | {
       step: "record-report";

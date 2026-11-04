@@ -188,7 +188,7 @@ export function evaluatePolicy(input: {
 }
 
 /** Dollars without trailing zeros: `$20`, `$12.5`. */
-function usd(amount: number): string {
+export function usd(amount: number): string {
   return `$${Number(amount.toFixed(2))}`;
 }
 

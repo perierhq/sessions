@@ -27,6 +27,8 @@ test.each([
     "night",
   ],
   [{ budget: { perIncidentUsd: 50, perMonthUsd: 20 } }, "perMonthUsd"],
+  [{ budget: { perCheckUsd: 0.1 } }, "perCheckUsd"],
+  [{ budget: { perIncidentUsd: 5, perCheckUsd: 8 } }, "perCheckUsd"],
   [{ neverWithoutYou: ["migration", "migration"] }, "neverWithoutYou"],
 ])("rejects policy %j", (input, message) => {
   expect(validatePolicyFields(input, current)).toEqual({
@@ -104,6 +106,29 @@ test("placeholders cannot sit inside quotes", () => {
       "runner-prod",
     ]),
   ).toMatchObject({ id: "deploy" });
+});
+
+test("a post-release check's budget: from $0.50 to the per-incident budget; raising it loosens", () => {
+  expect(
+    validatePolicyFields({ budget: { perCheckUsd: 3 } }, current),
+  ).toMatchObject({ budget: { ...DEFAULT_BUDGET, perCheckUsd: 3 } });
+  // Unset stays unset.
+  expect(
+    validatePolicyFields({ budget: { perIncidentUsd: 30 } }, current),
+  ).toEqual({ budget: { ...DEFAULT_BUDGET, perIncidentUsd: 30 } });
+  const before = defaultProjectDocument("acme-web", "t").incidents;
+  expect(
+    loosenedFields(before, {
+      ...before,
+      budget: { ...before.budget, perCheckUsd: 5 },
+    }),
+  ).toEqual(["budget"]);
+  expect(
+    loosenedFields(
+      { ...before, budget: { ...before.budget, perCheckUsd: 5 } },
+      { ...before, budget: { ...before.budget, perCheckUsd: 1 } },
+    ),
+  ).toEqual([]);
 });
 
 test("loosening is judged on the policy fields alone", () => {

@@ -69,6 +69,21 @@ export interface NightRule {
 export interface IncidentBudget {
   perIncidentUsd: number;
   perMonthUsd: number;
+  /** What one post-release check may spend: it only checks, so less than
+   *  an investigator or a verifier. Absent: DEFAULT_CHECK_BUDGET_USD, at
+   *  most the per-incident budget. */
+  perCheckUsd?: number;
+}
+
+/** A post-release check's budget when the project sets none. */
+export const DEFAULT_CHECK_BUDGET_USD = 2;
+
+/** What one post-release check may spend under `budget`. */
+export function checkBudgetUsd(budget: IncidentBudget): number {
+  return Math.min(
+    budget.perCheckUsd ?? DEFAULT_CHECK_BUDGET_USD,
+    budget.perIncidentUsd,
+  );
 }
 
 export interface IncidentRelease {
@@ -389,7 +404,9 @@ export type CancelReason =
   | "budget"
   | "timeout"
   | "stopped"
-  | "closed";
+  | "closed"
+  /** A post-release check at its own budget (IncidentBudget.perCheckUsd). */
+  | "check-budget";
 
 /**
  * One run per agent session. A send-back reuses the investigator's run and
@@ -443,6 +460,9 @@ export interface AgentRun {
   /** Values Sessions repaired in an otherwise valid report. */
   reportWarnings?: string[];
   reminded: boolean;
+  /** A post-release check stopped at its budget and asked once to report
+   *  from what it has. */
+  wrappedUp?: boolean;
   /** The session that took over the next round, when this one's access
    *  was widened after it started. */
   supersededBy?: string;

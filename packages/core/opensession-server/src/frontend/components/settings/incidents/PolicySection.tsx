@@ -7,6 +7,7 @@ import {
   type NightRule,
   type ProjectSpend,
   type RedactedProjectSettings,
+  checkBudgetUsd,
 } from "../../../../shared/incident-response";
 import type { ProjectSettingsInput } from "../../../lib/api/incidents";
 import { errorMessage } from "../../../lib/error-message";
@@ -71,7 +72,12 @@ export type PolicyInput = Pick<
   | "night"
 >;
 type Save = (input: PolicyInput) => Promise<void>;
-type DialogKind = "night" | "never" | "per-incident" | "per-month";
+type DialogKind =
+  | "night"
+  | "never"
+  | "per-incident"
+  | "per-month"
+  | "per-check";
 
 const PER_INCIDENT_MAX = 1000;
 const PER_MONTH_MAX = 100_000;
@@ -228,6 +234,12 @@ export function PolicySection({
           value={formatUsd(settings.budget.perMonthUsd, { whole: true })}
           onClick={() => open("per-month")}
         />
+        <SettingLinkRow
+          title="Per post-release check"
+          description="It only checks production, so it stops sooner"
+          value={formatUsd(checkBudgetUsd(settings.budget))}
+          onClick={() => open("per-check")}
+        />
       </SettingCard>
 
       <NightDialog
@@ -246,9 +258,19 @@ export function PolicySection({
       />
       <BudgetDialog
         key={`budget-${opened}`}
-        open={dialog === "per-incident" || dialog === "per-month"}
+        open={
+          dialog === "per-incident" ||
+          dialog === "per-month" ||
+          dialog === "per-check"
+        }
         onClose={close}
-        which={dialog === "per-month" ? "month" : "incident"}
+        which={
+          dialog === "per-month"
+            ? "month"
+            : dialog === "per-check"
+              ? "check"
+              : "incident"
+        }
         budget={settings.budget}
         onSave={onSave}
       />
@@ -412,20 +434,33 @@ export function BudgetDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  which: "incident" | "month";
+  which: "incident" | "month" | "check";
   budget: RedactedProjectSettings["budget"];
   onSave: Save;
 }) {
   const current =
-    which === "incident" ? budget.perIncidentUsd : budget.perMonthUsd;
+    which === "incident"
+      ? budget.perIncidentUsd
+      : which === "check"
+        ? checkBudgetUsd(budget)
+        : budget.perMonthUsd;
   const [text, setText] = useState(String(current));
   const { busy, error, save } = useDialogSave(onSave, onClose);
   const hintId = useId();
-  const min = which === "incident" ? 0.5 : budget.perIncidentUsd;
-  const max = which === "incident" ? PER_INCIDENT_MAX : PER_MONTH_MAX;
+  const min = which === "month" ? budget.perIncidentUsd : 0.5;
+  const max =
+    which === "incident"
+      ? PER_INCIDENT_MAX
+      : which === "check"
+        ? budget.perIncidentUsd
+        : PER_MONTH_MAX;
   const amount = parseUsd(text, min, max);
   const title =
-    which === "incident" ? "Budget per incident" : "Budget per month";
+    which === "incident"
+      ? "Budget per incident"
+      : which === "check"
+        ? "Budget per post-release check"
+        : "Budget per month";
   return (
     <SettingsDialog
       open={open}
@@ -440,7 +475,9 @@ export function BudgetDialog({
           budget:
             which === "incident"
               ? { ...budget, perIncidentUsd: amount }
-              : { ...budget, perMonthUsd: amount },
+              : which === "check"
+                ? { ...budget, perCheckUsd: amount }
+                : { ...budget, perMonthUsd: amount },
         });
       }}
     >

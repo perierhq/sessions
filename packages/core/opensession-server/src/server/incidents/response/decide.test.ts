@@ -4058,6 +4058,78 @@ test("post-release: bounded; errors, time and the budget skip it and the watch d
   });
 });
 
+test("post-release: its own budget; at it the check is asked to report now, and stopped past it", () => {
+  const costing = (
+    costUsd: number,
+    over: Partial<AgentRun> = {},
+    settings = defaultSettings,
+  ) => {
+    const v = checked(undefined, "running", over);
+    v.settings = settings;
+    v.agents = new Map([
+      ["check-1", { status: "running", costUsd, tokens: 0 }],
+    ]);
+    return v;
+  };
+  // Under the default $2: it goes on.
+  expect(decideNextStep(costing(1.5))).toEqual({ step: "none" });
+  expect(decideNextStep(costing(2.1))).toEqual({
+    step: "cancel-agents",
+    reason: "The post-release check reached its $2 budget",
+    for: "check-budget",
+  });
+  // The project's own budget for it.
+  expect(
+    decideNextStep(
+      costing(
+        2.1,
+        {},
+        {
+          ...defaultSettings,
+          budget: { ...defaultSettings.budget, perCheckUsd: 5 },
+        },
+      ),
+    ),
+  ).toEqual({ step: "none" });
+  // Stopped at the budget: asked once to report from what it has.
+  expect(
+    decideNextStep(
+      checked(undefined, "cancelled", { cancelledFor: "check-budget" }),
+    ),
+  ).toEqual({
+    step: "message-agent",
+    sessionId: "check-1",
+    message: "wrap-up",
+  });
+  // Reporting: a little past the budget is fine, half again is not.
+  expect(decideNextStep(costing(2.6, { wrappedUp: true }))).toEqual({
+    step: "none",
+  });
+  expect(decideNextStep(costing(3.1, { wrappedUp: true }))).toEqual({
+    step: "cancel-agents",
+    reason: "The post-release check reached its $2 budget",
+    for: "check-budget",
+  });
+  // Stopped again: it couldn't decide, and the watch decides.
+  const step = decideNextStep(
+    checked(undefined, "cancelled", {
+      cancelledFor: "check-budget",
+      wrappedUp: true,
+    }),
+  );
+  expect(step).toMatchObject({
+    step: "transition",
+    patch: {
+      postRelease: {
+        status: "skipped",
+        reasons: [
+          "not confirmed: it reached its $2 budget before it could decide",
+        ],
+      },
+    },
+  });
+});
+
 test("post-release: a rollback-first fix has nothing new to check", () => {
   const v = watching(watchNow, green(), {
     postRelease: undefined,
