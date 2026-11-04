@@ -4010,6 +4010,20 @@ test("I'll release it myself: a fix still failing after the watch comes back to 
     "Search is still failing after PR #12 went out",
   );
   expect(w.actions).toEqual([]);
+  // Sent back: the merge record goes, and its pull request is settled, so
+  // it is never taken for a merge outside Sessions or offered as released.
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Try the cache",
+    w.deps,
+  );
+  const back = await getIncident(w.incident.id);
+  expect(back?.response?.merge).toBeUndefined();
+  expect(back?.response?.settledPrs).toEqual([
+    "https://github.com/acme/web/pull/12",
+  ]);
 });
 
 test("I'll release it myself: a pull request closed without merging comes back to the owner", async () => {
@@ -4041,7 +4055,7 @@ test("a pull request merged outside Sessions while the card waits goes to the re
   const mergedAt = new Date(w.clock).toISOString();
   w.deps.pullRequest = (_project, url) =>
     url.endsWith("/12")
-      ? { state: "MERGED", updatedAt: mergedAt, headSha: "abc1234" }
+      ? { state: "MERGED", updatedAt: mergedAt, mergedAt, headSha: "abc1234" }
       : undefined;
   w.deps.prState = () => "MERGED";
   expect(await runResponseTick(w.clock, w.deps)).toContain(w.incident.id);
@@ -4086,7 +4100,7 @@ test("I released it, watch: a fix the verifier named, merged meanwhile, is offer
   const mergedAt = new Date(w.clock).toISOString();
   w.deps.pullRequest = (_project, url) =>
     url === "https://github.com/acme/web/pull/9"
-      ? { state: "MERGED", updatedAt: mergedAt, headSha: "fed9876" }
+      ? { state: "MERGED", updatedAt: mergedAt, mergedAt, headSha: "fed9876" }
       : url === "https://github.com/acme/web/pull/12"
         ? { state: "OPEN", updatedAt: mergedAt }
         : undefined;

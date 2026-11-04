@@ -4664,6 +4664,7 @@ test("waiting on the owner: its pull request merged outside Sessions goes to the
       number: 12,
       state: "MERGED",
       updatedAt: iso(-60_000),
+      mergedAt: iso(-60_000),
       headSha: "def5678",
       round: 2,
     },
@@ -4703,6 +4704,7 @@ test("waiting on the owner: its pull request merged outside Sessions goes to the
       number: 11,
       state: "MERGED",
       updatedAt: iso(-60_000),
+      mergedAt: iso(-60_000),
       round: 1,
     },
     { url: PR12, number: 12, state: "OPEN", updatedAt: iso(-60_000), round: 2 },
@@ -4722,14 +4724,28 @@ test("waiting on the owner: a merge Sessions already acted on, or one before the
     number: 12,
     state: "MERGED" as const,
     updatedAt: iso(-60_000),
+    mergedAt: iso(-60_000),
     round: 2,
   };
   expect(
     decideNextStep(waitingOnOwner([merged], { settledPrs: [PR12] })),
   ).toEqual({ step: "none" });
   expect(
-    decideNextStep(waitingOnOwner([{ ...merged, updatedAt: iso(-7_200_000) }])),
+    decideNextStep(
+      waitingOnOwner([
+        { ...merged, updatedAt: iso(-7_200_000), mergedAt: iso(-7_200_000) },
+      ]),
+    ),
   ).toEqual({ step: "none" });
+  // Merged before the card; a comment since moved only its last update.
+  expect(
+    decideNextStep(waitingOnOwner([{ ...merged, mergedAt: iso(-7_200_000) }])),
+  ).toEqual({ step: "none" });
+  // The PR cache's row doesn't say when it merged: not acted on.
+  const { mergedAt: _m, ...unknownMerge } = merged;
+  expect(decideNextStep(waitingOnOwner([unknownMerge]))).toEqual({
+    step: "none",
+  });
   // A question card: the agent waits on its own question.
   const asking = waitingOnOwner([merged]);
   asking.incident.response!.needsYou!.kind = "question";

@@ -64,6 +64,10 @@ export interface PrInfo {
   author: string;
   createdAt: string;
   updatedAt: string;
+  /** When it merged, as GitHub says; `updatedAt` also moves on a later
+   *  comment or label. Absent unless merged, and on rows from an older
+   *  snapshot. */
+  mergedAt?: string;
   checks: PrChecksSummary;
   /** The head SHA `checks` describes. Absent until counts were fetched. */
   checksHead?: string;
@@ -349,6 +353,7 @@ export function markCachedPrMerged(ghRepo: string, branch: string): void {
     state: "MERGED",
     isDraft: false,
     updatedAt: new Date().toISOString(),
+    mergedAt: pr.mergedAt ?? new Date().toISOString(),
   });
   prCache.ts = Date.now();
   persistPrCache(prCache.data);
@@ -671,6 +676,9 @@ export function applyPrWebhookToBulkCache(
     author: pr.user?.login || prev?.author || "",
     createdAt: pr.created_at || prev?.createdAt || "",
     updatedAt: pr.updated_at || new Date().toISOString(),
+    ...(state === "MERGED" && (pr.merged_at || prev?.mergedAt)
+      ? { mergedAt: pr.merged_at || prev?.mergedAt }
+      : {}),
     // A push moves the head, and the counts describe the old one.
     headRefOid: pr.head?.sha || prev?.headRefOid,
     ...(prev?.checksHead &&
@@ -1085,6 +1093,7 @@ async function refreshPrCacheInner(): Promise<Set<string>> {
         author: pr.author?.login || pr.author?.name || "",
         createdAt: pr.createdAt || "",
         updatedAt: pr.updatedAt || "",
+        ...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
         ...carriedChecks(pr),
         headRefOid: pr.headRefOid || undefined,
         mergeable: pr.mergeable || "UNKNOWN",

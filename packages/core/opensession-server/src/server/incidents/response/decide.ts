@@ -1013,7 +1013,7 @@ function movedOutside(view: ResponseView): ResponseStep | undefined {
           {
             url: pr.url,
             number: pr.number,
-            at: pr.updatedAt,
+            at: pr.mergedAt!,
             headSha: pr.headSha,
           },
           incident.owner,

@@ -34,7 +34,7 @@ export function incidentPrUrls(
  *  doesn't know it. */
 export type PrLookup = (
   url: string,
-) => Pick<KnownPr, "state" | "updatedAt" | "headSha"> | undefined;
+) => Pick<KnownPr, "state" | "updatedAt" | "mergedAt" | "headSha"> | undefined;
 
 /** The incident's pull requests the PR cache knows. */
 export function knownPrs(r: IncidentResponse, lookup: PrLookup): KnownPr[] {
@@ -71,11 +71,16 @@ export function movedPrs(
   const settled = new Set(r.settledPrs ?? []);
   const fresh = prs.filter((p) => !settled.has(p.url) && !mergedByRecord(r, p));
   const since = Date.parse(ny.since);
+  // Its merge time, never its last update: a later comment on a pull
+  // request merged long ago is not a merge.
   const merged = fresh
-    .filter((p) => p.state === "MERGED" && Date.parse(p.updatedAt) >= since)
+    .filter(
+      (p) =>
+        p.state === "MERGED" && !!p.mergedAt && Date.parse(p.mergedAt) >= since,
+    )
     .sort(
       (a, b) =>
-        b.round - a.round || Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
+        b.round - a.round || Date.parse(b.mergedAt!) - Date.parse(a.mergedAt!),
     );
   const shown = new Set([
     ...(ny.prs ?? []).map((p) => p.url),
@@ -155,14 +160,17 @@ export function mergedFixFor(
   ): MergedFix => ({
     url: pr.url,
     number: pr.number,
-    at: known!.updatedAt,
+    at: known!.mergedAt!,
     ...(known!.headSha ? { headSha: known!.headSha } : {}),
     ...(named ? { named: true as const } : {}),
   });
   const own = knownPrs(r, lookup)
     .filter(
       (p) =>
-        p.state === "MERGED" && !settled.has(p.url) && !mergedByRecord(r, p),
+        p.state === "MERGED" &&
+        !!p.mergedAt &&
+        !settled.has(p.url) &&
+        !mergedByRecord(r, p),
     )
     .sort((a, b) => b.round - a.round);
   if (own[0]) return fix(own[0], own[0], false);
@@ -181,9 +189,9 @@ export function mergedFixFor(
     } catch {
       known = undefined;
     }
-    if (known?.state !== "MERGED") continue;
-    if (!(Date.parse(known.updatedAt) >= opened)) continue;
-    if (best && Date.parse(best.at) >= Date.parse(known.updatedAt)) continue;
+    if (known?.state !== "MERGED" || !known.mergedAt) continue;
+    if (!(Date.parse(known.mergedAt) >= opened)) continue;
+    if (best && Date.parse(best.at) >= Date.parse(known.mergedAt)) continue;
     best = fix({ url, number }, known, true);
   }
   return best;

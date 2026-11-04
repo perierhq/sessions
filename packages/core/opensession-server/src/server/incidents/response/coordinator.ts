@@ -209,7 +209,9 @@ export interface CoordinatorDeps {
   pullRequest: (
     project: string,
     url: string,
-  ) => Pick<KnownPr, "state" | "updatedAt" | "headSha"> | undefined;
+  ) =>
+    | Pick<KnownPr, "state" | "updatedAt" | "mergedAt" | "headSha">
+    | undefined;
   /** Saves the findings an accepted report carries, unless the run already
    *  showed some with `show_findings` this round. Never throws. */
   applyReportFindings: (req: {
@@ -265,6 +267,7 @@ function defaultDeps(): CoordinatorDeps {
           return {
             state: pr.state,
             updatedAt: pr.updatedAt,
+            ...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
             ...(pr.headRefOid ? { headSha: pr.headRefOid } : {}),
           };
       return undefined;
@@ -559,6 +562,7 @@ async function writeOrError(
     let r = out.response;
     if (c.state === "needs-you" && out.incident.state !== "needs-you")
       r = patched(r, { needsYou: undefined });
+    r = settleClearedMerge(c.response?.merge, r);
     const next: Incident = {
       ...out.incident,
       response: { ...r, updatedAt: at },
@@ -567,6 +571,24 @@ async function writeOrError(
     return next;
   });
   return result;
+}
+
+/**
+ * A merge record going away (a send-back, a new round, another merge)
+ * leaves its pull request in `settledPrs`, so Sessions' own earlier merge is
+ * never taken for one outside Sessions or offered as released.
+ */
+function settleClearedMerge(
+  was: IncidentResponse["merge"],
+  r: IncidentResponse,
+): IncidentResponse {
+  if (was?.status !== "merged" || !was.ghRepo) return r;
+  if (r.merge?.status === "merged" && r.merge.number === was.number) return r;
+  const url = `https://github.com/${was.ghRepo}/pull/${was.number}`;
+  const settled = r.settledPrs ?? [];
+  return settled.includes(url)
+    ? r
+    : patched(r, { settledPrs: [...settled, url] });
 }
 
 function guardOf(view: ResponseView): { state: IncidentState; phase?: string } {

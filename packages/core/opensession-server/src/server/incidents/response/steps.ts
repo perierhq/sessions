@@ -97,9 +97,11 @@ export interface KnownPr {
   url: string;
   number: number;
   state: "OPEN" | "MERGED" | "CLOSED";
-  /** When GitHub last changed it; for a merged pull request, its merge
-   *  (a later comment only moves it later). */
+  /** When GitHub last changed it (a comment or a label moves it too). */
   updatedAt: string;
+  /** When it merged; absent unless merged, or when the PR cache's row
+   *  predates the field (then Sessions doesn't act on the merge). */
+  mergedAt?: string;
   headSha?: string;
   /** The round whose agent opened it. */
   round: number;

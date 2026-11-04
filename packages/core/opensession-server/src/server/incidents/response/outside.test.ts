@@ -117,7 +117,12 @@ function naming(text: string, round = 3): Partial<IncidentResponse> {
 test("a fix merged already: the incident's own pull request, merged before the card went up", () => {
   const lookup = (u: string) =>
     u === url(13)
-      ? { state: "MERGED" as const, updatedAt: BEFORE, headSha: "abc1234" }
+      ? {
+          state: "MERGED" as const,
+          updatedAt: AFTER,
+          mergedAt: BEFORE,
+          headSha: "abc1234",
+        }
       : undefined;
   expect(mergedFixFor(waiting(), lookup)).toEqual({
     url: url(13),
@@ -129,6 +134,12 @@ test("a fix merged already: the incident's own pull request, merged before the c
   expect(mergedFixFor(waiting({ settledPrs: [url(13)] }), lookup)).toBe(
     undefined,
   );
+  // The PR cache's row doesn't say when it merged: not acted on.
+  expect(
+    mergedFixFor(waiting(), (u) =>
+      u === url(13) ? { state: "MERGED", updatedAt: AFTER } : undefined,
+    ),
+  ).toBe(undefined);
   // Open or closed: nothing merged.
   expect(
     mergedFixFor(waiting(), (u) =>
@@ -140,9 +151,10 @@ test("a fix merged already: the incident's own pull request, merged before the c
 test("a fix merged already: another pull request the latest round's agents named, merged since the incident opened", () => {
   const lookup = (u: string) =>
     u === url(9)
-      ? { state: "MERGED" as const, updatedAt: AFTER }
+      ? { state: "MERGED" as const, updatedAt: AFTER, mergedAt: AFTER }
       : u === url(8)
-        ? { state: "MERGED" as const, updatedAt: BEFORE }
+        ? // Merged before the incident; a comment since moved its update.
+          { state: "MERGED" as const, updatedAt: AFTER, mergedAt: BEFORE }
         : undefined;
   expect(
     mergedFixFor(
@@ -186,7 +198,11 @@ test("a fix merged already: another pull request the latest round's agents named
 });
 
 test("a fix merged already: none while the card is an agent's question or a setup problem", () => {
-  const lookup = () => ({ state: "MERGED" as const, updatedAt: AFTER });
+  const lookup = () => ({
+    state: "MERGED" as const,
+    updatedAt: AFTER,
+    mergedAt: AFTER,
+  });
   for (const kind of ["question", "setup"] as const) {
     const i = waiting();
     i.response!.needsYou!.kind = kind;
