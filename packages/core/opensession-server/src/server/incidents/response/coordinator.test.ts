@@ -4100,6 +4100,112 @@ test("I'll release it myself: another part failing after the release goes to an 
   ).toHaveLength(1);
 });
 
+test("Resolved by hand while the signal fails on another part: that part gets an incident of its own", async () => {
+  const w = await world();
+  const recent: Observation[] = [
+    {
+      at: new Date(START - 60_000).toISOString(),
+      result: "fail",
+      detail: "search: slow",
+    },
+  ];
+  w.deps.recent = () => recent;
+  await toUnproven(w);
+  expect((await getIncident(w.incident.id))?.response?.openedOn?.detail).toBe(
+    "search: slow",
+  );
+  recent.push({
+    at: new Date(w.clock).toISOString(),
+    result: "fail",
+    detail: "price-watches: slow",
+  });
+  w.evaluate("sig-a", "failing");
+  w.clock += 60_000;
+  expect(
+    await applyOwnerDecision(w.incident.id, "resolve", "Bo", undefined, w.deps),
+  ).toMatchObject({ state: "resolved" });
+  const others = (await listIncidents({ project: "acme" })).filter(
+    (o) => o.id !== w.incident.id,
+  );
+  expect(others).toHaveLength(1);
+  expect(others[0]).toMatchObject({
+    title: "Search, price-watches",
+    state: "investigating",
+    primarySignalId: "sig-a",
+    openedBy: { kind: "rule", ref: "sig-a" },
+  });
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("resolved");
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      `price-watches: slow went to an incident of its own, ${others[0]!.id}`,
+    ]),
+  );
+});
+
+test("Resolved by hand: its own part failing, or the signal passing, opens nothing", async () => {
+  for (const [detail, state] of [
+    ["search: slow, price-watches: slow", "failing"],
+    ["price-watches: slow", "ok"],
+    ["HTTP 503", "failing"],
+  ] as const) {
+    const w = await world();
+    const recent: Observation[] = [
+      {
+        at: new Date(START - 60_000).toISOString(),
+        result: "fail",
+        detail: "search: slow",
+      },
+    ];
+    w.deps.recent = () => recent;
+    await toUnproven(w);
+    recent.push({
+      at: new Date(w.clock).toISOString(),
+      result: "fail",
+      detail,
+    });
+    w.evaluate("sig-a", state);
+    w.clock += 60_000;
+    await applyOwnerDecision(w.incident.id, "resolve", "Bo", undefined, w.deps);
+    expect(
+      (await listIncidents({ project: "acme" })).filter(
+        (o) => o.id !== w.incident.id && o.state !== "resolved",
+      ),
+    ).toEqual([]);
+  }
+});
+
+test("Resolved by hand before the fix loop started: another part failing gets an incident of its own", async () => {
+  const w = await world();
+  w.deps.recent = () => [
+    {
+      at: new Date(START - 60_000).toISOString(),
+      result: "fail",
+      detail: "search: slow",
+    },
+    {
+      at: new Date(START + 30_000).toISOString(),
+      result: "fail",
+      detail: "price-watches: slow",
+    },
+  ];
+  w.clock += 60_000;
+  expect(
+    await applyOwnerDecision(w.incident.id, "resolve", "Bo", undefined, w.deps),
+  ).toMatchObject({ state: "resolved" });
+  const others = (await listIncidents({ project: "acme" })).filter(
+    (o) => o.id !== w.incident.id,
+  );
+  expect(others).toHaveLength(1);
+  expect(others[0]).toMatchObject({ title: "Search, price-watches" });
+  const i = await getIncident(w.incident.id);
+  // No fix loop is started on it for the record.
+  expect(i?.response).toBeUndefined();
+  expect(i?.events.at(-1)?.detail).toBe(
+    `price-watches: slow went to an incident of its own, ${others[0]!.id}`,
+  );
+});
+
 test("an incident whose opening check the recent checks no longer reach takes it from the stored history", async () => {
   const w = await world();
   const asked: number[] = [];

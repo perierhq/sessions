@@ -2370,7 +2370,9 @@ function watchLength(view: ResponseView): number {
 }
 
 /** The failed check the incident opened on, as Sessions has it. */
-function openedDetail(view: ResponseView): string {
+function openedDetail(
+  view: Pick<ResponseView, "incident" | "primaryRecent">,
+): string {
   const { incident } = view;
   return (
     incident.response?.openedOn?.detail ??
@@ -2419,6 +2421,23 @@ function otherPartOnly(
   if (!state || !PROBLEM_STATES.has(state)) return {};
   const last = failed.at(-1)!;
   return { split: { at: last.at, detail: last.detail.trim() } };
+}
+
+/** The primary signal is a problem now, and its newest failed check is on
+ *  another part than the one the incident opened on: that check, for an
+ *  incident of its own when the owner resolves this one. Undefined when the
+ *  check names the incident's part, or the parts can't be told. */
+export function otherPartFailingNow(
+  view: Pick<ResponseView, "incident" | "primaryRecent">,
+  state: SignalState | undefined,
+): { at: string; detail: string } | undefined {
+  if (!state || !PROBLEM_STATES.has(state)) return undefined;
+  const opened = openedDetail(view);
+  if (!failingParts(opened).length) return undefined;
+  const last = failedCheckAt(view.primaryRecent, Number.POSITIVE_INFINITY);
+  const detail = last?.detail.trim() ?? "";
+  if (!last || samePart(opened, detail)) return undefined;
+  return { at: last.at, detail };
 }
 
 /** "; price-watches: slow still fails and goes to an incident of its

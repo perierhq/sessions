@@ -96,6 +96,7 @@ import {
   handReleaseAvailable,
   manualRollbackAvailable,
   nextActionFor,
+  otherPartFailingNow,
   releasedPatch,
   rereadsReport,
   roundRan,
@@ -3139,7 +3140,7 @@ async function resolveIncident(
  * incidents. Best effort: the resolve stands whatever happens here.
  */
 async function splitOff(
-  view: ResponseView,
+  view: Pick<ResponseView, "incident" | "settings" | "signals" | "evaluations">,
   split: { at: string; detail: string },
   d: CoordinatorDeps,
 ): Promise<void> {
@@ -3193,18 +3194,67 @@ async function splitOff(
     );
     if (!touched) return;
     const detail = `${split.detail} went to an incident of its own, ${touched.id}`;
-    await write(incident.id, d, settings, null, (c, base, now) => ({
-      incident: event(c, "state", now, detail),
-      response: ledger(base, now, {
-        actor: "sessions",
-        kind: "policy",
-        detail,
-      }),
-    }));
+    // An incident the fix loop never started on gets the line as an
+    // event only: no response is made up for it.
+    if (!incident.response)
+      await d.updateIncident(incident.id, (c) =>
+        event(c, "state", iso(d.now()), detail),
+      );
+    else
+      await write(incident.id, d, settings, null, (c, base, now) => ({
+        incident: event(c, "state", now, detail),
+        response: ledger(base, now, {
+          actor: "sessions",
+          kind: "policy",
+          detail,
+        }),
+      }));
   } catch (error) {
     console.warn(
       `[incidents] ${incident.id}: ${split.detail} not split off: ${errorMessage(error)}`,
     );
+  }
+}
+
+/**
+ * The owner resolved `incident` while its signal fails on another part
+ * than the one it opened on: that part gets an incident of its own, as
+ * when the post-release watch resolves it (splitOff).
+ */
+async function splitAfterOwnerResolve(
+  incident: Incident,
+  d: CoordinatorDeps,
+): Promise<Incident> {
+  const id = incident.primarySignalId;
+  // Best effort, like splitOff: the resolve stands whatever happens here.
+  try {
+    const [signal, settings] = await Promise.all([
+      d.signal(id),
+      d.settings(incident.project),
+    ]);
+    const evaluation = d.evaluation(id);
+    if (!signal || !evaluation) return incident;
+    const split = otherPartFailingNow(
+      { incident, primaryRecent: d.recent(id) },
+      evaluation.state,
+    );
+    if (!split) return incident;
+    await splitOff(
+      {
+        incident,
+        settings,
+        signals: new Map([[id, signal]]),
+        evaluations: new Map([[id, evaluation]]),
+      },
+      split,
+      d,
+    );
+    return (await d.getIncident(incident.id)) ?? incident;
+  } catch (error) {
+    console.warn(
+      `[incidents] ${incident.id}: another part not split off: ${errorMessage(error)}`,
+    );
+    return incident;
   }
 }
 
@@ -4024,7 +4074,10 @@ async function ownerDecision(
 
   if (!incident.response) {
     if (decision !== "resolve" && decision !== "close") return refused;
-    return bareDecision(incident, decision, by, d);
+    const bare = await bareDecision(incident, decision, by, d);
+    return decision === "resolve" && !("error" in bare)
+      ? splitAfterOwnerResolve(bare, d)
+      : bare;
   }
   const settings = await d.settings(incident.project);
   if (!decisionAllowed(decision, incident, settings))
@@ -4110,6 +4163,10 @@ async function ownerDecision(
     decision,
     by,
   });
+  // Another part still failing gets its own incident, as an automatic
+  // resolve does.
+  const out =
+    decision === "resolve" ? await splitAfterOwnerResolve(result, d) : result;
   // The agents' pull requests, after the close is recorded: in the chain,
   // so the decision returns without waiting on GitHub.
   if (decision === "close")
@@ -4135,7 +4192,7 @@ async function ownerDecision(
       by,
       from: incident.state,
     });
-  return result;
+  return out;
 }
 
 /**

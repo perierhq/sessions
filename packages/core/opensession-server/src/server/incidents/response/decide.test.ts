@@ -26,6 +26,7 @@ import {
   manualRollbackAvailable,
   needsYouOptions,
   nextActionFor,
+  otherPartFailingNow,
   waitingOnChecks,
   ownSignalIds,
   rollbackFirstApplies,
@@ -5124,4 +5125,60 @@ test("needs-you: an agent's Release and watch on the fix that merged already pos
   ).toEqual([
     "Left off the verifier's option \"Watch #7\": PR #7 isn't this round's fix",
   ]);
+});
+
+test("resolved by hand: the part failing now, when it is not the one the incident opened on", () => {
+  const fail = (msFromNow: number, detail: string) => ({
+    at: iso(msFromNow),
+    result: "fail" as const,
+    detail,
+  });
+  const opened = fail(-60_000, "search: slow");
+  const at = (
+    recent: ReturnType<typeof fail>[],
+    over: Partial<Incident> = {},
+  ) => ({
+    incident: incident("needs-you", undefined, over),
+    primaryRecent: recent,
+  });
+  // The incident's part from the check it opened on.
+  expect(
+    otherPartFailingNow(
+      at([opened, fail(60_000, "price-watches: slow ")]),
+      "failing",
+    ),
+  ).toEqual({ at: iso(60_000), detail: "price-watches: slow" });
+  // Or from the one the fix loop recorded.
+  expect(
+    otherPartFailingNow(
+      at([fail(60_000, "price-watches: slow")], {
+        response: {
+          openedOn: { at: iso(-60_000), detail: "search: slow" },
+        } as IncidentResponse,
+      }),
+      "slow",
+    ),
+  ).toEqual({ at: iso(60_000), detail: "price-watches: slow" });
+  // Its own part among them, a signal not failing, parts unknown: none.
+  expect(
+    otherPartFailingNow(
+      at([opened, fail(60_000, "price-watches: slow, search: slow")]),
+      "failing",
+    ),
+  ).toBeUndefined();
+  expect(
+    otherPartFailingNow(
+      at([opened, fail(60_000, "price-watches: slow")]),
+      "ok",
+    ),
+  ).toBeUndefined();
+  expect(
+    otherPartFailingNow(at([opened, fail(60_000, "HTTP 503")]), "failing"),
+  ).toBeUndefined();
+  expect(
+    otherPartFailingNow(
+      at([fail(-60_000, "HTTP 503"), fail(60_000, "price-watches: slow")]),
+      "failing",
+    ),
+  ).toBeUndefined();
 });
