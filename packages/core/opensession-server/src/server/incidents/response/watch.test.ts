@@ -167,6 +167,47 @@ test("the release that holds the fix: its release pull request touches the fix's
   expect(
     releaseAfter({ ...src, releasePrs: unknown }, merged, fix),
   ).toMatchObject({ at: at(4 * MIN) });
+  // A single-package release bumps root files too: it holds every path.
+  expect(
+    releaseAfter(
+      {
+        ...src,
+        releasePrs: [
+          {
+            ...web,
+            title: "chore: release 2.0.0",
+            files: [
+              ".release-please-manifest.json",
+              "CHANGELOG.md",
+              "package.json",
+              "src/version.ts",
+            ],
+          },
+        ],
+      },
+      merged,
+      ["lib/search.ts"],
+    ),
+  ).toMatchObject({ ref: "chore: release 2.0.0" });
+  // The manifest alone is not a root release.
+  expect(
+    releaseAfter(
+      {
+        ...src,
+        releasePrs: [
+          {
+            ...search,
+            files: [
+              ".release-please-manifest.json",
+              "services/search/CHANGELOG.md",
+            ],
+          },
+        ],
+      },
+      merged,
+      fix,
+    ),
+  ).toBeUndefined();
   // A release hook's ref is read the same way.
   expect(
     releaseAfter(

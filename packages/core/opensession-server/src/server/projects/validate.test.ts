@@ -112,6 +112,16 @@ test("a post-release check's budget: from $0.50 to the per-incident budget; rais
   expect(
     validatePolicyFields({ budget: { perCheckUsd: 3 } }, current),
   ).toMatchObject({ budget: { ...DEFAULT_BUDGET, perCheckUsd: 3 } });
+  // Lowering the per-incident budget with the dialog's whole budget back
+  // keeps an unchanged per-check budget: the lower cap applies to it.
+  expect(
+    validatePolicyFields(
+      { budget: { perIncidentUsd: 3, perMonthUsd: 200, perCheckUsd: 5 } },
+      { budget: { perIncidentUsd: 20, perMonthUsd: 200, perCheckUsd: 5 } },
+    ),
+  ).toEqual({
+    budget: { perIncidentUsd: 3, perMonthUsd: 200, perCheckUsd: 5 },
+  });
   // Unset stays unset.
   expect(
     validatePolicyFields({ budget: { perIncidentUsd: 30 } }, current),

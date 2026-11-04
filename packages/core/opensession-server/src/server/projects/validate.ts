@@ -486,10 +486,11 @@ export function validatePolicyFields(
         error:
           "Budget per month (perMonthUsd) must be from the per-incident budget to $100000",
       };
-    // Checked when it is set: a lower per-incident budget caps it anyway
-    // (checkBudgetUsd).
+    // Checked when it changes: a lower per-incident budget caps an
+    // unchanged one anyway (checkBudgetUsd).
     if (
       "perCheckUsd" in input.budget &&
+      input.budget.perCheckUsd !== current.budget.perCheckUsd &&
       !numberIn(budget.perCheckUsd, 0.5, budget.perIncidentUsd)
     )
       return {

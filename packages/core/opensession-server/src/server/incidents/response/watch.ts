@@ -149,8 +149,9 @@ function releaseWords(name: string): string[] {
  * release pull request changed files in a directory the fix changed (an
  * app's or package's own changelog and version), or its title or ref
  * names one of the fix's directories ("release web 1.24.0" for
- * apps/web); false when its files show it released other directories
- * only; undefined when that can't be told.
+ * apps/web), or it changed a root file such as the changelog (a
+ * single-package repository); false when its files show it released
+ * other directories only; undefined when that can't be told.
  */
 export function releaseHolds(
   release: { name?: string; files?: readonly string[] | null },
@@ -161,6 +162,11 @@ export function releaseHolds(
   for (const f of release.files ?? []) {
     const at = f.lastIndexOf("/");
     if (at > 0) dirs.add(f.slice(0, at));
+    // A root changelog or version file: the whole repository is released
+    // (a single-package repository). Release tools' own dotfiles and
+    // configs are not a release of anything.
+    else if (!f.startsWith(".") && !/^release-please-config\./.test(f))
+      return true;
   }
   if (dirs.size)
     return fixFiles.some((f) => [...dirs].some((d) => f.startsWith(`${d}/`)));
