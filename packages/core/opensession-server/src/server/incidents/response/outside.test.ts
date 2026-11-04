@@ -253,6 +253,55 @@ test("a fix merged already: never another incident's pull request; one touching 
   ).toMatchObject({ number: 10 });
 });
 
+test("a fix merged already: only what the agents say about this incident's fix names it, not the pull requests they looked through", () => {
+  const lookup = (u: string) =>
+    u === url(9)
+      ? { state: "MERGED" as const, updatedAt: AFTER, mergedAt: AFTER }
+      : undefined;
+  const investigator = (report: Record<string, unknown>) => {
+    const base = response();
+    return waiting({
+      agents: [
+        ...base.agents,
+        {
+          role: "investigator",
+          round: 3,
+          report: {
+            role: "investigator",
+            summary: "Search reads slow on one slow request",
+            cause: "The p95 is the slowest request in a quiet window.",
+            readFirst: [{ path: "PR #9 (open): docs/x.md", found: true }],
+            attempts: [
+              {
+                step: "Look for better fixes in open PRs (#9)",
+                cost: "free",
+                result: "informative",
+                evidence: "#9 does the same for another part",
+              },
+            ],
+            candidate: { pr: true, actions: [] },
+            claims: [],
+            ...report,
+          },
+        } as unknown as IncidentResponse["agents"][number],
+      ],
+    });
+  };
+  expect(mergedFixFor(investigator({}), lookup)).toBe(undefined);
+  expect(
+    mergedFixFor(
+      investigator({ cause: "The p95 rule; #9 already fixes it." }),
+      lookup,
+    ),
+  ).toMatchObject({ number: 9, named: true });
+  expect(
+    mergedFixFor(
+      investigator({ claims: [{ text: "PR #9 makes search read ok" }] }),
+      lookup,
+    ),
+  ).toMatchObject({ number: 9 });
+});
+
 test("a fix merged already: none while the card is an agent's question or a setup problem", () => {
   const lookup = () => ({
     state: "MERGED" as const,

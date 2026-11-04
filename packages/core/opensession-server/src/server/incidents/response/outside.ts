@@ -125,13 +125,20 @@ function repoOf(r: IncidentResponse): string | undefined {
   return undefined;
 }
 
-/** What the latest round's investigator and verifier said: their reports
- *  and finding sets, as text. */
+/** What the latest round's investigator and verifier said about this
+ *  incident's fix: their reports and finding sets, as text. The
+ *  investigator's readFirst and attempts are left out: they list what it
+ *  looked through (another incident's open pull requests, say), not this
+ *  incident's fix. */
 function latestRoundText(r: IncidentResponse): string {
   const parts: unknown[] = [];
   for (const run of r.agents)
-    if (run.round === r.round && !run.check && run.report)
-      parts.push(run.report);
+    if (run.round === r.round && !run.check && run.report) {
+      if (run.report.role === "investigator") {
+        const { readFirst: _read, attempts: _attempts, ...own } = run.report;
+        parts.push(own);
+      } else parts.push(run.report);
+    }
   for (const set of r.findingSets ?? [])
     if (set.round === r.round && !set.check) parts.push(set.blocks);
   return parts.map((p) => JSON.stringify(p)).join("\n");
