@@ -182,6 +182,15 @@ function engineIncidents(
   });
 }
 
+/** The detail of the signal's newest failed check (main lane): the part
+ *  it fails on, for a status page ("price-watches: slow"). */
+function newestFailedDetail(signalId: string): string | undefined {
+  const failed = recentObservations(signalId).findLast(
+    (o) => o.result === "fail",
+  );
+  return failed?.detail.trim() || undefined;
+}
+
 async function snapshotAt(
   now: number,
   signal: Signal,
@@ -192,6 +201,7 @@ async function snapshotAt(
     listIncidents(),
     getProjectSettings(signal.project),
   ]);
+  const failedOn = newestFailedDetail(signal.id);
   return {
     // A disabled signal is as good as gone: its stale state must not hold
     // an incident open or correlate with anything.
@@ -200,6 +210,7 @@ async function snapshotAt(
     incidents: engineIncidents(incidents, now, signal.id, current),
     now,
     runs,
+    ...(failedOn === undefined ? {} : { failedOn }),
     ...(settings.incidentsPaused
       ? { incidentsPaused: new Set([signal.project]) }
       : {}),

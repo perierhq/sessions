@@ -21,6 +21,7 @@ import {
   updateIncident,
 } from "./incident-store";
 import { appendEvent, transitionIncident } from "./lifecycle";
+import { failingParts, samePart } from "./response/watch";
 import { PROBLEM_STATES, WARNING_STATES, recoveriesFor } from "./rules";
 
 /** An open incident takes a new problem in its project for this long after
@@ -74,6 +75,9 @@ export interface EngineSnapshot {
   /** Projects whose settings pause new incidents: their signals open and
    *  reopen nothing; incidents already open still hear from them. */
   incidentsPaused?: ReadonlySet<string>;
+  /** The changed signal's newest failed check ("price-watches: slow"): the
+   *  part it fails on. Unknown when absent or when it names no parts. */
+  failedOn?: string;
 }
 
 export type IncidentOp =
@@ -213,14 +217,32 @@ type Quiet =
   /** A new problem: reopen this one. */
   | { kind: "reopen"; incident: Incident };
 
-/** The newest incident with the signal closed without action whose quiet
- *  the signal's bad run began in, and what that quiet says. */
+/** Whether the signal's failure now is on the part `incident` opened on:
+ *  it names one of its parts, or either side names none (unknown). The
+ *  opening check is the primary signal's: another signal's parts are
+ *  unknown to it. */
+function onOpenedPart(
+  incident: Incident,
+  signal: Signal,
+  snapshot: EngineSnapshot,
+): boolean {
+  if (incident.primarySignalId !== signal.id) return true;
+  return samePart(
+    incident.response?.openedOn?.detail ?? "",
+    snapshot.failedOn?.trim() ?? "",
+  );
+}
+
+/** The newest incident with the signal closed without action, opened on
+ *  the part it fails on, whose quiet the signal's bad run began in, and
+ *  what that quiet says. */
 function quietFor(signal: Signal, snapshot: EngineSnapshot): Quiet | undefined {
   const run = snapshot.runs?.get(signal.id);
   const badSince = run?.badSince ?? snapshot.now;
   const incident = newestFirst(snapshot.incidents).find((i) => {
     if (i.state !== "closed-without-action" || !i.signalIds.includes(signal.id))
       return false;
+    if (!onOpenedPart(i, signal, snapshot)) return false;
     const closedAt = Date.parse(i.closedAt ?? "");
     return Number.isFinite(closedAt) && badSince - closedAt <= QUIET_WINDOW_MS;
   });
@@ -298,7 +320,10 @@ function inMergeWindow(incident: Incident, snapshot: EngineSnapshot): boolean {
 type Target =
   | { kind: "own"; incident: Incident }
   | { kind: "merge"; incident: Incident }
-  | { kind: "reopen"; incident: Incident };
+  | { kind: "reopen"; incident: Incident }
+  /** Closed recently, but opened on another part than the signal fails
+   *  on now: that part gets an incident of its own. */
+  | { kind: "other-part"; incident: Incident };
 
 function pickTarget(
   signal: Signal,
@@ -317,13 +342,16 @@ function pickTarget(
     (i) => i.project === signal.project && inMergeWindow(i, snapshot),
   );
   if (nearby) return { kind: "merge", incident: nearby };
-  const closed = incidents.find(
+  const closed = incidents.filter(
     (i) =>
       isTerminalIncidentState(i.state) &&
       i.signalIds.includes(signal.id) &&
       since(i.closedAt, snapshot.now) <= REOPEN_WINDOW_MS,
   );
-  if (closed) return { kind: "reopen", incident: closed };
+  // Only for the part it opened on: another part is a problem of its own.
+  const same = closed.find((i) => onOpenedPart(i, signal, snapshot));
+  if (same) return { kind: "reopen", incident: same };
+  if (closed[0]) return { kind: "other-part", incident: closed[0] };
   return undefined;
 }
 
@@ -482,6 +510,24 @@ function recordProviders(
   }
 }
 
+/** A new incident for the part the signal fails on, after `closed` (on
+ *  another part): "Search, price-watches", as the post-release split-off
+ *  names one. */
+function splitNaming(
+  signal: Signal,
+  closed: Incident,
+  snapshot: EngineSnapshot,
+): { title?: string; detail?: string } {
+  const failedOn = snapshot.failedOn?.trim() ?? "";
+  const parts = failingParts(failedOn);
+  if (!parts.length) return {};
+  const how = closed.state === "resolved" ? "fixed" : "closed";
+  return {
+    title: `${signal.name}, ${parts.join(", ")}`,
+    detail: `${failedOn}, after ${closed.title} was ${how}`,
+  };
+}
+
 /** An own signal turned problem or warning. */
 function decideBad(
   ops: OpList,
@@ -495,14 +541,12 @@ function decideBad(
     ? disagreementsWith(signal, current.state, snapshot)
     : [];
   let target = pickTarget(signal, snapshot);
-  if (
-    (!target || target.kind === "reopen") &&
-    snapshot.incidentsPaused?.has(signal.project)
-  )
-    return;
+  const opens = (t: Target | undefined) =>
+    !t || t.kind === "reopen" || t.kind === "other-part";
+  if (opens(target) && snapshot.incidentsPaused?.has(signal.project)) return;
   // A signal of an incident closed without action is quiet a while: it
   // reopens or opens nothing until it shows a new problem.
-  if (!target || target.kind === "reopen") {
+  if (opens(target)) {
     const quiet = quietFor(signal, snapshot);
     if (quiet?.kind === "hold") {
       ops.add({
@@ -521,16 +565,17 @@ function decideBad(
     if (quiet?.kind === "reopen")
       target = { kind: "reopen", incident: quiet.incident };
   }
-  if (!target) {
+  if (!target || target.kind === "other-part") {
     const findings = [
       ...providers.map((p) => externalFinding(p, snapshot)),
       ...disagreements,
     ];
+    const split = target ? splitNaming(signal, target.incident, snapshot) : {};
     ops.add({
       op: "open",
       incident: {
         project: signal.project,
-        title: signal.name,
+        title: split.title ?? signal.name,
         state: providers.length
           ? "waiting-on-provider"
           : problem
@@ -544,7 +589,7 @@ function decideBad(
         signalIds: [signal.id, ...providers.map((p) => p.id)],
         primarySignalId: signal.id,
         at: new Date(snapshot.now).toISOString(),
-        detail: current.reason,
+        detail: split.detail ?? current.reason,
         ...(findings.length ? { findings } : {}),
       },
     });

@@ -589,6 +589,165 @@ describe("decide", () => {
     ).toMatchObject({ op: "transition", incidentId: "inc-1" });
   });
 
+  test("a recently closed incident reopens only for the part it opened on", () => {
+    const a = S("sig-a");
+    const openedOn = (detail: string) =>
+      ({ openedOn: { at: iso(1_200_000), detail } }) as Incident["response"];
+    const resolved = I("inc-1", "resolved", {
+      title: "Search",
+      closedAt: iso(600_000),
+      response: openedOn("search: slow"),
+    });
+    const fails = (failedOn: string | undefined, incidents: Incident[]) =>
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap([a], [E("sig-a", "failing")], incidents),
+        ...(failedOn === undefined ? {} : { failedOn }),
+      });
+    const reopen = (id: string): IncidentOp[] => [
+      {
+        op: "transition",
+        incidentId: id,
+        to: "investigating",
+        detail: "3 failures in a row",
+      },
+    ];
+    // Its own part again, alone or with another: it reopens.
+    expect(fails("search: slow", [resolved])).toEqual(reopen("inc-1"));
+    expect(fails("price-watches: down, Search: slow", [resolved])).toEqual(
+      reopen("inc-1"),
+    );
+    // Another part: an incident of its own, named for that part.
+    expect(fails("price-watches: slow", [resolved])).toEqual([
+      {
+        op: "open",
+        incident: {
+          project: "acme",
+          title: "Search, price-watches",
+          state: "investigating",
+          severity: "major",
+          owner: "Ada",
+          openedBy: { kind: "rule", ref: "sig-a" },
+          signalIds: ["sig-a"],
+          primarySignalId: "sig-a",
+          at: iso(),
+          detail: "price-watches: slow, after Search was fixed",
+        },
+      },
+    ]);
+    // Parts unknown on either side: it reopens, as before.
+    expect(fails(undefined, [resolved])).toEqual(reopen("inc-1"));
+    expect(fails("HTTP 503", [resolved])).toEqual(reopen("inc-1"));
+    expect(
+      fails("price-watches: slow", [
+        { ...resolved, response: openedOn("HTTP 503") },
+      ]),
+    ).toEqual(reopen("inc-1"));
+    expect(
+      fails("price-watches: slow", [{ ...resolved, response: undefined }]),
+    ).toEqual(reopen("inc-1"));
+    // That part's own closed incident reopens, even when an incident on
+    // another part closed later.
+    const own = I("inc-2", "resolved", {
+      title: "Search, price-watches",
+      openedAt: iso(1_500_000),
+      closedAt: iso(900_000),
+      response: openedOn("price-watches: slow"),
+    });
+    expect(fails("price-watches: slow", [resolved, own])).toEqual(
+      reopen("inc-2"),
+    );
+    // Past the reopen window the part is not told apart: a plain incident.
+    expect(
+      fails("price-watches: slow", [
+        { ...resolved, closedAt: iso(2_400_000) },
+      ])[0],
+    ).toMatchObject({ op: "open", incident: { title: "Search" } });
+    // Paused: nothing opens for the other part either.
+    expect(
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap([a], [E("sig-a", "failing")], [resolved]),
+        failedOn: "price-watches: slow",
+        incidentsPaused: new Set(["acme"]),
+      }),
+    ).toEqual([]);
+  });
+
+  test("a merged-in signal's parts are not told apart from the primary's", () => {
+    const a = S("sig-a");
+    const b = S("sig-b", { name: "Vendor status" });
+    // Opened on sig-a's search; sig-b was merged in later.
+    const resolved = I("inc-1", "resolved", {
+      title: "Search",
+      signalIds: ["sig-a", "sig-b"],
+      closedAt: iso(600_000),
+      response: {
+        openedOn: { at: iso(1_200_000), detail: "search: slow" },
+      } as Incident["response"],
+    });
+    expect(
+      decide(b, "ok", E("sig-b", "failing"), {
+        ...snap([a, b], [E("sig-b", "failing")], [resolved]),
+        failedOn: "api: degraded",
+      }),
+    ).toEqual([
+      {
+        op: "transition",
+        incidentId: "inc-1",
+        to: "investigating",
+        detail: "3 failures in a row",
+      },
+    ]);
+    // Closed without action, it still quiets sig-b.
+    expect(
+      decide(b, "ok", E("sig-b", "failing"), {
+        ...snap(
+          [a, b],
+          [E("sig-b", "failing")],
+          [{ ...resolved, state: "closed-without-action" }],
+        ),
+        failedOn: "api: degraded",
+        runs: new Map([
+          ["sig-b", { badSince: NOW, problemSince: NOW, healthyBefore: 0 }],
+        ]),
+      })[0],
+    ).toMatchObject({ op: "hold", incidentId: "inc-1" });
+  });
+
+  test("an incident closed without action quiets only the part it opened on", () => {
+    const a = S("sig-a");
+    const closed = I("inc-1", "closed-without-action", {
+      title: "Search",
+      closedAt: iso(600_000),
+      response: {
+        openedOn: { at: iso(1_200_000), detail: "search: slow" },
+      } as Incident["response"],
+    });
+    const flap = new Map([
+      ["sig-a", { badSince: NOW, problemSince: NOW, healthyBefore: 60_000 }],
+    ]);
+    const fails = (failedOn: string) =>
+      decide(a, "ok", E("sig-a", "failing"), {
+        ...snap([a], [E("sig-a", "failing")], [closed]),
+        runs: flap,
+        failedOn,
+      });
+    // Its own part flapping stays quiet.
+    expect(fails("search: slow")[0]).toMatchObject({
+      op: "hold",
+      incidentId: "inc-1",
+    });
+    // Another part is a problem of its own.
+    expect(fails("price-watches: slow")).toEqual([
+      {
+        op: "open",
+        incident: expect.objectContaining({
+          title: "Search, price-watches",
+          detail: "price-watches: slow, after Search was closed",
+        }),
+      },
+    ]);
+  });
+
   test("a project with new incidents paused opens and reopens nothing", () => {
     const a = S("sig-a");
     const paused = (incidents: Incident[]) =>
