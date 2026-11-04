@@ -4058,6 +4058,78 @@ test("post-release: bounded; errors, time and the budget skip it and the watch d
   });
 });
 
+test("post-release: its own budget; at it the check is asked to report now, and stopped past it", () => {
+  const costing = (
+    costUsd: number,
+    over: Partial<AgentRun> = {},
+    settings = defaultSettings,
+  ) => {
+    const v = checked(undefined, "running", over);
+    v.settings = settings;
+    v.agents = new Map([
+      ["check-1", { status: "running", costUsd, tokens: 0 }],
+    ]);
+    return v;
+  };
+  // Under the default $2: it goes on.
+  expect(decideNextStep(costing(1.5))).toEqual({ step: "none" });
+  expect(decideNextStep(costing(2.1))).toEqual({
+    step: "cancel-agents",
+    reason: "The post-release check reached its $2 budget",
+    for: "check-budget",
+  });
+  // The project's own budget for it.
+  expect(
+    decideNextStep(
+      costing(
+        2.1,
+        {},
+        {
+          ...defaultSettings,
+          budget: { ...defaultSettings.budget, perCheckUsd: 5 },
+        },
+      ),
+    ),
+  ).toEqual({ step: "none" });
+  // Stopped at the budget: asked once to report from what it has.
+  expect(
+    decideNextStep(
+      checked(undefined, "cancelled", { cancelledFor: "check-budget" }),
+    ),
+  ).toEqual({
+    step: "message-agent",
+    sessionId: "check-1",
+    message: "wrap-up",
+  });
+  // Reporting: a little past the budget is fine, half again is not.
+  expect(decideNextStep(costing(2.6, { wrappedUp: true }))).toEqual({
+    step: "none",
+  });
+  expect(decideNextStep(costing(3.1, { wrappedUp: true }))).toEqual({
+    step: "cancel-agents",
+    reason: "The post-release check reached its $2 budget",
+    for: "check-budget",
+  });
+  // Stopped again: it couldn't decide, and the watch decides.
+  const step = decideNextStep(
+    checked(undefined, "cancelled", {
+      cancelledFor: "check-budget",
+      wrappedUp: true,
+    }),
+  );
+  expect(step).toMatchObject({
+    step: "transition",
+    patch: {
+      postRelease: {
+        status: "skipped",
+        reasons: [
+          "not confirmed: it reached its $2 budget before it could decide",
+        ],
+      },
+    },
+  });
+});
+
 test("post-release: a rollback-first fix has nothing new to check", () => {
   const v = watching(watchNow, green(), {
     postRelease: undefined,
@@ -4358,6 +4430,114 @@ test("hand release: passing the whole base-rate watch resolves", () => {
     detail:
       "Search passed the 6 h watch after the release; the post-release check confirmed it",
   });
+});
+
+test("hand release: another part still failing at the end resolves the fixed part and splits the other off", () => {
+  // Search is fixed; price-watches fails after the release, a spell.
+  const other = [-40, -39, -38, -2].map((m) => ({
+    at: iso(m * 60_000),
+    result: "fail" as const,
+    detail: "price-watches: slow",
+  }));
+  const v = handWatching(
+    other,
+    {
+      watchFailures: other.map((o) => ({
+        at: o.at,
+        detail: o.detail,
+        samePart: false,
+      })),
+    },
+    NOW + 6 * 3_600_000,
+  );
+  v.evaluations = new Map([
+    ["sig-a", evaluation("failing", iso(-40 * 60_000))],
+  ]);
+  const step = decideNextStep(v);
+  expect(step).toMatchObject({
+    step: "resolve",
+    fixedBy: "agents-with-you",
+    split: { at: iso(-2 * 60_000), detail: "price-watches: slow" },
+  });
+  if (step.step !== "resolve") throw new Error("expected resolve");
+  expect(step.detail).toContain("price-watches: slow");
+  // The same part still failing at the end is still the owner's.
+  const same = handWatching(
+    [{ at: iso(-2 * 60_000), result: "fail" as const, detail: "search: slow" }],
+    {
+      watchFailures: [
+        { at: iso(-2 * 60_000), detail: "search: slow", samePart: true },
+      ],
+    },
+    NOW + 6 * 3_600_000,
+  );
+  same.evaluations = new Map([["sig-a", evaluation("failing", iso(-60_000))]]);
+  expect(decideNextStep(same)).toMatchObject({
+    step: "needs-you",
+    kind: "post-release",
+  });
+});
+
+test("post-release: the verdict notes other parts that failed after the release", () => {
+  const v = checked({
+    role: "post-release",
+    verdict: "confirmed",
+    reasons: ["Search has not read slow since the release"],
+    checks: [],
+  });
+  v.incident.response!.openedOn = {
+    at: iso(-3_600_000),
+    detail: "search: slow",
+  };
+  v.primaryRecent = [
+    { at: iso(-3_000_000), result: "fail", detail: "search: slow" },
+    { at: iso(-90_000), result: "fail", detail: "price-watches: slow" },
+    { at: iso(-30_000), result: "fail", detail: "price-watches: slow" },
+  ];
+  const step = decideNextStep(v);
+  expect(step).toMatchObject({
+    step: "transition",
+    patch: {
+      postRelease: {
+        status: "confirmed",
+        otherParts: [{ at: iso(-30_000), detail: "price-watches: slow" }],
+      },
+    },
+  });
+  if (step.step !== "transition") throw new Error("expected transition");
+  expect(step.detail).toContain("price-watches: slow");
+});
+
+test("watching: only another part failing through the watch resolves the fix and splits the other off", () => {
+  const v = watching(
+    { startedAt: iso(-11 * 60_000), deadline: iso(-60_000) },
+    new Map([["sig-a", evaluation("failing", iso(-9 * 60_000))]]),
+    {
+      openedOn: { at: iso(-3_600_000), detail: "search: slow" },
+      postRelease: {
+        round: 1,
+        status: "confirmed",
+        at: iso(-5 * 60_000),
+        after: "Deploy at 11:49 UTC",
+      },
+    },
+  );
+  v.primaryRecent = [-9, -8, -7, -1].map((m) => ({
+    at: iso(m * 60_000),
+    result: "fail" as const,
+    detail: "price-watches: slow",
+  }));
+  expect(decideNextStep(v)).toMatchObject({
+    step: "resolve",
+    fixedBy: "agents",
+    split: { at: iso(-60_000), detail: "price-watches: slow" },
+  });
+  // The opened part failing in the watch is not split off.
+  v.primaryRecent = [
+    ...v.primaryRecent,
+    { at: iso(-30_000), result: "fail" as const, detail: "search: slow" },
+  ];
+  expect(decideNextStep(v)).not.toMatchObject({ step: "resolve" });
 });
 
 test("merge it: Sessions merges a hand release it was asked to merge", () => {

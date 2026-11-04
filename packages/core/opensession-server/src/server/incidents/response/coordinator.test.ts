@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import type {
   ActionRun,
   AgentWorkspace,
+  CandidateState,
   IncidentAction,
   IncidentProjectSettings,
   InvestigatorReport,
@@ -9,6 +10,7 @@ import type {
 } from "../../../shared/incident-response";
 import type {
   Incident,
+  Observation,
   Signal,
   SignalEvaluation,
 } from "../../../shared/incidents";
@@ -4026,6 +4028,102 @@ test("I'll release it myself: a fix still failing after the watch comes back to 
   ]);
 });
 
+test("I'll release it myself: another part failing after the release goes to an incident of its own; the fix resolves", async () => {
+  const w = await world();
+  const recent: Observation[] = [
+    {
+      at: new Date(START - 60_000).toISOString(),
+      result: "fail",
+      detail: "search: slow",
+    },
+  ];
+  w.deps.recent = () => recent;
+  await toUnproven(w);
+  expect((await getIncident(w.incident.id))?.response?.openedOn?.detail).toBe(
+    "search: slow",
+  );
+  w.deps.prState = () => "MERGED";
+  w.clock += 60_000;
+  await applyOwnerDecision(
+    w.incident.id,
+    "release-watch",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.state).toBe("watching");
+  // After the release another part fails, a spell; Search stays clear.
+  for (const m of [1, 2, 3])
+    recent.push({
+      at: new Date(w.clock + m * 60_000).toISOString(),
+      result: "fail",
+      detail: "price-watches: slow",
+    });
+  w.clock += 4 * 60_000;
+  w.evaluate("sig-a", "failing");
+  await w.finishCheck("confirmed");
+  let i = await getIncident(w.incident.id);
+  expect(i?.response?.postRelease).toMatchObject({
+    status: "confirmed",
+    otherParts: [{ detail: "price-watches: slow" }],
+  });
+  expect(i?.state).toBe("watching");
+  w.clock += 6 * 3_600_000;
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("resolved");
+  const others = (await listIncidents({ project: "acme" })).filter(
+    (o) => o.id !== w.incident.id,
+  );
+  expect(others).toHaveLength(1);
+  expect(others[0]).toMatchObject({
+    title: "Search, price-watches",
+    state: "investigating",
+    primarySignalId: "sig-a",
+    openedBy: { kind: "rule", ref: "sig-a" },
+  });
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining(
+        `price-watches: slow went to an incident of its own, ${others[0]!.id}`,
+      ),
+    ]),
+  );
+  // Resolving it again opens nothing more: the other part's incident is
+  // open, so a later split attaches to it.
+  expect(
+    (await listIncidents({ project: "acme" })).filter(
+      (o) => o.state !== "resolved",
+    ),
+  ).toHaveLength(1);
+});
+
+test("an incident whose opening check the recent checks no longer reach takes it from the stored history", async () => {
+  const w = await world();
+  const asked: number[] = [];
+  w.deps.openedCheck = async (_signal, atMs) => {
+    asked.push(atMs);
+    return {
+      at: new Date(atMs - 30_000).toISOString(),
+      result: "fail",
+      detail: "search: slow",
+    };
+  };
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.openedOn).toEqual({
+    at: new Date(START - 30_000).toISOString(),
+    detail: "search: slow",
+  });
+  expect(asked[0]).toBe(START);
+  // Looked up once.
+  await advanceIncident(w.incident.id, w.deps);
+  expect(asked).toHaveLength(1);
+});
+
 test("I'll release it myself: a pull request closed without merging comes back to the owner", async () => {
   const w = await world();
   await toUnproven(w);
@@ -4154,6 +4252,115 @@ test("I released it, watch: a fix the verifier named, merged meanwhile, is offer
   );
   expect(w.merges).toEqual([]);
   expect(w.actions).toEqual([]);
+});
+
+test("I released it, watch: another incident's pull request the round named is never offered as this fix", async () => {
+  const w = await world();
+  await toUnproven(w, [
+    "Only the release can show it; #9 does the same for another part",
+  ]);
+  // #9 is another incident's own pull request.
+  const other = await createIncident({
+    project: "acme",
+    title: "Billing",
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: { kind: "rule" },
+    signalIds: ["sig-b"],
+    primarySignalId: "sig-b",
+    at: new Date(START).toISOString(),
+    detail: "Billing failing",
+  });
+  await updateIncident(other.id, (c) => ({
+    ...c,
+    response: {
+      ...emptyResponse({
+        now: c.openedAt,
+        maxRounds: 2,
+        phase: "investigating",
+      }),
+      candidate: {
+        round: 1,
+        prUrl: "https://github.com/acme/web/pull/9",
+      } as CandidateState,
+    },
+  }));
+  __setCoordinatorDepsForTest(w.deps);
+  w.clock += 60_000;
+  const mergedAt = new Date(w.clock).toISOString();
+  w.deps.pullRequest = (_project, url) =>
+    url === "https://github.com/acme/web/pull/9"
+      ? { state: "MERGED", updatedAt: mergedAt, mergedAt, headSha: "fed9876" }
+      : url === "https://github.com/acme/web/pull/12"
+        ? { state: "OPEN", updatedAt: mergedAt }
+        : undefined;
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.needsYou?.mergedFix).toBeUndefined();
+  expect(i?.response?.ledger.map((e) => e.detail)).not.toContain(
+    "PR #9, named in this round, is merged",
+  );
+});
+
+test("I'll release it myself: the watch starts at the release that holds the fix's app, not the first release after the merge", async () => {
+  const w = await world();
+  await toUnproven(w);
+  w.deps.prState = () => "MERGED";
+  const mergedAt = w.clock + 60_000;
+  const release = (n: number, app: string, at: number) => ({
+    url: `https://github.com/acme/web/pull/${n}`,
+    title: `chore: release ${app} 1.0.${n}`,
+    state: "MERGED" as const,
+    updatedAt: new Date(at).toISOString(),
+  });
+  w.prs.set(40, {
+    state: "MERGED",
+    headSha: "a40",
+    files: [
+      "services/search-service/CHANGELOG.md",
+      "services/search-service/package.json",
+    ],
+  });
+  w.prs.set(41, {
+    state: "MERGED",
+    headSha: "a41",
+    // The fix changed src/search.ts.
+    files: ["CHANGELOG.md", "src/version.ts"],
+  });
+  let releases = [release(40, "search-service", mergedAt + 4 * 60_000)];
+  w.deps.releasePrs = () => releases.map((r) => ({ ...r }));
+  w.clock += 60_000;
+  await applyOwnerDecision(
+    w.incident.id,
+    "release-watch",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  // The merge is recorded first, then the other app's release comes.
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.merge?.at).toBe(
+    new Date(mergedAt).toISOString(),
+  );
+  w.clock += 5 * 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  // The other app's release doesn't hold it.
+  expect(i?.state).toBe("deploying");
+  expect(i?.response?.release).toBeUndefined();
+  releases = [...releases, release(41, "web", mergedAt + 24 * 60_000)];
+  w.clock += 20 * 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.release).toMatchObject({
+    source: "release-pr",
+    ref: "chore: release web 1.0.41",
+  });
+  expect(i?.state).toBe("watching");
 });
 
 test("a pull request closed without merging while the card waits leaves the card", async () => {
@@ -4487,6 +4694,34 @@ test("post-release: a regressed verdict goes to the owner with its evidence, nev
       "After the release, production looks worse: Searches on acme.example.test pass since the release",
   });
   expect(w.actions.map((a) => a.actionId)).toEqual(["deploy"]);
+});
+
+test("post-release: at its own budget the check is stopped and asked once to report; its report is used", async () => {
+  const w = await world();
+  await w.toWatching();
+  let i = await getIncident(w.incident.id);
+  const id = i?.response?.postRelease?.sessionId;
+  expect(id).toBeDefined();
+  w.live(id!, { costUsd: 2.4 });
+  w.clock += 5_000;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.cancels).toContain(id!);
+  expect(w.sends.at(-1)).toMatchObject({ id });
+  expect(w.sends.at(-1)?.message).toContain("reached its $2 budget");
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.agents.find((a) => a.sessionId === id)).toMatchObject({
+    status: "running",
+    wrappedUp: true,
+  });
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      "Post-release check stopped: The post-release check reached its $2 budget",
+      "Asked the post-release check to report from what it has: it reached its $2 budget",
+    ]),
+  );
+  await w.finishCheck("confirmed");
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.postRelease?.status).toBe("confirmed");
 });
 
 test("post-release: an answer to the check's question reaches the check, and its old verdict doesn't raise the card again", async () => {

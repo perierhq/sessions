@@ -291,9 +291,9 @@ export function findingsBrief(role: AgentRole | "post-release"): string[] {
     "",
     `Every block has id (lowercase letters, digits and dashes, at most ${L.idMax}, unique in your list), kind, an optional title and size (full or half; two half blocks share a row).`,
     "Kinds:",
-    ...FINDINGS_CATALOG.map(
-      (k) => `- ${k.kind}: ${k.use}. Fields: ${k.fields}.`,
-    ),
+    ...FINDINGS_CATALOG.filter(
+      (k) => role !== "post-release" || CHECK_KINDS.has(k.kind),
+    ).map((k) => `- ${k.kind}: ${k.use}. Fields: ${k.fields}.`),
     "",
     "References:",
     ...REF_CATALOG.map((r) => `- ${r.shape}: ${r.use}.`),
@@ -303,14 +303,29 @@ export function findingsBrief(role: AgentRole | "post-release"): string[] {
     `Limits: title at most ${L.title} characters; prose fields at most ${L.prose}; a statement or question at most ${L.statement}; timeline events at most ${L.eventText} characters; marker labels and compare labels at most ${L.markerLabel}; a log at most ${L.logLines} lines of ${L.logLineChars} characters; a signal window at most ${days} days.`,
     "",
     ...optionsBrief(),
-    "Example:",
-    "```json",
-    JSON.stringify(FINDINGS_EXAMPLE, null, 2),
-    "```",
-    "",
   );
+  // The post-release check only checks: a short brief, without the
+  // worked example.
+  if (role !== "post-release")
+    out.push(
+      "Example:",
+      "```json",
+      JSON.stringify(FINDINGS_EXAMPLE, null, 2),
+      "```",
+      "",
+    );
   return out;
 }
+
+/** The kinds the post-release check's brief lists: what production does
+ *  now, against before the release. */
+const CHECK_KINDS: ReadonlySet<string> = new Set([
+  "signal",
+  "compare",
+  "log",
+  "claims",
+  "question",
+]);
 
 const PROSE_MAX = 120;
 

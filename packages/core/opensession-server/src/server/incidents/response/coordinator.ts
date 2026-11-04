@@ -17,6 +17,7 @@ import {
   type IncidentProjectSettings,
   type IncidentResponse,
   type LedgerEntry,
+  type MergedFix,
   needsYouCardDecisions,
   OWNER_DECISIONS,
   OWNER_NOTES_MAX,
@@ -27,6 +28,7 @@ import {
   type ResponsePhase,
   SEND_BACK_NOTE_MAX,
   type SetupFix,
+  checkBudgetUsd,
   roundOfMax,
 } from "../../../shared/incident-response";
 import { findingSetOf, previousFindingSet } from "../../../shared/findings";
@@ -63,7 +65,12 @@ import {
   updateIncident,
 } from "../incident-store";
 import { appendEvent, transitionIncident } from "../lifecycle";
-import { recentObservations } from "../observation-store";
+import { applyIncidentOps } from "../engine";
+import {
+  MAIN_LANE,
+  queryObservations,
+  recentObservations,
+} from "../observation-store";
 import { trailingPasses } from "../rules";
 import { getSignalEvaluation } from "../signal-runtime";
 import { getSignal, setSignalRunOnCheck } from "../signal-store";
@@ -85,6 +92,7 @@ import {
   currentAgent,
   decideNextStep,
   failedCheckAt,
+  failingParts,
   handReleaseAvailable,
   manualRollbackAvailable,
   nextActionFor,
@@ -111,7 +119,7 @@ import {
 } from "./merge";
 import { independenceBetween, resolveRoleModels } from "./models";
 import { agentOptionsFor, mergeBlocked, offersOption } from "./options";
-import { budgetProblem } from "./policy";
+import { budgetProblem, usd } from "./policy";
 import {
   getProjectSettings,
   latestForwardRelease,
@@ -128,6 +136,7 @@ import {
   INCIDENT_DOCS_DIR,
   type PrOverlap,
   buildAnswerMessage,
+  buildCheckWrapUp,
   buildInvestigatorPrompt,
   buildPostReleasePrompt,
   buildReminder,
@@ -148,10 +157,13 @@ import {
   type ResponseView,
 } from "./steps";
 import {
+  type FixContext,
   type PrLookup,
+  incidentPrUrls,
   knownPrs,
   mergedFixFor,
   mergedFixMoved,
+  namedMergedPrs,
   prsMovedOutside,
 } from "./outside";
 
@@ -212,6 +224,13 @@ export interface CoordinatorDeps {
   ) =>
     | Pick<KnownPr, "state" | "updatedAt" | "mergedAt" | "headSha">
     | undefined;
+  /** The newest failed main-lane check of a signal at or shortly before
+   *  `atMs`, from its stored history: the check an incident opened on when
+   *  the recent ones no longer reach back that far. */
+  openedCheck: (
+    signalId: string,
+    atMs: number,
+  ) => Promise<Observation | undefined>;
   /** Saves the findings an accepted report carries, unless the run already
    *  showed some with `show_findings` this round. Never throws. */
   applyReportFindings: (req: {
@@ -222,6 +241,9 @@ export interface CoordinatorDeps {
     claims: string[];
   }) => Promise<void>;
 }
+
+/** How far before an incident opened its opening check is looked for. */
+const OPENED_CHECK_SPAN_MS = 30 * 60_000;
 
 /** Branches release tools open their release pull requests from. */
 const RELEASE_BRANCH = /^(release-please--|changeset-release\/|release\/)/;
@@ -284,6 +306,12 @@ function defaultDeps(): CoordinatorDeps {
           });
       return out;
     },
+    openedCheck: async (signalId, atMs) =>
+      (
+        await queryObservations(signalId, atMs - OPENED_CHECK_SPAN_MS, atMs, {
+          lane: MAIN_LANE,
+        })
+      ).findLast((o) => o.result === "fail"),
     agentsPaused: (project) =>
       peekProjectSettings(project)?.agentsPaused === true,
     ready: () => serviceReadiness().phase === "ready" && !isShuttingDown(),
@@ -834,14 +862,31 @@ export async function buildResponseView(
       handReleasePr = undefined;
     }
   // A fix released by hand, waiting for its release: what the PR cache
-  // says about the project's release pull requests.
+  // says about the project's release pull requests, with the files of
+  // those merged since the fix and of the fix, to tell which holds it.
   let releasePrs: ReleasePr[] | undefined;
-  if (r?.handRelease && !r.release && r.merge?.status === "merged")
+  let fixFiles: readonly string[] | undefined;
+  if (r?.handRelease && !r.release && r.merge?.status === "merged") {
     try {
       releasePrs = d.releasePrs(incident.project);
     } catch {
       releasePrs = undefined;
     }
+    const since = Date.parse(r.merge.at ?? r.handRelease.at);
+    const merged = (releasePrs ?? []).filter(
+      (p) => p.state === "MERGED" && Date.parse(p.updatedAt) >= since,
+    );
+    if (merged.length) {
+      const own =
+        r.candidate?.pr?.url === r.handRelease.prUrl
+          ? r.candidate.pr.files
+          : undefined;
+      fixFiles =
+        own ?? (await mergedPrFiles(r.handRelease.prUrl, d)) ?? undefined;
+      if (fixFiles?.length)
+        for (const p of merged) p.files = await mergedPrFiles(p.url, d);
+    }
+  }
   const setup =
     incident.state === "needs-you" &&
     incident.response?.needsYou?.kind === "setup"
@@ -852,8 +897,21 @@ export async function buildResponseView(
   const lookup: PrLookup = (url) => d.pullRequest(incident.project, url);
   const prs =
     incident.state === "needs-you" && r ? knownPrs(r, lookup) : undefined;
-  const mergedFix =
-    incident.state === "needs-you" ? mergedFixFor(incident, lookup) : undefined;
+  let mergedFix: MergedFix | undefined;
+  if (incident.state === "needs-you") {
+    const context: FixContext = {
+      claimed: claimedPrs(
+        incident.id,
+        await d.listIncidents({ project: incident.project }),
+      ),
+      files: memoPrFiles,
+    };
+    // The files of the pull requests the agents named, to tell which
+    // touches this incident.
+    for (const pr of namedMergedPrs(incident, lookup, context.claimed))
+      await mergedPrFiles(pr.url, d);
+    mergedFix = mergedFixFor(incident, lookup, context);
+  }
 
   return {
     now,
@@ -870,9 +928,56 @@ export async function buildResponseView(
     models,
     ...(handReleasePr ? { handReleasePr } : {}),
     ...(releasePrs ? { releasePrs } : {}),
+    ...(fixFiles?.length ? { fixFiles } : {}),
     ...(prs ? { prs } : {}),
     ...(mergedFix ? { mergedFix } : {}),
   };
+}
+
+/** The pull requests other incidents opened, by URL: never another
+ *  incident's fix. */
+function claimedPrs(
+  incidentId: string,
+  incidents: readonly Incident[],
+): Set<string> {
+  const out = new Set<string>();
+  for (const other of incidents)
+    if (other.id !== incidentId && other.response)
+      for (const pr of incidentPrUrls(other.response)) out.add(pr.url);
+  return out;
+}
+
+/** Merged pull requests' changed files by URL, as read: a merged pull
+ *  request's files don't change. A failed read is tried again after
+ *  PR_FILES_RETRY_MS. */
+const prFilesMemo = new Map<string, { files: string[] | null; at: number }>();
+const PR_FILES_RETRY_MS = 600_000;
+const PR_FILES_MEMO_MAX = 500;
+
+function memoPrFiles(url: string): readonly string[] | null | undefined {
+  return prFilesMemo.get(url)?.files;
+}
+
+async function mergedPrFiles(
+  url: string,
+  d: CoordinatorDeps,
+): Promise<string[] | null> {
+  const had = prFilesMemo.get(url);
+  if (had && (had.files !== null || d.now() - had.at < PR_FILES_RETRY_MS))
+    return had.files;
+  const pr = parsePrUrl(url);
+  let files: string[] | null = null;
+  if (pr)
+    try {
+      files = prFilePaths(await d.github.files(pr.ghRepo, pr.number));
+    } catch {
+      files = null;
+    }
+  prFilesMemo.delete(url);
+  prFilesMemo.set(url, { files, at: d.now() });
+  if (prFilesMemo.size > PR_FILES_MEMO_MAX)
+    prFilesMemo.delete(prFilesMemo.keys().next().value!);
+  return files;
 }
 
 /** Whether incident agents could start for `project` now: a model, then a
@@ -901,7 +1006,10 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
     let incident = await d.getIncident(incidentId);
     if (!incident) return;
     const settings = await d.settings(incident.project);
-    if (i === 0) await retireSuperseded(incident, d);
+    if (i === 0) {
+      await retireSuperseded(incident, d);
+      incident = await recoverOpenedOn(incident, d, settings);
+    }
     incident = await syncAgents(incident, d, settings);
     for (const run of incident.response?.agents ?? [])
       sessionIndex.set(run.sessionId, incident.id);
@@ -921,6 +1029,48 @@ async function advance(incidentId: string, d: CoordinatorDeps): Promise<void> {
     }
     if (!more) return;
   }
+}
+
+/** Incidents whose opening check was looked up in the stored history and
+ *  not found: not looked up again while the process runs. */
+const openedOnMissing = new Set<string>();
+
+/**
+ * Records the check an incident opened on when its fix loop started
+ * without one (an incident older than `openedOn`, or one whose opening
+ * check the recent checks no longer reach), from the signal's stored
+ * history, so another part's failure is still told apart from it.
+ */
+async function recoverOpenedOn(
+  incident: Incident,
+  d: CoordinatorDeps,
+  settings: IncidentProjectSettings,
+): Promise<Incident> {
+  const r = incident.response;
+  if (!r || r.openedOn || !isOpenIncident(incident)) return incident;
+  if (openedOnMissing.has(incident.id)) return incident;
+  const openedMs = Date.parse(incident.openedAt);
+  if (failedCheckAt(d.recent(incident.primarySignalId), openedMs))
+    return incident;
+  let found: Observation | undefined;
+  try {
+    found = await d.openedCheck(incident.primarySignalId, openedMs);
+  } catch (error) {
+    console.warn(
+      `[incidents] ${incident.id}: opening check not read: ${errorMessage(error)}`,
+    );
+    return incident;
+  }
+  if (!found?.detail.trim()) {
+    openedOnMissing.add(incident.id);
+    return incident;
+  }
+  const openedOn = { at: found.at, detail: found.detail.trim() };
+  const next = await write(incident.id, d, settings, null, (c, base) => ({
+    incident: c,
+    response: base.openedOn ? base : { ...base, openedOn },
+  }));
+  return next ?? incident;
 }
 
 /**
@@ -1419,6 +1569,11 @@ async function startAgent(
       mode: access.mode,
       connections,
       recent: view.primaryRecent,
+      budgetUsd: checkBudgetUsd(settings.budget),
+      openedOn:
+        r.openedOn?.detail ??
+        failedCheckAt(view.primaryRecent, Date.parse(incident.openedAt))
+          ?.detail,
       hypotheses: (["investigator", "verifier"] as const).flatMap((who) =>
         (findingSetOf(r, who, round)?.blocks ?? []).flatMap((b) =>
           b.kind === "hypothesis" ? [b.statement] : [],
@@ -1958,32 +2113,38 @@ async function messageAgent(
   }
   const answer = step.message === "answer" ? r.answer : undefined;
   if (step.message === "answer" && !answer) return false;
+  const wrapUp = step.message === "wrap-up";
   // Notes the owner added since the agents' last prompt go with this one.
   const notes = (r.ownerNotes ?? []).filter((n) => !n.sentAt);
   const message = answer
     ? buildAnswerMessage(answer.by, answer.note)
-    : sendBack
-      ? buildSendBackMessage(
-          r.round,
-          r.maxRounds,
-          r.sendBack ?? { kind: "reopened", detail: "The work was sent back" },
-          // The send-back raised the round before this message, so the
-          // round sent back is the one before r.round.
-          run.role === "investigator"
-            ? previousFindingSet(r, "investigator", r.round)
-            : undefined,
-          await prOverlaps(incident, d),
-        )
-      : buildReminder(
-          // A run refused before every issue was kept has its first one.
-          run.reportIssues ?? [
-            {
-              problem: run.reportProblem ?? "missing",
-              error: run.reportError ?? "No incident-report block",
+    : wrapUp
+      ? buildCheckWrapUp(checkBudgetUsd(settings.budget))
+      : sendBack
+        ? buildSendBackMessage(
+            r.round,
+            r.maxRounds,
+            r.sendBack ?? {
+              kind: "reopened",
+              detail: "The work was sent back",
             },
-          ],
-          run.role,
-        );
+            // The send-back raised the round before this message, so the
+            // round sent back is the one before r.round.
+            run.role === "investigator"
+              ? previousFindingSet(r, "investigator", r.round)
+              : undefined,
+            await prOverlaps(incident, d),
+          )
+        : buildReminder(
+            // A run refused before every issue was kept has its first one.
+            run.reportIssues ?? [
+              {
+                problem: run.reportProblem ?? "missing",
+                error: run.reportError ?? "No incident-report block",
+              },
+            ],
+            run.role,
+          );
   const text = withOwnerNotes(message, notes);
   await agents.send(
     run.sessionId,
@@ -1998,6 +2159,15 @@ async function messageAgent(
     (c, base, at) => {
       const agentsNext = base.agents.map((a) => {
         if (a.sessionId !== run.sessionId) return a;
+        if (wrapUp)
+          return patched(a, {
+            status: "running",
+            turnSentAt: at,
+            endedAt: undefined,
+            cancelledFor: undefined,
+            error: undefined,
+            wrappedUp: true,
+          });
         if (answer)
           // The same round goes on: the report it gave is replaced by the
           // one it writes after reading the answer.
@@ -2041,9 +2211,11 @@ async function messageAgent(
       const who = run.check ? "post-release check" : run.role;
       const detail = answer
         ? `Passed ${answer.by}'s answer to the ${who}`
-        : sendBack
-          ? `Sent the ${run.role} round ${roundOfMax(base.round, base.maxRounds)}`
-          : `Asked the ${who} for a valid report`;
+        : wrapUp
+          ? `Asked the post-release check to report from what it has: it reached its ${usd(checkBudgetUsd(settings.budget))} budget`
+          : sendBack
+            ? `Sent the ${run.role} round ${roundOfMax(base.round, base.maxRounds)}`
+            : `Asked the ${who} for a valid report`;
       const response = ledger(
         patched(base, {
           agents: agentsNext,
@@ -2236,7 +2408,7 @@ async function cancelAgents(
           response = ledger(response, at, {
             actor: "sessions",
             kind: step.for === "budget" ? "budget" : "agent-finished",
-            detail: `${roleLabel(run.role)} stopped: ${step.reason}`,
+            detail: `${run.check ? "Post-release check" : roleLabel(run.role)} stopped: ${step.reason}`,
             sessionId: run.sessionId,
           });
       return {
@@ -2955,7 +3127,85 @@ async function resolveIncident(
       };
     },
   );
-  return next !== null;
+  if (next === null) return false;
+  if (step.split) await splitOff(view, step.split, d);
+  return true;
+}
+
+/**
+ * The signal still fails on another part than the one the resolved
+ * incident opened on: that part gets an incident of its own, or joins the
+ * open one the signal already has. Never while the project pauses new
+ * incidents. Best effort: the resolve stands whatever happens here.
+ */
+async function splitOff(
+  view: ResponseView,
+  split: { at: string; detail: string },
+  d: CoordinatorDeps,
+): Promise<void> {
+  const { incident, settings } = view;
+  const signal = view.signals.get(incident.primarySignalId);
+  const evaluation = view.evaluations.get(incident.primarySignalId);
+  if (!signal || !evaluation) return;
+  try {
+    const open = (await d.listIncidents({ project: incident.project }))
+      .filter(
+        (i) =>
+          i.id !== incident.id &&
+          isOpenIncident(i) &&
+          i.signalIds.includes(signal.id),
+      )
+      .sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt))[0];
+    if (!open && settings.incidentsPaused) return;
+    const at = iso(d.now());
+    const parts = failingParts(split.detail);
+    const [touched] = await applyIncidentOps(
+      open
+        ? [
+            {
+              op: "event",
+              incidentId: open.id,
+              signalId: signal.id,
+              signalState: evaluation.state,
+              detail: split.detail,
+            },
+          ]
+        : [
+            {
+              op: "open",
+              incident: {
+                project: incident.project,
+                title: parts.length
+                  ? `${signal.name}, ${parts.join(", ")}`
+                  : signal.name,
+                state: "investigating",
+                severity: signal.severity,
+                owner: incident.owner,
+                openedBy: { kind: "rule", ref: signal.id },
+                signalIds: [signal.id],
+                primarySignalId: signal.id,
+                at,
+                detail: `${split.detail}, after ${incident.title} was fixed`,
+              },
+            },
+          ],
+      at,
+    );
+    if (!touched) return;
+    const detail = `${split.detail} went to an incident of its own, ${touched.id}`;
+    await write(incident.id, d, settings, null, (c, base, now) => ({
+      incident: event(c, "state", now, detail),
+      response: ledger(base, now, {
+        actor: "sessions",
+        kind: "policy",
+        detail,
+      }),
+    }));
+  } catch (error) {
+    console.warn(
+      `[incidents] ${incident.id}: ${split.detail} not split off: ${errorMessage(error)}`,
+    );
+  }
 }
 
 async function mergeNote(
@@ -3142,6 +3392,9 @@ function needsAttention(
   settings?: IncidentProjectSettings,
   recovering = false,
   lookup?: PrLookup,
+  /** The project's incidents, for the pull requests other incidents
+   *  opened. */
+  incidents?: readonly Incident[],
 ): boolean {
   const r = incident.response;
   const working = (r?.agents ?? []).some(
@@ -3169,7 +3422,10 @@ function needsAttention(
         (!!lookup &&
           !!r &&
           (prsMovedOutside(incident, knownPrs(r, lookup)) ||
-            mergedFixMoved(incident, lookup)))
+            mergedFixMoved(incident, lookup, {
+              claimed: claimedPrs(incident.id, incidents ?? []),
+              files: memoPrFiles,
+            })))
       );
     case "done":
       return working;
@@ -3208,6 +3464,7 @@ export async function runResponseTick(
         settingsOf.get(incident.project),
         recovering,
         (url) => d.pullRequest(incident.project, url),
+        incidents.filter((i) => i.project === incident.project),
       )
     )
       continue;

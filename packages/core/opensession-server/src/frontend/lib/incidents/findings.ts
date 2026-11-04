@@ -160,6 +160,9 @@ export interface AfterReleaseView {
   tone: DotTone;
   /** Its first reason, or why it was skipped. */
   reason: string | null;
+  /** Other parts that failed after the release, which don't count against
+   *  the fix; null without any. */
+  otherParts: string | null;
   /** Its blocks as a page (round, byline, items); null without any. */
   page: FindingsPageView | null;
 }
@@ -240,6 +243,9 @@ export function afterReleasePage(
     status: FINDINGS_COPY.check[check.status],
     tone: CHECK_TONE[check.status],
     reason: check.reasons?.[0] ?? null,
+    otherParts: check.otherParts?.length
+      ? FINDINGS_COPY.otherParts(check.otherParts.map((o) => o.detail))
+      : null,
     page,
   };
 }

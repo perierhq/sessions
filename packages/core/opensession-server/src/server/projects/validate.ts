@@ -15,6 +15,7 @@ import {
   type IncidentProjectSettings,
   type NeverWithoutYou,
   type NightRule,
+  checkBudgetUsd,
 } from "../../shared/incident-response";
 import type {
   ProjectIncidentPolicy,
@@ -361,7 +362,8 @@ export function loosenedFields(
     fields.push("autonomy");
   if (
     after.budget.perIncidentUsd > before.budget.perIncidentUsd ||
-    after.budget.perMonthUsd > before.budget.perMonthUsd
+    after.budget.perMonthUsd > before.budget.perMonthUsd ||
+    checkBudgetUsd(after.budget) > checkBudgetUsd(before.budget)
   )
     fields.push("budget");
   if (
@@ -484,9 +486,23 @@ export function validatePolicyFields(
         error:
           "Budget per month (perMonthUsd) must be from the per-incident budget to $100000",
       };
+    // Checked when it changes: a lower per-incident budget caps an
+    // unchanged one anyway (checkBudgetUsd).
+    if (
+      "perCheckUsd" in input.budget &&
+      input.budget.perCheckUsd !== current.budget.perCheckUsd &&
+      !numberIn(budget.perCheckUsd, 0.5, budget.perIncidentUsd)
+    )
+      return {
+        error:
+          "Budget per post-release check (perCheckUsd) must be from $0.50 to the per-incident budget",
+      };
     patch.budget = {
       perIncidentUsd: budget.perIncidentUsd,
       perMonthUsd: budget.perMonthUsd,
+      ...(budget.perCheckUsd !== undefined
+        ? { perCheckUsd: budget.perCheckUsd }
+        : {}),
     };
   }
   return patch;

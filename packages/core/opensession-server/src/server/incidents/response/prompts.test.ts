@@ -15,6 +15,7 @@ import type {
 import {
   buildAnswerMessage,
   buildInvestigatorPrompt,
+  buildCheckWrapUp,
   buildPostReleasePrompt,
   buildReminder,
   buildSendBackMessage,
@@ -1214,6 +1215,7 @@ test("the post-release check is read-only, says what went out, and asks for its 
     after: "Deploy of 9f9f9f9 at 12:10 UTC",
     releasedAt: "2026-10-20T12:10:00.000Z",
     mode: "ask",
+    budgetUsd: 2,
     recent: [{ at: "2026-10-20T12:11:00.000Z", result: "ok", detail: "200" }],
     hypotheses: ["Upstream blocks the default client"],
   });
@@ -1232,6 +1234,108 @@ test("the post-release check is read-only, says what went out, and asks for its 
   expect(text).toContain('Your blocks show on their own, as "after release"');
   // Never the signal's secret header value.
   expect(text).not.toContain("s3cret");
+});
+
+test("the post-release brief starts from what the watch shows, within its own budget", () => {
+  const text = buildPostReleasePrompt({
+    incident,
+    signal,
+    candidate,
+    after: "Deploy of 9f9f9f9 at 12:10 UTC",
+    releasedAt: "2026-10-20T12:10:00.000Z",
+    mode: "ask",
+    openedOn: "search: slow",
+    budgetUsd: 2,
+    recent: [
+      {
+        at: "2026-10-20T12:05:00.000Z",
+        result: "fail",
+        detail: "search: slow",
+      },
+      { at: "2026-10-20T12:11:00.000Z", result: "ok", detail: "200" },
+      {
+        at: "2026-10-20T12:31:00.000Z",
+        result: "fail",
+        detail: "price-watches: slow",
+      },
+      { at: "2026-10-20T12:32:00.000Z", result: "ok", detail: "200" },
+    ],
+    hypotheses: [],
+  });
+  const watch = text.indexOf("## What the watch shows");
+  expect(watch).toBeGreaterThan(0);
+  expect(watch).toBeLessThan(text.indexOf("## What to check"));
+  expect(text).toContain("- Since the release: 3 checks, 1 failed.");
+  expect(text).toContain("- search: no failure since the release.");
+  expect(text).toContain(
+    "- Other parts that failed since the release: price-watches: slow (1).",
+  );
+  expect(text).toContain("You have about $2 for this check.");
+  expect(text).toContain(
+    'If you can\'t decide within it, say not-confirmed with the reason "budget".',
+  );
+  // Each claim stays for the report; the round's hypotheses at most three.
+  expect(text).toContain("Upstream returns 403 to the default user agent");
+  const many = buildPostReleasePrompt({
+    incident,
+    signal,
+    candidate,
+    after: "Deploy of 9f9f9f9 at 12:10 UTC",
+    releasedAt: "2026-10-20T12:10:00.000Z",
+    mode: "ask",
+    budgetUsd: 2,
+    recent: [],
+    hypotheses: ["h1", "h2", "h3", "h4"],
+  });
+  expect(many).toContain("- h3");
+  expect(many).not.toContain("- h4");
+});
+
+test("the post-release check's wrap-up asks for the report from what it has", () => {
+  const text = buildCheckWrapUp(2);
+  expect(text).toContain("reached its $2 budget");
+  expect(text).toContain("Stop checking");
+  expect(text).toContain('say not-confirmed with the reason "budget"');
+});
+
+test("the post-release brief judges only the part the incident opened on", () => {
+  const text = buildPostReleasePrompt({
+    incident,
+    signal,
+    candidate,
+    after: "Deploy of 9f9f9f9 at 12:10 UTC",
+    releasedAt: "2026-10-20T12:10:00.000Z",
+    mode: "ask",
+    budgetUsd: 2,
+    openedOn: "search: slow",
+    recent: [
+      {
+        at: "2026-10-20T12:31:00.000Z",
+        result: "fail",
+        detail: "price-watches: slow",
+      },
+    ],
+    hypotheses: [],
+  });
+  expect(text).toContain("## The part this incident is about");
+  expect(text).toContain("search: slow");
+  expect(text).toContain(
+    "Judge only search. A failure of another part after the release is not this fix's failure",
+  );
+  // Without a part to tell apart, the section is left out.
+  const plain = buildPostReleasePrompt({
+    incident,
+    signal,
+    candidate,
+    after: "Deploy of 9f9f9f9 at 12:10 UTC",
+    releasedAt: "2026-10-20T12:10:00.000Z",
+    mode: "ask",
+    budgetUsd: 2,
+    openedOn: "HTTP 503",
+    recent: [],
+    hypotheses: [],
+  });
+  expect(plain).not.toContain("## The part this incident is about");
 });
 
 test("the owner's notes follow a prompt as data, oldest first; none leave it as it is", () => {

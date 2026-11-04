@@ -197,6 +197,111 @@ test("a fix merged already: another pull request the latest round's agents named
   });
 });
 
+test("a fix merged already: never another incident's pull request; one touching this incident's part or earlier fix first", () => {
+  const lookup = (u: string) =>
+    u === url(9)
+      ? { state: "MERGED" as const, updatedAt: AFTER, mergedAt: AFTER }
+      : u === url(10)
+        ? {
+            state: "MERGED" as const,
+            updatedAt: AFTER,
+            mergedAt: "2026-10-21T08:00:00.000Z",
+          }
+        : undefined;
+  const named = waiting(
+    naming("Look for better fixes in open PRs (#9, #10) and the notes"),
+  );
+  // #9 is another incident's own pull request: never this incident's fix.
+  expect(
+    mergedFixFor(named, lookup, { claimed: new Set([url(9)]) }),
+  ).toMatchObject({ number: 10, named: true });
+  expect(
+    mergedFixFor(named, lookup, { claimed: new Set([url(9), url(10)]) }),
+  ).toBe(undefined);
+  // Both free: the newest merge, unless the other touches this incident's
+  // part (search) or the files of its earlier fix.
+  expect(mergedFixFor(named, lookup)).toMatchObject({ number: 9 });
+  const opened = waiting({
+    ...naming("Look for better fixes in open PRs (#9, #10) and the notes"),
+    openedOn: { at: OPENED, detail: "search: slow" },
+  });
+  const files = (u: string) =>
+    u === url(9)
+      ? ["apps/billing/src/charge.ts"]
+      : u === url(10)
+        ? ["apps/search-service/src/client.ts"]
+        : undefined;
+  expect(mergedFixFor(opened, lookup, { files })).toMatchObject({
+    number: 10,
+  });
+  const earlier = waiting(
+    naming("Look for better fixes in open PRs (#9, #10) and the notes"),
+  );
+  earlier.response!.candidate = {
+    ...earlier.response!.candidate!,
+    pr: { files: ["apps/web/src/status.ts"] },
+  } as IncidentResponse["candidate"];
+  expect(
+    mergedFixFor(earlier, lookup, {
+      files: (u) =>
+        u === url(9)
+          ? ["docs/notes.md"]
+          : u === url(10)
+            ? ["apps/web/src/status.ts"]
+            : undefined,
+    }),
+  ).toMatchObject({ number: 10 });
+});
+
+test("a fix merged already: only what the agents say about this incident's fix names it, not the pull requests they looked through", () => {
+  const lookup = (u: string) =>
+    u === url(9)
+      ? { state: "MERGED" as const, updatedAt: AFTER, mergedAt: AFTER }
+      : undefined;
+  const investigator = (report: Record<string, unknown>) => {
+    const base = response();
+    return waiting({
+      agents: [
+        ...base.agents,
+        {
+          role: "investigator",
+          round: 3,
+          report: {
+            role: "investigator",
+            summary: "Search reads slow on one slow request",
+            cause: "The p95 is the slowest request in a quiet window.",
+            readFirst: [{ path: "PR #9 (open): docs/x.md", found: true }],
+            attempts: [
+              {
+                step: "Look for better fixes in open PRs (#9)",
+                cost: "free",
+                result: "informative",
+                evidence: "#9 does the same for another part",
+              },
+            ],
+            candidate: { pr: true, actions: [] },
+            claims: [],
+            ...report,
+          },
+        } as unknown as IncidentResponse["agents"][number],
+      ],
+    });
+  };
+  expect(mergedFixFor(investigator({}), lookup)).toBe(undefined);
+  expect(
+    mergedFixFor(
+      investigator({ cause: "The p95 rule; #9 already fixes it." }),
+      lookup,
+    ),
+  ).toMatchObject({ number: 9, named: true });
+  expect(
+    mergedFixFor(
+      investigator({ claims: [{ text: "PR #9 makes search read ok" }] }),
+      lookup,
+    ),
+  ).toMatchObject({ number: 9 });
+});
+
 test("a fix merged already: none while the card is an agent's question or a setup problem", () => {
   const lookup = () => ({
     state: "MERGED" as const,

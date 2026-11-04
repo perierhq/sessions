@@ -69,6 +69,8 @@ test("policy rows in order, with defaults", () => {
     "Spending money",
     "$20",
     "$200",
+    "Per post-release check",
+    "$2.00",
   ].map((text) => html.indexOf(text));
   expect(order.every((i) => i >= 0)).toBe(true);
   expect([...order].sort((a, b) => a - b)).toEqual(order);

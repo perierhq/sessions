@@ -322,6 +322,10 @@ describe("workflow durable sessions", () => {
       "cancelled",
     );
     expect(h.cancels).toEqual([child.id]);
+    // A message after the cancel resumes the session: once its turn ends
+    // it reads done again, not cancelled.
+    await h.controller.send(child.id, "Report from what you have", "send-b");
+    expect((await h.controller.status(child.id)).status).toBe("done");
     await expect(h.controller.status("parent")).rejects.toThrow(
       /not spawned by this workflow/,
     );

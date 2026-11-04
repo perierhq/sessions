@@ -83,6 +83,9 @@ export interface ResponseView {
    *  release pull requests the PR cache knows (release-please and the
    *  like), with the time each was last updated. */
   releasePrs?: ReleasePr[];
+  /** Only then, with release pull requests merged since: the files the
+   *  hand-released fix changed, to tell which release holds it. */
+  fixFiles?: readonly string[];
   /** Only while the incident waits on its owner: its agents' pull
    *  requests (any round's) as the PR cache has them, the ones it doesn't
    *  know left out. */
@@ -113,6 +116,9 @@ export interface ReleasePr {
   title: string;
   state: "OPEN" | "MERGED" | "CLOSED";
   updatedAt: string;
+  /** The files it changed, once Sessions read them (merged ones after
+   *  the fix only); null when they couldn't be read. */
+  files?: readonly string[] | null;
 }
 
 /** How long a merged fix waits for its release before asking the owner. */
@@ -120,6 +126,9 @@ export const RELEASE_WAIT_MS = 24 * 3_600_000;
 /** How long the post-release check may run before Sessions stops it and
  *  the watch decides alone. */
 export const CHECK_MAX_MS = 1_800_000;
+/** A post-release check asked to report at its budget is stopped for good
+ *  once it spends this many times its budget. */
+export const CHECK_WRAP_UP_FACTOR = 1.5;
 
 export type ResponseStep =
   | { step: "none" }
@@ -142,8 +151,9 @@ export type ResponseStep =
       step: "message-agent";
       sessionId: string;
       /** `answer`: the owner's answer to the agent's question, as its
-       *  next prompt in the same round. */
-      message: "send-back" | "reminder" | "answer";
+       *  next prompt in the same round. `wrap-up`: a post-release check
+       *  stopped at its budget, asked to report from what it has. */
+      message: "send-back" | "reminder" | "answer" | "wrap-up";
     }
   | {
       step: "record-report";
@@ -209,7 +219,14 @@ export type ResponseStep =
       /** How long it lasts; the project's watch window when absent. */
       ms?: number;
     }
-  | { step: "resolve"; fixedBy: FixedBy; detail: string }
+  | {
+      step: "resolve";
+      fixedBy: FixedBy;
+      detail: string;
+      /** The signal still fails on another part than the one the incident
+       *  opened on: its newest such failure, for an incident of its own. */
+      split?: { at: string; detail: string };
+    }
   | { step: "merge-note" }
   /** A card whose pull request's checks GitHub Actions never ran: look
    *  whether Actions works again, and if so re-run them and verify the fix

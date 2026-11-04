@@ -9,6 +9,7 @@ import type {
 import type { Incident } from "../../../shared/incidents";
 import type { KnownPr } from "./steps";
 import { parsePrUrl } from "./merge";
+import { failingParts } from "./watch";
 
 /** The incident's pull requests, each once: every agent's (any round's)
  *  and the candidate's, with the round that opened it. */
@@ -124,29 +125,119 @@ function repoOf(r: IncidentResponse): string | undefined {
   return undefined;
 }
 
-/** What the latest round's investigator and verifier said: their reports
- *  and finding sets, as text. */
+/** What the latest round's investigator and verifier said about this
+ *  incident's fix: their reports and finding sets, as text. The
+ *  investigator's readFirst and attempts are left out: they list what it
+ *  looked through (another incident's open pull requests, say), not this
+ *  incident's fix. */
 function latestRoundText(r: IncidentResponse): string {
   const parts: unknown[] = [];
   for (const run of r.agents)
-    if (run.round === r.round && !run.check && run.report)
-      parts.push(run.report);
+    if (run.round === r.round && !run.check && run.report) {
+      if (run.report.role === "investigator") {
+        const { readFirst: _read, attempts: _attempts, ...own } = run.report;
+        parts.push(own);
+      } else parts.push(run.report);
+    }
   for (const set of r.findingSets ?? [])
     if (set.round === r.round && !set.check) parts.push(set.blocks);
   return parts.map((p) => JSON.stringify(p)).join("\n");
+}
+
+/** What tells this incident's fix from other pull requests: the ones
+ *  other incidents opened (never this incident's fix), and the files a
+ *  merged pull request changed when Sessions read them. */
+export interface FixContext {
+  /** Other incidents' own pull request URLs. */
+  claimed?: ReadonlySet<string>;
+  /** The files a pull request changed; undefined while not read, null
+   *  when they couldn't be. */
+  files?: (url: string) => readonly string[] | null | undefined;
+}
+
+/** The pull requests the latest round's agents named, merged since the
+ *  incident opened, that may be this incident's fix: not its own, not
+ *  another incident's, not settled. In the order named. */
+export function namedMergedPrs(
+  incident: Incident,
+  lookup: PrLookup,
+  claimed: ReadonlySet<string> = new Set(),
+): Array<{
+  url: string;
+  number: number;
+  known: NonNullable<ReturnType<PrLookup>>;
+}> {
+  const r = incident.response;
+  if (!r) return [];
+  const repo = repoOf(r);
+  if (!repo) return [];
+  const settled = new Set(r.settledPrs ?? []);
+  const mine = new Set(incidentPrUrls(r).map((p) => p.number));
+  const opened = Date.parse(incident.openedAt);
+  const out: Array<{
+    url: string;
+    number: number;
+    known: NonNullable<ReturnType<PrLookup>>;
+  }> = [];
+  for (const number of namedNumbers(latestRoundText(r), repo)) {
+    if (mine.has(number)) continue;
+    const url = `https://github.com/${repo}/pull/${number}`;
+    if (settled.has(url) || claimed.has(url)) continue;
+    let known: ReturnType<PrLookup>;
+    try {
+      known = lookup(url);
+    } catch {
+      known = undefined;
+    }
+    if (known?.state !== "MERGED" || !known.mergedAt) continue;
+    if (!(Date.parse(known.mergedAt) >= opened)) continue;
+    out.push({ url, number, known });
+  }
+  return out;
+}
+
+/** Whether a pull request's files touch this incident: a file of its
+ *  earlier fix, or a path naming the part it opened on (search for
+ *  apps/search-service/…). */
+function touchesIncident(
+  r: IncidentResponse,
+  files: readonly string[] | null | undefined,
+): boolean {
+  if (!files?.length) return false;
+  const earlier = new Set(r.candidate?.pr?.files ?? []);
+  if (files.some((f) => earlier.has(f))) return true;
+  const parts = failingParts(r.openedOn?.detail ?? "");
+  if (!parts.length) return false;
+  return files.some((f) =>
+    f
+      .toLowerCase()
+      .split("/")
+      .some((segment) =>
+        parts.some(
+          (p) =>
+            segment === p ||
+            segment.replace(/\.[^.]*$/, "") === p ||
+            segment.split(/[-_.]/).includes(p),
+        ),
+      ),
+  );
 }
 
 /**
  * A fix already merged that the owner may say they released, for Sessions
  * to watch after: the incident's own pull request (newest round first), or
  * else one the latest round's agents named (an earlier incident's fix,
- * say) in the same repository, merged since the incident opened (newest
- * merge first). Ones Sessions already acted on are left out. Undefined
- * unless the incident waits on its owner with a card that takes options.
+ * say) in the same repository, merged since the incident opened. Another
+ * open or closed incident's own pull request is never this one's fix. Of
+ * those named, one whose files touch this incident (its earlier fix's
+ * files, or its part) comes first, then the newest merge. Ones Sessions
+ * already acted on are left out. Undefined unless the incident waits on
+ * its owner with a card that takes options.
  */
 export function mergedFixFor(
   incident: Incident,
   lookup: PrLookup,
+  context: FixContext = {},
 ): MergedFix | undefined {
   const r = incident.response;
   const ny = r?.needsYou;
@@ -174,33 +265,25 @@ export function mergedFixFor(
     )
     .sort((a, b) => b.round - a.round);
   if (own[0]) return fix(own[0], own[0], false);
-  const repo = repoOf(r);
-  if (!repo) return undefined;
-  const mine = new Set(incidentPrUrls(r).map((p) => p.number));
-  const opened = Date.parse(incident.openedAt);
-  let best: MergedFix | undefined;
-  for (const number of namedNumbers(latestRoundText(r), repo)) {
-    if (mine.has(number)) continue;
-    const url = `https://github.com/${repo}/pull/${number}`;
-    if (settled.has(url)) continue;
-    let known: ReturnType<PrLookup>;
-    try {
-      known = lookup(url);
-    } catch {
-      known = undefined;
-    }
-    if (known?.state !== "MERGED" || !known.mergedAt) continue;
-    if (!(Date.parse(known.mergedAt) >= opened)) continue;
-    if (best && Date.parse(best.at) >= Date.parse(known.mergedAt)) continue;
-    best = fix({ url, number }, known, true);
-  }
-  return best;
+  const files = context.files ?? (() => undefined);
+  const best = namedMergedPrs(incident, lookup, context.claimed)
+    .map((p) => ({ ...p, touches: touchesIncident(r, files(p.url)) }))
+    .sort(
+      (a, b) =>
+        Number(b.touches) - Number(a.touches) ||
+        Date.parse(b.known.mergedAt!) - Date.parse(a.known.mergedAt!),
+    )[0];
+  return best ? fix(best, best.known, true) : undefined;
 }
 
 /** Whether the merged fix the card offers is not the one there is now
  *  (one appeared, went or changed), so the tick should read it again. */
-export function mergedFixMoved(incident: Incident, lookup: PrLookup): boolean {
+export function mergedFixMoved(
+  incident: Incident,
+  lookup: PrLookup,
+  context: FixContext = {},
+): boolean {
   const had = incident.response?.needsYou?.mergedFix;
-  const now = mergedFixFor(incident, lookup);
+  const now = mergedFixFor(incident, lookup, context);
   return had?.url !== now?.url || had?.at !== now?.at;
 }

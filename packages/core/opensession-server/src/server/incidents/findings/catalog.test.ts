@@ -312,6 +312,20 @@ describe("options brief", () => {
     ]);
   });
 
+  test("the post-release check's brief is short: what production shows now, no worked example", () => {
+    const brief = findingsBrief("post-release").join("\n");
+    expect(brief).toContain("- signal: ");
+    expect(brief).toContain("- compare: ");
+    expect(brief).toContain("- question: ");
+    expect(brief).not.toContain("- timeline: ");
+    expect(brief).not.toContain("- hypothesis: ");
+    expect(brief).not.toContain(JSON.stringify(FINDINGS_EXAMPLE, null, 2));
+    expect(brief).toContain("### Options");
+    expect(brief.length).toBeLessThan(
+      findingsBrief("verifier").join("\n").length * 0.75,
+    );
+  });
+
   for (const role of ["investigator", "verifier"] as const)
     test(`the ${role}'s brief says when and how to offer options`, () => {
       const brief = findingsBrief(role).join("\n");

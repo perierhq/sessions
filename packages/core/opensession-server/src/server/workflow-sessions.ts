@@ -641,9 +641,13 @@ export function createWorkflowSessionController(
     async send(id, message, requestId) {
       assertOwned(id);
       if (!message.trim()) throw new Error("sendToSession() needs a message");
-      return await control.deliverToSession(id, message, opts.user, {
+      const sent = await control.deliverToSession(id, message, opts.user, {
         deliveryId: requestId,
       });
+      // A message resumes a cancelled session: its next turn is read as
+      // done or running again, never as the old cancel.
+      cancelled.delete(id);
+      return sent;
     },
 
     async autofix(id, reason, requestId) {

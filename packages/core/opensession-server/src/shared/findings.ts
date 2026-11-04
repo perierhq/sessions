@@ -301,6 +301,7 @@ export const FINDINGS_COPY: Readonly<{
   underWay: (round: number) => string;
   afterRelease: "After release";
   checkByline: (clock: string) => string;
+  otherParts: (details: readonly string[]) => string;
   check: Readonly<Record<PostReleaseStatus, string>>;
   byline: (role: AgentRole, clock: string) => string;
   earlierRow: (round: number) => string;
@@ -312,6 +313,8 @@ export const FINDINGS_COPY: Readonly<{
   underWay: (round: number) => `Round ${round} under way`,
   afterRelease: "After release",
   checkByline: (clock: string) => `from the post-release check, ${clock}`,
+  otherParts: (details: readonly string[]) =>
+    `Other parts failed after the release and don't count against the fix: ${details.join("; ")}`,
   check: Object.freeze({
     running: "Checking production after the release",
     confirmed: "Confirmed in production",
