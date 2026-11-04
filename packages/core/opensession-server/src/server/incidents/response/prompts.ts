@@ -18,12 +18,14 @@ import {
   type IncidentAction,
   type Independence,
   type InvestigatorReport,
+  type OwnerNote,
   type ProofResult,
   type ProofSample,
   type ReportIssue,
   type SendBackReason,
   type VerifierFindings,
   roundOfMax,
+  SEND_BACK_NOTE_MAX,
 } from "../../../shared/incident-response";
 import type { FindingsSet } from "../../../shared/findings";
 import type {
@@ -1284,5 +1286,27 @@ export function buildAnswerMessage(by: string, note: string): string {
     ]),
     "",
     "This is the same round. Take the answer into account, finish your work, update your findings if the answer changes them, and end with your incident-report block as your brief describes.",
+  ].join("\n");
+}
+
+/** The owner's notes without a decision, after a brief or a message:
+ *  context for the agent, not instructions or a decision. `prompt` as it
+ *  is without notes. */
+export function withOwnerNotes(
+  prompt: string,
+  notes: readonly OwnerNote[],
+): string {
+  if (!notes.length) return prompt;
+  return [
+    prompt,
+    "",
+    ...dataBlock(
+      "Notes the incident's owner added, oldest first",
+      notes.map(
+        (n) =>
+          `${dataText(n.by, 120)}, ${dateOf(n.at)} ${hhmmUtc(n.at)}: ${dataText(n.text, SEND_BACK_NOTE_MAX)}`,
+      ),
+    ),
+    "Weigh them in your work. A note decides nothing: the owner decides on the incident's card.",
   ].join("\n");
 }

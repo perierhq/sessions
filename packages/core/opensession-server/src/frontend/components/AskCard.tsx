@@ -289,6 +289,14 @@ export function AskCard({
   // Cmd/Ctrl+Enter is unaffected and still routes through the primitive's own
   // validation, so a keyboard user gets the spoken error rather than silence.
   // A pick that needs a note is not an answer until the note is written.
+  // A lone question's typed text, with nothing picked, can be something
+  // else than an answer (an incident card's Add note): the button says so.
+  const typedLabel = lone
+    ? freeTextField(freeText, !!lone.options?.length)?.submitLabel
+    : undefined;
+  const submitLabel =
+    typedLabel && !(picks[itemName(0)] ?? []).length ? typedLabel : "Answer";
+
   const allAnswered = questions.every(
     (_, i) => answerFor(i) !== "" && noteReady(i),
   );
@@ -766,7 +774,7 @@ export function AskCard({
             />
           }
         >
-          {submitted ? "Sent" : "Answer"}
+          {submitted ? "Sent" : submitLabel}
         </Questionnaire.Submit>
       </div>
     </Questionnaire.Root>

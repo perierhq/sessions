@@ -52,6 +52,11 @@ export const DECISION_COPY: Readonly<
     description:
       "Sessions waits for the pull request to merge, then watches the signal",
   },
+  "released-watch": {
+    label: "I released it, watch",
+    description:
+      "The fix is merged and out; Sessions watches the signal from its release",
+  },
   merge: {
     label: "Merge it",
     description:

@@ -114,8 +114,7 @@ export interface ChoiceCard {
   /** The investigator's suggested steps first, then the fixed decisions,
    *  set smaller. Absent without suggestions. */
   groups?: AskOptionGroup[];
-  /** The typed answer: Send it back with that note. Null when Send it
-   *  back is not offered. */
+  /** The typed text: a note without a decision (Add note). */
   freeText: AskFreeText | null;
   /** The agent's own options are the card's: what stopped, said above
    *  them, since the question is the agent's. */
@@ -544,11 +543,13 @@ export const NEXT_STEP_SECTION: Record<NextStepTarget, ProjectSectionId> = {
 /** The label over the investigator's suggested steps. */
 export const SUGGESTED_LABEL = "Suggested by the investigator";
 
-/** The typed answer on a card that offers Send it back. */
-export const TELL_INVESTIGATOR: AskFreeText = {
-  label: "Tell the investigator",
-  placeholder: "Tell the investigator…",
+/** The typed text on a needs-you card: a note without a decision, which
+ *  the agents' next prompt carries. Send it back takes its own note. */
+export const ADD_NOTE: AskFreeText = {
+  label: "Add a note",
+  placeholder: "Add a note for the agents…",
   maxLength: SEND_BACK_NOTE_MAX,
+  submitLabel: "Add note",
 };
 
 interface SuggestedStep {
@@ -638,7 +639,7 @@ function choiceCard(
     },
     notes: { ...notes, ...decisionNotes(decisions) },
     picks,
-    freeText: decisions.includes("send-back") ? TELL_INVESTIGATOR : null,
+    freeText: ADD_NOTE,
   };
   if (suggested.length)
     card.groups = [
@@ -662,9 +663,10 @@ export const ANSWER_NOTE: AskNoteField = {
  * The needs-you card with the agent's own options and nothing else of the
  * card's: the agent's question, its options in its order (the recommended
  * one first, labelled), each posting its decision. Send it back starts
- * with the agent's note; Answer asks for the answer. The typed field stays
- * Send it back. Close without action, when the agent didn't offer it, is
- * in the card's … menu.
+ * with the agent's note; Answer asks for the answer. The typed field adds
+ * a note. Close without action, when the agent didn't offer it, is
+ * in the card's … menu. I released it, watch (a fix merged meanwhile)
+ * comes after the agent's options.
  */
 function agentChoiceCard(
   reason: string,
@@ -684,27 +686,38 @@ function agentChoiceCard(
     if (o.decision === "answer") notes[o.label] = ANSWER_NOTE;
   }
   const offered = new Set(options.map((o) => o.decision));
+  // A fix that merged meanwhile, which no agent knew of: after theirs.
+  const released =
+    decisions.includes("released-watch") && !offered.has("released-watch")
+      ? (["released-watch"] as const)
+      : [];
+  for (const d of released)
+    picks[DECISION_COPY[d].label] = { kind: "decision", decision: d };
   const card: ChoiceCard = {
     mode: "choice",
     eyebrow: "Needs you",
-    decisions: options.map((o) => o.decision),
+    decisions: [...options.map((o) => o.decision), ...released],
     question: {
       header: "Needs you",
       question: question ?? reason,
-      options: options.map((o) => ({ label: o.label, description: o.detail })),
+      options: [
+        ...options.map((o) => ({ label: o.label, description: o.detail })),
+        ...released.map((d) => DECISION_COPY[d]),
+      ],
       multiSelect: false,
     },
     notes,
     picks,
-    freeText: decisions.includes("send-back") ? TELL_INVESTIGATOR : null,
+    freeText: ADD_NOTE,
   };
   if (question) card.reason = reason;
   const menu = decisions.filter((d) => d === "close" && !offered.has(d));
   if (menu.length) card.menu = menu;
+  const count = options.length + released.length;
   if (options[0]?.recommended)
     card.groups = [
       { label: RECOMMENDED_LABEL, count: 1 },
-      ...(options.length > 1 ? [{ count: options.length - 1 }] : []),
+      ...(count > 1 ? [{ count: count - 1 }] : []),
     ];
   return card;
 }

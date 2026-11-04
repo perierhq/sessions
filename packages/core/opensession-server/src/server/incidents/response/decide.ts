@@ -9,6 +9,7 @@ import type {
   IncidentAction,
   IncidentProjectSettings,
   IncidentResponse,
+  MergedFix,
   NeedsYouKind,
   NextAction,
   OwnerDecision,
@@ -41,8 +42,13 @@ import {
 } from "../../../shared/incidents";
 import { recoveriesFor } from "../rules";
 import { KNOWLEDGE_GLOB, changeFacts, globMatch } from "./facts";
-import { assessAutoMerge } from "./merge";
-import { agentOptionsFor, handReleaseOpen } from "./options";
+import { assessAutoMerge, parsePrUrl } from "./merge";
+import {
+  agentOptionsFor,
+  handReleaseOpen,
+  handReleaseUncertain,
+} from "./options";
+import { movedPrs } from "./outside";
 import {
   baseRateWatchMs,
   failingParts,
@@ -257,8 +263,20 @@ function offersApprove(kind: NeedsYouKind, r: IncidentResponse): boolean {
 }
 
 /** `settings`, when given, keeps Deploy the fix off a card where it can't
- *  work (approveBlocked); the card says why instead. */
+ *  work (approveBlocked); the card says why instead. A fix that merged
+ *  already (`needsYou.mergedFix`) adds I released it, watch first. */
 export function needsYouOptions(
+  kind: NeedsYouKind,
+  r: IncidentResponse,
+  settings?: IncidentProjectSettings,
+): OwnerDecision[] {
+  const options = cardOptions(kind, r, settings);
+  return r.needsYou?.mergedFix && kind !== "question" && kind !== "setup"
+    ? ["released-watch", ...options]
+    : options;
+}
+
+function cardOptions(
   kind: NeedsYouKind,
   r: IncidentResponse,
   settings?: IncidentProjectSettings,
@@ -300,8 +318,9 @@ export function needsYouOptions(
         "close",
       ];
     case "rounds":
-      // The rounds are used up, and the owner may still ship the reviewed
-      // head by hand and have Sessions watch after.
+      // The rounds are used up, and the owner may still ship the head by
+      // hand (reviewed, or with green checks) and have Sessions watch
+      // after.
       return [
         ...(handReleaseAvailable(r) ? (["release-watch"] as const) : []),
         "send-back",
@@ -340,9 +359,59 @@ function needsYouReason(
       .map((o) => `${o.detail} at ${hhmmUtc(Date.parse(o.at))} UTC`)
       .join("; ")}.`;
   const prs = ny.prs ?? [];
-  if (!prs.length) return reason;
-  const numbers = prs.map((p) => `#${p.number}`).join(", ");
-  return `${reason.replace(/\.$/, "")}. Open pull ${prs.length === 1 ? "request" : "requests"}: ${numbers}.`;
+  if (prs.length) {
+    const numbers = prs.map((p) => `#${p.number}`).join(", ");
+    reason = `${reason.replace(/\.$/, "")}. Open pull ${prs.length === 1 ? "request" : "requests"}: ${numbers}.`;
+  }
+  const offered = needsYouOptions(ny.kind, r, settings);
+  const c = r.candidate;
+  if (offered.includes("release-watch") && handReleaseUncertain(r)) {
+    const n = c?.pr?.number ?? parsePrUrl(c?.prUrl ?? "")?.number;
+    reason = `${reason.replace(/\.$/, "")}. The verifier wasn't certain about PR #${n}; its checks are green.`;
+  }
+  const merged = ny.mergedFix;
+  if (merged && offered.includes("released-watch"))
+    reason = `${reason.replace(/\.$/, "")}. ${mergedFixName(merged)} is merged. If it's released, Sessions can watch the signal.`;
+  return reason;
+}
+
+/** The merged fix as the card and the ledger name it. */
+function mergedFixName(fix: MergedFix): string {
+  return fix.named
+    ? `PR #${fix.number}, named in this round,`
+    : `PR #${fix.number}`;
+}
+
+/**
+ * A fix already merged (outside.ts `mergedFixFor`) that the card should
+ * offer to watch the release of (I released it, watch), or no longer: the
+ * card is told, with a ledger line when it appears.
+ */
+function mergedFixChanged(view: ResponseView): ResponseStep | undefined {
+  const ny = view.incident.response?.needsYou;
+  if (!ny) return undefined;
+  const fix = view.mergedFix;
+  const had = ny.mergedFix;
+  if (fix && had && fix.url === had.url && fix.at === had.at) return undefined;
+  if (!fix && !had) return undefined;
+  if (!fix) {
+    const { mergedFix: _gone, ...rest } = ny;
+    return {
+      step: "transition",
+      to: null,
+      phase: "needs-you",
+      detail: `PR #${had!.number} is no longer offered as released`,
+      patch: { needsYou: rest },
+    };
+  }
+  return {
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail: `${mergedFixName(fix)} is merged`,
+    log: "merge",
+    patch: { needsYou: { ...ny, mergedFix: fix } },
+  };
 }
 
 function runningActionLabel(r: IncidentResponse): string {
@@ -868,6 +937,117 @@ function staleWaiting(view: ResponseView): ResponseStep | undefined {
   };
 }
 
+/**
+ * The response once a merged fix is out of the owner's hands: the
+ * hand-release path (the release when Sessions can see one, then the
+ * base-rate watch and the post-release check), with the merge recorded.
+ * Another round's or another incident's pull request replaces the
+ * candidate's, whose claims are not its. Also for I released it, watch.
+ */
+export function releasedPatch(
+  incident: Incident,
+  pr: Pick<MergedFix, "url" | "number" | "at" | "headSha">,
+  by: string,
+): Partial<IncidentResponse> {
+  const c = incident.response?.candidate;
+  const same = !!c && (c.prUrl ?? c.pr?.url) === pr.url;
+  return {
+    handRelease: { by, at: pr.at, prUrl: pr.url, number: pr.number },
+    merge: {
+      ghRepo: parsePrUrl(pr.url)?.ghRepo ?? c?.pr?.ghRepo ?? "",
+      number: pr.number,
+      sha: pr.headSha ?? (same ? (c?.pr?.headSha ?? "") : ""),
+      status: "merged",
+      method: "outside",
+      at: pr.at,
+    },
+    ...(c
+      ? {
+          candidate: same
+            ? {
+                ...c,
+                ...(c.pr ? { pr: { ...c.pr, state: "MERGED" as const } } : {}),
+              }
+            : { ...c, prUrl: pr.url, pr: undefined, claims: [] },
+        }
+      : {}),
+    release: undefined,
+    watch: undefined,
+    watchFailures: undefined,
+    veto: undefined,
+    mergingSince: undefined,
+  };
+}
+
+/**
+ * The incident's own pull request (any round's) merged outside Sessions
+ * while the card waited on the owner: what the card said about it (its
+ * checks, the verifier's doubt) is no longer the question, so the card
+ * goes and the release watch takes over, as after "I'll release it
+ * myself": the release when Sessions can see one, then the base-rate
+ * watch and the post-release check. No verified head is needed: the
+ * owner already shipped it. One closed without merging leaves the card.
+ */
+function movedOutside(view: ResponseView): ResponseStep | undefined {
+  const { incident } = view;
+  const r = incident.response;
+  const ny = r?.needsYou;
+  if (!r || !ny || !view.prs) return undefined;
+  const { merged, closed } = movedPrs(incident, view.prs);
+  const settled = [
+    ...(r.settledPrs ?? []),
+    ...merged.slice(0, 1).map((p) => p.url),
+    ...closed.map((p) => p.url),
+  ];
+  const pr = merged[0];
+  if (pr)
+    return {
+      step: "transition",
+      to: "deploying",
+      phase: "deploying",
+      detail: `Merged outside Sessions: #${pr.number}`,
+      log: "merge",
+      patch: {
+        ...releasedPatch(
+          incident,
+          {
+            url: pr.url,
+            number: pr.number,
+            at: pr.mergedAt!,
+            headSha: pr.headSha,
+          },
+          incident.owner,
+        ),
+        settledPrs: settled,
+      },
+    };
+  if (!closed.length) return undefined;
+  const gone = new Set(closed.map((p) => p.url));
+  const numbers = closed.map((p) => `#${p.number}`).join(", ");
+  const prs = (ny.prs ?? []).filter((p) => !gone.has(p.url));
+  const { prs: _prs, ...rest } = ny;
+  const c = r.candidate;
+  const candidateClosed = !!c?.pr && gone.has(c.pr.url);
+  return {
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail: `Closed without being merged: ${numbers}`,
+    log: "merge",
+    patch: {
+      needsYou: {
+        ...rest,
+        reason: `${ny.reason.replace(/\.$/, "")}. ${closed.length === 1 ? `PR ${numbers} was` : `PRs ${numbers} were`} closed without being merged.`,
+        ...(prs.length ? { prs } : {}),
+      },
+      ...(candidateClosed
+        ? { candidate: { ...c!, pr: { ...c!.pr!, state: "CLOSED" as const } } }
+        : {}),
+      settledPrs: settled,
+    },
+  };
+}
+
 function guards(view: ResponseView): ResponseStep | undefined {
   const { incident, settings } = view;
   const r = incident.response;
@@ -975,6 +1155,8 @@ function guards(view: ResponseView): ResponseStep | undefined {
         patch: { needsYou: undefined },
       };
     return (
+      movedOutside(view) ??
+      mergedFixChanged(view) ??
       actionsDownWait(view) ??
       actionsBack(view) ??
       setupChanged(view) ??

@@ -128,6 +128,17 @@ test("writes carry the revision and the decision", async () => {
   );
 });
 
+test("a note posts only its text", async () => {
+  serve({
+    "/api/incidents/inc-1/notes": { status: 200, body: { id: "inc-1" } },
+  });
+  await api.addIncidentNoteApi("inc-1", "Released by hand");
+  expect(calls[0]).toMatchObject({
+    method: "POST",
+    body: JSON.stringify({ note: "Released by hand" }),
+  });
+});
+
 test("writes throw on a missing route", async () => {
   serve({});
   await expect(api.decideIncidentApi("inc-1", "stop")).rejects.toBeInstanceOf(

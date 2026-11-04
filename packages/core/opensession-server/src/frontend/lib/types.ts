@@ -55,6 +55,9 @@ export interface AskFreeText {
   label: string;
   placeholder: string;
   maxLength?: number;
+  /** What the send button reads while no option is picked, so typed text
+   *  is that (an incident card's Add note). Absent: Answer. */
+  submitLabel?: string;
 }
 
 export type SessionSource = "slack" | "linear" | "opensession" | "cli";

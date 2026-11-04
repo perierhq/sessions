@@ -19,7 +19,9 @@ import {
   type LedgerEntry,
   needsYouCardDecisions,
   OWNER_DECISIONS,
+  OWNER_NOTES_MAX,
   type OwnerDecision,
+  type OwnerNote,
   type PastRound,
   type ProjectSpend,
   type ResponsePhase,
@@ -37,6 +39,7 @@ import {
   type Signal,
   type SignalEvaluation,
   isOpenIncident,
+  isTerminalIncidentState,
 } from "../../../shared/incidents";
 import type { Automation } from "../../automations";
 import { getPrsByRepo } from "../../pr-cache";
@@ -85,6 +88,7 @@ import {
   handReleaseAvailable,
   manualRollbackAvailable,
   nextActionFor,
+  releasedPatch,
   rereadsReport,
   roundRan,
   earlierVerifierFindings,
@@ -131,16 +135,25 @@ import {
   buildVerifierPrompt,
   notePathFor,
   runbookPathsFor,
+  withOwnerNotes,
 } from "./prompts";
 import { plainReportProblem } from "./reports";
 import { productionRunOnProblem, runnerLabel } from "./runners";
 import {
   FINAL_TEXT_GRACE_MS,
   PARALLEL_INVESTIGATOR_RETRY_MS,
+  type KnownPr,
   type ReleasePr,
   type ResponseStep,
   type ResponseView,
 } from "./steps";
+import {
+  type PrLookup,
+  knownPrs,
+  mergedFixFor,
+  mergedFixMoved,
+  prsMovedOutside,
+} from "./outside";
 
 export const RESPONSE_TICK_MS = 5_000;
 export const MAX_STEPS_PER_ADVANCE = 8;
@@ -191,6 +204,14 @@ export interface CoordinatorDeps {
   /** The project's release pull requests the PR cache knows (release
    *  branches such as release-please's). Cheap: no GitHub call. */
   releasePrs: (project: string) => ReleasePr[];
+  /** A pull request as the PR cache has it (state, last update, head);
+   *  undefined when it doesn't know it. Cheap: no GitHub call. */
+  pullRequest: (
+    project: string,
+    url: string,
+  ) =>
+    | Pick<KnownPr, "state" | "updatedAt" | "mergedAt" | "headSha">
+    | undefined;
   /** Saves the findings an accepted report carries, unless the run already
    *  showed some with `show_findings` this round. Never throws. */
   applyReportFindings: (req: {
@@ -238,6 +259,17 @@ function defaultDeps(): CoordinatorDeps {
     prState: (project, url) => {
       for (const pr of getPrsByRepo().get(project)?.values() ?? [])
         if (pr.url === url) return pr.state;
+      return undefined;
+    },
+    pullRequest: (project, url) => {
+      for (const pr of getPrsByRepo().get(project)?.values() ?? [])
+        if (pr.url === url)
+          return {
+            state: pr.state,
+            updatedAt: pr.updatedAt,
+            ...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
+            ...(pr.headRefOid ? { headSha: pr.headRefOid } : {}),
+          };
       return undefined;
     },
     releasePrs: (project) => {
@@ -530,6 +562,7 @@ async function writeOrError(
     let r = out.response;
     if (c.state === "needs-you" && out.incident.state !== "needs-you")
       r = patched(r, { needsYou: undefined });
+    r = settleClearedMerge(c.response?.merge, r);
     const next: Incident = {
       ...out.incident,
       response: { ...r, updatedAt: at },
@@ -538,6 +571,24 @@ async function writeOrError(
     return next;
   });
   return result;
+}
+
+/**
+ * A merge record going away (a send-back, a new round, another merge)
+ * leaves its pull request in `settledPrs`, so Sessions' own earlier merge is
+ * never taken for one outside Sessions or offered as released.
+ */
+function settleClearedMerge(
+  was: IncidentResponse["merge"],
+  r: IncidentResponse,
+): IncidentResponse {
+  if (was?.status !== "merged" || !was.ghRepo) return r;
+  if (r.merge?.status === "merged" && r.merge.number === was.number) return r;
+  const url = `https://github.com/${was.ghRepo}/pull/${was.number}`;
+  const settled = r.settledPrs ?? [];
+  return settled.includes(url)
+    ? r
+    : patched(r, { settledPrs: [...settled, url] });
 }
 
 function guardOf(view: ResponseView): { state: IncidentState; phase?: string } {
@@ -796,6 +847,13 @@ export async function buildResponseView(
     incident.response?.needsYou?.kind === "setup"
       ? await setupReadiness(incident.project, models, d)
       : undefined;
+  // Waiting on the owner: its pull requests as the PR cache has them, for
+  // one merged or closed outside Sessions.
+  const lookup: PrLookup = (url) => d.pullRequest(incident.project, url);
+  const prs =
+    incident.state === "needs-you" && r ? knownPrs(r, lookup) : undefined;
+  const mergedFix =
+    incident.state === "needs-you" ? mergedFixFor(incident, lookup) : undefined;
 
   return {
     now,
@@ -812,6 +870,8 @@ export async function buildResponseView(
     models,
     ...(handReleasePr ? { handReleasePr } : {}),
     ...(releasePrs ? { releasePrs } : {}),
+    ...(prs ? { prs } : {}),
+    ...(mergedFix ? { mergedFix } : {}),
   };
 }
 
@@ -1388,6 +1448,10 @@ async function startAgent(
     });
   }
 
+  // A fresh session reads every note the owner added.
+  const notes = r.ownerNotes ?? [];
+  prompt = withOwnerNotes(prompt, notes);
+
   let sessionId: string;
   let branch: string;
   try {
@@ -1494,6 +1558,7 @@ async function startAgent(
           : {}),
         // The send-back reason went into the fresh session's brief.
         ...(role === "investigator" ? { sendBack: undefined } : {}),
+        ...notesSent(base, notes, at),
       }),
       at,
       { actor: "sessions", kind: "agent-started", detail, sessionId },
@@ -1893,7 +1958,9 @@ async function messageAgent(
   }
   const answer = step.message === "answer" ? r.answer : undefined;
   if (step.message === "answer" && !answer) return false;
-  const text = answer
+  // Notes the owner added since the agents' last prompt go with this one.
+  const notes = (r.ownerNotes ?? []).filter((n) => !n.sentAt);
+  const message = answer
     ? buildAnswerMessage(answer.by, answer.note)
     : sendBack
       ? buildSendBackMessage(
@@ -1917,6 +1984,7 @@ async function messageAgent(
           ],
           run.role,
         );
+  const text = withOwnerNotes(message, notes);
   await agents.send(
     run.sessionId,
     text,
@@ -1981,6 +2049,7 @@ async function messageAgent(
           agents: agentsNext,
           ...(sendBack ? { sendBack: undefined } : {}),
           ...(answer ? { answer: undefined } : {}),
+          ...notesSent(base, notes, at),
           ...(answer && run.check && base.postRelease
             ? {
                 postRelease: patched(base.postRelease, {
@@ -3072,6 +3141,7 @@ function needsAttention(
   incident: Incident,
   settings?: IncidentProjectSettings,
   recovering = false,
+  lookup?: PrLookup,
 ): boolean {
   const r = incident.response;
   const working = (r?.agents ?? []).some(
@@ -3095,7 +3165,11 @@ function needsAttention(
         r?.needsYou?.kind === "setup" ||
         waitingMayBeStale(incident) ||
         waitingOnChecks(incident) ||
-        waitingOnActions(incident)
+        waitingOnActions(incident) ||
+        (!!lookup &&
+          !!r &&
+          (prsMovedOutside(incident, knownPrs(r, lookup)) ||
+            mergedFixMoved(incident, lookup)))
       );
     case "done":
       return working;
@@ -3128,7 +3202,14 @@ export async function runResponseTick(
         await d.settings(incident.project).catch(() => undefined),
       );
     const recovering = d.evaluation(incident.primarySignalId)?.state === "ok";
-    if (!needsAttention(incident, settingsOf.get(incident.project), recovering))
+    if (
+      !needsAttention(
+        incident,
+        settingsOf.get(incident.project),
+        recovering,
+        (url) => d.pullRequest(incident.project, url),
+      )
+    )
       continue;
     scheduleAdvance(incident.id);
     scheduled.push(incident.id);
@@ -3199,6 +3280,7 @@ const REFUSALS: Record<OwnerDecision, string> = {
   "close-prs": "No pull request is waiting for you",
   "keep-prs": "No pull request is waiting for you",
   "release-watch": "No verified pull request to release",
+  "released-watch": "No merged fix to watch",
 };
 
 const STOPPABLE_PHASES: ReadonlySet<ResponsePhase> = new Set([
@@ -3283,6 +3365,9 @@ function decisionAllowed(
           r.needsYou?.kind === "rounds" ||
           offersOption(c, settings, "release-watch"))
       );
+    case "released-watch":
+      // A fix merged already, which the card offers (checked above).
+      return c.state === "needs-you" && !!r.needsYou?.mergedFix;
     case "send-back":
       return c.state === "needs-you" || c.state === "veto";
     case "retry":
@@ -3453,6 +3538,19 @@ function decisionMove(
           handRelease: { by, at, prUrl, number },
           release: undefined,
           watchFailures: undefined,
+        }),
+      );
+    }
+    case "released-watch": {
+      // decisionAllowed checked the card offers the merged fix.
+      const fix = base.needsYou!.mergedFix!;
+      return move(
+        "deploying",
+        `${by} released PR #${fix.number}; Sessions watches the signal`,
+        patched(base, {
+          ...releasedPatch(c, fix, by),
+          phase: "deploying",
+          settledPrs: [...(base.settledPrs ?? []), fix.url],
         }),
       );
     }
@@ -3881,6 +3979,79 @@ export async function applyOwnerDecision(
   const held = stopping && heldByStop.delete(incidentId);
   if (!("error" in out) || held) scheduleAdvance(incidentId, deps);
   return out;
+}
+
+/** `notes` went out in an agent's prompt at `at`: marked sent. */
+function notesSent(
+  base: IncidentResponse,
+  notes: readonly OwnerNote[],
+  at: string,
+): Partial<IncidentResponse> {
+  if (!notes.length || !base.ownerNotes) return {};
+  const sent = new Set(notes.map((n) => `${n.at}\u0000${n.by}\u0000${n.text}`));
+  return {
+    ownerNotes: base.ownerNotes.map((n) =>
+      !n.sentAt && sent.has(`${n.at}\u0000${n.by}\u0000${n.text}`)
+        ? { ...n, sentAt: at }
+        : n,
+    ),
+  };
+}
+
+/**
+ * The owner adds a note without a decision: a ledger line, kept on the
+ * response for the agents' next prompt (prompts.ts `withOwnerNotes`). The
+ * incident's state, card and work stay as they are, and no agent is woken
+ * for it.
+ */
+export async function addOwnerNote(
+  incidentId: string,
+  by: string,
+  note: string,
+  deps: Partial<CoordinatorDeps> = {},
+): Promise<Incident | DecisionError> {
+  const text = note.trim();
+  if (!text) return { error: "Write the note first", status: 400 };
+  if (text.length > SEND_BACK_NOTE_MAX)
+    return {
+      error: `The note is too long: ${SEND_BACK_NOTE_MAX.toLocaleString("en-US")} characters at most`,
+      status: 400,
+    };
+  const d = resolveCoordinatorDeps(deps);
+  try {
+    return await runInIncidentChain(incidentId, async () => {
+      const incident = await d.getIncident(incidentId);
+      if (!incident) return { error: "Not found", status: 404 as const };
+      if (isTerminalIncidentState(incident.state))
+        return { error: "This incident is over", status: 409 as const };
+      const settings = await d.settings(incident.project);
+      const out = await writeOrError(
+        incidentId,
+        d,
+        settings,
+        null,
+        (c, base, at) => {
+          if (isTerminalIncidentState(c.state))
+            return { error: "This incident is over" };
+          const notes = [...(base.ownerNotes ?? []), { at, by, text }].slice(
+            -OWNER_NOTES_MAX,
+          );
+          const response = ledger({ ...base, ownerNotes: notes }, at, {
+            actor: "owner",
+            kind: "note",
+            detail: `${by} noted: ${text}`,
+            by,
+          });
+          return { incident: c, response };
+        },
+      );
+      if (!out) return { error: "Not found", status: 404 as const };
+      if ("error" in out) return { error: out.error, status: 409 as const };
+      return out;
+    });
+  } catch (error) {
+    return { error: errorMessage(error), status: 409 };
+  }
 }
 
 // ── Restarts, Runner checks and boot ───────────────────────────────────────

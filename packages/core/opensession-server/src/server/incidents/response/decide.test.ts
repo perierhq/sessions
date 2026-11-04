@@ -33,6 +33,7 @@ import {
 } from "./decide";
 import { defaultProjectSettings } from "./project-settings";
 import { agentOptionsFor } from "./options";
+import { needsYouCardDecisions } from "../../../shared/incident-response";
 import type { ResponseView } from "./steps";
 
 const NOW = Date.parse("2026-10-20T12:00:00.000Z");
@@ -3782,21 +3783,30 @@ test("needs-you: merge and hand release need a reviewed, open pull request Actio
   ];
   const dropped = (over: Partial<IncidentResponse>) =>
     agentOptionsFor(offering(both, over), noDeploy).dropped;
+  // Not reviewed, but every check passed: the owner may still release it.
   expect(dropped({ verdict: undefined })).toEqual([
     "Left off the verifier's option \"Merge it\": the verifier hasn't reviewed its head",
-    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
+  ]);
+  expect(
+    dropped({
+      verdict: undefined,
+      candidate: candidate({ pr: prSnapshot({ pendingChecks: ["ci"] }) }),
+    }),
+  ).toEqual([
+    "Left off the verifier's option \"Merge it\": the verifier hasn't reviewed its head",
+    "Left off the verifier's option \"I'll release it\": there is no reviewed or green, open pull request to release",
   ]);
   expect(
     dropped({ candidate: candidate({ pr: prSnapshot({ state: "MERGED" }) }) }),
   ).toEqual([
     'Left off the verifier\'s option "Merge it": PR #12 is already merged',
-    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
+    "Left off the verifier's option \"I'll release it\": there is no reviewed or green, open pull request to release",
   ]);
   expect(
     dropped({ candidate: candidate({ pr: prSnapshot({ state: "CLOSED" }) }) }),
   ).toEqual([
     'Left off the verifier\'s option "Merge it": PR #12 is closed',
-    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
+    "Left off the verifier's option \"I'll release it\": there is no reviewed or green, open pull request to release",
   ]);
   // Actions refusing to run stops the merge, not a release by hand.
   const refused = agentOptionsFor(
@@ -3821,7 +3831,7 @@ test("needs-you: merge and hand release need a reviewed, open pull request Actio
     }),
   ).toEqual([
     'Left off the verifier\'s option "Merge it": there is no pull request to merge',
-    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
+    "Left off the verifier's option \"I'll release it\": there is no reviewed or green, open pull request to release",
   ]);
 });
 
@@ -3837,10 +3847,10 @@ test("needs-you: an earlier round's reviewed head is not this round's", () => {
     ),
     noDeploy,
   );
-  expect(out.options).toEqual([]);
+  // Its checks are green, so the owner may still release it by hand.
+  expect(out.options.map((o) => o.decision)).toEqual(["release-watch"]);
   expect(out.dropped).toEqual([
     "Left off the verifier's option \"Merge it\": the verifier hasn't reviewed its head",
-    "Left off the verifier's option \"I'll release it\": there is no reviewed, open pull request to release",
   ]);
 });
 
@@ -4595,5 +4605,343 @@ test("send-back: every earlier round's open verifier findings, once each, newest
       questions: [{ text: "Who repins acme?", wouldAnswer: "" }],
       hypotheses: [],
     },
+  ]);
+});
+
+// ── Pull requests merged or closed outside Sessions while it waits ──────────
+
+const PR11 = "https://github.com/acme/web/pull/11";
+const PR12 = "https://github.com/acme/web/pull/12";
+
+function waitingOnOwner(
+  prs: ResponseView["prs"],
+  over: Partial<IncidentResponse> = {},
+) {
+  return view({
+    incident: incident(
+      "needs-you",
+      response({
+        phase: "needs-you",
+        round: 2,
+        candidate: candidate({
+          round: 2,
+          pr: prSnapshot({ failingChecks: ["ci"] }),
+        }),
+        agents: [
+          run("investigator", { round: 1, status: "done", prUrl: PR11 }),
+          run("investigator", {
+            round: 2,
+            status: "done",
+            sessionId: "child-3",
+            prUrl: PR12,
+          }),
+        ],
+        needsYou: {
+          kind: "rounds",
+          reason: "Not certain after 2 rounds: the only check is red on PR #12",
+          since: iso(-3_600_000),
+          resumePhase: "verifying",
+          prs: [{ url: PR12, number: 12, sessionId: "child-3" }],
+        },
+        ...over,
+      }),
+    ),
+    prs,
+  });
+}
+
+test("waiting on the owner: its pull request merged outside Sessions goes to the release watch, verified or not", () => {
+  const v = waitingOnOwner([
+    {
+      url: PR11,
+      number: 11,
+      state: "CLOSED",
+      updatedAt: iso(-7_200_000),
+      round: 1,
+    },
+    {
+      url: PR12,
+      number: 12,
+      state: "MERGED",
+      updatedAt: iso(-60_000),
+      mergedAt: iso(-60_000),
+      headSha: "def5678",
+      round: 2,
+    },
+  ]);
+  expect(decideNextStep(v)).toEqual({
+    step: "transition",
+    to: "deploying",
+    phase: "deploying",
+    detail: "Merged outside Sessions: #12",
+    log: "merge",
+    patch: {
+      handRelease: { by: "Ada", at: iso(-60_000), prUrl: PR12, number: 12 },
+      merge: {
+        ghRepo: "acme/web",
+        number: 12,
+        sha: "def5678",
+        status: "merged",
+        method: "outside",
+        at: iso(-60_000),
+      },
+      candidate: candidate({
+        round: 2,
+        pr: prSnapshot({ failingChecks: ["ci"], state: "MERGED" }),
+      }),
+      settledPrs: [PR12],
+      release: undefined,
+      watch: undefined,
+      watchFailures: undefined,
+      veto: undefined,
+      mergingSince: undefined,
+    },
+  });
+  // Another round's pull request: its claims are not the round's.
+  const older = waitingOnOwner([
+    {
+      url: PR11,
+      number: 11,
+      state: "MERGED",
+      updatedAt: iso(-60_000),
+      mergedAt: iso(-60_000),
+      round: 1,
+    },
+    { url: PR12, number: 12, state: "OPEN", updatedAt: iso(-60_000), round: 2 },
+  ]);
+  expect(decideNextStep(older)).toMatchObject({
+    detail: "Merged outside Sessions: #11",
+    patch: {
+      candidate: { prUrl: PR11, pr: undefined, claims: [] },
+      handRelease: { number: 11, prUrl: PR11 },
+    },
+  });
+});
+
+test("waiting on the owner: a merge Sessions already acted on, or one before the card, is not acted on again", () => {
+  const merged = {
+    url: PR12,
+    number: 12,
+    state: "MERGED" as const,
+    updatedAt: iso(-60_000),
+    mergedAt: iso(-60_000),
+    round: 2,
+  };
+  expect(
+    decideNextStep(waitingOnOwner([merged], { settledPrs: [PR12] })),
+  ).toEqual({ step: "none" });
+  expect(
+    decideNextStep(
+      waitingOnOwner([
+        { ...merged, updatedAt: iso(-7_200_000), mergedAt: iso(-7_200_000) },
+      ]),
+    ),
+  ).toEqual({ step: "none" });
+  // Merged before the card; a comment since moved only its last update.
+  expect(
+    decideNextStep(waitingOnOwner([{ ...merged, mergedAt: iso(-7_200_000) }])),
+  ).toEqual({ step: "none" });
+  // The PR cache's row doesn't say when it merged: not acted on.
+  const { mergedAt: _m, ...unknownMerge } = merged;
+  expect(decideNextStep(waitingOnOwner([unknownMerge]))).toEqual({
+    step: "none",
+  });
+  // A question card: the agent waits on its own question.
+  const asking = waitingOnOwner([merged]);
+  asking.incident.response!.needsYou!.kind = "question";
+  expect(decideNextStep(asking)).not.toMatchObject({
+    detail: "Merged outside Sessions: #12",
+  });
+});
+
+test("waiting on the owner: its pull request closed without merging leaves the card", () => {
+  const v = waitingOnOwner([
+    {
+      url: PR12,
+      number: 12,
+      state: "CLOSED",
+      updatedAt: iso(-60_000),
+      round: 2,
+    },
+  ]);
+  const step = decideNextStep(v);
+  expect(step).toEqual({
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail: "Closed without being merged: #12",
+    log: "merge",
+    patch: {
+      needsYou: {
+        kind: "rounds",
+        reason:
+          "Not certain after 2 rounds: the only check is red on PR #12. PR #12 was closed without being merged.",
+        since: iso(-3_600_000),
+        resumePhase: "verifying",
+      },
+      candidate: candidate({
+        round: 2,
+        pr: prSnapshot({ failingChecks: ["ci"], state: "CLOSED" }),
+      }),
+      settledPrs: [PR12],
+    },
+  });
+  // Once settled, nothing more.
+  const settled = waitingOnOwner(
+    [
+      {
+        url: PR12,
+        number: 12,
+        state: "CLOSED",
+        updatedAt: iso(-60_000),
+        round: 2,
+      },
+    ],
+    { settledPrs: [PR12] },
+  );
+  expect(decideNextStep(settled)).toEqual({ step: "none" });
+});
+
+// ── I released it, watch / I'll release it myself, watch after ─────────────
+
+const PR9 = "https://github.com/acme/web/pull/9";
+const MERGED_FIX = {
+  url: PR9,
+  number: 9,
+  at: "2026-10-20T11:30:00.000Z",
+  named: true as const,
+};
+
+test("a fix merged already: the card is told, with a ledger line, and forgets it once it's gone", () => {
+  const v = waitingOnOwner([]);
+  v.mergedFix = MERGED_FIX;
+  const ny = v.incident.response!.needsYou!;
+  expect(decideNextStep(v)).toEqual({
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail: "PR #9, named in this round, is merged",
+    log: "merge",
+    patch: { needsYou: { ...ny, mergedFix: MERGED_FIX } },
+  });
+  // Told already: nothing to do.
+  ny.mergedFix = MERGED_FIX;
+  expect(decideNextStep(v)).toEqual({ step: "none" });
+  // Settled since (the PR cache no longer offers it): the card forgets it.
+  v.mergedFix = undefined;
+  const { mergedFix: _gone, ...rest } = ny;
+  expect(decideNextStep(v)).toEqual({
+    step: "transition",
+    to: null,
+    phase: "needs-you",
+    detail: "PR #9 is no longer offered as released",
+    patch: { needsYou: rest },
+  });
+});
+
+test("a fix merged already: the card offers I released it, watch, and says which", () => {
+  const v = waitingOnOwner([]);
+  v.incident.response!.needsYou!.mergedFix = MERGED_FIX;
+  const next = nextActionFor(v.incident, defaultSettings);
+  expect(next).toMatchObject({
+    kind: "needs-you",
+    options: ["released-watch", "send-back", "resolve", "close"],
+  });
+  expect(next.kind === "needs-you" && next.reason).toEndWith(
+    "PR #9, named in this round, is merged. If it's released, Sessions can watch the signal.",
+  );
+  // The incident's own pull request, merged before the card.
+  v.incident.response!.needsYou!.mergedFix = {
+    url: PR12,
+    number: 12,
+    at: iso(-7_200_000),
+  };
+  const own = nextActionFor(v.incident, defaultSettings);
+  expect(own.kind === "needs-you" && own.reason).toEndWith(
+    "PR #12 is merged. If it's released, Sessions can watch the signal.",
+  );
+  // With the agent's own options, it stays on the card.
+  expect(
+    needsYouCardDecisions({
+      kind: "needs-you",
+      reason: "",
+      needsYou: "rounds",
+      options: ["released-watch", "send-back", "resolve", "close"],
+      agentOptions: [
+        {
+          label: "Mark it fixed",
+          detail: "",
+          action: "mark-fixed",
+          decision: "resolve",
+          role: "verifier",
+        },
+      ],
+    }),
+  ).toEqual(["resolve", "send-back", "close", "released-watch"]);
+});
+
+test("I'll release it myself: offered on an open pull request with green checks though the verifier wasn't certain, and the card says so", () => {
+  const r = (pr: Partial<PrSnapshot>) =>
+    response({
+      phase: "needs-you",
+      round: 2,
+      candidate: candidate({ round: 2, pr: prSnapshot(pr) }),
+      needsYou: {
+        kind: "rounds",
+        reason: "Not certain after 2 rounds: the replay misses one window",
+        since: iso(0),
+        resumePhase: "verifying",
+      },
+    });
+  expect(needsYouOptions("rounds", r({}), defaultSettings)).toEqual([
+    "release-watch",
+    "send-back",
+    "resolve",
+    "close",
+  ]);
+  expect(
+    nextActionFor(incident("needs-you", r({})), defaultSettings),
+  ).toMatchObject({
+    reason:
+      "Not certain after 2 rounds: the replay misses one window. The verifier wasn't certain about PR #12; its checks are green.",
+  });
+  // Checks failing, still running or missing, or closed: not offered.
+  for (const pr of [
+    { failingChecks: ["ci"] },
+    { pendingChecks: ["ci"] },
+    { missingRequired: ["ci"] },
+    { state: "CLOSED" as const },
+  ])
+    expect(needsYouOptions("rounds", r(pr), defaultSettings)).toEqual([
+      "send-back",
+      "resolve",
+      "close",
+    ]);
+});
+
+test("needs-you: an agent's Release and watch on the fix that merged already posts I released it, watch", () => {
+  const withFix = (options: unknown[], pr?: Partial<PrSnapshot>) => {
+    const i = offering(options, {
+      candidate: candidate({ pr: prSnapshot({ state: "CLOSED", ...pr }) }),
+    });
+    i.response!.needsYou!.mergedFix = MERGED_FIX;
+    return agentOptionsFor(i, noDeploy);
+  };
+  expect(
+    withFix([
+      { label: "Watch #9", detail: "", action: "release-watch", pr: 9 },
+    ]).options.map((o) => o.decision),
+  ).toEqual(["released-watch"]);
+  // Without a pull request named: the merged fix, as nothing is open.
+  expect(
+    withFix([{ label: "Watch it", detail: "", action: "release-watch" }])
+      .options[0]?.decision,
+  ).toBe("released-watch");
+  // Another pull request, not this round's: left off.
+  expect(
+    withFix([{ label: "Watch #7", detail: "", action: "release-watch", pr: 7 }])
+      .dropped,
+  ).toEqual([
+    "Left off the verifier's option \"Watch #7\": PR #7 isn't this round's fix",
   ]);
 });

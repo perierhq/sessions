@@ -17,6 +17,7 @@ import {
   type IncidentResponse,
   type NeedsYouKind,
   OPTION_DECISION,
+  type OwnerDecision,
 } from "../../../shared/incident-response";
 import type { Incident } from "../../../shared/incidents";
 import { changeFacts } from "./facts";
@@ -98,18 +99,39 @@ export function mergeBlocked(
   return undefined;
 }
 
+/** Whether every check on the round's pull request passed, as Sessions
+ *  last read it: open, none failing, still running or missing. */
+function checksGreen(r: IncidentResponse): boolean {
+  const pr = r.candidate?.pr;
+  return (
+    pr?.state === "OPEN" &&
+    !pr.actionsBlocked &&
+    !pr.failingChecks.length &&
+    !pr.pendingChecks.length &&
+    !pr.missingRequired.length
+  );
+}
+
 /** Whether the owner may release the round's pull request by hand and have
- *  Sessions watch after: a verified head on an open pull request. */
+ *  Sessions watch after: an open pull request whose head the verifier
+ *  reviewed, or whose checks are green though the verifier wasn't
+ *  certain (`handReleaseUncertain`; the card says so). */
 export function handReleaseOpen(r: IncidentResponse): boolean {
   const c = r.candidate;
   return (
     !!c?.plan.pr &&
     !c.rollbackFirst &&
     !!(c.prUrl ?? c.pr?.url) &&
-    reviewedThisRound(r) &&
+    (reviewedThisRound(r) || checksGreen(r)) &&
     c.pr?.state !== "MERGED" &&
     c.pr?.state !== "CLOSED"
   );
+}
+
+/** The hand release is offered on green checks alone: this round's
+ *  verifier didn't vouch for the head. */
+export function handReleaseUncertain(r: IncidentResponse): boolean {
+  return handReleaseOpen(r) && !reviewedThisRound(r);
 }
 
 /** The run of the session that offered the options. */
@@ -138,10 +160,12 @@ function blockedOption(
     case "merge":
       return otherPr ?? mergeBlocked(r, settings);
     case "release-watch":
+      // The fix merged already (I released it, watch).
+      if (optionDecision(option, r) === "released-watch") return undefined;
       if (otherPr) return otherPr;
       return handReleaseOpen(r)
         ? undefined
-        : "there is no reviewed, open pull request to release";
+        : "there is no reviewed or green, open pull request to release";
     case "send-back":
       return r.round < r.maxRounds ? undefined : "no round is left";
     case "answer":
@@ -189,7 +213,7 @@ export function agentOptionsFor(
     }
     options.push({
       ...option,
-      decision: OPTION_DECISION[option.action],
+      decision: optionDecision(option, r),
       role,
       ...(i === 0 ? { recommended: true as const } : {}),
     });
@@ -203,13 +227,27 @@ export function agentOptionsFor(
   };
 }
 
-/** Whether the card offers an agent option posting `action`. */
+/** The decision an option posts: Release and watch on the fix that merged
+ *  already is I released it, watch. */
+function optionDecision(
+  option: OwnerOption,
+  r: IncidentResponse,
+): OwnerDecision {
+  const merged = r.needsYou?.mergedFix;
+  if (option.action === "release-watch" && merged) {
+    if (option.pr === merged.number) return "released-watch";
+    if (option.pr === undefined && !handReleaseOpen(r)) return "released-watch";
+  }
+  return OPTION_DECISION[option.action];
+}
+
+/** Whether the card offers an agent option posting `decision`. */
 export function offersOption(
   incident: Pick<Incident, "state" | "response">,
   settings: IncidentProjectSettings,
-  action: OwnerOption["action"],
+  decision: OwnerDecision,
 ): boolean {
   return agentOptionsFor(incident, settings).options.some(
-    (o) => o.action === action,
+    (o) => o.decision === decision,
   );
 }

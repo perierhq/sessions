@@ -75,6 +75,8 @@ export interface BulkPr {
   author?: { login?: string; name?: string };
   updatedAt: string;
   createdAt: string;
+  /** When it merged; absent (or empty) unless it did. */
+  mergedAt?: string | null;
   reviewRequests?: Array<{ login?: string; name?: string; slug?: string }>;
   assignees?: Array<{ login?: string }>;
   // MERGEABLE | CONFLICTING | UNKNOWN. GitHub computes this asynchronously,
@@ -93,7 +95,7 @@ export interface BulkPr {
 }
 
 const BULK_FIELDS =
-  "headRefName,headRefOid,url,state,number,title,isDraft,additions,deletions,changedFiles,reviewDecision,author,createdAt,updatedAt,reviewRequests,assignees,mergeable";
+  "headRefName,headRefOid,url,state,number,title,isDraft,additions,deletions,changedFiles,reviewDecision,author,createdAt,updatedAt,mergedAt,reviewRequests,assignees,mergeable";
 
 export interface PrHost {
   readonly capabilities: PrHostCapabilities;

@@ -48,6 +48,7 @@ import {
   __setCoordinatorDepsForTest,
   __waitForCoordinatorForTest,
   advanceIncident,
+  addOwnerNote,
   applyOwnerDecision,
   buildResponseView,
   incidentRunOnCheck,
@@ -3855,7 +3856,10 @@ test("the fix loop records the failed check the incident opened on", async () =>
 });
 
 /** An after-release fix the verifier could not prove: the unproven card. */
-async function toUnproven(w: Awaited<ReturnType<typeof world>>) {
+async function toUnproven(
+  w: Awaited<ReturnType<typeof world>>,
+  reasons = ["Only the release can show it"],
+) {
   w.evaluate("sig-a", "ok");
   w.deps.proof = async (input) => ({
     round: input.round,
@@ -3888,7 +3892,7 @@ async function toUnproven(w: Awaited<ReturnType<typeof world>>) {
     fence({
       ...goodVerifier,
       verdict: "not-certain",
-      reasons: ["Only the release can show it"],
+      reasons,
       proofAccepted: false,
     }),
   );
@@ -4006,6 +4010,20 @@ test("I'll release it myself: a fix still failing after the watch comes back to 
     "Search is still failing after PR #12 went out",
   );
   expect(w.actions).toEqual([]);
+  // Sent back: the merge record goes, and its pull request is settled, so
+  // it is never taken for a merge outside Sessions or offered as released.
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Try the cache",
+    w.deps,
+  );
+  const back = await getIncident(w.incident.id);
+  expect(back?.response?.merge).toBeUndefined();
+  expect(back?.response?.settledPrs).toEqual([
+    "https://github.com/acme/web/pull/12",
+  ]);
 });
 
 test("I'll release it myself: a pull request closed without merging comes back to the owner", async () => {
@@ -4026,6 +4044,141 @@ test("I'll release it myself: a pull request closed without merging comes back t
     kind: "merge",
     reason: "PR #12 was closed without being merged",
   });
+});
+
+test("a pull request merged outside Sessions while the card waits goes to the release watch", async () => {
+  const w = await world();
+  await toUnproven(w);
+  __setCoordinatorDepsForTest(w.deps);
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+  w.clock += 60_000;
+  const mergedAt = new Date(w.clock).toISOString();
+  w.deps.pullRequest = (_project, url) =>
+    url.endsWith("/12")
+      ? { state: "MERGED", updatedAt: mergedAt, mergedAt, headSha: "abc1234" }
+      : undefined;
+  w.deps.prState = () => "MERGED";
+  expect(await runResponseTick(w.clock, w.deps)).toContain(w.incident.id);
+  await __waitForCoordinatorForTest();
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("watching");
+  expect(i?.response?.needsYou).toBeUndefined();
+  expect(i?.response?.merge).toMatchObject({
+    number: 12,
+    status: "merged",
+    method: "outside",
+    at: mergedAt,
+  });
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      "Merged outside Sessions: #12",
+      "Sessions can't see acme's releases, so the watch starts at the merge of PR #12",
+    ]),
+  );
+  // Sessions merged and deployed nothing.
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+});
+
+test("I released it, watch: a fix the verifier named, merged meanwhile, is offered and goes to the release watch", async () => {
+  const w = await world();
+  await toUnproven(w, [
+    "Only the release can show it; PR #9 takes another way to the same fix",
+  ]);
+  // Not offered while nothing merged.
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "released-watch",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toEqual({ error: "No merged fix to watch", status: 409 });
+  __setCoordinatorDepsForTest(w.deps);
+  w.clock += 60_000;
+  const mergedAt = new Date(w.clock).toISOString();
+  w.deps.pullRequest = (_project, url) =>
+    url === "https://github.com/acme/web/pull/9"
+      ? { state: "MERGED", updatedAt: mergedAt, mergedAt, headSha: "fed9876" }
+      : url === "https://github.com/acme/web/pull/12"
+        ? { state: "OPEN", updatedAt: mergedAt }
+        : undefined;
+  expect(await runResponseTick(w.clock, w.deps)).toContain(w.incident.id);
+  await __waitForCoordinatorForTest();
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.next).toMatchObject({
+    kind: "needs-you",
+    options: [
+      "released-watch",
+      "approve",
+      "release-watch",
+      "send-back",
+      "resolve",
+      "close",
+    ],
+    reason: expect.stringContaining(
+      "PR #9, named in this round, is merged. If it's released, Sessions can watch the signal.",
+    ),
+  });
+  expect(i?.response?.ledger.at(-1)?.detail).toBe(
+    "PR #9, named in this round, is merged",
+  );
+  // Told once.
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+  expect(
+    await applyOwnerDecision(
+      w.incident.id,
+      "released-watch",
+      "Bo",
+      undefined,
+      w.deps,
+    ),
+  ).toMatchObject({ state: "deploying" });
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("watching");
+  expect(i?.response).toMatchObject({
+    merge: { number: 9, sha: "fed9876", status: "merged", at: mergedAt },
+    handRelease: { by: "Bo", number: 9 },
+    candidate: { prUrl: "https://github.com/acme/web/pull/9", claims: [] },
+    settledPrs: ["https://github.com/acme/web/pull/9"],
+  });
+  expect(i?.response?.ledger.map((e) => e.detail)).toEqual(
+    expect.arrayContaining([
+      "Bo: released-watch",
+      "Sessions can't see acme's releases, so the watch starts at the merge of PR #9",
+    ]),
+  );
+  expect(w.merges).toEqual([]);
+  expect(w.actions).toEqual([]);
+});
+
+test("a pull request closed without merging while the card waits leaves the card", async () => {
+  const w = await world();
+  await toUnproven(w);
+  w.clock += 60_000;
+  w.deps.pullRequest = (_project, url) =>
+    url.endsWith("/12")
+      ? { state: "CLOSED", updatedAt: new Date(w.clock).toISOString() }
+      : undefined;
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.state).toBe("needs-you");
+  expect(i?.response?.needsYou?.prs).toBeUndefined();
+  expect(i?.response?.needsYou?.reason).toEndWith(
+    "PR #12 was closed without being merged.",
+  );
+  expect(i?.response?.next).toMatchObject({
+    options: expect.not.arrayContaining(["release-watch", "approve"]),
+  });
+  expect(i?.response?.ledger.at(-1)?.detail).toBe(
+    "Closed without being merged: #12",
+  );
+  __setCoordinatorDepsForTest(w.deps);
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
 });
 
 test("a proof that stopped is measured again when the signal fails again, instead of saying it stopped", async () => {
@@ -4553,4 +4706,84 @@ test("GitHub Actions comes back: the checks are re-run and the same round is ver
   await advanceIncident(w.incident.id, w.deps);
   expect(w.spawns.map((s) => s.role)).toEqual(["investigator", "verifier"]);
   expect((await getIncident(w.incident.id))?.response?.round).toBe(1);
+});
+
+// ── A note without a decision ──────────────────────────────────────────────
+
+test("a note without a decision: a ledger line, the card and state as they were, and the agents' next prompt carries it", async () => {
+  const w = await world();
+  await toUnproven(w);
+  const before = await getIncident(w.incident.id);
+  w.clock += 60_000;
+  const out = await addOwnerNote(
+    w.incident.id,
+    "Bo",
+    "  DB blocked our egress from 21:05 to 21:54 UTC  ",
+    w.deps,
+  );
+  expect(out).toMatchObject({ state: "needs-you" });
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe(before?.state);
+  expect(i?.response?.phase).toBe(before?.response?.phase);
+  expect(i?.response?.needsYou).toEqual(before?.response?.needsYou);
+  expect(i?.response?.next).toEqual(before?.response?.next);
+  expect(i?.response?.ledger.at(-1)).toMatchObject({
+    actor: "owner",
+    kind: "note",
+    by: "Bo",
+    detail: "Bo noted: DB blocked our egress from 21:05 to 21:54 UTC",
+  });
+  expect(i?.response?.ownerNotes).toEqual([
+    {
+      at: new Date(w.clock).toISOString(),
+      by: "Bo",
+      text: "DB blocked our egress from 21:05 to 21:54 UTC",
+    },
+  ]);
+  // Nothing is sent to an agent for a note alone.
+  const sent = w.sends.length;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.sends.length).toBe(sent);
+  // The next prompt to an agent carries it, once.
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Look at the egress",
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  const prompts = [
+    ...w.sends.slice(sent).map((m) => m.message),
+    ...w.spawns.slice(2).map((s) => s.prompt),
+  ];
+  expect(prompts.join("\n")).toContain(
+    "DB blocked our egress from 21:05 to 21:54 UTC",
+  );
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.ownerNotes?.[0]?.sentAt).toBeDefined();
+});
+
+test("a note without a decision: refused when empty, too long, or the incident is over", async () => {
+  const w = await world();
+  await toUnproven(w);
+  expect(await addOwnerNote(w.incident.id, "Bo", "   ", w.deps)).toEqual({
+    error: "Write the note first",
+    status: 400,
+  });
+  expect(
+    await addOwnerNote(w.incident.id, "Bo", "x".repeat(2001), w.deps),
+  ).toEqual({
+    error: "The note is too long: 2,000 characters at most",
+    status: 400,
+  });
+  expect(await addOwnerNote("inc-missing", "Bo", "Hi", w.deps)).toEqual({
+    error: "Not found",
+    status: 404,
+  });
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  expect(await addOwnerNote(w.incident.id, "Bo", "Late", w.deps)).toEqual({
+    error: "This incident is over",
+    status: 409,
+  });
 });

@@ -443,6 +443,19 @@ export function decideIncidentApi(
   });
 }
 
+/** A note without a decision: the incident is unchanged, the agents'
+ *  next prompt carries it. 400 for an empty or too long note. */
+export function addIncidentNoteApi(
+  id: string,
+  note: string,
+): Promise<Incident> {
+  return request<Incident>(`/incidents/${seg(id)}/notes`, {
+    method: "POST",
+    body: { note },
+    label: "Failed to add the note",
+  });
+}
+
 export function fetchAgentAudit(id: string): Promise<AgentAuditView | null> {
   return orNull(
     request<AgentAuditView>(`/incidents/${seg(id)}/agent-audit`, {

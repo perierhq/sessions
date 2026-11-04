@@ -423,3 +423,22 @@ test("a named free-text field says what typing does, and the answer says it was 
     { "No fix found": "Look at the proxy logs too" },
   ]);
 });
+
+test("a free-text field with its own send label: the button says it while no option is picked", async () => {
+  const card = mountCard([NEXT], {
+    groups: GROUPS,
+    notes: PREFILLED,
+    freeText: {
+      label: "Add a note",
+      placeholder: "Add a note for the agents…",
+      submitLabel: "Add note",
+    },
+  });
+  expect(card.submit()?.props.children).toBe("Add note");
+  expect(card.submit()?.props.disabled).toBe(true);
+  await card.type("Released by hand at 21:36");
+  expect(card.submit()?.props.children).toBe("Add note");
+  expect(card.submit()?.props.disabled).toBe(false);
+  await card.click("Check the 407s first");
+  expect(card.submit()?.props.children).toBe("Answer");
+});

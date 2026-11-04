@@ -78,6 +78,7 @@ const decide =
   mock<
     (id: string, decision: OwnerDecision, note?: string) => Promise<Incident>
   >();
+const note = mock<(id: string, note: string) => Promise<Incident>>();
 const updateSettings =
   mock<
     (project: string, body: ProjectPatchBody) => Promise<ProjectSettingsView>
@@ -88,6 +89,7 @@ const realApi = await import("../../lib/api/incidents");
 mock.module("../../lib/api/incidents", () => ({
   ...realApi,
   decideIncidentApi: decide,
+  addIncidentNoteApi: note,
   updateSignalApi: updateSignal,
 }));
 // Pausing writes the project settings API; the old incident-projects path
@@ -471,10 +473,10 @@ test("Try again, Mark as fixed and Close without action go without a note", asyn
     decide.mockClear();
     const card = harness.mount(NextAction, props({ incident: agentError }));
     const ask = askOf(card.output());
-    // Nothing on this card needs more than the pick, and there is no
-    // free-text answer that would have nowhere to go.
+    // Nothing on this card needs more than the pick; typed text would be
+    // a note without a decision.
     expect(ask.notes).toEqual({});
-    expect(ask.freeText).toBe(false);
+    expect(ask.freeText).toMatchObject({ submitLabel: "Add note" });
     ask.onAnswer({ [ask.questions[0]!.question]: label }, {}, {});
     await settle();
     expect(decide).toHaveBeenCalledWith("inc-1", decision, undefined);
@@ -624,7 +626,8 @@ test("suggested steps lead the card, then the fixed decisions, then a note", () 
     { count: 3, quiet: true },
   ]);
   expect(ask.freeText).toMatchObject({
-    placeholder: "Tell the investigator…",
+    placeholder: "Add a note for the agents…",
+    submitLabel: "Add note",
   });
   // The suggested send-back opens its note already written.
   expect(ask.notes?.["Check the proxy's 407s first"]).toMatchObject({
@@ -682,19 +685,24 @@ test("closing as the provider's problem is Close without action", async () => {
   expect(decide).toHaveBeenCalledWith("inc-1", "close", undefined);
 });
 
-test("typed text sends it back with that note, even when it reads like an option", async () => {
+test("typed text adds a note without a decision, even when it reads like an option", async () => {
   const inc = unreachable();
-  decide.mockResolvedValue(inc);
+  note.mockResolvedValue(inc);
   for (const text of ["Look at the proxy logs too", "Mark as fixed"]) {
     decide.mockClear();
+    note.mockClear();
     const card = harness.mount(NextAction, props({ incident: inc }));
     const ask = askOf(card.output());
     const q = ask.questions[0]!.question;
-    ask.onAnswer({ [q]: text }, {}, { [q]: text });
+    ask.onAnswer({ [q]: text }, {}, { [q]: `  ${text} ` });
     await settle();
-    expect(decide).toHaveBeenCalledWith("inc-1", "send-back", text);
+    expect(note).toHaveBeenCalledWith("inc-1", text);
+    expect(decide).not.toHaveBeenCalled();
     harness.unmountAll();
   }
+  expect(toasts.at(-1)?.message).toBe(
+    "Note added. The agents get it with their next prompt",
+  );
 });
 
 test("a refused suggestion keeps the server's refusal, as any decision does", async () => {
@@ -843,7 +851,7 @@ test("an agent's options are the card's only options, with Close in the … menu
     { count: 1 },
   ]);
   expect(ask.menu?.map((m) => m.label)).toEqual(["Close without action"]);
-  expect(ask.freeText).toMatchObject({ placeholder: "Tell the investigator…" });
+  expect(ask.freeText).toMatchObject({ submitLabel: "Add note" });
 });
 
 test("an agent's Merge it posts merge; Answer posts the answer; the menu closes", async () => {

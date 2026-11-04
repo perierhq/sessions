@@ -488,6 +488,20 @@ export type PolicyDecision =
   | { kind: "ask"; reason: string; rule: string }
   | { kind: "watch"; rule: string };
 
+/**
+ * A pull request already merged that may be the incident's fix: one of its
+ * own agents' (merged before the card went up), or one the latest round's
+ * agents named (`named`), merged since the incident opened. `at` is when
+ * GitHub last changed it, the merge for a merged pull request.
+ */
+export interface MergedFix {
+  url: string;
+  number: number;
+  at: string;
+  headSha?: string;
+  named?: true;
+}
+
 export interface PrSnapshot {
   ghRepo: string;
   number: number;
@@ -603,6 +617,7 @@ export const OWNER_DECISIONS = [
   "close-prs",
   "keep-prs",
   "release-watch",
+  "released-watch",
   "merge",
   "answer",
 ] as const;
@@ -637,6 +652,22 @@ export interface AgentOption extends OwnerOption {
 export const SEND_BACK_NOTE_MAX = 2000;
 
 /**
+ * A note the owner added without a decision: what they know or did (a
+ * release, an upstream outage). It changes nothing by itself; the agents'
+ * next prompt carries it (`sentAt` once one did), and every brief of a
+ * fresh session does. At most SEND_BACK_NOTE_MAX characters.
+ */
+export interface OwnerNote {
+  at: string;
+  by: string;
+  text: string;
+  sentAt?: string;
+}
+
+/** The most notes an incident keeps; the oldest go first. */
+export const OWNER_NOTES_MAX = 20;
+
+/**
  * `options` on `watching` and `done` is `["roll-back"]` when a manual
  * rollback is available, else `[]`. Closed without action with code-fix
  * pull requests still open (`openPrs`), `done` offers
@@ -666,7 +697,9 @@ export type NextAction =
 /**
  * The decisions a needs-you card offers. With the agent's own options, the
  * card offers those, Send it back when its options have it (the card's
- * typed note) and Close when they have it (the card's menu). Otherwise it
+ * typed note), Close when they have it (the card's menu) and I released
+ * it, watch when they have it (no agent knows the fix merged meanwhile;
+ * after the agent's options). Otherwise it
  * offers its options. The web card shows these (frontend
  * lib/incidents/next-action.ts), and the server accepts no other decision
  * while the card is up (coordinator.ts decisionAllowed).
@@ -676,7 +709,7 @@ export function needsYouCardDecisions(
 ): OwnerDecision[] {
   if (!next.agentOptions?.length) return next.options;
   const offered = new Set(next.agentOptions.map((o) => o.decision));
-  for (const d of ["send-back", "close"] as const)
+  for (const d of ["send-back", "close", "released-watch"] as const)
     if (next.options.includes(d)) offered.add(d);
   return [...offered];
 }
@@ -700,7 +733,8 @@ export type LedgerKind =
   | "action"
   | "decision"
   | "budget"
-  | "release";
+  | "release"
+  | "note";
 
 export interface LedgerEntry {
   id: string;
@@ -810,6 +844,13 @@ export interface IncidentResponse {
     number: number;
     merger?: "sessions";
   };
+  /** The owner's notes without a decision, oldest first, at most
+   *  OWNER_NOTES_MAX. */
+  ownerNotes?: OwnerNote[];
+  /** Pull requests of this incident (their URLs) that were merged or
+   *  closed outside Sessions and that it already acted on, so a later card
+   *  doesn't act on them again. */
+  settledPrs?: string[];
   /** The owner's answer to an agent's question, on its way to that
    *  agent's session as its next prompt (no new round). */
   answer?: {
@@ -863,6 +904,9 @@ export interface IncidentResponse {
     /** The card was brought up to date because the signal failed again
      *  (its `lastProblemAt` then). Such a card alerts at most once a day. */
     failedAgainAt?: string;
+    /** A fix already merged that the owner may say they released, for
+     *  Sessions to watch after (I released it, watch). */
+    mergedFix?: MergedFix;
   };
   /** The failed check the incident opened on (its detail names a status
    *  page's failing parts), for telling a different part's failure apart. */

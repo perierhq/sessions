@@ -20,7 +20,11 @@ import {
 import { isIncidentKey } from "../../hooks/useIncidents";
 import { projectSWRKey } from "../../hooks/useProjects";
 import { useSecondsLeft } from "../../hooks/useSecondsLeft";
-import { decideIncidentApi, updateSignalApi } from "../../lib/api/incidents";
+import {
+  addIncidentNoteApi,
+  decideIncidentApi,
+  updateSignalApi,
+} from "../../lib/api/incidents";
 import { updateProjectSettingsApi } from "../../lib/api/projects";
 import { apiSWRKey } from "../../lib/api-swr";
 import { ASK_CARD_PLATE } from "../../lib/ask-card-classes";
@@ -353,6 +357,23 @@ export function NextAction({
     return ok;
   };
 
+  const addNote = async (note: string): Promise<boolean> => {
+    setBusy("note");
+    let ok = false;
+    try {
+      const updated = await addIncidentNoteApi(incident.id, note);
+      await mutate(incidentKey, updated, { revalidate: false });
+      toast("Note added. The agents get it with their next prompt");
+      ok = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast(`Couldn't add the note: ${message}`, { variant: "error" });
+      void mutate(incidentKey);
+    }
+    setBusy(null);
+    return ok;
+  };
+
   const writePaused = async (
     paused: boolean,
     key: string,
@@ -473,8 +494,8 @@ export function NextAction({
 
   // The card asks in place for the note a decision needs (Send it back),
   // so an answer is one decision through the same route as every other:
-  // a picked option, or typed text, which sends it back with that note. A
-  // suggested settings step only opens the section.
+  // a picked option. Typed text with nothing picked is a note without a
+  // decision (Add note). A suggested settings step only opens the section.
   const onAnswer = async (
     answers: Record<string, string>,
     notes: Record<string, string>,
@@ -483,11 +504,13 @@ export function NextAction({
     if (card?.mode !== "choice") return;
     const [question = "", answer = ""] = Object.entries(answers)[0] ?? [];
     const written = typed[question]?.trim();
-    const pick: ChoicePick | null = written
-      ? card.freeText
-        ? { kind: "decision", decision: "send-back" }
-        : null
-      : pickFromAnswer(answer, card);
+    if (written) {
+      // A fresh card either way: the note is on the ledger, or refused.
+      await addNote(written);
+      setChoiceAttempt((n) => n + 1);
+      return;
+    }
+    const pick: ChoicePick | null = pickFromAnswer(answer, card);
     let ok = false;
     if (pick?.kind === "settings") onOpenProjectSettings?.(pick.section);
     else if (pick)
@@ -495,7 +518,7 @@ export function NextAction({
         pick.decision,
         DECISION_COPY[pick.decision].label,
         `choice:${pick.decision}`,
-        written || notes[question],
+        notes[question],
       );
     // A refused answer, or a settings step, gets a fresh card to answer
     // again.
