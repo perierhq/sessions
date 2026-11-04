@@ -48,6 +48,7 @@ import {
   __setCoordinatorDepsForTest,
   __waitForCoordinatorForTest,
   advanceIncident,
+  addOwnerNote,
   applyOwnerDecision,
   buildResponseView,
   incidentRunOnCheck,
@@ -4691,4 +4692,84 @@ test("GitHub Actions comes back: the checks are re-run and the same round is ver
   await advanceIncident(w.incident.id, w.deps);
   expect(w.spawns.map((s) => s.role)).toEqual(["investigator", "verifier"]);
   expect((await getIncident(w.incident.id))?.response?.round).toBe(1);
+});
+
+// ── A note without a decision ──────────────────────────────────────────────
+
+test("a note without a decision: a ledger line, the card and state as they were, and the agents' next prompt carries it", async () => {
+  const w = await world();
+  await toUnproven(w);
+  const before = await getIncident(w.incident.id);
+  w.clock += 60_000;
+  const out = await addOwnerNote(
+    w.incident.id,
+    "Bo",
+    "  DB blocked our egress from 21:05 to 21:54 UTC  ",
+    w.deps,
+  );
+  expect(out).toMatchObject({ state: "needs-you" });
+  let i = await getIncident(w.incident.id);
+  expect(i?.state).toBe(before?.state);
+  expect(i?.response?.phase).toBe(before?.response?.phase);
+  expect(i?.response?.needsYou).toEqual(before?.response?.needsYou);
+  expect(i?.response?.next).toEqual(before?.response?.next);
+  expect(i?.response?.ledger.at(-1)).toMatchObject({
+    actor: "owner",
+    kind: "note",
+    by: "Bo",
+    detail: "Bo noted: DB blocked our egress from 21:05 to 21:54 UTC",
+  });
+  expect(i?.response?.ownerNotes).toEqual([
+    {
+      at: new Date(w.clock).toISOString(),
+      by: "Bo",
+      text: "DB blocked our egress from 21:05 to 21:54 UTC",
+    },
+  ]);
+  // Nothing is sent to an agent for a note alone.
+  const sent = w.sends.length;
+  await advanceIncident(w.incident.id, w.deps);
+  expect(w.sends.length).toBe(sent);
+  // The next prompt to an agent carries it, once.
+  await applyOwnerDecision(
+    w.incident.id,
+    "send-back",
+    "Bo",
+    "Look at the egress",
+    w.deps,
+  );
+  await advanceIncident(w.incident.id, w.deps);
+  const prompts = [
+    ...w.sends.slice(sent).map((m) => m.message),
+    ...w.spawns.slice(2).map((s) => s.prompt),
+  ];
+  expect(prompts.join("\n")).toContain(
+    "DB blocked our egress from 21:05 to 21:54 UTC",
+  );
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.ownerNotes?.[0]?.sentAt).toBeDefined();
+});
+
+test("a note without a decision: refused when empty, too long, or the incident is over", async () => {
+  const w = await world();
+  await toUnproven(w);
+  expect(await addOwnerNote(w.incident.id, "Bo", "   ", w.deps)).toEqual({
+    error: "Write the note first",
+    status: 400,
+  });
+  expect(
+    await addOwnerNote(w.incident.id, "Bo", "x".repeat(2001), w.deps),
+  ).toEqual({
+    error: "The note is too long: 2,000 characters at most",
+    status: 400,
+  });
+  expect(await addOwnerNote("inc-missing", "Bo", "Hi", w.deps)).toEqual({
+    error: "Not found",
+    status: 404,
+  });
+  await applyOwnerDecision(w.incident.id, "close", "Bo", undefined, w.deps);
+  expect(await addOwnerNote(w.incident.id, "Bo", "Late", w.deps)).toEqual({
+    error: "This incident is over",
+    status: 409,
+  });
 });

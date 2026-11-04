@@ -652,6 +652,22 @@ export interface AgentOption extends OwnerOption {
 export const SEND_BACK_NOTE_MAX = 2000;
 
 /**
+ * A note the owner added without a decision: what they know or did (a
+ * release, an upstream outage). It changes nothing by itself; the agents'
+ * next prompt carries it (`sentAt` once one did), and every brief of a
+ * fresh session does. At most SEND_BACK_NOTE_MAX characters.
+ */
+export interface OwnerNote {
+  at: string;
+  by: string;
+  text: string;
+  sentAt?: string;
+}
+
+/** The most notes an incident keeps; the oldest go first. */
+export const OWNER_NOTES_MAX = 20;
+
+/**
  * `options` on `watching` and `done` is `["roll-back"]` when a manual
  * rollback is available, else `[]`. Closed without action with code-fix
  * pull requests still open (`openPrs`), `done` offers
@@ -717,7 +733,8 @@ export type LedgerKind =
   | "action"
   | "decision"
   | "budget"
-  | "release";
+  | "release"
+  | "note";
 
 export interface LedgerEntry {
   id: string;
@@ -827,6 +844,9 @@ export interface IncidentResponse {
     number: number;
     merger?: "sessions";
   };
+  /** The owner's notes without a decision, oldest first, at most
+   *  OWNER_NOTES_MAX. */
+  ownerNotes?: OwnerNote[];
   /** Pull requests of this incident (their URLs) that were merged or
    *  closed outside Sessions and that it already acted on, so a later card
    *  doesn't act on them again. */

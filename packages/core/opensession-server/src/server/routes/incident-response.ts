@@ -1,8 +1,8 @@
 /**
  * Incident response API: per-project fix loop settings (redacted, read
- * only), pairing a new production Runner, owner decisions on an incident,
- * and "What the agents did" (the ledger plus each agent's access and tool
- * calls). Writing the settings and binding a paired Runner moved to the
+ * only), pairing a new production Runner, owner decisions and notes on an
+ * incident, and "What the agents did" (the ledger plus each agent's access
+ * and tool calls). Writing the settings and binding a paired Runner moved to the
  * project settings API (routes/projects.ts); the old paths answer 410.
  *
  * Identity is the verified sign-in only; a claimed `user` in a body is
@@ -29,6 +29,7 @@ import { getIncident } from "../incidents/incident-store";
 import { AGENT_AUDIT_TAIL } from "../incidents/response/agent-audit";
 import { agentToolCalls } from "../incidents/response/agents";
 import {
+  addOwnerNote,
   applyOwnerDecision,
   projectMonthSpend,
 } from "../incidents/response/coordinator";
@@ -52,6 +53,7 @@ const PROJECT_PATH = /^\/api\/incident-projects\/([^/]+)$/;
 const PAIRING_PATH = /^\/api\/incident-projects\/([^/]+)\/runner-pairing$/;
 const BIND_PATH = /^\/api\/incident-projects\/([^/]+)\/runners\/([^/]+)\/bind$/;
 const DECISIONS_PATH = /^\/api\/incidents\/([^/]+)\/decisions$/;
+const NOTES_PATH = /^\/api\/incidents\/([^/]+)\/notes$/;
 const AGENT_AUDIT_PATH = /^\/api\/incidents\/([^/]+)\/agent-audit$/;
 
 /** Decisions that merge, deploy or roll back production. */
@@ -200,6 +202,25 @@ async function decide(
   return Response.json(out);
 }
 
+/** A note without a decision: `{ note }`. It changes nothing on the
+ *  incident; the agents' next prompt carries it. */
+async function addNote(
+  ctx: RouteContext,
+  id: string,
+  signInRequired: () => boolean,
+): Promise<Response> {
+  const body = await readObject(ctx.req);
+  if (body instanceof Response) return body;
+  if (signInRequired() && !ctx.authUser) return error("Sign in required", 401);
+  const out = await addOwnerNote(
+    id,
+    verifiedPerson(ctx) || requestUser(ctx) || "Anonymous",
+    typeof body.note === "string" ? body.note : "",
+  );
+  if ("error" in out) return error(out.error, out.status);
+  return Response.json(out);
+}
+
 export async function handleIncidentResponseRoutes(
   ctx: RouteContext,
   signInRequired: () => boolean = webAuthRequired,
@@ -248,6 +269,13 @@ export async function handleIncidentResponseRoutes(
     const id = decodeSegment(decisionMatch[1]!);
     if (id === null) return notFound();
     return decide(ctx, id, signInRequired);
+  }
+
+  const noteMatch = NOTES_PATH.exec(path);
+  if (noteMatch && req.method === "POST") {
+    const id = decodeSegment(noteMatch[1]!);
+    if (id === null) return notFound();
+    return addNote(ctx, id, signInRequired);
   }
 
   const auditMatch = AGENT_AUDIT_PATH.exec(path);

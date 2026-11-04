@@ -21,6 +21,7 @@ import type {
 import { ApiError } from "../api/request";
 import { clockTime } from "../time";
 import {
+  ADD_NOTE,
   decisionErrorText,
   decisionFromAnswer,
   decisionNotes,
@@ -301,8 +302,8 @@ test("needs you: several ways forward go to AskCard, one goes to a primary butto
       "Try again": { kind: "decision", decision: "retry" },
       "Close without action": { kind: "decision", decision: "close" },
     },
-    // Nothing to tell the investigator without Send it back.
-    freeText: null,
+    // A note without a decision, on every card.
+    freeText: ADD_NOTE,
   });
   const one = nextCard({
     ...base,
@@ -767,10 +768,12 @@ test("needs you: the investigator's steps lead, then the fixed decisions", () =>
     maxLength: SEND_BACK_NOTE_MAX,
     initial: "Rule out the 407s first.",
   });
+  // Typed text is a note without a decision.
   expect(card.freeText).toEqual({
-    label: "Tell the investigator",
-    placeholder: "Tell the investigator…",
+    label: "Add a note",
+    placeholder: "Add a note for the agents…",
     maxLength: SEND_BACK_NOTE_MAX,
+    submitLabel: "Add note",
   });
   expect(pickFromAnswer(" close as the provider's problem", card)).toEqual({
     kind: "decision",
@@ -780,15 +783,15 @@ test("needs you: the investigator's steps lead, then the fixed decisions", () =>
 });
 
 test("needs you: a step whose decision is not offered is left out", () => {
-  // No Send it back and no Close: only the settings step is left, and
-  // nothing can be typed to the investigator.
+  // No Send it back and no Close: only the settings step is left; a note
+  // can still be added.
   const card = suggesting(["retry", "resolve"]);
   expect(card.question.options?.map((o) => o.label)).toEqual([
     "Let agents read the search logs",
     "Try again",
     "Mark as fixed",
   ]);
-  expect(card.freeText).toBeNull();
+  expect(card.freeText?.submitLabel).toBe("Add note");
   // One decision and a suggestion is still a choice.
   expect(suggesting(["resolve"]).mode).toBe("choice");
 });
@@ -1014,7 +1017,7 @@ test("needs you: the agent's options only, never beside the card's own or the su
     label: "Your answer",
   });
   // The typed field stays Send it back.
-  expect(card.freeText?.placeholder).toBe("Tell the investigator…");
+  expect(card.freeText?.placeholder).toBe("Add a note for the agents…");
   // The recommended option is marked, subtly, as a group label.
   expect(card.groups).toEqual([
     { label: "Recommended", count: 1 },

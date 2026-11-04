@@ -269,6 +269,45 @@ test("decisions need a verified sign-in when sign-in is on", async () => {
   ).toBe(404);
 });
 
+test("a note without a decision: kept with a ledger line, the state as it was", async () => {
+  const inc = await seedIncidentInVeto();
+  const path = `/api/incidents/${inc.id}/notes`;
+  expect(
+    (
+      await call(
+        "POST",
+        path,
+        { note: "Released by hand at 21:36" },
+        { authUser: null, signInRequired: true },
+      )
+    )?.status,
+  ).toBe(401);
+  const added = await call("POST", path, { note: "Released by hand at 21:36" });
+  expect(added?.status).toBe(200);
+  expect(added?.json).toMatchObject({
+    state: "veto",
+    response: {
+      ownerNotes: [{ by: "Ada", text: "Released by hand at 21:36" }],
+    },
+  });
+  expect((added?.json as Incident).response?.ledger.at(-1)).toMatchObject({
+    kind: "note",
+    detail: "Ada noted: Released by hand at 21:36",
+  });
+  expect(await call("POST", path, { note: " " })).toEqual({
+    status: 400,
+    json: { error: "Write the note first" },
+  });
+  expect(await call("POST", path, {})).toEqual({
+    status: 400,
+    json: { error: "Write the note first" },
+  });
+  expect(
+    (await call("POST", "/api/incidents/inc-missing/notes", { note: "Hi" }))
+      ?.status,
+  ).toBe(404);
+});
+
 test("production decisions need a signed-in person, never a claimed name", async () => {
   const inc = await seedIncidentInVeto();
   expect(
