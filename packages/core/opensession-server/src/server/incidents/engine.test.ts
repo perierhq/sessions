@@ -672,6 +672,47 @@ describe("decide", () => {
     ).toEqual([]);
   });
 
+  test("a merged-in signal's parts are not told apart from the primary's", () => {
+    const a = S("sig-a");
+    const b = S("sig-b", { name: "Vendor status" });
+    // Opened on sig-a's search; sig-b was merged in later.
+    const resolved = I("inc-1", "resolved", {
+      title: "Search",
+      signalIds: ["sig-a", "sig-b"],
+      closedAt: iso(600_000),
+      response: {
+        openedOn: { at: iso(1_200_000), detail: "search: slow" },
+      } as Incident["response"],
+    });
+    expect(
+      decide(b, "ok", E("sig-b", "failing"), {
+        ...snap([a, b], [E("sig-b", "failing")], [resolved]),
+        failedOn: "api: degraded",
+      }),
+    ).toEqual([
+      {
+        op: "transition",
+        incidentId: "inc-1",
+        to: "investigating",
+        detail: "3 failures in a row",
+      },
+    ]);
+    // Closed without action, it still quiets sig-b.
+    expect(
+      decide(b, "ok", E("sig-b", "failing"), {
+        ...snap(
+          [a, b],
+          [E("sig-b", "failing")],
+          [{ ...resolved, state: "closed-without-action" }],
+        ),
+        failedOn: "api: degraded",
+        runs: new Map([
+          ["sig-b", { badSince: NOW, problemSince: NOW, healthyBefore: 0 }],
+        ]),
+      })[0],
+    ).toMatchObject({ op: "hold", incidentId: "inc-1" });
+  });
+
   test("an incident closed without action quiets only the part it opened on", () => {
     const a = S("sig-a");
     const closed = I("inc-1", "closed-without-action", {

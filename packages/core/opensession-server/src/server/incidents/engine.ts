@@ -218,8 +218,15 @@ type Quiet =
   | { kind: "reopen"; incident: Incident };
 
 /** Whether the signal's failure now is on the part `incident` opened on:
- *  it names one of its parts, or either side names none (unknown). */
-function onOpenedPart(incident: Incident, snapshot: EngineSnapshot): boolean {
+ *  it names one of its parts, or either side names none (unknown). The
+ *  opening check is the primary signal's: another signal's parts are
+ *  unknown to it. */
+function onOpenedPart(
+  incident: Incident,
+  signal: Signal,
+  snapshot: EngineSnapshot,
+): boolean {
+  if (incident.primarySignalId !== signal.id) return true;
   return samePart(
     incident.response?.openedOn?.detail ?? "",
     snapshot.failedOn?.trim() ?? "",
@@ -235,7 +242,7 @@ function quietFor(signal: Signal, snapshot: EngineSnapshot): Quiet | undefined {
   const incident = newestFirst(snapshot.incidents).find((i) => {
     if (i.state !== "closed-without-action" || !i.signalIds.includes(signal.id))
       return false;
-    if (!onOpenedPart(i, snapshot)) return false;
+    if (!onOpenedPart(i, signal, snapshot)) return false;
     const closedAt = Date.parse(i.closedAt ?? "");
     return Number.isFinite(closedAt) && badSince - closedAt <= QUIET_WINDOW_MS;
   });
@@ -342,7 +349,7 @@ function pickTarget(
       since(i.closedAt, snapshot.now) <= REOPEN_WINDOW_MS,
   );
   // Only for the part it opened on: another part is a problem of its own.
-  const same = closed.find((i) => onOpenedPart(i, snapshot));
+  const same = closed.find((i) => onOpenedPart(i, signal, snapshot));
   if (same) return { kind: "reopen", incident: same };
   if (closed[0]) return { kind: "other-part", incident: closed[0] };
   return undefined;
