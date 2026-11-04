@@ -17,6 +17,7 @@ import {
   type IncidentProjectSettings,
   type IncidentResponse,
   type LedgerEntry,
+  type MergedFix,
   needsYouCardDecisions,
   OWNER_DECISIONS,
   OWNER_NOTES_MAX,
@@ -154,10 +155,13 @@ import {
   type ResponseView,
 } from "./steps";
 import {
+  type FixContext,
   type PrLookup,
+  incidentPrUrls,
   knownPrs,
   mergedFixFor,
   mergedFixMoved,
+  namedMergedPrs,
   prsMovedOutside,
 } from "./outside";
 
@@ -856,14 +860,31 @@ export async function buildResponseView(
       handReleasePr = undefined;
     }
   // A fix released by hand, waiting for its release: what the PR cache
-  // says about the project's release pull requests.
+  // says about the project's release pull requests, with the files of
+  // those merged since the fix and of the fix, to tell which holds it.
   let releasePrs: ReleasePr[] | undefined;
-  if (r?.handRelease && !r.release && r.merge?.status === "merged")
+  let fixFiles: readonly string[] | undefined;
+  if (r?.handRelease && !r.release && r.merge?.status === "merged") {
     try {
       releasePrs = d.releasePrs(incident.project);
     } catch {
       releasePrs = undefined;
     }
+    const since = Date.parse(r.merge.at ?? r.handRelease.at);
+    const merged = (releasePrs ?? []).filter(
+      (p) => p.state === "MERGED" && Date.parse(p.updatedAt) >= since,
+    );
+    if (merged.length) {
+      const own =
+        r.candidate?.pr?.url === r.handRelease.prUrl
+          ? r.candidate.pr.files
+          : undefined;
+      fixFiles =
+        own ?? (await mergedPrFiles(r.handRelease.prUrl, d)) ?? undefined;
+      if (fixFiles?.length)
+        for (const p of merged) p.files = await mergedPrFiles(p.url, d);
+    }
+  }
   const setup =
     incident.state === "needs-you" &&
     incident.response?.needsYou?.kind === "setup"
@@ -874,8 +895,21 @@ export async function buildResponseView(
   const lookup: PrLookup = (url) => d.pullRequest(incident.project, url);
   const prs =
     incident.state === "needs-you" && r ? knownPrs(r, lookup) : undefined;
-  const mergedFix =
-    incident.state === "needs-you" ? mergedFixFor(incident, lookup) : undefined;
+  let mergedFix: MergedFix | undefined;
+  if (incident.state === "needs-you") {
+    const context: FixContext = {
+      claimed: claimedPrs(
+        incident.id,
+        await d.listIncidents({ project: incident.project }),
+      ),
+      files: memoPrFiles,
+    };
+    // The files of the pull requests the agents named, to tell which
+    // touches this incident.
+    for (const pr of namedMergedPrs(incident, lookup, context.claimed))
+      await mergedPrFiles(pr.url, d);
+    mergedFix = mergedFixFor(incident, lookup, context);
+  }
 
   return {
     now,
@@ -892,9 +926,56 @@ export async function buildResponseView(
     models,
     ...(handReleasePr ? { handReleasePr } : {}),
     ...(releasePrs ? { releasePrs } : {}),
+    ...(fixFiles?.length ? { fixFiles } : {}),
     ...(prs ? { prs } : {}),
     ...(mergedFix ? { mergedFix } : {}),
   };
+}
+
+/** The pull requests other incidents opened, by URL: never another
+ *  incident's fix. */
+function claimedPrs(
+  incidentId: string,
+  incidents: readonly Incident[],
+): Set<string> {
+  const out = new Set<string>();
+  for (const other of incidents)
+    if (other.id !== incidentId && other.response)
+      for (const pr of incidentPrUrls(other.response)) out.add(pr.url);
+  return out;
+}
+
+/** Merged pull requests' changed files by URL, as read: a merged pull
+ *  request's files don't change. A failed read is tried again after
+ *  PR_FILES_RETRY_MS. */
+const prFilesMemo = new Map<string, { files: string[] | null; at: number }>();
+const PR_FILES_RETRY_MS = 600_000;
+const PR_FILES_MEMO_MAX = 500;
+
+function memoPrFiles(url: string): readonly string[] | null | undefined {
+  return prFilesMemo.get(url)?.files;
+}
+
+async function mergedPrFiles(
+  url: string,
+  d: CoordinatorDeps,
+): Promise<string[] | null> {
+  const had = prFilesMemo.get(url);
+  if (had && (had.files !== null || d.now() - had.at < PR_FILES_RETRY_MS))
+    return had.files;
+  const pr = parsePrUrl(url);
+  let files: string[] | null = null;
+  if (pr)
+    try {
+      files = prFilePaths(await d.github.files(pr.ghRepo, pr.number));
+    } catch {
+      files = null;
+    }
+  prFilesMemo.delete(url);
+  prFilesMemo.set(url, { files, at: d.now() });
+  if (prFilesMemo.size > PR_FILES_MEMO_MAX)
+    prFilesMemo.delete(prFilesMemo.keys().next().value!);
+  return files;
 }
 
 /** Whether incident agents could start for `project` now: a model, then a
@@ -3291,6 +3372,9 @@ function needsAttention(
   settings?: IncidentProjectSettings,
   recovering = false,
   lookup?: PrLookup,
+  /** The project's incidents, for the pull requests other incidents
+   *  opened. */
+  incidents?: readonly Incident[],
 ): boolean {
   const r = incident.response;
   const working = (r?.agents ?? []).some(
@@ -3318,7 +3402,10 @@ function needsAttention(
         (!!lookup &&
           !!r &&
           (prsMovedOutside(incident, knownPrs(r, lookup)) ||
-            mergedFixMoved(incident, lookup)))
+            mergedFixMoved(incident, lookup, {
+              claimed: claimedPrs(incident.id, incidents ?? []),
+              files: memoPrFiles,
+            })))
       );
     case "done":
       return working;
@@ -3357,6 +3444,7 @@ export async function runResponseTick(
         settingsOf.get(incident.project),
         recovering,
         (url) => d.pullRequest(incident.project, url),
+        incidents.filter((i) => i.project === incident.project),
       )
     )
       continue;

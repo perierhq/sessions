@@ -83,6 +83,9 @@ export interface ResponseView {
    *  release pull requests the PR cache knows (release-please and the
    *  like), with the time each was last updated. */
   releasePrs?: ReleasePr[];
+  /** Only then, with release pull requests merged since: the files the
+   *  hand-released fix changed, to tell which release holds it. */
+  fixFiles?: readonly string[];
   /** Only while the incident waits on its owner: its agents' pull
    *  requests (any round's) as the PR cache has them, the ones it doesn't
    *  know left out. */
@@ -113,6 +116,9 @@ export interface ReleasePr {
   title: string;
   state: "OPEN" | "MERGED" | "CLOSED";
   updatedAt: string;
+  /** The files it changed, once Sessions read them (merged ones after
+   *  the fix only); null when they couldn't be read. */
+  files?: readonly string[] | null;
 }
 
 /** How long a merged fix waits for its release before asking the owner. */

@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import type {
   ActionRun,
   AgentWorkspace,
+  CandidateState,
   IncidentAction,
   IncidentProjectSettings,
   InvestigatorReport,
@@ -4251,6 +4252,115 @@ test("I released it, watch: a fix the verifier named, merged meanwhile, is offer
   );
   expect(w.merges).toEqual([]);
   expect(w.actions).toEqual([]);
+});
+
+test("I released it, watch: another incident's pull request the round named is never offered as this fix", async () => {
+  const w = await world();
+  await toUnproven(w, [
+    "Only the release can show it; #9 does the same for another part",
+  ]);
+  // #9 is another incident's own pull request.
+  const other = await createIncident({
+    project: "acme",
+    title: "Billing",
+    state: "investigating",
+    severity: "major",
+    owner: "Ada",
+    openedBy: { kind: "rule" },
+    signalIds: ["sig-b"],
+    primarySignalId: "sig-b",
+    at: new Date(START).toISOString(),
+    detail: "Billing failing",
+  });
+  await updateIncident(other.id, (c) => ({
+    ...c,
+    response: {
+      ...emptyResponse({
+        now: c.openedAt,
+        maxRounds: 2,
+        phase: "investigating",
+      }),
+      candidate: {
+        round: 1,
+        prUrl: "https://github.com/acme/web/pull/9",
+      } as CandidateState,
+    },
+  }));
+  __setCoordinatorDepsForTest(w.deps);
+  w.clock += 60_000;
+  const mergedAt = new Date(w.clock).toISOString();
+  w.deps.pullRequest = (_project, url) =>
+    url === "https://github.com/acme/web/pull/9"
+      ? { state: "MERGED", updatedAt: mergedAt, mergedAt, headSha: "fed9876" }
+      : url === "https://github.com/acme/web/pull/12"
+        ? { state: "OPEN", updatedAt: mergedAt }
+        : undefined;
+  expect(await runResponseTick(w.clock, w.deps)).not.toContain(w.incident.id);
+  await advanceIncident(w.incident.id, w.deps);
+  const i = await getIncident(w.incident.id);
+  expect(i?.response?.needsYou?.mergedFix).toBeUndefined();
+  expect(i?.response?.ledger.map((e) => e.detail)).not.toContain(
+    "PR #9, named in this round, is merged",
+  );
+});
+
+test("I'll release it myself: the watch starts at the release that holds the fix's app, not the first release after the merge", async () => {
+  const w = await world();
+  await toUnproven(w);
+  w.deps.prState = () => "MERGED";
+  const mergedAt = w.clock + 60_000;
+  const release = (n: number, app: string, at: number) => ({
+    url: `https://github.com/acme/web/pull/${n}`,
+    title: `chore: release ${app} 1.0.${n}`,
+    state: "MERGED" as const,
+    updatedAt: new Date(at).toISOString(),
+  });
+  w.prs.set(40, {
+    state: "MERGED",
+    headSha: "a40",
+    files: [
+      "services/search-service/CHANGELOG.md",
+      "services/search-service/package.json",
+    ],
+  });
+  w.prs.set(41, {
+    state: "MERGED",
+    headSha: "a41",
+    // The fix changed src/search.ts.
+    files: ["CHANGELOG.md", "src/version.ts"],
+  });
+  let releases = [release(40, "search-service", mergedAt + 4 * 60_000)];
+  w.deps.releasePrs = () => releases.map((r) => ({ ...r }));
+  w.clock += 60_000;
+  await applyOwnerDecision(
+    w.incident.id,
+    "release-watch",
+    "Bo",
+    undefined,
+    w.deps,
+  );
+  // The merge is recorded first, then the other app's release comes.
+  await advanceIncident(w.incident.id, w.deps);
+  expect((await getIncident(w.incident.id))?.response?.merge?.at).toBe(
+    new Date(mergedAt).toISOString(),
+  );
+  w.clock += 5 * 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  let i = await getIncident(w.incident.id);
+  // The other app's release doesn't hold it.
+  expect(i?.state).toBe("deploying");
+  expect(i?.response?.release).toBeUndefined();
+  releases = [...releases, release(41, "web", mergedAt + 24 * 60_000)];
+  w.clock += 20 * 60_000;
+  await advanceIncident(w.incident.id, w.deps);
+  await advanceIncident(w.incident.id, w.deps);
+  i = await getIncident(w.incident.id);
+  expect(i?.response?.release).toMatchObject({
+    source: "release-pr",
+    ref: "chore: release web 1.0.41",
+  });
+  expect(i?.state).toBe("watching");
 });
 
 test("a pull request closed without merging while the card waits leaves the card", async () => {

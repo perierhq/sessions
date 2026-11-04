@@ -111,3 +111,75 @@ test("a release after the merge: the hook or a merged release pull request", () 
     ref: "chore(main): release web 1.18.0",
   });
 });
+
+test("the release that holds the fix: its release pull request touches the fix's app, not just the first after the merge", () => {
+  const merged = T0;
+  const fix = [
+    "apps/web/src/lib/status/parts.ts",
+    "packages/shared/src/status.ts",
+  ];
+  const search = {
+    url: "https://github.com/acme/web/pull/40",
+    title: "chore: release search-service 1.17.1",
+    state: "MERGED" as const,
+    updatedAt: at(4 * MIN),
+    files: [
+      ".release-please-manifest.json",
+      "apps/search-service/CHANGELOG.md",
+      "apps/search-service/package.json",
+    ],
+  };
+  const web = {
+    url: "https://github.com/acme/web/pull/41",
+    title: "chore: release web 1.24.0",
+    state: "MERGED" as const,
+    updatedAt: at(24 * MIN),
+    files: [
+      ".release-please-manifest.json",
+      "apps/web/CHANGELOG.md",
+      "apps/web/package.json",
+    ],
+  };
+  const src = { releases: [], hook: false, releasePrs: [search, web] };
+  expect(releaseAfter(src, merged, fix)).toEqual({
+    at: at(24 * MIN),
+    source: "release-pr",
+    ref: "chore: release web 1.24.0",
+  });
+  // Only the other app's release so far: not yet released.
+  expect(
+    releaseAfter({ ...src, releasePrs: [search] }, merged, fix),
+  ).toBeUndefined();
+  // Without its files, the title names the app.
+  const titled = { ...web, files: undefined };
+  expect(
+    releaseAfter(
+      { ...src, releasePrs: [{ ...search, files: undefined }, titled] },
+      merged,
+      fix,
+    ),
+  ).toMatchObject({ ref: "chore: release web 1.24.0" });
+  // Neither can be told apart: the first after the merge, as before.
+  const unknown = [
+    { ...search, title: "chore: release main", files: null },
+    { ...web, title: "chore: release main 2", files: null },
+  ];
+  expect(
+    releaseAfter({ ...src, releasePrs: unknown }, merged, fix),
+  ).toMatchObject({ at: at(4 * MIN) });
+  // A release hook's ref is read the same way.
+  expect(
+    releaseAfter(
+      {
+        hook: true,
+        releasePrs: [],
+        releases: [
+          { at: at(4 * MIN), ref: "search-service-v1.17.1" },
+          { at: at(24 * MIN), ref: "web-v1.24.0" },
+        ],
+      },
+      merged,
+      fix,
+    ),
+  ).toEqual({ at: at(24 * MIN), source: "hook", ref: "web-v1.24.0" });
+});

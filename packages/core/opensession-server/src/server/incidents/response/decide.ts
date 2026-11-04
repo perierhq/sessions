@@ -2326,7 +2326,7 @@ function awaitingRelease(
     releasePrs: view.releasePrs ?? [],
   };
   const n = `PR #${hand.number}`;
-  const seen = releaseAfter(src, mergedMs);
+  const seen = releaseAfter(src, mergedMs, view.fixFiles);
   if (seen)
     return {
       step: "transition",
