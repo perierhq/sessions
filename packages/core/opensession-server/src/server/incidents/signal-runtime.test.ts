@@ -60,6 +60,27 @@ const feed = async (id: string, ...results: Array<"ok" | "fail">) => {
 beforeEach(() => {
   clock = T0;
 });
+/** Like `feed`, each check failing or passing on `detail`. */
+const feedOn = async (
+  id: string,
+  detail: string,
+  ...results: Array<"ok" | "fail">
+) => {
+  for (const result of results) {
+    clock += 60_000;
+    await ingestObservations(
+      id,
+      [
+        {
+          at: new Date(clock).toISOString(),
+          result,
+          detail: result === "fail" ? detail : "",
+        },
+      ],
+      clock,
+    );
+  }
+};
 
 test("three failures open one incident owned by the signal's creator", async () => {
   const s = await make();
@@ -197,6 +218,52 @@ test("a project that pauses new incidents opens none; resumed, it does", async (
   } finally {
     __setProjectSettingsContextForTest(undefined);
   }
+});
+
+test("a resolved incident reopens for its own part; another part opens its own", async () => {
+  const s = await make();
+  await feedOn(s.id, "search: slow", "fail", "fail", "fail");
+  const [first] = await listIncidents();
+  // The fix loop records the check an incident opened on.
+  const openedOn = (id: string, detail: string) =>
+    updateIncident(id, (c) => ({
+      ...c,
+      response: {
+        ...(c.response as NonNullable<typeof c.response>),
+        openedOn: { at: new Date(clock).toISOString(), detail },
+      },
+    }));
+  await openedOn(first!.id, "search: slow");
+  const resolve = (id: string) =>
+    updateIncident(id, (c) =>
+      transitionIncident(c, "resolved", {
+        by: "Ada",
+        detail: "Resolved by Ada",
+        at: new Date(clock).toISOString(),
+        fixedBy: "by-hand",
+      }),
+    );
+  await resolve(first!.id);
+  await feedOn(s.id, "", "ok", "ok", "ok");
+  // Another part within the reopen window: an incident of its own.
+  await feedOn(s.id, "price-watches: slow", "fail", "fail", "fail");
+  let all = await listIncidents();
+  expect(all).toHaveLength(2);
+  const other = all.find((i) => i.id !== first!.id)!;
+  expect(other).toMatchObject({
+    title: "Search, price-watches",
+    state: "investigating",
+  });
+  expect(all.find((i) => i.id === first!.id)?.state).toBe("resolved");
+  await openedOn(other.id, "price-watches: slow");
+  await resolve(other.id);
+  await feedOn(s.id, "", "ok", "ok", "ok");
+  // Its own part again: the resolved incident reopens, not the other.
+  await feedOn(s.id, "search: slow", "fail", "fail", "fail");
+  all = await listIncidents();
+  expect(all).toHaveLength(2);
+  expect(all.find((i) => i.id === first!.id)?.state).toBe("investigating");
+  expect(all.find((i) => i.id === other.id)?.state).toBe("resolved");
 });
 
 test("closed without action, a flapping signal reopens and opens nothing", async () => {
