@@ -42,6 +42,18 @@ const SERVER_ROOT = join(import.meta.dir, "..", "..");
 export const REPO_ROOT = resolve(SERVER_ROOT, "../../..");
 export const FRONTEND_DIST = join(REPO_ROOT, ".frontend-dist");
 const FRONTEND_BUILD_DEFINE = { "process.env.NODE_ENV": '"production"' };
+// Desktop shells built before the request filter was narrowed cancel every
+// request matching <origin>/*sw.js* to keep the service worker out, and those
+// shells stay installed. A bare [hash] ends in "sw" often enough across a few
+// hundred chunks that some build lands on it (App-bnz8y7sw.js), the lazy import
+// needing it rejects and the window stays blank. The "_" after the hash keeps
+// every name clear of that pattern; it is a word character, so sw.js's
+// <name>-<hash>.js asset match and the server's static routes still accept it.
+export const FRONTEND_BUILD_NAMING = {
+  entry: "[name]-[hash]_.[ext]",
+  chunk: "[name]-[hash]_.[ext]",
+  asset: "[name]-[hash]_.[ext]",
+};
 export const FRONTEND_SRC = join(SERVER_ROOT, "src", "frontend");
 const FRONTEND_REL = "packages/core/opensession-server/src/frontend";
 
@@ -341,11 +353,7 @@ export async function compileAssets(): Promise<BundleMeta> {
     // (the instance host); old /opensession + /backstage page URLs 301 there, and
     // prefixed asset requests still normalize in the fetch preamble.
     publicPath: "/",
-    naming: {
-      entry: "[name]-[hash].[ext]",
-      chunk: "[name]-[hash].[ext]",
-      asset: "[name]-[hash].[ext]",
-    },
+    naming: FRONTEND_BUILD_NAMING,
     plugins: [reactCompilerPlugin(compilerCount, transformSync)],
     // Without this, React resolves to its development build. That build
     // records a performance.measure entry for every component render and
@@ -844,6 +852,7 @@ export function frontendInputsHash(): string {
   const parts: string[] = [
     `bun:${Bun.version}`,
     `define:${JSON.stringify(FRONTEND_BUILD_DEFINE)}`,
+    `naming:${JSON.stringify(FRONTEND_BUILD_NAMING)}`,
   ];
   try {
     parts.push(
