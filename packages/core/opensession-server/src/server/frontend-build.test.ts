@@ -15,6 +15,7 @@ import {
   bundleVersion,
   editorName,
   ensureFrontendBuilt,
+  FRONTEND_BUILD_NAMING,
   frontendDistFile,
   frontendInputsHash,
   isPrebuiltFrontend,
@@ -229,6 +230,51 @@ describe("renderIndexHtml", () => {
     expect(renderIndexHtml(meta)).not.toContain('"agentationEnabled":true');
     process.env.OPENSESSION_AGENTATION = "1";
     expect(renderIndexHtml(meta)).toContain('"agentationEnabled":true');
+  });
+});
+
+// The request filter of desktop shells built before it was narrowed: any URL
+// matching <origin>/*sw.js* is cancelled (see FRONTEND_BUILD_NAMING).
+const blockedByOlderShells = (url: string) => url.includes("sw.js");
+
+describe("FRONTEND_BUILD_NAMING", () => {
+  it("keeps a hash ending in sw out of the shells' service-worker block", () => {
+    for (const template of Object.values(FRONTEND_BUILD_NAMING)) {
+      const name = template
+        .replace("[name]", "App")
+        .replace("[hash]", "bnz8y7sw")
+        .replace("[ext]", "js");
+      expect(name).toEndWith(".js");
+      expect(blockedByOlderShells(`https://acme.example.test/${name}`)).toBe(
+        false,
+      );
+    }
+  });
+
+  it("is what a split build names its entry and chunks with", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "os1-naming-"));
+    try {
+      writeFileSync(
+        join(dir, "App.ts"),
+        'export const load = () => import("./panes");',
+      );
+      writeFileSync(join(dir, "panes.ts"), "export const panes = 1;");
+      const result = await Bun.build({
+        entrypoints: [join(dir, "App.ts")],
+        outdir: join(dir, "dist"),
+        splitting: true,
+        naming: FRONTEND_BUILD_NAMING,
+      });
+      expect(result.success).toBe(true);
+      const names = result.outputs.map((o) => o.path.split("/").pop()!);
+      expect(names).toHaveLength(2);
+      for (const name of names) {
+        expect(name).toMatch(/^(?:App|panes)-\w+_\.js$/);
+        expect(blockedByOlderShells(`/${name}`)).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

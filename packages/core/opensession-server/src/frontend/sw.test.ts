@@ -315,6 +315,34 @@ describe("service worker navigation freshness", () => {
   });
 });
 
+describe("service worker hashed assets", () => {
+  // frontend-build.ts names bundles <name>-<hash>_.js; the trailing "_" keeps
+  // a hash ending in "sw" clear of older desktop shells' sw.js block.
+  test("serves a built bundle from its cache while offline", async () => {
+    const harness = workerHarness();
+    await harness.cache.put(
+      "/App-bnz8y7sw_.js",
+      new Response("export const a = 1;"),
+    );
+
+    let response: Promise<Response> | undefined;
+    harness.listeners.get("fetch")?.({
+      request: {
+        method: "GET",
+        mode: "cors",
+        url: "https://os.test/App-bnz8y7sw_.js",
+      },
+      respondWith(value: Promise<Response>) {
+        response = value;
+      },
+      waitUntil() {},
+    });
+
+    expect(response).toBeDefined();
+    expect(await (await response!).text()).toBe("export const a = 1;");
+  });
+});
+
 describe("service worker gate assets", () => {
   test("precaches the icon and still backgrounds during installation", async () => {
     const harness = workerHarness();
