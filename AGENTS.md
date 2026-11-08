@@ -27,6 +27,14 @@ disagree.
   its branch locally and on origin, stop its background jobs, and delete scratch
   files it left in `/tmp`.
 
+## Data first
+
+We are a data-first household. Back every conclusion with evidence you gathered
+this session: probe the system, read the files, run the command, or pull the
+data with your tools. Prove each fact before you conclude from it. When
+something is still unverified, label it as an assumption and name the check
+that would settle it.
+
 ## What we're building
 
 Kacper's own control room for pi coding agents on a Linux VPS, used from a
