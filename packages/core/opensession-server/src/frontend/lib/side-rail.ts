@@ -31,23 +31,46 @@ export function wantsSideRail(insets: {
   );
 }
 
+/**
+ * Keep `side-rail` on `root` in step with the insets: once now and again on
+ * every `subscribe` callback. Returns an unsubscribe.
+ */
+export function bindSideRail(
+  read: () => { right: number; left: number },
+  root: { classList: { toggle(token: string, force?: boolean): boolean } },
+  subscribe: (onChange: () => void) => () => void,
+): () => void {
+  const apply = () => {
+    root.classList.toggle(SIDE_RAIL_CLASS, wantsSideRail(read()));
+  };
+  apply();
+  return subscribe(apply);
+}
+
 let started = false;
 
 /** Idempotent; called once at boot. Folding, unfolding and rotating change the
- *  insets, so it re-measures on every resize. */
-export function startSideRail(read: () => { right: number; left: number }) {
+ *  insets, and iOS can report them only after the first layout, so it
+ *  re-measures on every resize and on every change of the insets themselves
+ *  (`watch`, backed by lib/safe-area's onSafeAreaChange). */
+export function startSideRail(
+  read: () => { right: number; left: number },
+  watch: (onChange: () => void) => () => void,
+) {
   if (started || typeof window === "undefined") return;
   const standalone =
     window.matchMedia("(display-mode: standalone)").matches ||
     ("standalone" in navigator && navigator.standalone === true);
   if (!standalone) return;
   started = true;
-  const apply = () =>
-    document.documentElement.classList.toggle(
-      SIDE_RAIL_CLASS,
-      wantsSideRail(read()),
-    );
-  apply();
-  window.addEventListener("resize", apply);
-  window.addEventListener("orientationchange", apply);
+  bindSideRail(read, document.documentElement, (apply) => {
+    window.addEventListener("resize", apply);
+    window.addEventListener("orientationchange", apply);
+    const stopWatching = watch(apply);
+    return () => {
+      window.removeEventListener("resize", apply);
+      window.removeEventListener("orientationchange", apply);
+      stopWatching();
+    };
+  });
 }

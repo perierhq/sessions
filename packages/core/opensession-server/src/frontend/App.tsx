@@ -8,7 +8,7 @@ import { transcriptMotionFixtureOptions } from "./lib/transcript-motion-scenario
 import { TooltipProvider } from "./ui/tooltip";
 import { AppContent } from "./AppContent";
 import { startLocalFolderBridge } from "./lib/local-folders/bridge";
-import { readSafeAreaInsets } from "./lib/safe-area";
+import { onSafeAreaChange, readSafeAreaInsets } from "./lib/safe-area";
 import { startSideRail } from "./lib/side-rail";
 import type { AppProps } from "./lib/app-types";
 
@@ -48,7 +48,8 @@ if (!embeddedDemo) {
   if (!transcriptMotionFixture) startLocalFolderBridge();
   // An installed app on a foldable with a side status column moves its
   // floating controls into that column (lib/side-rail.ts).
-  if (!transcriptMotionFixture) startSideRail(readSafeAreaInsets);
+  if (!transcriptMotionFixture)
+    startSideRail(readSafeAreaInsets, onSafeAreaChange);
   // `reducedMotion="user"` makes every `motion.*` component honour the OS
   // setting. Motion's default is "never", so without this the CSS blanket in
   // legacy.css would quietly cover only half the app — Motion animates inline

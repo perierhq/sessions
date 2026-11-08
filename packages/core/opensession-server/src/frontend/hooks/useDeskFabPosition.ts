@@ -4,7 +4,7 @@ import {
   calculateDeskFabPosition,
   type DeskFabPosition,
 } from "../lib/desk-fab-position";
-import { readSafeAreaInsets } from "../lib/safe-area";
+import { onSafeAreaChange, readSafeAreaInsets } from "../lib/safe-area";
 import { SIDE_RAIL_CLASS } from "../lib/side-rail";
 
 const COMPOSER_ANCHOR_SELECTOR = ".detail-pane div:has(> .composer)";
@@ -66,6 +66,9 @@ export function useDeskFabPosition(
 
     measure();
     window.addEventListener("resize", scheduleMeasure);
+    // The insets can arrive after boot with no resize; the side status column
+    // (lib/side-rail.ts) turns on with them and this placement stands down.
+    const stopWatchingInsets = onSafeAreaChange(scheduleMeasure);
 
     const resizeObserver =
       typeof ResizeObserver === "undefined"
@@ -80,6 +83,7 @@ export function useDeskFabPosition(
 
     return () => {
       window.removeEventListener("resize", scheduleMeasure);
+      stopWatchingInsets();
       resizeObserver?.disconnect();
       if (frame) cancelAnimationFrame(frame);
     };
