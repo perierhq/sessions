@@ -49,7 +49,11 @@ import {
  * and the shadow on the content's left edge (see SETTINGS_CONTENT), so the
  * column itself needs no fill and no border of its own.
  */
-export const SETTINGS_PAGE = "relative flex h-full min-h-0 flex-1 bg-sidebar";
+export const SETTINGS_PAGE =
+  "relative flex h-full min-h-0 flex-1 bg-sidebar " +
+  // Desktop layout on a touch screen: the nav's fill reaches the left edge and
+  // its rows clear the left safe area (see SIDEBAR_COLUMN_DESKTOP).
+  "desktop:pl-[var(--sa-l)]";
 
 /**
  * The otherwise-empty desktop titlebar strip. `wco-chrome` makes it a window
@@ -69,7 +73,7 @@ export const SETTINGS_DRAG_HANDLE =
  * attribute this element deliberately does not carry: the preference is named
  * "Compact sidebar" and retunes the rail you work in, not a nav you visit.
  */
-export const SETTINGS_NAV = `settings-nav flex w-58 shrink-0 flex-col px-3 py-4 ${SIDEBAR_DENSITY_VARS}`;
+export const SETTINGS_NAV = `settings-nav flex w-58 shrink-0 flex-col px-3 pt-[calc(1rem+var(--sa-t))] pb-[max(1rem,var(--sa-b))] ${SIDEBAR_DENSITY_VARS}`;
 
 /**
  * The nav's search field, and the seam it grows once the section list travels
@@ -145,7 +149,7 @@ export const SETTINGS_BACK = `group -mx-1.5 mb-2 flex cursor-pointer items-cente
  * cuts.
  */
 export const SETTINGS_CONTENT =
-  "settings-content flex min-w-0 flex-1 justify-center overflow-y-auto border-l border-divider bg-surface px-8 pt-11 desktop:[box-shadow:var(--content-edge-shadow)]";
+  "settings-content flex min-w-0 flex-1 justify-center overflow-y-auto border-l border-divider bg-surface pl-8 pr-[calc(2rem+var(--sa-r))] pt-[calc(2.75rem+var(--sa-t))] pb-[var(--sa-b)] desktop:[box-shadow:var(--content-edge-shadow)]";
 export const SETTINGS_CONTENT_TOOL = "settings-content-tool min-h-0 p-0";
 
 /** Same column inside the phone sheet — a phone gutter instead of the desktop one. */

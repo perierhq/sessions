@@ -84,6 +84,7 @@ import { isToolView, parseRoute, routePath, type Route } from "./lib/app-route";
 import { useDeskShowNavigation } from "./hooks/useDeskShowNavigation";
 import {
   APP_BODY,
+  APP_ROOT,
   DETAIL_TOPBAR,
   DETAIL_TOPBAR_ACTIONS,
   DETAIL_TOPBAR_TITLE,
@@ -1256,7 +1257,7 @@ export function AppContent({
       <BlockExpandHost />
       <ToastHost container={settingsActive ? null : detailPaneEl} />
       <RunningCloseDialog {...runningCloseDialog} />
-      <div className="app">
+      <div className={APP_ROOT}>
         {!forceFirstMile && onboarding.state === "loading" ? (
           <div className="flex h-[100dvh] items-center justify-center bg-bg">
             <LoadingState>Preparing Open Session…</LoadingState>

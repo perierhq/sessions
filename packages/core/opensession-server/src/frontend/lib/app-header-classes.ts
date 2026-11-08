@@ -86,6 +86,10 @@ const APP_HEADER_DETAIL = "phone:bg-transparent";
 const APP_HEADER_OVERLAY =
   "app-header-overlay " +
   "phone:fixed phone:inset-x-0 phone:top-0 phone:z-40 phone:bg-transparent " +
+  // Fixed, so the app root's side insets (APP_ROOT) do not reach it: the
+  // scroll edge below still runs edge to edge, and the controls clear the
+  // side safe areas with the same 12px the in-flow bar keeps.
+  "phone:pr-[calc(12px+var(--sa-r))] phone:pl-[calc(12px+var(--sa-l))] " +
   "phone:pointer-events-none phone:*:pointer-events-auto " +
   "phone:before:absolute phone:before:inset-x-0 phone:before:top-0 " +
   "phone:before:bottom-auto phone:before:z-[-1] phone:before:h-[calc(100%+30px)] " +

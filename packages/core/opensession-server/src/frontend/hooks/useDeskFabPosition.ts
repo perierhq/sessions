@@ -4,6 +4,7 @@ import {
   calculateDeskFabPosition,
   type DeskFabPosition,
 } from "../lib/desk-fab-position";
+import { readSafeAreaInsets } from "../lib/safe-area";
 
 const COMPOSER_ANCHOR_SELECTOR = ".detail-pane div:has(> .composer)";
 const DETAIL_PANE_SELECTOR = ".detail-pane";
@@ -40,12 +41,15 @@ export function useDeskFabPosition(
         COMPOSER_ANCHOR_SELECTOR,
       );
       const anchor = anchors.item(anchors.length - 1);
-      const next = anchor
-        ? calculateDeskFabPosition(anchor.getBoundingClientRect(), {
-            width: window.innerWidth,
-            height: window.innerHeight,
-          })
-        : undefined;
+      const insets = anchor ? readSafeAreaInsets() : undefined;
+      const next =
+        anchor && insets
+          ? calculateDeskFabPosition(
+              anchor.getBoundingClientRect(),
+              { width: window.innerWidth, height: window.innerHeight },
+              { right: insets.right, bottom: insets.bottom },
+            )
+          : undefined;
       setPosition((current) => (samePosition(current, next) ? current : next));
     };
     const scheduleMeasure = () => {

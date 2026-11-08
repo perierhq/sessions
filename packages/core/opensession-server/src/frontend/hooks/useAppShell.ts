@@ -120,13 +120,20 @@ export function useAppShell() {
     // pointer rate; the state catches up once, on drop.
     let width = sidebarWidthRef.current;
     let frame = 0;
+    // The column carries the left safe-area inset on top of its width
+    // (SIDEBAR_COLUMN_DESKTOP), so the pointer's x overshoots it by that much.
+    const col = sidebarColRef.current;
+    const leftInset = col
+      ? Number.parseFloat(getComputedStyle(col).paddingLeft) || 0
+      : 0;
     const paint = () => {
       frame = 0;
       sidebarColRef.current?.style.setProperty("--sidebar-w", `${width}px`);
     };
     const onMove = (ev: MouseEvent) => {
-      // The sidebar is the leftmost element, so the pointer's x is its width.
-      width = Math.min(480, Math.max(200, ev.clientX));
+      // The sidebar is the leftmost element, so the pointer's x, less the
+      // inset it starts after, is its width.
+      width = Math.min(480, Math.max(200, ev.clientX - leftInset));
       sidebarWidthRef.current = width;
       if (!frame) frame = requestAnimationFrame(paint);
     };
