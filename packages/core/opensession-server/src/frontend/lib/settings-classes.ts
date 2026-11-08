@@ -150,7 +150,14 @@ export const SETTINGS_BACK = `group -mx-1.5 mb-2 flex cursor-pointer items-cente
  */
 export const SETTINGS_CONTENT =
   "settings-content flex min-w-0 flex-1 justify-center overflow-y-auto border-l border-divider bg-surface pl-8 pr-[calc(2rem+var(--sa-r))] pt-[calc(2.75rem+var(--sa-t))] pb-[var(--sa-b)] desktop:[box-shadow:var(--content-edge-shadow)]";
-export const SETTINGS_CONTENT_TOOL = "settings-content-tool min-h-0 p-0";
+/**
+ * A tool section drops the reading gutters but keeps the safe-area insets: the
+ * Settings page is not inside WORKSPACE_SHELL, so nothing else clears the
+ * status bar, a right-hand notch or the home indicator. The left inset belongs
+ * to the nav beside it.
+ */
+export const SETTINGS_CONTENT_TOOL =
+  "settings-content-tool min-h-0 p-0 pt-[var(--sa-t)] pr-[var(--sa-r)] pb-[var(--sa-b)]";
 
 /** Same column inside the phone sheet — a phone gutter instead of the desktop one. */
 export const SETTINGS_CONTENT_SHEET =

@@ -8,6 +8,11 @@ import {
 import { appHeader } from "../lib/app-header-classes";
 import { DESK_FAB, MOBILE_FAB } from "../lib/fab-classes";
 import { VIEWER_INPUT } from "../lib/session-viewer-classes";
+import {
+  SETTINGS_CONTENT,
+  SETTINGS_CONTENT_TOOL,
+} from "../lib/settings-classes";
+import { cn } from "../ui/cn";
 
 test("each safe-area edge has its own token", async () => {
   const css = await readBaseCss();
@@ -45,6 +50,20 @@ test("desktop columns reach the screen edge and inset their content", () => {
   expect(WORKSPACE_SHELL).toContain("desktop:pr-[var(--sa-r)]");
   // The composer takes the larger of its gap and the home indicator, not both.
   expect(VIEWER_INPUT).toContain("pb-[max(14px,var(--sa-b))]");
+});
+
+test("Settings tool sections drop the gutters but keep the insets", () => {
+  // Settings.tsx merges the two through cn(); tailwind-merge must not let the
+  // tool variant's p-0 take the insets with the gutters.
+  const merged = cn(SETTINGS_CONTENT, SETTINGS_CONTENT_TOOL).split(" ");
+  for (const edge of [
+    "pt-[var(--sa-t)]",
+    "pr-[var(--sa-r)]",
+    "pb-[var(--sa-b)]",
+  ])
+    expect(merged).toContain(edge);
+  expect(merged).not.toContain("pl-8");
+  expect(merged).not.toContain("pt-[calc(2.75rem+var(--sa-t))]");
 });
 
 test("fold layouts are enhancements keyed on viewport segments", () => {
