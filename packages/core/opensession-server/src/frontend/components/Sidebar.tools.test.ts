@@ -14,7 +14,10 @@ test("the tools nav owns tool-row rendering", () => {
   expect(sidebarSource).toContain("<SidebarChrome");
   expect(sidebarChromeSource).toContain("<SidebarToolsNav");
   expect(sidebarSource).not.toContain("{visibleTools.map((tool)");
-  expect(toolsNavSource).toContain("{tools.map((tool)");
+  expect(toolsNavSource).toContain("{listed.map((tool)");
+  // A short viewport folds the strip behind a More row; the rows still
+  // render here, from the same tools.
+  expect(toolsNavSource).toContain("foldSidebarTools(tools");
   expect(toolsNavSource).toContain("<OrganizationSwitcher");
   expect(toolsNavSource).toContain("<SidebarToolRows");
   expect(toolsNavSource).toContain("<TeamLensMenu");

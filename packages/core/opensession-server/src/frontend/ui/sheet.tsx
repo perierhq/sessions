@@ -264,6 +264,9 @@ export function ResponsiveDialog({
           // app, `calc(<px> * var(--rf))`, so they follow the squircle bump
           // and its circular fallback with everything else.
           "absolute flex flex-col overflow-hidden outline-none [corner-shape:squircle]",
+          // A phone sheet runs edge to edge, so its content clears the side
+          // safe areas itself (a phone on its side, a foldable's outer screen).
+          phone && "pr-[var(--sa-r)] pl-[var(--sa-l)]",
           phone
             ? phonePage
               ? "inset-0 h-dvh max-h-none rounded-none bg-surface pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] shadow-none"

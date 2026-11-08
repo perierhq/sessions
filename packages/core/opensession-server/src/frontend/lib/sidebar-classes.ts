@@ -100,9 +100,22 @@
  * Tailwind's output order, which two utilities setting one property would
  * otherwise be settled by.
  */
+/**
+ * The desktop layout on a touch screen (a foldable's inner screen, an iPad
+ * installed to the Home Screen) is a tap surface, like a phone, so every row
+ * and the tool strip take a 44px box there whatever the density preference
+ * says: a compact rail is a mouse preference, and a 30px row under a thumb is
+ * a miss. The captions and the row action grow with the line so the rail keeps
+ * its proportions. `!` because these must beat the compact values, which sit
+ * at the same specificity (see below), regardless of emit order.
+ */
+const SIDEBAR_TOUCH_DENSITY =
+  "desktop:pointer-coarse:[--sidebar-row-pad:11px]! desktop:pointer-coarse:[--sidebar-tool-pad:11px]! desktop:pointer-coarse:[--sidebar-line-h:44px]! desktop:pointer-coarse:[--sidebar-cap-h:32px]! desktop:pointer-coarse:[--sidebar-band-slot:36px]! desktop:pointer-coarse:[--sidebar-row-action:32px]!";
+
 export const SIDEBAR_DENSITY_VARS =
   "[--sidebar-row-pad:7px] [--sidebar-tool-pad:5px] [--sidebar-line-h:36px] [--sidebar-cap-h:28px] [--sidebar-band-slot:32px] [--sidebar-group-gap:14px] [--sidebar-row-action:26px] " +
-  "desktop:data-[density=compact]:[--sidebar-row-pad:4px] desktop:data-[density=compact]:[--sidebar-tool-pad:4px] desktop:data-[density=compact]:[--sidebar-line-h:30px] desktop:data-[density=compact]:[--sidebar-cap-h:24px] desktop:data-[density=compact]:[--sidebar-band-slot:28px] desktop:data-[density=compact]:[--sidebar-group-gap:8px] desktop:data-[density=compact]:[--sidebar-row-action:24px]";
+  "desktop:data-[density=compact]:[--sidebar-row-pad:4px] desktop:data-[density=compact]:[--sidebar-tool-pad:4px] desktop:data-[density=compact]:[--sidebar-line-h:30px] desktop:data-[density=compact]:[--sidebar-cap-h:24px] desktop:data-[density=compact]:[--sidebar-band-slot:28px] desktop:data-[density=compact]:[--sidebar-group-gap:8px] desktop:data-[density=compact]:[--sidebar-row-action:24px] " +
+  SIDEBAR_TOUCH_DENSITY;
 
 /**
  * The rail's HORIZONTAL scale, the counterpart to the vertical one above, on
@@ -659,7 +672,10 @@ export const SIDEBAR_STUCK_BACKING =
  * ordering rather than to the call site.
  */
 export const SIDEBAR_CHROME_BTN =
-  "shrink-0 items-center justify-center rounded-control text-faint transition-[color,background] hover:bg-hover hover:text-fg";
+  "shrink-0 items-center justify-center rounded-control text-faint transition-[color,background] hover:bg-hover hover:text-fg " +
+  // A tap target when the desktop layout is on a touch screen (see
+  // SIDEBAR_TOUCH_DENSITY); the glyph stays put in the middle of the box.
+  "desktop:pointer-coarse:min-h-11 desktop:pointer-coarse:min-w-11";
 
 /**
  * The square icon buttons in the workspace header — the filter and the new

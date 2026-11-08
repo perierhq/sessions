@@ -8,6 +8,10 @@ import type { useSessions } from "../hooks/useSessions";
 import type { RepoInfo } from "../lib/api";
 import { renameSessionApi } from "../lib/api";
 import type { Route } from "../lib/app-route";
+import {
+  FOLD_SPLIT_HIDDEN,
+  SIDEBAR_COLUMN_DESKTOP,
+} from "../lib/app-shell-classes";
 import { supportPageItem } from "../lib/support-list";
 import { SIDEBAR_CHROME_BTN } from "../lib/sidebar-classes";
 import type { UnifiedSession, Workspace } from "../lib/types";
@@ -148,9 +152,7 @@ export function AppSidebar({
           // On phones the sidebar is the root PAGE of the iOS-style
           // stack — full bleed under the pushed detail pane — rather than
           // a fixed-width column.
-          isPhone
-            ? "absolute inset-0 z-[1] w-full"
-            : "relative w-[var(--sidebar-w,280px)]",
+          isPhone ? "absolute inset-0 z-[1] w-full" : SIDEBAR_COLUMN_DESKTOP,
           // Collapsed hides the whole left column; on phones the page
           // stack owns the sidebar and the class is inert.
           sidebarCollapsed && "desktop:hidden",
@@ -287,6 +289,8 @@ export function AppSidebar({
         <div
           className={cn(
             "absolute top-0 right-[-3px] z-30 h-full w-[7px] cursor-col-resize after:absolute after:top-0 after:right-[3px] after:h-full after:w-[2px] after:bg-transparent after:transition-[background] after:content-[''] hover:after:bg-line-strong [body.resizing-sidebar_&]:after:bg-faint",
+            // On a fold the hinge sets the width (SIDEBAR_COLUMN_DESKTOP).
+            FOLD_SPLIT_HIDDEN,
             isPhone && "hidden",
           )}
           onMouseDown={startSidebarResize}

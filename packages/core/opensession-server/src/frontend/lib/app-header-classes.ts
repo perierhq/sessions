@@ -86,6 +86,10 @@ const APP_HEADER_DETAIL = "phone:bg-transparent";
 const APP_HEADER_OVERLAY =
   "app-header-overlay " +
   "phone:fixed phone:inset-x-0 phone:top-0 phone:z-40 phone:bg-transparent " +
+  // Fixed, so the app root's side insets (APP_ROOT) do not reach it: the
+  // scroll edge below still runs edge to edge, and the controls clear the
+  // side safe areas with the same 12px the in-flow bar keeps.
+  "phone:pr-[calc(12px+var(--sa-r))] phone:pl-[calc(12px+var(--sa-l))] " +
   "phone:pointer-events-none phone:*:pointer-events-auto " +
   "phone:before:absolute phone:before:inset-x-0 phone:before:top-0 " +
   "phone:before:bottom-auto phone:before:z-[-1] phone:before:h-[calc(100%+30px)] " +
@@ -347,7 +351,16 @@ export const HEADER_SESSIONBAR_USAGE =
  * appended after this string silently loses to a `gap-2.5` inside it.
  */
 const HEADER_ACTIONS_BASE =
-  "app-header-actions phone:flex phone:min-w-0 phone:items-center";
+  "app-header-actions phone:flex phone:min-w-0 phone:items-center " +
+  // A side status column (lib/side-rail.ts): the actions leave the top bar
+  // and stack down the column under the status icons, centred in it, so the
+  // title gets the bar's whole width. `!` because the variants below each set
+  // the same properties for the row they otherwise are. Each variant keeps
+  // its own gap: the root capsule's segments touch, a pushed page's controls
+  // keep their air.
+  "phone:[html.side-rail_&]:fixed! phone:[html.side-rail_&]:top-[var(--status-column-h)] " +
+  "phone:[html.side-rail_&]:right-[calc((var(--sa-r)-52px)/2)] phone:[html.side-rail_&]:ml-0! " +
+  "phone:[html.side-rail_&]:w-[52px] phone:[html.side-rail_&]:flex-col!";
 
 /**
  * On the root page the two glyphs in this slot — Filter and Search — are one

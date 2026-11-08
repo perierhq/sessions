@@ -57,7 +57,7 @@ describe("app shell ownership", () => {
   test("retains bounded requestAnimationFrame resizing and persistence", () => {
     expect(hookSource).toContain("return v >= 200 && v <= 480 ? v : 280");
     expect(hookSource).toContain(
-      "width = Math.min(480, Math.max(200, ev.clientX))",
+      "width = Math.min(480, Math.max(200, ev.clientX - leftInset))",
     );
     expect(hookSource).toContain(
       "if (!frame) frame = requestAnimationFrame(paint)",

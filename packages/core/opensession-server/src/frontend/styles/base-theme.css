@@ -443,6 +443,21 @@
      8px on its own top pad, leaving 40px for MOBILE_BAR_SEGMENT and the settings
      mark in lib/app-header-classes.ts. Move the two together. */
   --header-h: calc(48px + env(safe-area-inset-top, 0px));
+  /* The four safe-area insets, one token per edge. Read every edge on its
+     own: a notched iPhone on its side insets left and right, and a foldable
+     (iPhone Duo) can inset one side far deeper than the other, so no rule may
+     assume left == right or top == bottom. They are 0 wherever the browser
+     reports no inset, which is every desktop browser and the Electron shell.
+     lib/app-shell-classes.ts spends them on the app shell; lib/safe-area.ts
+     reads them in px for placements made in script. */
+  --sa-t: env(safe-area-inset-top, 0px);
+  --sa-r: env(safe-area-inset-right, 0px);
+  --sa-b: env(safe-area-inset-bottom, 0px);
+  --sa-l: env(safe-area-inset-left, 0px);
+  /* How far down a side status column (lib/side-rail.ts) the clock, the
+     connectivity ring and their spacing reach; the rail starts below it.
+     Measured on an iPhone Duo installed app, where they take about 105pt. */
+  --status-column-h: 116px;
 }
 
 /* Above the phone breakpoint the top bar isn't rendered at all, so nothing is

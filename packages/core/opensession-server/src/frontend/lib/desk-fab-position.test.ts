@@ -35,4 +35,25 @@ describe("calculateDeskFabPosition", () => {
     expect(narrow).toEqual({ left: 1256.625, bottom: 129.25 });
     expect(wide).toEqual({ left: 2012, bottom: 18 });
   });
+
+  test("rests in the safe area's corner, not the window's", () => {
+    expect(
+      calculateDeskFabPosition(
+        { right: 500, top: 780 },
+        { width: 951, height: 902 },
+        { right: 30, bottom: 20 },
+      ),
+    ).toEqual({ left: 859, bottom: 38 });
+  });
+
+  test("moves above the composer when the room beside it is a side inset", () => {
+    // A phone on its side: the gap beside the composer is the notch's inset.
+    expect(
+      calculateDeskFabPosition(
+        { right: 777, top: 264 },
+        { width: 844, height: 390 },
+        { right: 47, bottom: 21 },
+      ),
+    ).toEqual({ left: 733, bottom: 136 });
+  });
 });

@@ -277,7 +277,11 @@ export const VIEWER_MESSAGES =
  * the input, then disappears behind the composer itself without a blank band.
  */
 export const VIEWER_INPUT =
-  "relative z-[1] mt-[calc(-1*var(--session-under))] shrink-0 px-5 pt-1 pb-3.5 " +
+  "relative z-[1] mt-[calc(-1*var(--session-under))] shrink-0 px-5 pt-1 " +
+  // Desktop layout on a touch screen (a foldable's inner screen, an iPad
+  // installed to the Home Screen) has a home indicator under the composer.
+  // The larger of the two gaps, not their sum.
+  "pb-[max(14px,var(--sa-b))] " +
   // The same gutter the transcript keeps, so the input stays on the column's
   // edges rather than reaching past them.
   `${RAIL_GUTTER_CLASS} ` +
@@ -296,7 +300,17 @@ export const VIEWER_INPUT =
   // composer by hundreds of pixels. The painted wrapper keeps the solid tail of
   // the fade behind a compact 8px gap down to the keyboard.
   "phone:[body.kb-open_&]:fixed phone:[body.kb-open_&]:inset-x-0 phone:[body.kb-open_&]:bottom-0 " +
-  "phone:[body.kb-open_&]:pb-2";
+  // A foldable half open like a laptop (two stacked viewport segments): the
+  // transcript reads on the top half and the composer takes the bottom one,
+  // starting just past the hinge, where the keyboard comes up. The box runs
+  // from the fold to the bottom of the screen; its overlap with the transcript
+  // (--session-under) stays above the fold. Not while the keyboard is up,
+  // when the box is fixed to the keyboard's edge instead.
+  "[@media(vertical-viewport-segments:2)]:[body:not(.kb-open)_&]:min-h-[calc(100dvh_-_env(viewport-segment-top_0_1)_+_var(--session-under))] " +
+  "[@media(vertical-viewport-segments:2)]:[body:not(.kb-open)_&]:pt-[calc(var(--session-under)_+_8px)] " +
+  "phone:[body.kb-open_&]:pb-2 " +
+  // Fixed takes it out of the app root's side insets (APP_ROOT); keep them.
+  "phone:[body.kb-open_&]:pr-[calc(12px+var(--sa-r))] phone:[body.kb-open_&]:pl-[calc(12px+var(--sa-l))]";
 
 /**
  * The step the transcript and the composer take while the workspace summary

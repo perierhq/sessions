@@ -193,6 +193,15 @@
               keyboardOpen()
             )
               return;
+            // A screen shorter than the window is not this window's screen:
+            // a foldable can report the other display across a fold. Forcing
+            // the roots to it would leave a blank band under the app, which
+            // the check below cannot see, since it only catches a window that
+            // stays shorter than the roots.
+            if (height < window.innerHeight) {
+              setRootHeight("");
+              return;
+            }
             setRootHeight(height + "px");
             clearTimeout(standaloneVerifyTimer);
             standaloneVerifyTimer = setTimeout(function () {
@@ -216,7 +225,16 @@
           document.addEventListener("DOMContentLoaded", fillStandaloneScreen, {
             once: true,
           });
-          window.addEventListener("resize", fillStandaloneScreen);
+          // A width change is a new window, not a keyboard: a rotation, or a
+          // foldable opening or closing, which fires no orientationchange.
+          // Start over for it, like orientationchange does.
+          var standaloneWidth = window.innerWidth;
+          window.addEventListener("resize", function () {
+            if (window.innerWidth === standaloneWidth)
+              return fillStandaloneScreen();
+            standaloneWidth = window.innerWidth;
+            resyncStandaloneScreen();
+          });
           window.addEventListener("orientationchange", resyncStandaloneScreen);
           window.addEventListener("pageshow", resyncStandaloneScreen);
           window.addEventListener("pagehide", cancelStandaloneTimers);

@@ -45,6 +45,47 @@ import type { Route } from "./app-route";
  */
 
 /**
+ * The app's outermost box, and where the phone layout keeps clear of the side
+ * safe areas: a notched iPhone on its side, or a foldable's outer screen,
+ * whose insets can differ left to right. The phone layout is built from
+ * full-width pages and a floating top bar, so insetting the whole box is the
+ * one place that moves all of them; its own fill paints the strips, and it
+ * takes the colour of the page beside them (the page colour under a pushed
+ * page, the sidebar's on the root list) so the strip reads as that page.
+ * Fixed chrome is positioned against the viewport, not this box, so each fixed
+ * control adds the inset of the edge it touches itself (see lib/fab-classes.ts).
+ *
+ * Desktop insets its columns instead (SIDEBAR_COLUMN_DESKTOP, WORKSPACE_SHELL)
+ * so each column's own fill reaches the screen edge. `app` stays on the markup
+ * as a hook: base.css and the palette scroll lock read it.
+ */
+export const APP_ROOT =
+  "app phone:bg-surface phone:pr-[var(--sa-r)] phone:pl-[var(--sa-l)] " +
+  "phone:[&:has(>.app-body.mobile-root)]:bg-sidebar";
+
+/**
+ * The desktop sidebar column. Its fill reaches the left, top and bottom edges
+ * of the screen and its content clears whatever safe area is there (a
+ * foldable's inner screen, or an iPad installed to the Home Screen, insets
+ * the top and bottom; a phone on its side insets the left). The inset is added
+ * to the column's width rather than taken out of it, so a deep left inset does
+ * not narrow the list; `useAppShell`'s resize drag subtracts it again.
+ *
+ * On a foldable open like a book (two side-by-side viewport segments) the
+ * column takes exactly the left segment, so the list sits on one half and the
+ * workspace on the other, divided at the hinge instead of across a page. The
+ * resize grabber stands down there (FOLD_SPLIT_HIDDEN).
+ */
+export const SIDEBAR_COLUMN_DESKTOP =
+  "relative w-[calc(var(--sidebar-w,280px)+var(--sa-l))] " +
+  "pt-[var(--sa-t)] pb-[var(--sa-b)] pl-[var(--sa-l)] " +
+  "[@media(horizontal-viewport-segments:2)]:w-[env(viewport-segment-width_0_0)]";
+
+/** Hidden while a foldable is open like a book; see SIDEBAR_COLUMN_DESKTOP. */
+export const FOLD_SPLIT_HIDDEN =
+  "[@media(horizontal-viewport-segments:2)]:hidden";
+
+/**
  * The row under the top bar: sidebar + workspace. Desktop paints the shared
  * chrome material here so the sidebar sits on it, and an opaque sticky header
  * scrolls over the same colour instead of revealing a seam. Phones get the
@@ -74,6 +115,16 @@ export const WORKSPACE_SHELL =
   "relative z-[25] flex min-h-0 min-w-0 flex-1 overflow-hidden border-l border-divider bg-surface desktop:[box-shadow:var(--content-edge-shadow)] " +
   // Collapsed sidebar: nothing to divide from or cast depth onto.
   "[.app-body.sidebar-collapsed_&]:border-l-0 [.app-body.sidebar-collapsed_&]:[box-shadow:none] " +
+  // Safe areas on the edges this column touches: top and right always, left
+  // once the sidebar is gone. Bottom is left to the content, so a transcript
+  // still scrolls under the home indicator and the composer clears it with
+  // its own gap (VIEWER_INPUT) rather than with this one added on top.
+  "desktop:pt-[var(--sa-t)] desktop:pr-[var(--sa-r)] " +
+  "desktop:[.app-body.sidebar-collapsed_&]:pl-[var(--sa-l)] " +
+  // Book-open foldable: start on the far side of the hinge, so nothing in
+  // the workspace lands in the gap between the two segments.
+  "desktop:[@media(horizontal-viewport-segments:2)]:ml-[calc(env(viewport-segment-left_1_0)_-_env(viewport-segment-right_0_0))] " +
+  "desktop:[.app-body.sidebar-collapsed_&]:ml-0 " +
   "phone:contents";
 
 /**

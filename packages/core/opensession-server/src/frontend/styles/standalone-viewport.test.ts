@@ -54,6 +54,7 @@ function viewportHarness(standalone = true) {
   const window = {
     screen: { height: 844 },
     innerHeight: 784,
+    innerWidth: 390,
     scrollY: 0,
     visualViewport: viewport,
     __os1PanRelease: panRelease,
@@ -162,6 +163,37 @@ describe("standalone viewport recovery", () => {
     app.fireWindow("resize");
     app.advance(300);
     app.expectHeight("844px");
+  });
+
+  test("a foldable opening retries a correction its closed screen rejected", () => {
+    const app = viewportHarness();
+    app.advance(300);
+    app.expectHeight("");
+    // Same width: a keyboard or toolbar resize, which must not retry.
+    app.fireWindow("resize");
+    app.advance(1000);
+    app.expectHeight("");
+    // A new width with no orientationchange: the device opened.
+    app.window.innerWidth = 820;
+    app.fireWindow("resize");
+    app.expectHeight("844px");
+    app.window.innerHeight = 844;
+    app.advance(1000);
+    app.expectHeight("844px");
+  });
+
+  test("a screen shorter than the window never sets the roots", () => {
+    const app = viewportHarness();
+    app.window.innerHeight = 844;
+    app.advance(300);
+    app.expectHeight("844px");
+    // The other display of a foldable, reported across the fold.
+    app.window.innerWidth = 820;
+    app.window.innerHeight = 880;
+    app.fireWindow("resize");
+    app.expectHeight("");
+    app.advance(1000);
+    app.expectHeight("");
   });
 
   test("keyboard dismissal retries after kb-open is cleared and the animation settles", () => {
