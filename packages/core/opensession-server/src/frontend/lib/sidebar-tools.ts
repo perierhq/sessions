@@ -417,3 +417,29 @@ if (typeof window !== "undefined" && window.addEventListener) {
     }
   });
 }
+
+/**
+ * Which tool rows a short viewport keeps out, and which it folds behind a
+ * More row. The strip is fixed chrome above the workspace list on desktop, so
+ * on a phone on its side or a foldable's outer screen turned sideways five
+ * rows of tools can take most of the rail before the first session.
+ *
+ * The first `limit` tools stay, in the person's own order, and so does the
+ * tool you are on wherever it sits: a More row that hides the page you are
+ * looking at reads as the sidebar losing your place. Folding fewer than two
+ * tools saves nothing (the More row costs the row it frees), so then every
+ * tool stays out.
+ */
+export function foldSidebarTools<T extends { active: boolean }>(
+  tools: readonly T[],
+  limit: number,
+): { shown: T[]; folded: T[] } {
+  const shown: T[] = [];
+  const folded: T[] = [];
+  tools.forEach((tool, index) =>
+    (index < limit || tool.active ? shown : folded).push(tool),
+  );
+  return folded.length < 2
+    ? { shown: [...tools], folded: [] }
+    : { shown, folded };
+}

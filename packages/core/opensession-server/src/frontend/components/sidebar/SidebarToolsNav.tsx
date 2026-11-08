@@ -1,13 +1,15 @@
-import React from "react";
+import React, { useState } from "react";
 import type { TeamMember } from "../TeamPresence";
 import { TeamLensMenu } from "../TeamPresence";
-import { IconEyeOff } from "../icons";
+import { IconChevronDown, IconEyeOff } from "../icons";
 import { OrganizationSwitcher } from "../OrganizationSwitcher";
 import {
   SIDEBAR_HOVER_LAYER,
   SIDEBAR_RAIL_GAP,
 } from "../../lib/sidebar-classes";
-import type { SidebarToolId } from "../../lib/sidebar-tools";
+import { SHORT_QUERY, VERY_SHORT_QUERY } from "../../lib/breakpoints";
+import { foldSidebarTools, type SidebarToolId } from "../../lib/sidebar-tools";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { SupportSurface } from "../../lib/support-surface";
 import { cn } from "../../ui/cn";
 import { ContextMenu, MENU_ICON } from "../../ui/menu";
@@ -52,6 +54,17 @@ export function SidebarToolsNav({
   onSetSupportSurface: (surface: SupportSurface) => void;
   onPickPerson: (person: string) => void;
 }) {
+  // A short viewport folds the strip: the first tools stay out and the rest
+  // wait behind a More row (foldSidebarTools). Opening it is per visit; the
+  // next short window starts folded again, which is the point of folding.
+  const short = useMediaQuery(SHORT_QUERY);
+  const veryShort = useMediaQuery(VERY_SHORT_QUERY);
+  const [unfolded, setUnfolded] = useState(false);
+  const { shown, folded } = short
+    ? foldSidebarTools(tools, veryShort ? 2 : 3)
+    : { shown: tools, folded: [] };
+  const listed = unfolded || folded.length === 0 ? tools : shown;
+  const foldedCount = folded.reduce((sum, tool) => sum + (tool.count ?? 0), 0);
   return (
     <nav
       className={cn(
@@ -79,7 +92,7 @@ export function SidebarToolsNav({
           onOpenSettings={onOpenSettings}
         />
       </div>
-      {tools.map((tool) => {
+      {listed.map((tool) => {
         const rowClass = cn(
           // One look at both widths. Only the box changes, and only
           // because a phone row is pressed rather than read.
@@ -227,6 +240,44 @@ export function SidebarToolsNav({
           </div>
         );
       })}
+      {folded.length > 0 && (
+        <button
+          type="button"
+          aria-expanded={unfolded}
+          className={cn(
+            `w-full ${SIDEBAR_RAIL_GAP} group flex items-center rounded-row bg-transparent px-[calc(var(--sidebar-icon-left)-var(--sidebar-nav-x))] py-[var(--sidebar-tool-pad)] phone:py-[13px] text-left text-body font-medium text-dim transition-colors desktop:text-item-title hover:text-fg`,
+            SIDEBAR_HOVER_LAYER,
+          )}
+          onClick={() => setUnfolded((open) => !open)}
+        >
+          <span className="inline-flex text-faint group-hover:text-dim [&_svg]:size-[22px]">
+            <IconChevronDown
+              className={cn(
+                "transition-transform motion-reduce:transition-none",
+                unfolded && "rotate-180",
+              )}
+            />
+          </span>
+          {unfolded ? "Less" : "More"}
+          {/* Folded, the row stands in for the tools under it, so it carries
+              what they would: their counts summed, and any state they show
+              at their own end (the Incidents dot). */}
+          {!unfolded && (
+            <span className="ml-auto flex items-center gap-1 empty:hidden">
+              {folded.map((tool) =>
+                tool.trailing ? (
+                  <React.Fragment key={tool.id}>{tool.trailing}</React.Fragment>
+                ) : null,
+              )}
+              {!!foldedCount && (
+                <span className="rounded-full bg-accent px-[7px] py-px text-meta leading-[1.5] font-semibold text-on-accent">
+                  {foldedCount}
+                </span>
+              )}
+            </span>
+          )}
+        </button>
+      )}
     </nav>
   );
 }

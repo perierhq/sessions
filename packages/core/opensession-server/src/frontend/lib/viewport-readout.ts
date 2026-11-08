@@ -5,6 +5,8 @@
 // only. It exists so a screenshot of a misbehaving phone carries the
 // measurements instead of another guess.
 
+import { readSafeAreaInsets, type SafeAreaInsets } from "./safe-area";
+
 /** What the standalone bootstrap (index.html) records about its phantom-pan
  * release: how often it ran, why the last run stopped, and the readings it
  * stopped on. */
@@ -43,6 +45,8 @@ export interface ViewportSample {
   hidden: boolean;
   scrollerTop: number | null;
   pan: PanReleaseRecord | null;
+  /** Safe-area insets in px; a foldable reports them per edge. */
+  safeArea: SafeAreaInsets;
 }
 
 const KEY = "opensession-viewport-readout";
@@ -93,6 +97,7 @@ export function sampleViewport(): ViewportSample {
     hidden: document.hidden,
     scrollerTop: scroller ? Math.round(scroller.scrollTop) : null,
     pan: window.__os1PanRelease ?? null,
+    safeArea: readSafeAreaInsets(),
   };
 }
 
@@ -104,6 +109,7 @@ export function formatViewportReadout(sample: ViewportSample): string[] {
   return [
     `${sample.platform} ${sample.standalone ? "standalone" : "browser"}`,
     `win ${sample.innerWidth}x${sample.innerHeight} screen ${sample.screenWidth}x${sample.screenHeight} root ${sample.rootHeight || "auto"}`,
+    `safe t${sample.safeArea.top} r${sample.safeArea.right} b${sample.safeArea.bottom} l${sample.safeArea.left}`,
     `vv h${orDash(sample.viewportHeight)} top${orDash(sample.viewportOffsetTop)} page${orDash(sample.viewportPageTop)} scale${orDash(sample.viewportScale)} scrollY ${sample.scrollY}`,
     `kb ${sample.keyboard ? "open" : "closed"} focus ${sample.focused} ${sample.hidden ? "hidden" : "visible"} scroller ${orDash(sample.scrollerTop)}`,
     pan

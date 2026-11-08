@@ -23,3 +23,14 @@
  * with everything here at exactly 720px wide.
  */
 export const PHONE_QUERY = "(max-width: 720px)";
+
+/**
+ * A short viewport: a phone on its side, a foldable's outer screen turned
+ * sideways, a laptop window dragged low. Height is not a second layout, so
+ * nothing switches surfaces on it; it only tells fixed chrome to give up rows
+ * (the sidebar's tool strip folds into a More row, see `foldSidebarTools`).
+ */
+export const SHORT_QUERY = "(max-height: 640px)";
+
+/** Shorter still: the sidebar keeps two tools out instead of three. */
+export const VERY_SHORT_QUERY = "(max-height: 480px)";

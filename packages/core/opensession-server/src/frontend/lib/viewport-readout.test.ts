@@ -33,6 +33,7 @@ const sample: ViewportSample = {
     viewportEvents: 0,
     scrollerEvents: 9,
   },
+  safeArea: { top: 0, right: 86, bottom: 0, left: 0 },
 };
 
 describe("viewport readout", () => {
@@ -52,6 +53,7 @@ describe("viewport readout", () => {
     expect(formatViewportReadout(sample)).toEqual([
       "iOS 27.0 standalone",
       "win 393x852 screen 393x852 root 852px",
+      "safe t0 r86 b0 l0",
       "vv h790 top62 page62 scale1 scrollY 0",
       "kb closed focus body visible scroller 4120",
       "pan rest runs3 rel0 pan0 sy0 scale1 vv0 sc9",
@@ -72,8 +74,8 @@ describe("viewport readout", () => {
     });
     expect(lines[0]).toBe("iOS 27.0 browser");
     expect(lines[1]).toEndWith("root auto");
-    expect(lines[2]).toBe("vv h- top- page- scale- scrollY 0");
-    expect(lines[3]).toEndWith("scroller -");
-    expect(lines[4]).toBe("pan release not installed");
+    expect(lines[3]).toBe("vv h- top- page- scale- scrollY 0");
+    expect(lines[4]).toEndWith("scroller -");
+    expect(lines[5]).toBe("pan release not installed");
   });
 });

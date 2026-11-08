@@ -454,6 +454,10 @@
   --sa-r: env(safe-area-inset-right, 0px);
   --sa-b: env(safe-area-inset-bottom, 0px);
   --sa-l: env(safe-area-inset-left, 0px);
+  /* How far down a side status column (lib/side-rail.ts) the clock, the
+     connectivity ring and their spacing reach; the rail starts below it.
+     Measured on an iPhone Duo installed app, where they take about 105pt. */
+  --status-column-h: 116px;
 }
 
 /* Above the phone breakpoint the top bar isn't rendered at all, so nothing is

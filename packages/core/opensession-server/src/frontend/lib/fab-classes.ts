@@ -38,7 +38,10 @@ export const MOBILE_FAB =
   "phone:z-500 phone:flex phone:size-[58px] phone:items-center phone:justify-center " +
   "phone:rounded-full phone:border-none phone:bg-accent phone:text-on-accent " +
   "phone:shadow-[0_4px_14px_rgba(0,0,0,0.16),0_1px_3px_rgba(0,0,0,0.10)] " +
-  "phone:transition-transform phone:active:scale-[0.92]";
+  "phone:transition-transform phone:active:scale-[0.92] " +
+  // Side status column (lib/side-rail.ts): the button sits in the column,
+  // centred, at the bottom, off the content it would otherwise cover.
+  "phone:[html.side-rail_&]:right-[calc((var(--sa-r)-58px)/2)]";
 
 /**
  * The ⌘J Desk trigger. Desktop uses the same resting shadow and border as the
@@ -75,4 +78,9 @@ export const DESK_FAB =
   "phone:right-[calc(12px+58px+12px+var(--sa-r))] phone:bottom-[calc(18px+env(safe-area-inset-bottom,0px))] " +
   "phone:size-[58px] phone:text-fg " +
   "phone:shadow-[0_2px_10px_rgba(0,0,0,0.10),0_1px_2px_rgba(0,0,0,0.06)] " +
-  "phone:hover:translate-y-0 phone:active:scale-[0.92]";
+  "phone:hover:translate-y-0 phone:active:scale-[0.92] " +
+  // Side status column: in the column above the + on phones, and at the
+  // column's foot on desktop, where useDeskFabPosition stands down.
+  "desktop:[html.side-rail_&]:right-[calc((var(--sa-r)-44px)/2)] " +
+  "phone:[html.side-rail_&]:right-[calc((var(--sa-r)-58px)/2)] " +
+  "phone:[html.side-rail_&]:bottom-[calc(18px+58px+12px+var(--sa-b))]";

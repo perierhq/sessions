@@ -5,6 +5,7 @@ import {
   type DeskFabPosition,
 } from "../lib/desk-fab-position";
 import { readSafeAreaInsets } from "../lib/safe-area";
+import { SIDE_RAIL_CLASS } from "../lib/side-rail";
 
 const COMPOSER_ANCHOR_SELECTOR = ".detail-pane div:has(> .composer)";
 const DETAIL_PANE_SELECTOR = ".detail-pane";
@@ -40,7 +41,13 @@ export function useDeskFabPosition(
       const anchors = document.querySelectorAll<HTMLElement>(
         COMPOSER_ANCHOR_SELECTOR,
       );
-      const anchor = anchors.item(anchors.length - 1);
+      // In a side status column the trigger has a fixed place of its own
+      // (DESK_FAB), clear of every composer.
+      const anchor = document.documentElement.classList.contains(
+        SIDE_RAIL_CLASS,
+      )
+        ? null
+        : anchors.item(anchors.length - 1);
       const insets = anchor ? readSafeAreaInsets() : undefined;
       const next =
         anchor && insets

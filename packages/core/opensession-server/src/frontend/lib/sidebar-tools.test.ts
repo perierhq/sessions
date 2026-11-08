@@ -6,6 +6,7 @@ import {
   replaceVisibleSidebarToolOrder,
   readHiddenSidebarTools,
   toolFitsViewport,
+  foldSidebarTools,
   SIDEBAR_TOOL_IDS,
 } from "./sidebar-tools";
 
@@ -239,5 +240,28 @@ describe("toolFitsViewport", () => {
       expect(toolFitsViewport(id, true)).toBe(true);
       expect(toolFitsViewport(id, false)).toBe(true);
     }
+  });
+});
+
+describe("foldSidebarTools", () => {
+  const tools = (active = -1) =>
+    ["a", "b", "c", "d", "e"].map((id, i) => ({ id, active: i === active }));
+  const ids = (list: { id: string }[]) => list.map((t) => t.id);
+
+  test("keeps the first tools out and folds the rest", () => {
+    const { shown, folded } = foldSidebarTools(tools(), 3);
+    expect(ids(shown)).toEqual(["a", "b", "c"]);
+    expect(ids(folded)).toEqual(["d", "e"]);
+  });
+
+  test("the tool you are on stays out wherever it sits", () => {
+    const { shown, folded } = foldSidebarTools(tools(4), 2);
+    expect(ids(shown)).toEqual(["a", "b", "e"]);
+    expect(ids(folded)).toEqual(["c", "d"]);
+  });
+
+  test("never folds a single tool behind a More row", () => {
+    expect(foldSidebarTools(tools().slice(0, 4), 3).folded).toEqual([]);
+    expect(ids(foldSidebarTools(tools(3), 3).shown)).toHaveLength(5);
   });
 });
