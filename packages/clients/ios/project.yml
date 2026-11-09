@@ -109,6 +109,61 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: Apple Distribution
           PROVISIONING_PROFILE_SPECIFIER: OS1 App Store Push
+  # Blob: the quiet app where the supervisor agent shows up only when it has
+  # something for you. It compiles the OS app's sources with the BLOB condition
+  # and swaps in its own entry point (Blob/BlobApp.swift), root view and icon.
+  # Its own bundle id, so it installs next to OS. Not in the release workflows
+  # yet: it has no App Store record or provisioning profile.
+  Blob:
+    type: application
+    platform: iOS
+    info:
+      path: Blob/Blob-Info.plist
+      properties:
+        CFBundleDisplayName: Blob
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        OS1DefaultServerURL: http://127.0.0.1:3850
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSMicrophoneUsageDescription: Talk to Blob.
+        # The shared sources include the OS composer's camera and dictation
+        # paths. Blob doesn't use them yet, but the keys keep them safe.
+        NSCameraUsageDescription: Attach a photo you take to a message.
+        NSSpeechRecognitionUsageDescription: Turn what you say into text.
+    sources:
+      - path: OS1
+        excludes:
+          # The OS app's entry point and icon; Blob brings its own.
+          - OS1App.swift
+          - Assets.xcassets
+      - path: Resources/mermaid
+        buildPhase: resources
+        excludes:
+          - README.md
+      - path: Blob
+        excludes:
+          - Blob-Info.plist
+    dependencies:
+      - package: SwiftStreamingMarkdown
+        product: SwiftStreamingMarkdown
+      - package: HighlightSwift
+        product: HighlightSwift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: pl.sessions.blob
+        DEVELOPMENT_TEAM: ${APPLE_TEAM_ID}
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.9"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) BLOB
+        TARGETED_DEVICE_FAMILY: "1"
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
   # Widget extension: the Home Screen / Lock Screen widget and the Control
   # Center control. iOS only — a macOS widget would need its own target, and
   # the Mac app has no Action Button or Control Center to put one in.

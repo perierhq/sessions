@@ -683,7 +683,25 @@ open OS1.xcodeproj
 ```
 
 Run the `OS1` scheme on iOS 26+ or `OS1Mac` on macOS 26+. Validate changes
-against both schemes.
+against both schemes, and against `Blob` when they touch shared code.
+
+## Blob
+
+`Blob` is a second iOS app built from the same sources: the quiet app where
+the supervisor agent shows up only when it has something for you. It compiles
+`OS1/` with the `BLOB` condition, minus `OS1App.swift` and the OS icon, and
+adds `Blob/`: its own entry point, home screen and character. Bundle id
+`pl.sessions.blob`, so it installs next to OS.
+
+- The character (`Blob/BlobCharacter.swift`) is a port of the motion
+  prototype in `design/blob-motion/blob.js`. Keep the two in step.
+- Tap Blob to talk. The conversation is the Desk's live voice call
+  (`DeskVoiceEngine.desk`); long-press for settings.
+- Debug builds launched with `BLOB_DEMO=1` play a scripted conversation with
+  no server or microphone, and `BLOB_DEMO_AT=<seconds>` freezes one moment,
+  for screenshots and motion checks.
+- Not in the release workflows yet: it has no App Store record or
+  provisioning profile.
 
 ## Architecture
 

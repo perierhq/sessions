@@ -26,5 +26,12 @@ enum AppBrand {
     /// place outside the app ("turn it on for OS in Settings"): what they will
     /// be reading there is this label. Prose about the product itself keeps the
     /// full name.
+    ///
+    /// The Blob app compiles this same code with the `BLOB` condition (see
+    /// project.yml) and carries its own label.
+    #if BLOB
+    static let appName = "Blob"
+    #else
     static let appName = "OS"
+    #endif
 }

@@ -1,0 +1,887 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blob · marks prototype</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Caveat:wght@500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --dim: #646464;
+        --faint: #949494;
+        --raised: #f6f6f6;
+        --accent: #1d82bc;
+        --accent-soft: rgb(29 130 188 / 12%);
+        /* hand colours: proposed --hand-* tokens, kept apart from the error red */
+        --hand-red: #de3334;
+        --hand-sky: #1d82bc;
+        --hand-ink: #1a1a1a;
+        --hand-green: #009740;
+        --hand-highlight: #f0b400;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #ececec;
+        font-family:
+          "SF Pro",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        color: var(--fg);
+      }
+      body {
+        display: flex;
+        gap: 32px;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 32px;
+      }
+      .device {
+        position: relative;
+        width: 466px;
+        height: 678px;
+        background: var(--bg);
+        overflow: hidden;
+        border-radius: 8px 59px 59px 8px;
+        box-shadow: 0 20px 60px rgb(0 0 0 / 12%);
+      }
+      .strip {
+        position: absolute;
+        left: 382px;
+        top: 0;
+        width: 84px;
+        height: 678px;
+      }
+      .camera {
+        position: absolute;
+        left: 17.5px;
+        top: 29.5px;
+        width: 37px;
+        height: 37px;
+        border-radius: 50%;
+        background: #000;
+      }
+      .time {
+        position: absolute;
+        left: 0;
+        top: 82px;
+        width: 72px;
+        text-align: center;
+        font-size: 15px;
+        line-height: 20px;
+        font-weight: 600;
+      }
+      .wifi {
+        position: absolute;
+        left: 24px;
+        top: 108px;
+      }
+
+      .space {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 382px;
+        height: 678px;
+        padding: 34px 22px 22px 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        user-select: none;
+      }
+      .say {
+        margin: 0 0 0 0;
+        font-size: 17px;
+        line-height: 22px;
+        padding-left: 0;
+      }
+      .mail {
+        padding: 12px 14px 14px;
+        border-radius: 14px;
+        background: var(--raised);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .mail .meta {
+        font-size: 11px;
+        line-height: 13px;
+        color: var(--faint);
+      }
+      .mail .subject {
+        font-size: 14px;
+        line-height: 17px;
+        font-weight: 500;
+      }
+      .mail .body {
+        font-size: 13px;
+        line-height: 19px;
+        color: var(--dim);
+      }
+      .label {
+        font-size: 13px;
+        line-height: 16px;
+        font-weight: 500;
+        color: var(--dim);
+        margin-bottom: -8px;
+      }
+      .did {
+        font-size: 14px;
+        line-height: 19px;
+      }
+      .opts {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .opt {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 52px;
+        padding: 8px 12px;
+        border-radius: 12px;
+        background: rgb(26 26 26 / 5%);
+      }
+      .opt .n {
+        width: 22px;
+        height: 22px;
+        border-radius: 7px;
+        background: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--dim);
+        flex-shrink: 0;
+      }
+      .opt b {
+        display: block;
+        font-size: 14px;
+        line-height: 17px;
+        font-weight: 500;
+      }
+      .opt small {
+        display: block;
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--dim);
+      }
+      [data-target] {
+        cursor: crosshair;
+      }
+
+      .ink,
+      .notes {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 466px;
+        height: 678px;
+        pointer-events: none;
+      }
+      .ink path {
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .ink .hl {
+        mix-blend-mode: multiply;
+      }
+      .note {
+        position: absolute;
+        font-family: "Caveat", "Bradley Hand", cursive;
+        font-weight: 500;
+        font-size: 20px;
+        line-height: 20px;
+        white-space: pre;
+        transform-origin: left bottom;
+      }
+      .blob {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 200px;
+        pointer-events: none;
+        will-change: transform;
+      }
+      .halo {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 200px;
+        border-radius: 50%;
+        pointer-events: none;
+      }
+
+      .panel {
+        width: 320px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        font-size: 13px;
+      }
+      .panel h1 {
+        font-size: 19px;
+        line-height: 23px;
+        margin: 0;
+      }
+      .panel p {
+        margin: 0;
+        color: var(--dim);
+        line-height: 18px;
+      }
+      .group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      button {
+        font: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        height: 32px;
+        padding: 0 12px;
+        border-radius: 9.25px;
+        border: 0;
+        background: rgb(26 26 26 / 8%);
+        color: var(--dim);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      button[aria-pressed="true"] {
+        background: var(--fg);
+        color: #fff;
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+      input[type="text"] {
+        font: inherit;
+        height: 32px;
+        padding: 0 10px;
+        border-radius: 9.25px;
+        border: 1px solid #d0d0d0;
+        width: 100%;
+      }
+      label {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: var(--dim);
+      }
+      .meta {
+        color: var(--faint);
+        font-variant-numeric: tabular-nums;
+      }
+      @media (hover: hover) and (pointer: fine) {
+        button:hover {
+          background: rgb(26 26 26 / 12%);
+        }
+        button[aria-pressed="true"]:hover {
+          background: #000;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="device" id="device">
+      <div class="space" id="space">
+        <p class="say">
+          <b>Only you can decide this.</b> A lawyer wants all data on Ewa Nowak
+          deleted.
+        </p>
+        <div class="mail">
+          <div class="meta">Acme Legal · today 08:52</div>
+          <div class="subject">
+            Erasure request for <span data-target="name">Ewa Nowak</span>
+          </div>
+          <div class="body">
+            …we request erasure of all personal data concerning our client
+            <span data-target="deadline">within 30 days</span> under Article 17
+            GDPR.
+          </div>
+        </div>
+        <div class="label">What I did</div>
+        <div class="did">
+          Confirmed we received it and paused emails.
+          <span data-target="safe">Nothing is deleted.</span>
+        </div>
+        <div class="opts">
+          <div class="opt" data-target="opt1">
+            <span class="n">1</span>
+            <div>
+              <b>Ask our lawyer first</b
+              ><small>I send Marta the request and both histories</small>
+            </div>
+          </div>
+          <div class="opt" data-target="opt2">
+            <span class="n">2</span>
+            <div>
+              <b>Delete both accounts</b
+              ><small>Can't be undone. I send the confirmation letter</small>
+            </div>
+          </div>
+          <div class="opt" data-target="opt3">
+            <span class="n">3</span>
+            <div>
+              <b>I'll handle it</b
+              ><small>I hand you the thread and stay out of it</small>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="strip">
+        <div class="camera"></div>
+        <div class="time">9:41</div>
+        <svg class="wifi" width="24" height="24" viewBox="0 0 24 24">
+          <path
+            d="M2.5 9.2a13.6 13.6 0 0 1 19 0M5.7 12.6a9 9 0 0 1 12.6 0M9 16a4.4 4.4 0 0 1 6 0"
+            fill="none"
+            stroke="#000"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+          <circle cx="12" cy="19.2" r="1.6" />
+        </svg>
+      </div>
+      <svg class="ink" id="ink" viewBox="0 0 466 678"></svg>
+      <div class="notes" id="notes"></div>
+      <div class="halo" id="halo"></div>
+      <svg
+        class="blob"
+        id="blob"
+        viewBox="0 0 200 200"
+        width="200"
+        height="200"
+      >
+        <defs>
+          <radialGradient id="g" cx="38%" cy="28%" r="85%">
+            <stop id="s0" offset="0%" />
+            <stop id="s1" offset="60%" />
+            <stop id="s2" offset="100%" />
+          </radialGradient>
+        </defs>
+        <path id="shape" fill="url(#g)" />
+        <ellipse id="eyeL" rx="9" ry="14" fill="#fff" />
+        <ellipse id="eyeR" rx="9" ry="14" fill="#fff" />
+        <path
+          id="smileL"
+          fill="none"
+          stroke="#fff"
+          stroke-width="8"
+          stroke-linecap="round"
+        />
+        <path
+          id="smileR"
+          fill="none"
+          stroke="#fff"
+          stroke-width="8"
+          stroke-linecap="round"
+        />
+      </svg>
+    </div>
+
+    <div class="panel">
+      <h1>Blob · marks</h1>
+      <p>
+        Blob's hands. It flies to what it wants to show, draws the mark while
+        its eyes follow the pen, then goes back to its slot.
+      </p>
+      <div class="group" id="kinds"></div>
+      <div class="group" id="colors"></div>
+      <input
+        type="text"
+        id="noteText"
+        value="check this"
+        aria-label="Note text"
+      />
+      <p class="meta">
+        Pick a mark and a colour, then tap anything in the screen.
+      </p>
+      <div class="group">
+        <button id="play">Play sequence</button>
+        <button id="clear">Clear</button>
+        <span class="meta" id="clock">0.0 s</span>
+      </div>
+      <div class="group" id="speeds"></div>
+      <label><input type="checkbox" id="reduce" /> Reduced motion</label>
+      <p class="meta">seek(ms) is on window for frame checks.</p>
+    </div>
+
+    <script src="blob.js"></script>
+    <script>
+      const el = (id) => document.getElementById(id);
+      const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+      const SLOT = { x: 382 + 36, y: 600, size: 52 };
+      const COLORS = {
+        red: "var(--hand-red)",
+        sky: "var(--hand-sky)",
+        ink: "var(--hand-ink)",
+        green: "var(--hand-green)",
+        highlight: "var(--hand-highlight)",
+      };
+      const KINDS = [
+        "circle",
+        "underline",
+        "arrow",
+        "strike",
+        "box",
+        "highlight",
+        "tick",
+        "bracket",
+        "note",
+      ];
+      const DUR = {
+        circle: 0.75,
+        underline: 0.38,
+        arrow: 0.62,
+        strike: 0.32,
+        box: 0.8,
+        highlight: 0.45,
+        tick: 0.3,
+        bracket: 0.36,
+      };
+      const TRAVEL = 0.35; // Blob flies to the mark before the pen touches down
+
+      const blob = createBlob(el("blob"), el("halo"), SLOT);
+      blob.st.reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const device = el("device"),
+        ink = el("ink"),
+        notes = el("notes");
+      const S = { kind: "circle", color: "red", speed: 1 };
+
+      /* ---------- geometry ---------- */
+      function box(target) {
+        const node =
+          typeof target === "string"
+            ? document.querySelector(`[data-target="${target}"]`)
+            : target;
+        const d = device.getBoundingClientRect();
+        const r = node.getClientRects()[0] || node.getBoundingClientRect(); // first line only for wrapped text
+        return {
+          x: r.left - d.left,
+          y: r.top - d.top,
+          w: r.width,
+          h: r.height,
+        };
+      }
+      function seeded(n) {
+        let s = n * 97 + 13;
+        return () => (s = (s * 16807) % 2147483647) / 2147483647;
+      }
+      const jitter = (r, a) => (r() - 0.5) * 2 * a;
+      // Catmull-Rom through open points
+      function smooth(pts) {
+        let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p0 = pts[Math.max(0, i - 1)],
+            p1 = pts[i],
+            p2 = pts[i + 1],
+            p3 = pts[Math.min(pts.length - 1, i + 2)];
+          d += `C${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)},${(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)} ${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)},${(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+        }
+        return d;
+      }
+      const line = (a, b, n, r, j) =>
+        Array.from({ length: n + 1 }, (_, i) => [
+          a[0] + ((b[0] - a[0]) * i) / n + (i && i < n ? jitter(r, j) : 0),
+          a[1] + ((b[1] - a[1]) * i) / n + (i && i < n ? jitter(r, j) : 0),
+        ]);
+
+      /* Each shape returns strokes as point lists. Hand-made: circles overshoot, lines wobble. */
+      const SHAPES = {
+        circle(b, r) {
+          const cx = b.x + b.w / 2,
+            cy = b.y + b.h / 2,
+            rx = b.w / 2 + 12,
+            ry = b.h / 2 + 9;
+          const a0 = -2.4 + jitter(r, 0.2),
+            sweep = Math.PI * 2 * 1.1,
+            ph = r() * 6,
+            N = 36;
+          return [
+            Array.from({ length: N + 1 }, (_, i) => {
+              const th = a0 + (sweep * i) / N,
+                k = 1 + 0.035 * Math.sin(3 * th + ph) + 0.06 * (i / N);
+              return [cx + rx * k * Math.cos(th), cy + ry * k * Math.sin(th)];
+            }),
+          ];
+        },
+        underline(b, r) {
+          const y = b.y + b.h + 3;
+          const p = line([b.x - 4, y], [b.x + b.w + 6, y + 1], 4, r, 1.2);
+          p[p.length - 1][1] -= 2.5;
+          return [p];
+        },
+        strike(b, r) {
+          const y = b.y + b.h / 2 + 1;
+          return [line([b.x - 3, y + 1], [b.x + b.w + 3, y - 1.5], 3, r, 0.8)];
+        },
+        highlight(b, r) {
+          const y = b.y + b.h / 2 + 1;
+          return [line([b.x + 1, y], [b.x + b.w - 1, y - 0.6], 4, r, 0.5)];
+        },
+        tick(b, r) {
+          const x = b.x + b.w + 10,
+            y = b.y + b.h / 2;
+          return [
+            [
+              [x, y],
+              [x + 5, y + 6.5],
+              [x + 18, y - 10 + jitter(r, 1.5)],
+            ],
+          ];
+        },
+        bracket(b, r) {
+          const x = b.x - 7;
+          return [
+            [
+              [x + 3, b.y - 1],
+              [x - 2, b.y + b.h * 0.25],
+              [x - 3 + jitter(r, 0.6), b.y + b.h / 2],
+              [x - 2, b.y + b.h * 0.75],
+              [x + 3, b.y + b.h + 1],
+            ],
+          ];
+        },
+        box(b, r) {
+          const p = 6,
+            tl = [b.x - p, b.y - p],
+            tr = [b.x + b.w + p, b.y - p],
+            br = [b.x + b.w + p, b.y + b.h + p],
+            bl = [b.x - p, b.y + b.h + p];
+          const sides = [
+            line(tl, tr, 4, r, 1),
+            line(tr, br, 3, r, 1),
+            line(br, bl, 4, r, 1),
+            line(bl, [tl[0] + 1, tl[1] - 1], 3, r, 1),
+          ];
+          const pts = sides.flatMap((s, i) => (i ? s.slice(1) : s));
+          pts.push([tl[0] + 12, tl[1] - 1.5]); // overshoot past the start
+          return [pts];
+        },
+        arrow(b, r) {
+          const to = [b.x + Math.min(b.w * 0.75, b.w - 14), b.y - 3];
+          const from = [clamp(to[0] + 34, 24, 360), to[1] - 54 + jitter(r, 4)];
+          const mid = [
+            (from[0] + to[0]) / 2 + 16,
+            (from[1] + to[1]) / 2 + jitter(r, 3),
+          ];
+          const shaft = [
+            from,
+            [(from[0] + mid[0]) / 2 + 4, (from[1] + mid[1]) / 2],
+            mid,
+            [(mid[0] + to[0]) / 2 + 3, (mid[1] + to[1]) / 2],
+            to,
+          ];
+          const dir = Math.atan2(to[1] - shaft[3][1], to[0] - shaft[3][0]);
+          const head = (a) => [
+            [to[0] - 11 * Math.cos(dir - a), to[1] - 11 * Math.sin(dir - a)],
+            to,
+          ];
+          return [shaft, head(0.5), head(-0.5)];
+        },
+      };
+
+      /* ---------- marks: queued, drawn one after another ---------- */
+      let marks = [],
+        lastEnd = 0,
+        clock = 0,
+        homeAt = null;
+      function enqueue({ kind, color, target, text, at }) {
+        const r = seeded(marks.length + 1),
+          b = box(target);
+        const start0 = Math.max(clock, lastEnd);
+        const reduce = blob.st.reduce;
+        const m = {
+          kind,
+          color,
+          travelAt: start0,
+          start: start0 + (reduce ? 0 : TRAVEL),
+          strokes: [],
+          noteEl: null,
+        };
+        const stroke = COLORS[color];
+        if (kind === "note") {
+          const n = document.createElement("div");
+          n.className = "note";
+          n.textContent = text || "check this";
+          n.style.color = stroke;
+          notes.appendChild(n);
+          const w = n.offsetWidth;
+          const x = clamp(at ? b.x + at.dx : b.x + b.w - 10, 6, 378 - w),
+            y = at ? b.y + at.dy : b.y - 24;
+          n.style.left = x + "px";
+          n.style.top = y + "px";
+          n.style.transform = `rotate(${-3 + jitter(r, 1.5)}deg)`;
+          n.style.clipPath = "inset(0 100% 0 0)";
+          m.noteEl = n;
+          m.note = { x, y, w };
+          m.dur = reduce ? 0.2 : clamp(0.04 * n.textContent.length, 0.5, 1.2);
+        } else {
+          let total = 0;
+          for (const pts of SHAPES[kind](b, r)) {
+            const p = document.createElementNS(
+              "http://www.w3.org/2000/svg",
+              "path",
+            );
+            p.setAttribute("d", smooth(pts));
+            if (kind === "highlight") {
+              p.setAttribute("class", "hl");
+              p.setAttribute("stroke-width", (b.h * 0.95).toFixed(1));
+              p.setAttribute("stroke-opacity", "0.38");
+              p.setAttribute("stroke-linecap", "butt");
+            } else p.setAttribute("stroke-width", "2.4");
+            p.style.stroke = stroke;
+            kind === "highlight" ? ink.prepend(p) : ink.appendChild(p);
+            const len = p.getTotalLength();
+            p.setAttribute("stroke-dasharray", `${len} ${len}`);
+            p.setAttribute("stroke-dashoffset", len);
+            m.strokes.push({ el: p, len, from: total });
+            total += len;
+          }
+          m.total = total;
+          m.dur = reduce ? 0.2 : DUR[kind];
+        }
+        m.end = m.start + m.dur;
+        lastEnd = m.end + (reduce ? 0.05 : 0.12);
+        homeAt = lastEnd + 0.5;
+        marks.push(m);
+        return m;
+      }
+      const ease = (x) => 0.5 - 0.5 * Math.cos(Math.PI * clamp(x, 0, 1)); // a hand speeds up, then settles
+
+      function tipOf(m, p) {
+        if (m.noteEl) return { x: m.note.x + m.note.w * p, y: m.note.y + 16 };
+        const d = m.total * p,
+          s = m.strokes.findLast((s) => s.from <= d) || m.strokes[0];
+        const pt = s.el.getPointAtLength(clamp(d - s.from, 0, s.len));
+        return { x: pt.x, y: pt.y };
+      }
+      function update() {
+        const reduce = blob.st.reduce;
+        let active = null;
+        for (const m of marks) {
+          const p = ease((clock - m.start) / m.dur);
+          if (reduce) {
+            // reduced motion: marks fade in place, nothing travels
+            const o = clamp((clock - m.start) / m.dur, 0, 1);
+            for (const s of m.strokes) {
+              s.el.setAttribute("stroke-dashoffset", 0);
+              s.el.style.opacity = o;
+            }
+            if (m.noteEl) {
+              m.noteEl.style.clipPath = "none";
+              m.noteEl.style.opacity = o;
+            }
+          } else {
+            for (const s of m.strokes)
+              s.el.setAttribute(
+                "stroke-dashoffset",
+                s.len - clamp(m.total * p - s.from, 0, s.len),
+              );
+            if (m.noteEl)
+              m.noteEl.style.clipPath = `inset(-6px ${(100 * (1 - p)).toFixed(1)}% -6px -6px)`;
+          }
+          if (clock >= m.travelAt && clock <= m.end) active = { m, p };
+        }
+        if (active) {
+          const tip = tipOf(active.m, clock < active.m.start ? 0 : active.p);
+          const at = reduce
+            ? SLOT
+            : {
+                x: clamp(tip.x + 34, 28, 354),
+                y: clamp(tip.y - 32, 40, 640),
+                size: 40,
+              };
+          blob.set({ mode: "draw", at, look: tip });
+        } else if (homeAt !== null && clock >= homeAt) {
+          blob.set({ mode: "quiet", at: SLOT, look: null });
+          homeAt = null;
+        } else if (
+          homeAt !== null &&
+          marks.length &&
+          clock > marks[marks.length - 1].end
+        ) {
+          blob.set({ mode: "speak", look: null }); // a small pleased beat before it goes home
+        }
+      }
+      function clear() {
+        ink.innerHTML = "";
+        notes.innerHTML = "";
+        marks = [];
+        lastEnd = clock;
+        homeAt = null;
+        blob.set({ mode: "quiet", at: SLOT, look: null });
+      }
+
+      /* ---------- the demo sequence ---------- */
+      function sequence() {
+        lastEnd = clock + 0.4;
+        enqueue({ kind: "circle", color: "red", target: "name" });
+        enqueue({
+          kind: "note",
+          color: "red",
+          target: "name",
+          text: "2 accounts match",
+          at: { dx: 64, dy: -26 },
+        });
+        enqueue({ kind: "underline", color: "red", target: "deadline" });
+        enqueue({ kind: "highlight", color: "highlight", target: "safe" });
+        enqueue({ kind: "arrow", color: "sky", target: "opt1" });
+        enqueue({
+          kind: "note",
+          color: "sky",
+          target: "opt1",
+          text: "I'd do this",
+          at: { dx: 190, dy: -78 },
+        });
+        enqueue({
+          kind: "strike",
+          color: "ink",
+          target: document.querySelector('[data-target="opt2"] small'),
+        });
+      }
+
+      /* ---------- loop, seek, controls ---------- */
+      let last = performance.now(),
+        live = true;
+      function frame(now) {
+        if (live) {
+          const dt = Math.min(0.05, (now - last) / 1000) * S.speed;
+          clock += dt;
+          blob.tick(dt);
+          update();
+          blob.render();
+          el("clock").textContent = clock.toFixed(1) + " s";
+        }
+        last = now;
+        requestAnimationFrame(frame);
+      }
+      window.seek = (ms) => {
+        live = false;
+        clock = 0;
+        clear();
+        blob.reset({ at: SLOT });
+        sequence();
+        while (clock < ms / 1000) {
+          clock += 1 / 240;
+          blob.tick(1 / 240);
+          update();
+        }
+        blob.render();
+        return {
+          t: +clock.toFixed(3),
+          mode: blob.st.mode,
+          marks: marks.length,
+        };
+      };
+      window.resume = () => {
+        live = true;
+      };
+
+      device.addEventListener("click", (e) => {
+        const t = e.target.closest("[data-target], small, b");
+        if (!t || !device.contains(t)) return;
+        resume();
+        enqueue({
+          kind: S.kind,
+          color: S.color,
+          target: t,
+          text: el("noteText").value,
+        });
+      });
+      const kEl = el("kinds");
+      for (const k of KINDS) {
+        const b = document.createElement("button");
+        b.textContent = k[0].toUpperCase() + k.slice(1);
+        b.dataset.k = k;
+        b.onclick = () => {
+          S.kind = k;
+          sync();
+        };
+        kEl.appendChild(b);
+      }
+      const cEl = el("colors");
+      for (const [c, label] of [
+        ["red", "Red"],
+        ["sky", "Sky"],
+        ["ink", "Ink"],
+        ["green", "Green"],
+        ["highlight", "Highlighter"],
+      ]) {
+        const b = document.createElement("button");
+        b.dataset.c = c;
+        b.innerHTML = `<span class="dot" style="background:${COLORS[c]}"></span>${label}`;
+        b.onclick = () => {
+          S.color = c;
+          sync();
+        };
+        cEl.appendChild(b);
+      }
+      const spEl = el("speeds");
+      for (const v of [1, 0.5, 0.2]) {
+        const b = document.createElement("button");
+        b.textContent = v + "×";
+        b.dataset.s = v;
+        b.onclick = () => {
+          S.speed = v;
+          sync();
+        };
+        spEl.appendChild(b);
+      }
+      el("play").onclick = () => {
+        resume();
+        clear();
+        sequence();
+      };
+      el("clear").onclick = () => {
+        resume();
+        clear();
+      };
+      el("reduce").checked = blob.st.reduce;
+      el("reduce").onchange = (e) => {
+        blob.st.reduce = e.target.checked;
+      };
+      function sync() {
+        kEl
+          .querySelectorAll("button")
+          .forEach((b) =>
+            b.setAttribute("aria-pressed", b.dataset.k === S.kind),
+          );
+        cEl
+          .querySelectorAll("button")
+          .forEach((b) =>
+            b.setAttribute("aria-pressed", b.dataset.c === S.color),
+          );
+        spEl
+          .querySelectorAll("button")
+          .forEach((b) =>
+            b.setAttribute("aria-pressed", +b.dataset.s === S.speed),
+          );
+      }
+      sync();
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>
