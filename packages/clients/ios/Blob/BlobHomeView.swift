@@ -8,6 +8,10 @@ import SwiftUI
 /// connect, and holding would cut off the first words of every sentence.
 struct BlobHomeView: View {
     private let engine = DeskVoiceEngine.desk
+    /// Used instead of the voice call when the server has no voice key.
+    @State private var text = BlobTextTalk()
+    /// Nil until the server answers; voice stays the default when it can't say.
+    @State private var voiceConfigured: Bool?
     @State private var physics = BlobPhysics()
     @State private var showSettings = false
     @AppStorage("blob.hasTalked") private var hasTalked = false
@@ -31,8 +35,8 @@ struct BlobHomeView: View {
                 }
                 .accessibilityElement()
                 .accessibilityLabel("Blob")
-                .accessibilityValue(engine.active ? engine.state.label : "Asleep")
-                .accessibilityHint(engine.active ? "Ends the conversation" : "Starts a conversation")
+                .accessibilityValue(talking ? statusLabel : "Asleep")
+                .accessibilityHint(talking ? "Ends the conversation" : "Starts a conversation")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { toggleTalk() }
 
@@ -48,9 +52,26 @@ struct BlobHomeView: View {
         }
         .background(OS1VisualStyle.background.ignoresSafeArea())
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .task { voiceConfigured = await BlobTextTalk.voiceConfigured() }
         .onChange(of: scenePhase) { _, phase in
             // A backgrounded app must never hold the mic open.
-            if phase == .background && !engine.shownOutsideApp { engine.stop() }
+            if phase == .background {
+                if !engine.shownOutsideApp { engine.stop() }
+                text.reset()
+            }
+        }
+    }
+
+    /// The live voice call, unless the server says it has no voice key.
+    private var usesVoice: Bool { voiceConfigured != false }
+    private var talking: Bool { usesVoice ? engine.active : text.active }
+
+    private var statusLabel: String {
+        if usesVoice { return engine.state.label }
+        switch text.phase {
+        case .listening: return "Listening"
+        case .waiting: return text.thinking ? "Thinking" : "Answering"
+        default: return ""
         }
     }
 
@@ -58,6 +79,15 @@ struct BlobHomeView: View {
         #if DEBUG
         if let demo = BlobDemo.current { return demo.mode }
         #endif
+        if !usesVoice {
+            // No voice key: Blob listens through dictation and answers in text,
+            // so "speaking" is a smile with no voice pulse.
+            switch text.phase {
+            case .idle, .failed: return .quiet
+            case .listening: return .listen
+            case .waiting: return text.thinking ? .think : .speak
+            }
+        }
         return switch engine.state {
         case .idle, .error: .quiet
         case .connecting, .thinking, .action: .think
@@ -71,7 +101,7 @@ struct BlobHomeView: View {
     private func targets(in size: CGSize, insets: EdgeInsets, at date: Date) -> BlobTargets {
         let center = CGPoint(x: insets.leading + (size.width - insets.leading - insets.trailing) / 2, y: size.height * 0.4)
         let slot = Self.slot(in: size, insets: insets)
-        var talking = engine.active, mode = mode, level = Double(engine.audioLevel)
+        var talking = talking, mode = mode, level = usesVoice ? Double(engine.audioLevel) : text.level
         #if DEBUG
         if let demo = BlobDemo.at(date) { talking = demo.talking; mode = demo.mode; level = demo.level }
         #endif
@@ -109,6 +139,11 @@ struct BlobHomeView: View {
     }
 
     private func toggleTalk() {
+        if !usesVoice {
+            hasTalked = true
+            text.tap()
+            return
+        }
         if engine.active {
             engine.stop()
         } else {
@@ -122,7 +157,9 @@ struct BlobHomeView: View {
     @ViewBuilder
     private func captions(insets: EdgeInsets) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if engine.active, let caption = engine.caption, !caption.text.isEmpty {
+            if !usesVoice && text.active {
+                textCaptions
+            } else if engine.active, let caption = engine.caption, !caption.text.isEmpty {
                 Text(caption.text)
                     .font(caption.role == .assistant ? .title3 : .callout)
                     .foregroundStyle(caption.role == .assistant ? OS1VisualStyle.text : OS1VisualStyle.textFaint)
@@ -138,7 +175,11 @@ struct BlobHomeView: View {
                 Text(hint)
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textDim)
-            } else if !hasTalked && !engine.active && !Self.demoRunning {
+            } else if case .failed(let message) = text.phase, !usesVoice {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(OS1VisualStyle.textDim)
+            } else if !hasTalked && !talking && !Self.demoRunning {
                 Text("Tap me to talk")
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textFaint)
@@ -147,9 +188,38 @@ struct BlobHomeView: View {
         }
         .padding(.leading, insets.leading + 24)
         .padding(.trailing, insets.trailing + 24)
-        .padding(.bottom, max(insets.bottom, 20) + (engine.active ? 28 : 60))
+        .padding(.bottom, max(insets.bottom, 20) + (talking ? 28 : 60))
         .animation(.easeOut(duration: 0.24), value: engine.caption?.text)
-        .allowsHitTesting(false)
+        .allowsHitTesting(!usesVoice && text.answer != nil)
+    }
+
+    /// Text mode: what you said, then Blob's answer. A long answer scrolls.
+    @ViewBuilder
+    private var textCaptions: some View {
+        if !text.heard.isEmpty {
+            Text(text.heard)
+                .font(.callout)
+                .foregroundStyle(OS1VisualStyle.textFaint)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(3)
+        } else if text.phase == .listening {
+            Text("Listening\u{2026} tap me when you\u{2019}re done")
+                .font(.footnote)
+                .foregroundStyle(OS1VisualStyle.textFaint)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        if let answer = text.answer {
+            ScrollView {
+                Text(answer)
+                    .font(.title3)
+                    .foregroundStyle(OS1VisualStyle.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 260)
+            .scrollBounceBehavior(.basedOnSize)
+        }
     }
 }
 
