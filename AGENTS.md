@@ -47,6 +47,12 @@ MacBook and a phone equally. v1 is "how I work today, but remote":
 - new session: pick a project, type the goal
 - the phone is the same product, never a lite version
 
+After v1, **Blob**: a separate PWA on the same server, installed from its own
+path prefix and manifest, where a supervisor agent runs the projects and
+speaks through one character, also called Blob. It stays quiet until something
+needs Kacper. In code the character is `presence`, so it never clashes with the
+web `Blob` type.
+
 ## Scope decisions
 
 - **Keep every client and feature for now:** the native iOS and Mac apps, the
