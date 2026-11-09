@@ -18,6 +18,16 @@ session`, `Try again`); headings name the place or object (`Model providers`).
 - Use an ellipsis only when an action requires more input before it happens,
   not as decoration or to make labels feel softer.
 
+## Designing in Paper
+
+- New screens start in the Paper file "perier sessions": clone parts from the
+  "Sessions · Components" page (dark: "Sessions · Components · Dark")
+  instead of drawing controls. Every part there is rendered from this tree.
+- Paper token `--color-<name>` is the Tailwind class `bg-<name>` /
+  `text-<name>` / `border-<name>`; dark values are `--dark-color-<name>`.
+- When a change alters how a `ui/` primitive or a product component looks,
+  refresh its Paper artboard with `scripts/paper-library` (see its README).
+
 ## Components
 
 - Search `packages/core/opensession-server/src/frontend/ui/` before building a control. New buttons, menus,
