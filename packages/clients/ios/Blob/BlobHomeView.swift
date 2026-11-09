@@ -51,7 +51,9 @@ struct BlobHomeView: View {
             .ignoresSafeArea()
         }
         .background(OS1VisualStyle.background.ignoresSafeArea())
-        .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showSettings) { BlobSettingsView(speaker: text.speaker) }
+        .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
+        .onChange(of: text.settled) { _, settled in if settled { text.answerSettled() } }
         .task { voiceConfigured = await BlobTextTalk.voiceConfigured() }
         .onChange(of: scenePhase) { _, phase in
             // A backgrounded app must never hold the mic open.
@@ -101,7 +103,7 @@ struct BlobHomeView: View {
     private func targets(in size: CGSize, insets: EdgeInsets, at date: Date) -> BlobTargets {
         let center = CGPoint(x: insets.leading + (size.width - insets.leading - insets.trailing) / 2, y: size.height * 0.4)
         let slot = Self.slot(in: size, insets: insets)
-        var talking = talking, mode = mode, level = usesVoice ? Double(engine.audioLevel) : text.level
+        var talking = talking, mode = mode, level = usesVoice ? Double(engine.audioLevel) : text.level(at: date)
         #if DEBUG
         if let demo = BlobDemo.at(date) { talking = demo.talking; mode = demo.mode; level = demo.level }
         #endif
@@ -203,6 +205,11 @@ struct BlobHomeView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .multilineTextAlignment(.trailing)
                 .lineLimit(3)
+        } else if text.listener.preparing {
+            Text("Getting my ears ready\u{2026}")
+                .font(.footnote)
+                .foregroundStyle(OS1VisualStyle.textFaint)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         } else if text.phase == .listening {
             Text("Listening\u{2026} tap me when you\u{2019}re done")
                 .font(.footnote)

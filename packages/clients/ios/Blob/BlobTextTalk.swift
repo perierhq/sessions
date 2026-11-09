@@ -1,9 +1,10 @@
 import Foundation
 import Observation
 
-/// Talking to Blob when the server has no voice key: you speak, on-device
-/// dictation (`Dictation`) turns it into text, the text goes to the Desk like a
-/// typed message, and Blob answers in text instead of speaking.
+/// Talking to Blob when the server has no voice key: you speak, Apple's
+/// on-device recognizer (`BlobListener`) turns it into text, the text goes to
+/// the Desk like a typed message, and Blob shows the answer and reads it aloud
+/// with a Premium or Enhanced voice (`BlobSpeaker`) when one fits.
 ///
 /// The live voice call needs an OpenAI key on the server
 /// (`GET /api/desk/voice/status` reports it). Without one, this keeps the same
@@ -16,14 +17,20 @@ final class BlobTextTalk {
     private(set) var phase: Phase = .idle
     /// What you said, as dictation hears it.
     private(set) var heard = ""
-    private let dictation = Dictation()
+    let listener = BlobListener()
+    let speaker = BlobSpeaker()
     private var desk: SessionViewModel?
     private let owner = UUID()
     /// Transcript size when the message went out; the answer is what comes after.
     private var sentAt = 0
 
     var active: Bool { phase != .idle }
-    var level: Double { phase == .listening ? Double(dictation.levels.last ?? 0) : 0 }
+    /// Voice level for Blob's body: yours while listening, its own while it reads.
+    func level(at date: Date) -> Double {
+        phase == .listening ? listener.level : speaker.level(at: date)
+    }
+    /// The answer that was last read aloud, so it is read once.
+    private var spokenAnswer: String?
 
     /// Blob's answer so far: streaming text while the Desk writes, then the
     /// finished reply.
@@ -47,7 +54,9 @@ final class BlobTextTalk {
     }
 
     func reset() {
-        dictation.stop()
+        listener.cancel()
+        speaker.stop()
+        spokenAnswer = nil
         heard = ""
         phase = .idle
     }
@@ -58,24 +67,34 @@ final class BlobTextTalk {
         return !desk.isRunning && !desk.isStreaming && answer != nil
     }
 
+    /// Reads the finished answer aloud, once. Called when `settled` turns true.
+    func answerSettled() {
+        guard let answer, answer != spokenAnswer else { return }
+        spokenAnswer = answer
+        speaker.speak(answer)
+    }
+
     private func listen() {
         heard = ""
         phase = .listening
         Task {
-            await dictation.start(base: "") { [weak self] text in self?.heard = text }
-            switch dictation.state {
-            case .denied(let message), .failed(let message): phase = .failed(message)
-            default: break
+            do {
+                try await listener.start()
+            } catch {
+                phase = .failed(error.localizedDescription)
             }
         }
     }
 
+    /// Mirrors the listener's text while listening. Called by the view.
+    func syncHeard() { if phase == .listening { heard = listener.text } }
+
     private func send() {
-        dictation.stop()
-        let text = heard.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { reset(); return }
         phase = .waiting
         Task {
+            let text = await listener.stop().trimmingCharacters(in: .whitespacesAndNewlines)
+            heard = text
+            guard !text.isEmpty else { reset(); return }
             do {
                 let model = try await deskModel()
                 sentAt = model.entries.count
