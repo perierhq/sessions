@@ -61,8 +61,14 @@ MacBook and a phone equally. v1 is "how I work today, but remote":
 2. **Strip audit:** a keep/cut list per feature, approved by Kacper before any
    deletion.
 3. **Cuts,** one PR each.
-4. **Restyle** from the Paper designs ("Control room · directions", page
+4. **Restyle** from the Paper designs (file "perier sessions", page
    "v6 · Remote pi").
+
+New designs in Paper are built from the component library in the same file:
+pages "Sessions · Components" and "Sessions · Components · Dark", generated
+from the frontend by `scripts/paper-library`. Clone its parts instead of
+drawing controls; the frontend `AGENTS.md` has the token mapping and when to
+refresh it.
 
 ## Release workflows
 
