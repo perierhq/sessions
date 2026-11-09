@@ -48,9 +48,6 @@ struct BlobHomeView: View {
         }
         .background(OS1VisualStyle.background.ignoresSafeArea())
         .sheet(isPresented: $showSettings) { SettingsView() }
-        .onAppear {
-            if !ServerConfig.shared.isConfigured { showSettings = true }
-        }
         .onChange(of: scenePhase) { _, phase in
             // A backgrounded app must never hold the mic open.
             if phase == .background && !engine.shownOutsideApp { engine.stop() }

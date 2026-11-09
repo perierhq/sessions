@@ -21,9 +21,18 @@ private struct BlobRoot: View {
     @AppStorage("os1.appearance") private var appearance = "system"
     @State private var config = ServerConfig.shared
     @State private var authGate = AuthGate.shared
+    @State private var connecting = !ServerConfig.shared.isConfigured
 
     var body: some View {
-        BlobHomeView()
+        Group {
+            if connecting {
+                BlobConnectView { withAnimation(.easeOut(duration: 0.3)) { connecting = false } }
+                    .transition(.opacity)
+            } else {
+                BlobHomeView()
+                    .transition(.opacity)
+            }
+        }
             .id(config.activeId)
             .tint(OS1VisualStyle.accentInk)
             // The server is refusing this device, so there is nothing to talk
@@ -35,6 +44,9 @@ private struct BlobRoot: View {
                 }
             }
             .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
+            .onChange(of: config.isConfigured) { _, configured in
+                if !configured { connecting = true }
+            }
             .task(id: config.activeId) {
                 // Crash reports from a launch with no server go up once there is one.
                 if config.isConfigured { await CrashReporter.shared.flush() }
