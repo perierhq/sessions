@@ -13,6 +13,8 @@ struct BlobHomeView: View {
     /// Nil until the server answers; voice stays the default when it can't say.
     @State private var voiceConfigured: Bool?
     @State private var physics = BlobPhysics()
+    /// Room a reply may take: the screen below Blob, minus what you said.
+    @State private var replyHeight: CGFloat = 420
     @State private var showSettings = false
     @AppStorage("blob.hasTalked") private var hasTalked = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -47,6 +49,8 @@ struct BlobHomeView: View {
                 if hit(location) { toggleTalk() }
             }
             .onLongPressGesture { showSettings = true }
+            .onAppear { replyHeight = max(240, geo.size.height - insets.top - insets.bottom - 220) }
+            .onChange(of: geo.size) { _, size in replyHeight = max(240, size.height - insets.top - insets.bottom - 220) }
             }
             .ignoresSafeArea()
         }
@@ -107,10 +111,13 @@ struct BlobHomeView: View {
         #if DEBUG
         if let demo = BlobDemo.at(date) { talking = demo.talking; mode = demo.mode; level = demo.level }
         #endif
+        // A reply on screen gets the room: Blob moves up and keeps talking from there.
+        let showingReply = (!usesVoice && text.answer != nil) || Self.demoReply != nil
+        let top = CGPoint(x: center.x, y: max(insets.top, 20) + 56)
         return BlobTargets(
             mode: mode,
-            position: talking ? center : slot,
-            size: talking ? 132 : 48,
+            position: talking ? (showingReply ? top : center) : slot,
+            size: talking ? (showingReply ? 72 : 132) : 48,
             look: nil,
             level: level
         )
@@ -130,6 +137,37 @@ struct BlobHomeView: View {
     private func hit(_ location: CGPoint) -> Bool {
         let p = physics.position
         return hypot(location.x - p.x, location.y - p.y) <= max(physics.radius + 12, 30)
+    }
+
+    /// A canned reply with blocks, for screenshots: `BLOB_DEMO_REPLY=1`.
+    private static var demoReply: String? {
+        #if DEBUG
+        guard ProcessInfo.processInfo.environment["BLOB_DEMO_REPLY"] != nil else { return nil }
+        return """
+        **Mostly refunds, after the payout delay.** 21 of 23 answered; two need you.
+
+        ```metrics
+        Tickets: 23 (+9)
+        Answered: 21
+        Median reply: 4 min (−2 min)
+        ```
+
+        ```csv
+        Topic,Tickets
+        Refunds,9
+        Wallet pass,6
+        Sign-in,5
+        Other,3
+        ```
+
+        ```choices
+        Show the two that need me
+        Draft both replies
+        ```
+        """
+        #else
+        return nil
+        #endif
     }
 
     private static var demoRunning: Bool {
@@ -159,7 +197,7 @@ struct BlobHomeView: View {
     @ViewBuilder
     private func captions(insets: EdgeInsets) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !usesVoice && text.active {
+            if (!usesVoice && text.active) || Self.demoReply != nil {
                 textCaptions
             } else if engine.active, let caption = engine.caption, !caption.text.isEmpty {
                 Text(caption.text)
@@ -216,15 +254,26 @@ struct BlobHomeView: View {
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        if let answer = text.answer {
+        if let content = Self.demoReply ?? text.replyEntry?.content, !content.isEmpty {
+            // The finished reply, drawn with the block catalog: metrics, charts,
+            // tables, choices and the rest render as they do in the OS app.
+            ScrollView {
+                MarkdownBody(content)
+                    .environment(\.quickReplyRelay, text.relay)
+                    .environment(\.transcriptEntryId, text.replyEntry?.id)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: replyHeight)
+            .scrollBounceBehavior(.basedOnSize)
+        } else if let answer = text.answer {
+            // Still being written: plain text until the reply settles.
             ScrollView {
                 Text(answer)
-                    .font(.title3)
+                    .font(.body)
                     .foregroundStyle(OS1VisualStyle.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
             }
-            .frame(maxHeight: 260)
+            .frame(maxHeight: replyHeight)
             .scrollBounceBehavior(.basedOnSize)
         }
     }

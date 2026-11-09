@@ -37,9 +37,18 @@ final class BlobTextTalk {
     var answer: String? {
         guard let desk, phase == .waiting else { return nil }
         if desk.isStreaming, !desk.liveText.isEmpty { return desk.liveText }
-        let reply = desk.entries.dropFirst(sentAt).last { $0.type == "assistant" && $0.isReasoning != true }
-        return reply?.content.flatMap { $0.isEmpty ? nil : $0 }
+        return replyEntry?.content.flatMap { $0.isEmpty ? nil : $0 }
     }
+
+    /// The finished reply as a transcript entry, once it has landed. Blob
+    /// draws it with the block catalog (`MarkdownBody`); see adrs/blob-views.md.
+    var replyEntry: TranscriptEntry? {
+        guard let desk, phase == .waiting, !desk.isStreaming else { return nil }
+        return desk.entries.dropFirst(sentAt).last { $0.type == "assistant" && $0.isReasoning != true }
+    }
+
+    /// The Desk's quick-reply relay, so `choices` chips in a reply send.
+    var relay: QuickReplyRelay? { desk?.quickReplies }
 
     /// True while the Desk is still working on the answer.
     var thinking: Bool { phase == .waiting && (desk?.isRunning ?? true) && answer == nil }
@@ -105,11 +114,24 @@ final class BlobTextTalk {
         }
     }
 
+    private func follow(up text: String) {
+        guard let desk else { return }
+        speaker.stop()
+        spokenAnswer = nil
+        heard = text
+        phase = .waiting
+        sentAt = desk.entries.count
+        desk.sendQuickReply(text)
+    }
+
     /// The Desk session, connected once and kept for the life of the screen.
     private func deskModel() async throws -> SessionViewModel {
         if let desk { return desk }
         let ensure = try await OS1API.ensureDesk()
         let model = SessionViewModel(session: Session(id: ensure.sessionId))
+        // A chip in a reply is the next thing you say: send it and wait for
+        // the answer to that, not the one already on screen.
+        model.quickReplies.send = { [weak self] text in self?.follow(up: text) }
         model.start(owner: owner)
         desk = model
         return model
