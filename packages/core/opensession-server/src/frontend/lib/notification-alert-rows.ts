@@ -34,6 +34,11 @@ export const NOTIFICATION_ALERT_ROWS: ReadonlyArray<NotificationAlertRow> = [
   },
   { group: "reminders", title: "Reminders", desc: "Desk task reminders" },
   {
+    group: "supervisor",
+    title: "Supervisor",
+    desc: "A lead needs your decision, and the daily digest. Quiet hours hold all but what is down",
+  },
+  {
     group: "incidents",
     title: "Incidents",
     desc: "An incident you own opens, needs you, is about to deploy, rolls back or is fixed. At night only what can't wait",

@@ -12,6 +12,7 @@ test("one row per alert switch, incidents then support last", () => {
     "mentions",
     "collaborators",
     "reminders",
+    "supervisor",
     "incidents",
     "support",
   ]);

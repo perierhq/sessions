@@ -1,0 +1,687 @@
+/**
+ * The supervisor inbox: post, dedupe, answer and dismiss; the per-person
+ * bound; quiet-hour holds and their flush; the down bypass; the daily digest;
+ * the per-turn briefing; the HTTP routes; and the inbox tools reaching only
+ * supervisor sessions. Runs on the in-memory kernel store with a fake clock
+ * and fake notification delivery; no real timers.
+ */
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  SessionKernelStore,
+  __setSessionKernelStoreForTest,
+} from "./session-kernel";
+import type { NotificationEvent } from "./notification-threads";
+
+const root = mkdtempSync(join(tmpdir(), "supervisor-inbox-test-"));
+const prior = process.env.OPENSESSION_STATE_DIR;
+process.env.OPENSESSION_STATE_DIR = root;
+
+type Inbox = typeof import("./supervisor-inbox");
+let inbox: Inbox;
+
+beforeAll(async () => {
+  inbox = await import("./supervisor-inbox");
+});
+
+afterAll(() => {
+  if (prior === undefined) delete process.env.OPENSESSION_STATE_DIR;
+  else process.env.OPENSESSION_STATE_DIR = prior;
+  rmSync(root, { recursive: true, force: true });
+});
+
+let store: SessionKernelStore;
+let previousStore: SessionKernelStore | undefined;
+let clock = Date.parse("2026-07-01T12:00:00Z");
+let sent: Array<{ user: string; event: NotificationEvent }> = [];
+let done: Array<{ user: string; ids: string[] }> = [];
+let failNotify = false;
+let restore: () => void = () => {};
+
+beforeEach(() => {
+  rmSync(join(root, ".opensession-supervisor-items"), {
+    recursive: true,
+    force: true,
+  });
+  store = new SessionKernelStore(":memory:");
+  previousStore = __setSessionKernelStoreForTest(store);
+  clock = Date.parse("2026-07-01T12:00:00Z");
+  sent = [];
+  done = [];
+  failNotify = false;
+  restore = inbox.__setSupervisorInboxDepsForTest({
+    now: () => clock,
+    notify: async (user, event) => {
+      if (failNotify) throw new Error("push service down");
+      sent.push({ user, event });
+      return {};
+    },
+    markDone: async (user, ids) => {
+      done.push({ user, ids });
+    },
+    supervisorSessionId: async (user) => `os-sup-${user.toLowerCase()}`,
+    timeZone: () => "UTC",
+  });
+});
+
+afterEach(() => {
+  restore();
+  inbox.__resetSupervisorInboxForTest();
+  __setSessionKernelStoreForTest(previousStore);
+  store.close();
+});
+
+const at = (iso: string) => Date.parse(iso);
+
+function needsYou(
+  patch: Partial<Parameters<Inbox["postSupervisorItem"]>[0]> = {},
+) {
+  return inbox.postSupervisorItem({
+    user: "Ada",
+    source: "lead:acme",
+    kind: "needs-you",
+    title: "Roll back the deploy?",
+    body: "Checkout errors doubled after the last deploy.",
+    project: "acme",
+    options: ["Roll back", "Wait an hour"],
+    ...patch,
+  });
+}
+
+function fyi(title: string, patch: Record<string, unknown> = {}) {
+  return inbox.postSupervisorItem({
+    user: "Ada",
+    source: "lead:acme",
+    kind: "fyi",
+    title,
+    ...patch,
+  });
+}
+
+describe("posting", () => {
+  test("a needs-you item outside quiet hours is pushed with a deep link", async () => {
+    const { item, created, delivery } = await needsYou();
+    expect(created).toBe(true);
+    expect(delivery).toBe("pushed");
+    expect(item).toMatchObject({
+      user: "Ada",
+      kind: "needs-you",
+      state: "open",
+      project: "acme",
+      notifiedAt: clock,
+    });
+    expect(item.id).toMatch(/^si-/);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.event).toMatchObject({
+      kind: "supervisor_needs_you",
+      subject: { type: "supervisor", id: item.id, context: "acme" },
+      reason: "Needs you",
+      body: "1. Roll back  2. Wait an hour",
+      url: `/session/os-sup-ada?item=${item.id}`,
+      delivery: "alert",
+    });
+  });
+
+  test("an fyi item is never pushed", async () => {
+    const { delivery } = await fyi("CI fixed on main");
+    expect(delivery).toBe("none");
+    expect(sent).toHaveLength(0);
+  });
+
+  test("an open item with the same dedupe key is updated, not duplicated", async () => {
+    const first = await needsYou({ dedupeKey: "deploy-42" });
+    clock += 60_000;
+    const second = await needsYou({
+      dedupeKey: "deploy-42",
+      title: "Roll back deploy 42?",
+    });
+    expect(second.created).toBe(false);
+    expect(second.item.id).toBe(first.item.id);
+    expect(second.item.title).toBe("Roll back deploy 42?");
+    expect(second.delivery).toBe("updated");
+    expect(await inbox.listSupervisorItems("Ada")).toHaveLength(1);
+    // The row is updated quietly: one banner in all.
+    expect(sent.map((s) => s.event.delivery)).toEqual(["alert", "quiet"]);
+  });
+
+  test("a dedupe key whose item is closed starts a new item", async () => {
+    const first = await needsYou({ dedupeKey: "deploy-42" });
+    await inbox.dismissSupervisorItem("Ada", first.item.id);
+    const second = await needsYou({ dedupeKey: "deploy-42" });
+    expect(second.created).toBe(true);
+    expect(second.item.id).not.toBe(first.item.id);
+  });
+
+  test("a failed push is retried by the sweep, once", async () => {
+    failNotify = true;
+    const { item, delivery } = await needsYou();
+    expect(delivery).toBe("none");
+    failNotify = false;
+    expect((await inbox.sweepSupervisorInbox()).pushed).toBe(1);
+    expect((await inbox.sweepSupervisorInbox()).pushed).toBe(0);
+    expect(sent).toHaveLength(1);
+    const [stored] = await inbox.listSupervisorItems("Ada");
+    expect(stored?.id).toBe(item.id);
+    expect(stored?.notifiedAt).toBe(clock);
+  });
+
+  test("inboxes are per person, whatever case the name arrives in", async () => {
+    await needsYou();
+    await inbox.postSupervisorItem({
+      user: "Grace",
+      source: "lead:acme",
+      kind: "fyi",
+      title: "Tests green",
+    });
+    expect(await inbox.listSupervisorItems("ada")).toHaveLength(1);
+    expect((await inbox.listSupervisorItems("Grace"))[0]?.title).toBe(
+      "Tests green",
+    );
+  });
+
+  test("rejects an item without a user, title or valid kind", async () => {
+    await expect(fyi("")).rejects.toThrow("missing title");
+    await expect(
+      inbox.postSupervisorItem({
+        user: " ",
+        source: "x",
+        kind: "fyi",
+        title: "t",
+      }),
+    ).rejects.toThrow("missing user");
+    await expect(
+      inbox.postSupervisorItem({
+        user: "Ada",
+        source: "x",
+        kind: "urgent" as never,
+        title: "t",
+      }),
+    ).rejects.toThrow("kind");
+  });
+});
+
+describe("listing", () => {
+  test("bounded per request and per person", async () => {
+    for (let i = 0; i < 210; i++) {
+      clock += 1000;
+      await fyi(`update ${i}`);
+    }
+    expect(await inbox.listSupervisorItems("Ada")).toHaveLength(50);
+    expect(
+      await inbox.listSupervisorItems("Ada", { limit: 10_000 }),
+    ).toHaveLength(inbox.MAX_LIST);
+    const { catalogDocuments } = await import("./catalog-documents");
+    const doc = (await catalogDocuments(inbox.SUPERVISOR_ITEMS_NAMESPACE).get(
+      inbox.supervisorInboxKey("Ada"),
+    )) as { items: unknown[] };
+    expect(doc.items).toHaveLength(inbox.MAX_ITEMS);
+    // Newest first.
+    expect(
+      (await inbox.listSupervisorItems("Ada", { limit: 1 }))[0]?.title,
+    ).toBe("update 209");
+  });
+
+  test("filters by state and since", async () => {
+    const a = await needsYou();
+    clock += 60_000;
+    const since = clock;
+    await fyi("later");
+    await inbox.answerSupervisorItem("Ada", a.item.id, "1");
+    expect(
+      (await inbox.listSupervisorItems("Ada", { state: "open" })).map(
+        (i) => i.title,
+      ),
+    ).toEqual(["later"]);
+    expect(
+      (await inbox.listSupervisorItems("Ada", { since })).map((i) => i.title),
+    ).toHaveLength(2);
+    expect(
+      await inbox.listSupervisorItems("Ada", { since: clock + 1 }),
+    ).toHaveLength(0);
+  });
+});
+
+describe("answering and dismissing", () => {
+  test("an answer closes the item, resolves a numbered option and tells the lead", async () => {
+    const heard: Array<[string, string]> = [];
+    inbox.onSupervisorAnswer("lead:acme", (item, answer) => {
+      heard.push([item.id, answer]);
+    });
+    inbox.onSupervisorAnswer("lead:other", () => {
+      throw new Error("wrong lead");
+    });
+    const { item } = await needsYou();
+    clock += 1000;
+    const result = await inbox.answerSupervisorItem("Ada", item.id, "2");
+    expect(result).toMatchObject({
+      ok: true,
+      item: { state: "answered", answer: "Wait an hour", answeredAt: clock },
+    });
+    expect(heard).toEqual([[item.id, "Wait an hour"]]);
+    expect(done).toEqual([{ user: "Ada", ids: [`supervisor:${item.id}`] }]);
+    expect(await inbox.answerSupervisorItem("Ada", item.id, "1")).toEqual({
+      ok: false,
+      error: "closed",
+    });
+  });
+
+  test("a handler that throws never fails the answer", async () => {
+    inbox.onSupervisorAnswer("lead:", () => {
+      throw new Error("boom");
+    });
+    const { item } = await needsYou();
+    expect(
+      (await inbox.answerSupervisorItem("Ada", item.id, "Roll back")).ok,
+    ).toBe(true);
+  });
+
+  test("someone else's item is not found", async () => {
+    const { item } = await needsYou();
+    expect(await inbox.answerSupervisorItem("Grace", item.id, "1")).toEqual({
+      ok: false,
+      error: "not-found",
+    });
+    expect(await inbox.dismissSupervisorItem("Grace", item.id)).toEqual({
+      ok: false,
+      error: "not-found",
+    });
+  });
+
+  test("dismiss closes the item and its notification row", async () => {
+    const { item } = await needsYou();
+    const result = await inbox.dismissSupervisorItem("Ada", item.id);
+    expect(result).toMatchObject({ ok: true, item: { state: "dismissed" } });
+    expect(done).toEqual([{ user: "Ada", ids: [`supervisor:${item.id}`] }]);
+  });
+});
+
+describe("quiet hours", () => {
+  test("a needs-you item in quiet hours is held, then flushed once after them", async () => {
+    clock = at("2026-07-01T03:00:00Z");
+    const { item, delivery } = await needsYou();
+    expect(delivery).toBe("held");
+    expect(item.heldUntil).toBe(at("2026-07-01T08:00:00Z"));
+    expect(sent).toHaveLength(0);
+
+    clock = at("2026-07-01T07:59:00Z");
+    expect((await inbox.sweepSupervisorInbox()).pushed).toBe(0);
+    clock = at("2026-07-01T08:00:00Z");
+    expect((await inbox.sweepSupervisorInbox()).pushed).toBe(1);
+    clock = at("2026-07-01T08:01:00Z");
+    expect((await inbox.sweepSupervisorInbox()).pushed).toBe(0);
+    expect(sent).toHaveLength(1);
+    const [stored] = await inbox.listSupervisorItems("Ada");
+    expect(stored?.heldUntil).toBeUndefined();
+    expect(stored?.notifiedAt).toBe(at("2026-07-01T08:00:00Z"));
+  });
+
+  test("something fully down goes through quiet hours", async () => {
+    clock = at("2026-07-01T03:00:00Z");
+    const { delivery, item } = await needsYou({ urgency: "down" });
+    expect(delivery).toBe("pushed");
+    expect(item.urgency).toBe("down");
+    expect(sent[0]!.event).toMatchObject({
+      reason: "Down, needs you",
+      push: { urgency: "high" },
+    });
+  });
+
+  test("escalating a held item to down pushes it now", async () => {
+    clock = at("2026-07-01T03:00:00Z");
+    await needsYou({ dedupeKey: "site" });
+    expect(sent).toHaveLength(0);
+    const { delivery } = await needsYou({ dedupeKey: "site", urgency: "down" });
+    expect(delivery).toBe("pushed");
+    expect(sent).toHaveLength(1);
+  });
+
+  test("an item answered during the night is not pushed after it", async () => {
+    clock = at("2026-07-01T03:00:00Z");
+    const { item } = await needsYou();
+    await inbox.answerSupervisorItem("Ada", item.id, "1");
+    clock = at("2026-07-01T09:00:00Z");
+    expect((await inbox.sweepSupervisorInbox()).pushed).toBe(0);
+    expect(sent.filter((s) => s.event.kind === "supervisor_needs_you")).toEqual(
+      [],
+    );
+  });
+
+  test("quiet hours follow the person's prefs and time zone", async () => {
+    const prefs = await inbox.setSupervisorPrefs("Ada", {
+      quietStart: "22:00",
+      quietEnd: "07:00",
+      timezone: "America/New_York",
+    });
+    expect(prefs).toMatchObject({
+      quietStart: "22:00",
+      quietEnd: "07:00",
+      digestAt: "09:00",
+      timezone: "America/New_York",
+      effectiveTimezone: "America/New_York",
+    });
+    // 03:00 UTC is 23:00 in New York (UTC-4): quiet, until 07:00 local.
+    clock = at("2026-07-01T03:00:00Z");
+    const { item, delivery } = await needsYou();
+    expect(delivery).toBe("held");
+    expect(item.heldUntil).toBe(at("2026-07-01T11:00:00Z"));
+  });
+
+  test("without a stored zone the profile's zone is used", async () => {
+    restore();
+    restore = inbox.__setSupervisorInboxDepsForTest({
+      now: () => clock,
+      notify: async (user, event) => {
+        sent.push({ user, event });
+      },
+      markDone: async () => {},
+      supervisorSessionId: async () => "os-sup",
+      timeZone: () => "Asia/Tokyo",
+    });
+    expect((await inbox.getSupervisorPrefs("Ada")).effectiveTimezone).toBe(
+      "Asia/Tokyo",
+    );
+    // 18:00 UTC is 03:00 in Tokyo.
+    clock = at("2026-07-01T18:00:00Z");
+    expect((await needsYou()).delivery).toBe("held");
+  });
+});
+
+describe("daily digest", () => {
+  test("once a day at the digest time, quiet, with a count", async () => {
+    clock = at("2026-07-01T08:30:00Z");
+    await fyi("CI repaired");
+    await fyi("Two support replies sent");
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
+
+    clock = at("2026-07-01T09:00:00Z");
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(2);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.event).toMatchObject({
+      kind: "supervisor_digest",
+      delivery: "quiet",
+      reason: "Daily digest",
+      subject: { type: "supervisor", id: "digest-2026-07-01" },
+      url: "/session/os-sup-ada",
+    });
+    expect(sent[0]!.event.body).toStartWith("2 updates");
+
+    // Not again the same day, even with something new.
+    clock = at("2026-07-01T15:00:00Z");
+    await fyi("Dependency bumped");
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
+
+    // The next day carries only what came after the last digest.
+    clock = at("2026-07-02T09:05:00Z");
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(1);
+    expect(sent.at(-1)!.event.body).toStartWith("1 update: Dependency bumped");
+
+    // A day with nothing new sends nothing.
+    clock = at("2026-07-03T09:05:00Z");
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
+    expect(sent).toHaveLength(2);
+  });
+
+  test("never during quiet hours", async () => {
+    await inbox.setSupervisorPrefs("Ada", { digestAt: "03:00" });
+    clock = at("2026-07-01T01:00:00Z");
+    await fyi("CI repaired");
+    clock = at("2026-07-01T03:00:00Z");
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
+    clock = at("2026-07-01T07:59:00Z");
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
+    clock = at("2026-07-01T08:00:00Z");
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(1);
+  });
+
+  test("a failed digest is retried", async () => {
+    clock = at("2026-07-01T08:00:00Z");
+    await fyi("CI repaired");
+    clock = at("2026-07-01T09:00:00Z");
+    failNotify = true;
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
+    failNotify = false;
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(1);
+  });
+});
+
+describe("briefing", () => {
+  test("open decisions, fyi since the digest, and each answer once", async () => {
+    expect(await inbox.supervisorInboxContext("Ada")).toBeUndefined();
+    const a = await needsYou();
+    const b = await needsYou({ title: "Ban the spammer?", options: ["Ban"] });
+    await fyi("CI repaired");
+    await inbox.answerSupervisorItem("Ada", b.item.id, "1");
+
+    const first = await inbox.supervisorInboxContext("Ada");
+    expect(first).toContain('source="supervisor-inbox"');
+    expect(first).toContain(`[${a.item.id}] Roll back the deploy?`);
+    expect(first).toContain("Options: 1. Roll back  2. Wait an hour");
+    expect(first).toContain("CI repaired");
+    expect(first).toContain(`[${b.item.id}] Ban the spammer?`);
+    expect(first).toContain('"Ban"');
+
+    const second = await inbox.supervisorInboxContext("Ada");
+    expect(second).not.toContain("Ban the spammer?");
+    expect(second).toContain("Roll back the deploy?");
+  });
+});
+
+describe("routes", () => {
+  async function call(
+    method: string,
+    path: string,
+    body?: unknown,
+    authUser?: { login: string; name: string },
+  ) {
+    const { handleSupervisorRoutes } = await import("./routes/supervisor");
+    const url = new URL(`http://localhost${path}`);
+    return handleSupervisorRoutes({
+      req: new Request(url, {
+        method,
+        ...(body === undefined
+          ? {}
+          : {
+              body: JSON.stringify(body),
+              headers: { "Content-Type": "application/json" },
+            }),
+      }),
+      url,
+      path: url.pathname,
+      publicPrefix: "/backstage",
+      authUser,
+    });
+  }
+
+  test("lists, answers and dismisses the claimed user's items", async () => {
+    const a = await needsYou();
+    const b = await fyi("CI repaired");
+    const list = await call("GET", "/api/supervisor/items?user=Ada&state=open");
+    expect(list?.status).toBe(200);
+    const { items } = (await list!.json()) as { items: Array<{ id: string }> };
+    expect(items.map((i) => i.id).sort()).toEqual(
+      [a.item.id, b.item.id].sort(),
+    );
+
+    const answered = await call(
+      "POST",
+      `/api/supervisor/items/${a.item.id}/answer`,
+      { user: "Ada", answer: "1" },
+    );
+    expect(answered?.status).toBe(200);
+    expect(
+      ((await answered!.json()) as { item: { answer: string } }).item.answer,
+    ).toBe("Roll back");
+    expect(
+      (
+        await call("POST", `/api/supervisor/items/${a.item.id}/answer`, {
+          user: "Ada",
+          answer: "1",
+        })
+      )?.status,
+    ).toBe(409);
+    expect(
+      (
+        await call("POST", `/api/supervisor/items/${b.item.id}/dismiss`, {
+          user: "Ada",
+        })
+      )?.status,
+    ).toBe(200);
+  });
+
+  test("a signed-in person acts on their own inbox, whatever the request claims", async () => {
+    const a = await needsYou();
+    const asGrace = { login: "grace", name: "Grace Hopper" };
+    const list = await call(
+      "GET",
+      "/api/supervisor/items?user=Ada",
+      undefined,
+      asGrace,
+    );
+    expect(((await list!.json()) as { items: unknown[] }).items).toEqual([]);
+    expect(
+      (
+        await call(
+          "POST",
+          `/api/supervisor/items/${a.item.id}/answer`,
+          { user: "Ada", answer: "1" },
+          asGrace,
+        )
+      )?.status,
+    ).toBe(404);
+    const asAda = { login: "ada", name: "Ada Lovelace" };
+    expect(
+      (
+        await call(
+          "POST",
+          `/api/supervisor/items/${a.item.id}/dismiss`,
+          { user: "Grace" },
+          asAda,
+        )
+      )?.status,
+    ).toBe(200);
+  });
+
+  test("refuses a request with no user or no answer", async () => {
+    expect((await call("GET", "/api/supervisor/items"))?.status).toBe(400);
+    expect(
+      (await call("POST", "/api/supervisor/items/si-x/dismiss", {}))?.status,
+    ).toBe(400);
+    const a = await needsYou();
+    expect(
+      (
+        await call("POST", `/api/supervisor/items/${a.item.id}/answer`, {
+          user: "Ada",
+          answer: "  ",
+        })
+      )?.status,
+    ).toBe(400);
+  });
+
+  test("reads and writes prefs, rejecting bad values", async () => {
+    const put = await call("PUT", "/api/supervisor/prefs", {
+      user: "Ada",
+      quietStart: "23:00",
+      quietEnd: "06:30",
+      digestAt: "08:15",
+      timezone: "Europe/Warsaw",
+    });
+    expect(put?.status).toBe(200);
+    const got = await call("GET", "/api/supervisor/prefs?user=Ada");
+    expect(((await got!.json()) as { prefs: unknown }).prefs).toEqual({
+      quietStart: "23:00",
+      quietEnd: "06:30",
+      digestAt: "08:15",
+      timezone: "Europe/Warsaw",
+      effectiveTimezone: "Europe/Warsaw",
+    });
+    expect(
+      (
+        await call("PUT", "/api/supervisor/prefs", {
+          user: "Ada",
+          digestAt: "8am",
+        })
+      )?.status,
+    ).toBe(400);
+    expect(
+      (
+        await call("PUT", "/api/supervisor/prefs", {
+          user: "Ada",
+          timezone: "Nowhere/Else",
+        })
+      )?.status,
+    ).toBe(400);
+  });
+});
+
+describe("opensession-supervisor", () => {
+  test("only a supervisor session gets the inbox tools", async () => {
+    const { supervisorMcpFor, SUPERVISOR_MCP_SERVER } =
+      await import("./supervisor-mcp");
+    expect(
+      Object.keys(supervisorMcpFor({ supervisor: true, createdBy: "Ada" })),
+    ).toEqual([SUPERVISOR_MCP_SERVER]);
+    expect(supervisorMcpFor({ createdBy: "Ada" })).toEqual({});
+    expect(supervisorMcpFor({ supervisor: false, createdBy: "Ada" })).toEqual(
+      {},
+    );
+    // A supervisor without an owner has no inbox to act on.
+    expect(supervisorMcpFor({ supervisor: true })).toEqual({});
+    expect(supervisorMcpFor(undefined)).toEqual({});
+  });
+
+  test("its tools act on the owner's inbox", async () => {
+    const { createSupervisorMcpServer } = await import("./supervisor-mcp");
+    const server = createSupervisorMcpServer({ user: "Ada" });
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: Record<string, unknown>,
+              extra: unknown,
+            ) => Promise<{ content: Array<{ text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools;
+    expect(Object.keys(tools).sort()).toEqual([
+      "answer_item",
+      "dismiss_item",
+      "list_items",
+      "post_item",
+    ]);
+    const posted = await tools.post_item!.handler(
+      {
+        kind: "needs-you",
+        title: "Raise prices?",
+        options: ["Not now", "Yes"],
+      },
+      {},
+    );
+    expect(posted.content[0]!.text).toContain("Posted (pushed)");
+    const [item] = await inbox.listSupervisorItems("Ada");
+    expect(item?.source).toBe("supervisor");
+    const listed = await tools.list_items!.handler({}, {});
+    expect(listed.content[0]!.text).toContain("Raise prices?");
+    const answered = await tools.answer_item!.handler(
+      { id: item!.id, answer: "1" },
+      {},
+    );
+    expect(answered.content[0]!.text).toContain("Answer: Not now");
+    expect(
+      (await tools.dismiss_item!.handler({ id: item!.id }, {})).content[0]!
+        .text,
+    ).toBe("That item is already closed.");
+  });
+});

@@ -36,6 +36,7 @@ import {
   createGoalSelfMcpServer,
   createGoalsMcpServer,
 } from "../agents/slack/goal-tools";
+import { createSupervisorMcpServer } from "./supervisor-mcp";
 import { createHumansMcpServer } from "../agents/slack/humans-tools";
 import { createKeychainMcpServer } from "../agents/slack/keychain-tools";
 import { createMemoryMcpServer } from "../agents/slack/memory-tools";
@@ -674,6 +675,19 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     condition: "Only on a session that carries a goalId.",
     note: "Deliberately NOT in SHARED_INPROCESS_SERVERS: goal wakes keep per-session engine servers, because the tool list is discovered once per directory instance.",
     build: () => createGoalSelfMcpServer("goal-example"),
+  },
+  {
+    name: "opensession-supervisor",
+    summary: INTERNAL_MCP_CAPABILITIES["opensession-supervisor"].summary,
+    source: "packages/core/opensession-server/src/server/supervisor-mcp.ts",
+    wiring: [
+      "packages/core/opensession-server/src/server/interactive-mcp.ts",
+      "packages/core/opensession-server/src/server/run-session.ts",
+    ],
+    runClasses: ["interactive"],
+    condition: "Only on a supervisor session (session.supervisor).",
+    note: "Acts on the inbox of the session's owner only (supervisor-inbox.ts).",
+    build: () => createSupervisorMcpServer({ user: USER }),
   },
   {
     name: "opensession-incident-access",

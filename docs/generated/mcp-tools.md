@@ -79,9 +79,10 @@ touches an in-process tool:
 | [`opensession-self`](#opensession-self) | 2 | automation | Only with the human-set `selfImprove` flag on that automation. |
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
+| [`opensession-supervisor`](#opensession-supervisor) | 4 | interactive | Only on a supervisor session (session.supervisor). |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-40 servers, 196 tools.
+41 servers, 200 tools.
 
 ## opensession-sessions
 
@@ -1593,6 +1594,40 @@ Set a short human-readable phase label for where the mission is (e.g. 'week 2: s
 `mcp__opensession-goal-self__append_ledger` · input: `text` (string, required)
 
 Append to your durable fact ledger — the authoritative record that survives context compaction. Write down baselines, decisions, PR URLs, and measured results here every wake, and read it back at the start of each wake. Be concrete (numbers, links).
+
+## opensession-supervisor
+
+The supervisor's inbox: decisions leads raised for the owner.
+
+- **Source** `packages/core/opensession-server/src/server/supervisor-mcp.ts`
+- **Wired in** `packages/core/opensession-server/src/server/interactive-mcp.ts`, `packages/core/opensession-server/src/server/run-session.ts`
+- **Runs** interactive
+- **Condition** Only on a supervisor session (session.supervisor).
+- **Note** Acts on the inbox of the session's owner only (supervisor-inbox.ts).
+
+### `list_items`
+
+`mcp__opensession-supervisor__list_items` · input: `state` ("open" | "answered" | "dismissed" | "expired"), `kind` ("needs-you" | "fyi"), `limit` (integer)
+
+List the owner's supervisor inbox: decisions leads raised (needs-you) and what ran alone (fyi). Newest first.
+
+### `answer_item`
+
+`mcp__opensession-supervisor__answer_item` · input: `id` (string, required), `answer` (string, required)
+
+Record the owner's answer to an inbox item, when they gave it to you in this conversation. Use the option's text or its number. The lead that raised it is told.
+
+### `dismiss_item`
+
+`mcp__opensession-supervisor__dismiss_item` · input: `id` (string, required)
+
+Dismiss an inbox item that no longer needs the owner.
+
+### `post_item`
+
+`mcp__opensession-supervisor__post_item` · input: `kind` ("needs-you" | "fyi", required), `title` (string, required), `body` (string), `options` (string[]), `project` (string), `dedupe_key` (string), `urgency` ("normal" | "down")
+
+Raise something to the owner. kind needs-you pushes their phone (held during their quiet hours unless urgency is down); fyi waits for the daily digest. Use needs-you only for a decision only they can make: two short lines and the options, recommended option first. The same dedupe_key updates an open item instead of adding another.
 
 ## opensession-incident-access
 

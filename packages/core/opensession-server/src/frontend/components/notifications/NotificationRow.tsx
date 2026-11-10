@@ -63,6 +63,8 @@ const KIND_ICON: Record<NotificationKind, React.ReactNode> = {
   support_veto: <IconClock />,
   support_failed: <IconWarningTriangle />,
   access_failing: <IconWarningTriangle />,
+  supervisor_needs_you: <IconMessageQuestion />,
+  supervisor_digest: <IconClock />,
 };
 
 const SWIPE_PX = 88;

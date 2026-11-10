@@ -290,6 +290,8 @@ import {
 } from "./session-repos";
 import { deskStateContext } from "./desk-state";
 import { blobSurfaceContext } from "./blob-surface";
+import { supervisorInboxContext } from "./supervisor-inbox";
+import { supervisorMcpFor } from "./supervisor-mcp";
 import {
   automationSessionMcp,
   interactiveMcpServers,
@@ -1995,6 +1997,7 @@ export function sandboxRunSecuritySpec(
                   ),
                 ),
                 ...(session.goalId ? ["opensession-goal-self"] : []),
+                ...Object.keys(supervisorMcpFor(session)),
               ],
     reposNote: undefined,
     deniedTools: opts.deniedTools,
@@ -3300,6 +3303,17 @@ async function runSessionPromptInner(
     if (deskState) prompt = `${deskState}\n\n${prompt}`;
   }
 
+  // The supervisor's inbox: decisions waiting on the owner, fyi items for
+  // the next digest, and answers the owner gave since the last turn. Like
+  // the live state above it rides in this turn's message; an answer is
+  // marked briefed once shown, so each reaches one turn (supervisor-inbox.ts).
+  if (session.supervisor && !isAutomationSession) {
+    const inbox = await supervisorInboxContext(session.createdBy).catch(
+      () => undefined,
+    );
+    if (inbox) prompt = `${inbox}\n\n${prompt}`;
+  }
+
   // Shown in the Blob app: say where, so the reply fits (blob-surface.ts).
   // Blob talks to the supervisor, not the Desk.
   if (session.supervisor) {
@@ -3654,7 +3668,13 @@ async function runSessionPromptInner(
                     session.goalId,
                   ),
                 }
-              : interactiveMcpServers(user, sessionId, durablePromptEntryId);
+              : // A supervisor session also gets its inbox tools
+                // (supervisor-mcp.ts); every other session gets nothing.
+                // Assigned, not spread, so the lazy set stays lazy.
+                Object.assign(
+                  interactiveMcpServers(user, sessionId, durablePromptEntryId),
+                  supervisorMcpFor(session),
+                );
   const hostedRun =
     !fixedSubscriptionRefusal &&
     !runnerRun &&

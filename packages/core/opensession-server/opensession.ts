@@ -153,6 +153,7 @@ import { incidentHookRoutes } from "./src/server/incidents/hooks";
 import { startIncidentSignals } from "./src/server/incidents/scheduler";
 import { startIncidentNotifications } from "./src/server/incidents/notifier";
 import { startSupportNotifications } from "./src/server/support/notify";
+import { startSupervisorInbox } from "./src/server/supervisor-inbox";
 import { startSupportRetention } from "./src/server/support/retention";
 import { installSupportPipeline } from "./src/server/support/routing";
 import { startSupportTick } from "./src/server/support/tick";
@@ -943,6 +944,10 @@ if (!g.__opensessionBooted) {
     // A support conversation's owner hears when its reply waits on them,
     // is about to send or failed, in fixed wording.
     startSupportNotifications();
+    // The supervisor inbox: needs-you items held for quiet hours go out
+    // after them, failed pushes retry, and each person's daily digest is
+    // sent at their digest time, from a once-a-minute sweep.
+    startSupervisorInbox();
     // Incident, signal and access changes reach open incident views.
     startIncidentBroadcasts();
     // Impact queries run once a minute for open incidents.

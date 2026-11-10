@@ -92,6 +92,11 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // (supervisor.ts). New, so its legacy directory is missing and imports as
   // empty.
   "supervisors",
+  // Each person's supervisor inbox: the items leads raise for them, their
+  // quiet hours and digest time, keyed like the notification inbox
+  // (supervisor-inbox.ts). New, so its legacy directory is missing and
+  // imports as empty.
+  "supervisor-items",
 ] as const;
 
 export type ApplicationCatalogNamespace =
