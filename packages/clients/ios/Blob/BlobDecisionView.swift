@@ -22,6 +22,14 @@ struct BlobDecisionView: View {
     @ScaledMetric(relativeTo: .subheadline) private var titleSize: CGFloat = 14
 
     var body: some View {
+        content
+            // On the open Duo or an iPad, a decision reads as a column, not a
+            // banner across the whole screen.
+            .frame(maxWidth: 560, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
