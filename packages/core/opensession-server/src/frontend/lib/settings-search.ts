@@ -331,6 +331,7 @@ export const PROJECT_SECTION_KEYWORDS: Record<ProjectSectionId, string[]> = {
     "pause all agents",
     "on-call",
   ],
+  lead: ["lead", "supervisor", "stage", "rules", "only you", "asks first"],
 };
 
 export type ProjectSectionHit = {

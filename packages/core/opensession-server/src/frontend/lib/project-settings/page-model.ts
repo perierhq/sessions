@@ -37,6 +37,7 @@ export const PROJECT_SECTIONS = [
   ["access", "What agents may use"],
   ["knowledge", "Knowledge"],
   ["incidents", "Incidents"],
+  ["lead", "Lead"],
 ] as const;
 export type ProjectSectionId = (typeof PROJECT_SECTIONS)[number][0];
 export type ProjectSection = (typeof PROJECT_SECTIONS)[number];

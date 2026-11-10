@@ -35,6 +35,7 @@ import {
   sectionAnchorId,
   type ProjectSectionId,
 } from "../../../lib/project-settings/page-model";
+import { applyLeadPatch } from "../../../lib/project-settings/lead-model";
 import {
   isStaleRevision,
   type ProjectPatchBody,
@@ -54,6 +55,7 @@ import { ConnectSandboxForm } from "./ConnectSandboxForm";
 import { DriftNotice } from "./DriftNotice";
 import { GitAccessNotice } from "./GitAccessNotice";
 import { IncidentsSection } from "./IncidentsSection";
+import { LeadSection } from "./LeadSection";
 import { ModelsSection } from "./ModelsSection";
 import { ProductionSection, type ProductionDialog } from "./ProductionSection";
 import { ProjectHeader } from "./ProjectHeader";
@@ -406,6 +408,14 @@ export function ProjectSettingsPage({
                 b,
                 b.incidents && ((v) => applyIncidentsPatch(v, b.incidents!)),
               )
+            }
+          />
+        </Section>
+        <Section id="lead">
+          <LeadSection
+            view={view}
+            onSave={(b) =>
+              save(b, b.lead && ((v) => applyLeadPatch(v, b.lead!)))
             }
           />
         </Section>
