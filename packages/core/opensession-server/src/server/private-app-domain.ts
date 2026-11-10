@@ -814,10 +814,13 @@ async function issueCertificate(
   let result = await runCommand(args, commandEnvironment(dnsEnvironment));
   // A renewal names the certificate it replaces (ARI, RFC 9773). Let's
   // Encrypt refuses the order when another ACME account issued that
-  // certificate, for example after the account was registered again, and it
+  // certificate, for example after the account was registered again (lego
+  // keys accounts by email, so a new email means a new account), and it
   // would refuse every day until the certificate expired. Renew once more
   // without ARI: lego then falls back to its own 30-day window.
+  let retriedWithoutAri = false;
   if (renew && result.code !== 0 && ARI_REPLACES_REFUSED.test(result.stderr)) {
+    retriedWithoutAri = true;
     console.warn(
       `[private-app] Let's Encrypt refused the ARI replacement for ${domain}; renewing without ARI`,
     );
@@ -827,10 +830,14 @@ async function issueCertificate(
     );
   }
   if (result.code !== 0) {
-    throw new Error(
+    const message =
       result.stderr.trim() ||
-        result.stdout.trim() ||
-        "Let’s Encrypt certificate request failed",
+      result.stdout.trim() ||
+      "Let’s Encrypt certificate request failed";
+    throw new Error(
+      retriedWithoutAri
+        ? `renewal without ARI after Let's Encrypt refused the ARI replacement: ${message}`
+        : message,
     );
   }
   const after = existsSync(certificatePath)

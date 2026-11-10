@@ -366,6 +366,10 @@ exit 0`,
     expect(renewCalls).toHaveLength(2);
     expect(renewCalls[0]).not.toContain("--ari-disable");
     expect(renewCalls[1]).toContain("--ari-disable");
+    // A renew flag: it must follow the subcommand.
+    expect(renewCalls[1].indexOf(" renew ")).toBeLessThan(
+      renewCalls[1].indexOf("--ari-disable"),
+    );
     expect(fingerprint(await installed(DOMAIN))).toBe(fingerprint(NEW_CERT));
     expect((await renewalState())[DOMAIN].error).toBeUndefined();
   });
