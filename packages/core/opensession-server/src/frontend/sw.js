@@ -329,7 +329,11 @@ self.addEventListener("push", (event) => {
   const options = {
     body: data.body || "",
     tag,
-    icon: PREFIX + "/icon-192.png",
+    // Who it is from (Blob's picture), when the server names one. Only an
+    // in-app path: a push never makes the device fetch another host.
+    icon: /^\/(?!\/)[\w./-]+$/.test(String(data.icon ?? ""))
+      ? PREFIX + data.icon
+      : PREFIX + "/icon-192.png",
     badge: PREFIX + "/icon-192.png",
     actions: kept
       .slice(0, maxActions())

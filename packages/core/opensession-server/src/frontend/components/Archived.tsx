@@ -31,6 +31,7 @@ import {
   canonicalNames,
   sessionHasOwner,
   sessionOwners,
+  startedByLabel,
 } from "../lib/session-owner";
 import { docTitle, DEFAULT_DOC_TITLE } from "../lib/brand";
 import { useIsPhone } from "../hooks/useIsPhone";
@@ -688,7 +689,7 @@ export function Archived({
                       ),
                       owner === "everyone" && s.startedBy && (
                         <span key="by" className="truncate">
-                          {s.startedBy}
+                          {startedByLabel(s)}
                         </span>
                       ),
                       reason === "all" && isAutoReason(s) && (

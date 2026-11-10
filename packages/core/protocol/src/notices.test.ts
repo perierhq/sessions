@@ -294,6 +294,37 @@ describe("cross-session notice detection", () => {
     }
   });
 
+  it("names Blob as the sender of its messages, with its session", () => {
+    const id = "os-01a01e56-a1fc-7000-bb91-bc99b916c4ad";
+    const content = `[blob ${id}] <!--os:session-notice-->\nCheck the deploy.`;
+    expect(parseSessionNotice(content)).toEqual({
+      body: "Check the deploy.",
+      sessionId: id,
+      from: "Blob",
+    });
+    const entry = classifyEntry({
+      id: "e1",
+      type: "user",
+      timestamp: "2026-09-14T12:00:00Z",
+      content,
+    });
+    expect(entry.sender).toBe("Blob");
+    expect(entry.content).toBe("Check the deploy.");
+    expect(entry.notice).toMatchObject({
+      kind: "session-notice",
+      title: "Message from Blob",
+      link: { sessionId: id },
+    });
+    // A bare "[Blob]" bracket is a person's name, never Blob.
+    expect(
+      parseSessionNotice("[Blob] <!--os:session-notice-->\nCheck the deploy."),
+    ).toEqual({ body: "Check the deploy.", sessionId: null });
+    expect(parseSessionNotice(`[Blob] ${headsUp}`)).toEqual({
+      body: headsUp,
+      sessionId: null,
+    });
+  });
+
   it("rejects a loose agent label that does not name a native session", () => {
     expect(
       parseSessionNotice("[agent release-bot] Please ship this."),

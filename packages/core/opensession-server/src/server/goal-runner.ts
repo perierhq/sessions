@@ -468,6 +468,8 @@ export async function runGoal(stored: Goal): Promise<void> {
           title: `${goal.name} — goal`,
           mode: goal.mode,
           goalId: goal.id,
+          // A project lead is Blob working on one project.
+          ...(goal.leadProject ? { actedBy: "Blob" as const } : {}),
           lastActivity: new Date().toISOString(),
         };
       });

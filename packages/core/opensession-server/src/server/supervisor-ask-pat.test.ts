@@ -115,6 +115,7 @@ describe("askPat", () => {
     expect(audits).toEqual([
       {
         kind: "supervisor_ask_pat",
+        actor: "Blob",
         user: "Ada",
         action: "review_pr",
         repo: "web",

@@ -166,6 +166,8 @@ export interface CreateSessionOpts {
   spawnDepth?: number;
   /** Started by a server-side agent action rather than a person typing in a composer. */
   agentStarted?: boolean;
+  /** Blob started it for `user` (types.ts UnifiedSession.actedBy). */
+  actedBy?: "Blob";
   /**
    * The session whose agent issued an internal helper create. Visible
    * create_session results should omit this so they remain in the user's

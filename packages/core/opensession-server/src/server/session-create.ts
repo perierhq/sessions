@@ -455,6 +455,8 @@ export interface ResolvedCreate {
   spawnDepth?: number;
   /** Started by a server-side agent action rather than a person's composer. */
   agentStarted?: boolean;
+  /** Blob started it for `user` (types.ts UnifiedSession.actedBy). */
+  actedBy?: "Blob";
   /** Agent that created this session (SessionData.spawnedBy). */
   spawnedBy?: string;
   reportBack?: boolean;
@@ -818,6 +820,7 @@ function createdSessionFileDefaults(spec: ResolvedCreate): NativeSessionFile {
     ...(spec.parentSessionId ? { parentSessionId: spec.parentSessionId } : {}),
     ...(spec.spawnDepth !== undefined ? { spawnDepth: spec.spawnDepth } : {}),
     ...(spec.agentStarted ? { agentStarted: true } : {}),
+    ...(spec.actedBy ? { actedBy: spec.actedBy } : {}),
     ...(spec.spawnedBy ? { spawnedBy: spec.spawnedBy } : {}),
     ...(spec.automationDescendantPolicy
       ? {

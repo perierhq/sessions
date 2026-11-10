@@ -123,6 +123,9 @@ struct Session: Identifiable, Decodable, Equatable, Hashable {
     var parentSessionId: String?
     /// The opening turn came from a server-side action, not a person's composer.
     var agentStarted: Bool?
+    /// "Blob" when Blob (the supervisor, or a project lead) started this for
+    /// `startedBy`. Credit only: the owner is still `startedBy`.
+    var actedBy: String?
     /// The session id of the run that started this one from inside itself
     /// (`create_session` in an agent's own turn). Set only for those: work the
     /// Desk delegates on a person's behalf is deliberately unmarked
@@ -171,6 +174,7 @@ struct Session: Identifiable, Decodable, Equatable, Hashable {
     /// The branch/id fallbacks preserve this mark on older PR and report runs.
     var wasAgentStarted: Bool {
         agentStarted == true
+            || actedBy?.isEmpty == false
             || isAutomation
             || parentSessionId?.isEmpty == false
             || spawnedBy?.isEmpty == false
@@ -179,6 +183,31 @@ struct Session: Identifiable, Decodable, Equatable, Hashable {
             || [createdBy, startedBy].contains { name in
                 name?.trimmingCharacters(in: .whitespaces).lowercased() == "automation"
             }
+    }
+
+    /// Who started this, as a list row says it: "Blob for Kent" when Blob
+    /// started it for Kent, "Blob · acme lead" for a project lead's goal,
+    /// plain "Blob" with no person behind it. Mirrors the web's
+    /// `startedByLabel` (lib/session-owner.ts); filters still key on
+    /// `startedBy`.
+    var startedByLabel: String? {
+        let owner = (startedBy ?? "").trimmingCharacters(in: .whitespaces)
+        guard actedBy == MessageAttribution.blobName else {
+            return owner.isEmpty ? nil : owner
+        }
+        let leadGoal = try? NSRegularExpression(
+            pattern: "^Lead:\\s*(.+?)\\s*\\(goal\\)$", options: [.caseInsensitive]
+        )
+        let whole = NSRange(owner.startIndex..., in: owner)
+        if let match = leadGoal?.firstMatch(in: owner, range: whole),
+           let project = Range(match.range(at: 1), in: owner) {
+            return "Blob · \(owner[project]) lead"
+        }
+        let machine = owner.range(
+            of: "\\((?:goal|automation)\\)$|^(?:agent|worker|blob)\\s+\\S+$|^(?:blob|project lead)$",
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+        return owner.isEmpty || machine ? "Blob" : "Blob for \(owner)"
     }
 
     /// The ordinary user entries belong to this person when they carry no

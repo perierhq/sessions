@@ -21,6 +21,22 @@ enum MessageAttribution {
         /// A reply relayed from Slack, which the UI marks more warmly than an
         /// in-app steer.
         let viaSlack: Bool
+        /// Blob, the supervisor: a bot, credited as itself, never a person.
+        var isBot: Bool { MessageAttribution.isBlob(name) }
+    }
+
+    /// Blob's name as the server sends it (session-actors.ts BLOB_ACTOR).
+    static let blobName = "Blob"
+
+    /// Blob by its bare name, or a `blob <session id>` sender: what Blob
+    /// sends another session names the supervisor session it came from.
+    static func isBlob(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return trimmed.caseInsensitiveCompare(blobName) == .orderedSame
+            || trimmed.range(
+                of: "^blob\\s+(?:os|bks)-[a-z0-9-]+$",
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
     }
 
     /// `viewerName` is the display name the app knows itself by, `viewerLogin`
@@ -35,6 +51,8 @@ enum MessageAttribution {
     ) -> Credit? {
         let author = author(sender: sender, owner: owner)
         guard let author else { return nil }
+        // Blob is never the viewer, whatever their name starts with.
+        if isBlob(author) { return Credit(name: blobName, viaSlack: false) }
         if isViewer(author, viewerName: viewerName, viewerLogin: viewerLogin) {
             return nil
         }
@@ -55,6 +73,7 @@ enum MessageAttribution {
         viewerLogin: String
     ) -> Bool {
         guard let author = author(sender: sender, owner: owner) else { return false }
+        if isBlob(author) { return false }
         return isViewer(author, viewerName: viewerName, viewerLogin: viewerLogin)
     }
 

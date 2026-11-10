@@ -36,6 +36,24 @@ test("serves every stable shell asset family", async () => {
   }
 });
 
+test("serves Blob's picture where the people directory points", async () => {
+  const { BLOB_ICON_PATH } = await import("../session-actors");
+  const { botDirectory } = await import("../people");
+  expect(botDirectory()).toEqual([
+    { kind: "bot", name: "Blob", fullName: "Blob", image: BLOB_ICON_PATH },
+  ]);
+  const url = new URL(`http://127.0.0.1${BLOB_ICON_PATH}`);
+  const response = await handleStaticAssetsRoutes({
+    req: new Request(url),
+    url,
+    path: BLOB_ICON_PATH,
+    publicPrefix: "",
+  });
+  expect(response?.status).toBe(200);
+  expect(response?.headers.get("content-type")).toBe("image/png");
+  expect((await response?.arrayBuffer())?.byteLength).toBeGreaterThan(0);
+});
+
 test("returns a real 404 for a retired hashed asset", async () => {
   const path = "/Settings-retired123.js";
   const url = new URL(`http://127.0.0.1${path}`);

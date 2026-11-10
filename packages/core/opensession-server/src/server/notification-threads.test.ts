@@ -410,6 +410,29 @@ describe("incident notifications", () => {
       }),
     ).toEqual({ title: "Needs you", body: "acme: a decision is waiting" });
   });
+
+  test("a supervisor banner from Blob is titled by who it is from", () => {
+    const subject = {
+      type: "supervisor" as const,
+      id: "si-1",
+      title: "Refund jane@example.test?",
+      context: "acme",
+    };
+    expect(
+      bannerText({
+        subject,
+        reason: "Needs you",
+        body: "acme: a decision is waiting",
+        actor: "Blob · acme lead",
+      }),
+    ).toEqual({
+      title: "Blob · acme lead",
+      body: "Needs you · acme: a decision is waiting",
+    });
+    expect(
+      bannerText({ subject, reason: "Needs you", body: "", actor: "Blob" }),
+    ).toEqual({ title: "Blob", body: "Needs you" });
+  });
 });
 
 describe("support notifications", () => {

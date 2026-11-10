@@ -36,6 +36,70 @@ export const GITHUB_ACTOR = "GitHub";
  *  not unlock what a present person unlocks, nor bill a subscription. */
 export const PLAIN_ACTOR = "Plain";
 
+/** Blob, the supervisor: a first-party bot teammate, never a person and
+ *  never the instance persona. Its display name, the `actedBy` of sessions
+ *  it starts for its owner (who stays `createdBy`, so permissions follow the
+ *  person) and the audit `actor` of what it does. The name is fixed: it is
+ *  the product's, not an instance setting, so no teammate may carry it
+ *  (`isReservedTeamName`). What Blob sends another session arrives from
+ *  `blobActor(<its session id>)`, never from this bare name. */
+export const BLOB_ACTOR = "Blob";
+
+/** Where Blob's square picture is served (routes/static-assets.ts serves
+ *  `src/frontend/blob-icon.png` at this path). Under `/bot-icon/`, which no
+ *  repository id can claim, unlike `/repo-icon/<repo>.png`. */
+export const BLOB_ICON_PATH = "/bot-icon/blob.png";
+
+/** Sender for a message a supervisor session (Blob) sends another session.
+ *  Like `agentActor`, it names the session it came from, so the target can
+ *  link and reply to it; unlike it, every surface credits Blob. */
+export function blobActor(sessionId: string): string {
+  return `blob ${sessionId}`;
+}
+
+/** The supervisor session a `blob <id>` sender names, or null. */
+export function blobActorSession(actor?: string | null): string | null {
+  const match = (actor || "").trim().match(/^blob\s+(\S+)$/i);
+  return match && isNativeSessionId(match[1]) ? match[1] : null;
+}
+
+/** True for Blob in any recorded form: its bare name, a `blob <id>`
+ *  sender, or Blob as one project's lead (`blobItemActor`). */
+export function isBlobActor(actor?: string | null): boolean {
+  const name = (actor || "").trim();
+  const lower = name.toLowerCase();
+  const blob = BLOB_ACTOR.toLowerCase();
+  return (
+    lower === blob ||
+    (lower.startsWith(`${blob} · `) && lower.endsWith(" lead")) ||
+    blobActorSession(name) !== null
+  );
+}
+
+/** Whether a teammate's name, alias or GitHub login would collide with Blob.
+ *  `gitIdentityFor` resolves a sender by name, first name, alias or login, so
+ *  a teammate called "Blob" (or "Blob Smith") would make Blob's bare name
+ *  resolve to a person. The roster refuses such entries (routes/setup-team.ts). */
+export function isReservedTeamName(value?: string | null): boolean {
+  const lower = (value || "").trim().toLowerCase();
+  if (!lower) return false;
+  const blob = BLOB_ACTOR.toLowerCase();
+  return lower === blob || lower.split(/\s+/)[0] === blob;
+}
+
+/** `createdBy` of a project lead's goal record (leads/goal.ts). The lead is
+ *  Blob working on one project, so it is a machine actor like Blob. */
+export const PROJECT_LEAD_ACTOR = "Project lead";
+
+/** What a supervisor inbox item says it is from: Blob itself, or Blob as the
+ *  lead of one project (`source` `lead:<project>`). */
+export function blobItemActor(source: string, project?: string): string {
+  const lead = source.match(/^lead:(.+)$/);
+  if (!lead) return BLOB_ACTOR;
+  const name = (project || lead[1]).trim();
+  return name ? `${BLOB_ACTOR} · ${name} lead` : BLOB_ACTOR;
+}
+
 /** Suffix an automation's own ticks carry as `createdBy`/sender:
  *  `"<automation name> (automation)"` (automations.ts). */
 export const AUTOMATION_ACTOR_SUFFIX = " (automation)";
@@ -161,6 +225,21 @@ export function delegatedActorParent(actor?: string | null): string | null {
 }
 
 /**
+ * True for any message another agent sent into a session: a `worker <id>` /
+ * `agent <id>` sender, or Blob's. Such a message drives the target's next turn
+ * but nobody typed it, so it drains alone and is never editable as a draft.
+ */
+export function isAgentSender(actor?: string | null): boolean {
+  return agentSenderSession(actor) !== null || isBlobActor(actor);
+}
+
+/** The session a `worker <id>`, `agent <id>` or `blob <id>` sender came
+ *  from, or null: the one a reply goes back to. */
+export function agentSenderSession(actor?: string | null): string | null {
+  return delegatedActorParent(actor) ?? blobActorSession(actor);
+}
+
+/**
  * True only for the `worker <id>` form. The two senders are not
  * interchangeable: a worker reporting to its own parent carries the report
  * verbatim, while any other cross-session message is wrapped as a notice.
@@ -186,6 +265,10 @@ function sameBrand(a: string, b: string): boolean {
 export function isMachineActor(createdBy?: string | null): boolean {
   const name = (createdBy || "").trim();
   if (!name) return false;
+  // Blob and the senders that name a session are checked before the roster:
+  // a teammate who shares the name must never lend Blob their rights, and
+  // nobody is called "agent os-…". The roster refuses Blob's name too.
+  if (isBlobActor(name) || delegatedActorParent(name) !== null) return true;
   // A configured teammate is never a sentinel, whatever they are called.
   // Cheap insurance against a login like "GitHub" reading as machine.
   if (gitIdentityFor(name)) return false;
@@ -196,12 +279,12 @@ export function isMachineActor(createdBy?: string | null): boolean {
     lower === AUTOMATION_MACHINE_USER.toLowerCase() ||
     lower === GITHUB_ACTOR.toLowerCase() ||
     lower === PLAIN_ACTOR.toLowerCase() ||
+    lower === PROJECT_LEAD_ACTOR.toLowerCase() ||
     lower.endsWith(AUTOMATION_ACTOR_SUFFIX) ||
     // The agent's own name: a session it started with no person to credit.
     sameBrand(name, personaName()) ||
     sameBrand(name, productMark()) ||
-    sameBrand(name, productName()) ||
-    delegatedActorParent(name) !== null
+    sameBrand(name, productName())
   );
 }
 
@@ -291,6 +374,7 @@ export function providerAccountUser(
  */
 export function machineActorLabel(createdBy?: string | null): string {
   const name = (createdBy || "").trim();
+  if (isBlobActor(name)) return BLOB_ACTOR;
   const match = name.match(/^(worker|agent)\s+(\S+)$/i);
   if (match && isNativeSessionId(match[2]))
     return match[1].toLowerCase() === "worker"

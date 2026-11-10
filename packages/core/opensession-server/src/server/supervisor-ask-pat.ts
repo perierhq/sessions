@@ -17,6 +17,7 @@
 import type { PrActionKind, TriggerResult } from "../agents/github/trigger";
 import { audit } from "./audit";
 import { configuredRepos, personaName, type Repo } from "./config";
+import { BLOB_ACTOR } from "./session-actors";
 
 export const ASK_PAT_ACTIONS = ["review_pr", "fix_ci", "auto_fix"] as const;
 export type AskPatAction = (typeof ASK_PAT_ACTIONS)[number];
@@ -100,8 +101,10 @@ export async function askPat(input: {
   pr: number;
 }): Promise<AskPatResult> {
   const persona = deps.persona();
+  // Blob asks on the owner's behalf: the owner is `user`, Blob the actor.
   const base = {
     kind: "supervisor_ask_pat",
+    actor: BLOB_ACTOR,
     user: input.owner,
     action: input.action,
     repo: input.repo,

@@ -23,7 +23,12 @@ struct UserAvatar: View {
     var login: String?
     var size: CGFloat = 26
 
+    /// A first-party bot (Blob): drawn with its own picture and a "Bot"
+    /// badge, never a GitHub face that shares its first name.
+    private var isBot: Bool { TeamDirectory.shared.isBot(name) }
+
     private var resolvedLogin: String {
+        if isBot { return "" }
         if let login, !login.isEmpty { return login }
         guard let person else { return ServerConfig.shared.githubLogin }
         return TeamDirectory.shared.githubLogin(for: person) ?? ""
@@ -64,7 +69,10 @@ struct UserAvatar: View {
         // that same shape. See `SquircleCapsule` for why SwiftUI's own
         // continuous corners collapse to a circle here and it has to be drawn.
         .clipShape(SquircleCapsule())
-        .accessibilityLabel(name.isEmpty ? "You" : name)
+        .overlay(alignment: .bottomTrailing) {
+            if isBot && size >= 24 { botBadge }
+        }
+        .accessibilityLabel(name.isEmpty ? "You" : isBot ? "\(name), bot" : name)
         // Keyed on the URL, not the login: a picture that is uploaded, replaced
         // or cleared changes the URL while the login stays put, and keying on
         // the login would leave the old face until the next launch.
@@ -81,6 +89,17 @@ struct UserAvatar: View {
         // GitHub serves any account's avatar at github.com/<login>.png; 3x the
         // point size keeps it crisp on retina displays.
         return URL(string: "https://github.com/\(resolvedLogin).png?size=\(Int(size * 3))")
+    }
+
+    /// The small label that keeps a bot from reading as a teammate.
+    private var botBadge: some View {
+        Text("Bot")
+            .font(.system(size: max(7, size * 0.26), weight: .semibold))
+            .foregroundStyle(OS1VisualStyle.text)
+            .padding(.horizontal, 3)
+            .background(Capsule().fill(.regularMaterial))
+            .offset(x: size * 0.12, y: size * 0.08)
+            .accessibilityHidden(true)
     }
 
     private var initialCircle: some View {

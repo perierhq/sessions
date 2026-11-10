@@ -19,6 +19,7 @@ import {
   monthOf,
   type Goal,
 } from "../goals";
+import { PROJECT_LEAD_ACTOR } from "../session-actors";
 import { supervisorInboxKey } from "../supervisor-inbox";
 import { localClock } from "../supervisor-quiet-hours";
 import {
@@ -312,7 +313,8 @@ async function createLeadGoal(
   const created = await d.createGoal(
     {
       ...(await leadGoalFieldsNow(project, doc, d)),
-      createdBy: "Project lead",
+      // A machine actor (session-actors.ts): the lead is Blob, never a person.
+      createdBy: PROJECT_LEAD_ACTOR,
     },
     { leadProject: project, pauseReason: STARTING_REASON },
   );

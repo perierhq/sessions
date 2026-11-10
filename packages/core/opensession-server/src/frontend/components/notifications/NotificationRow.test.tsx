@@ -108,3 +108,30 @@ test("other rows are unchanged", () => {
     'aria-label="Unread. Fix login. Ada mentioned you: look"',
   );
 });
+
+test("a supervisor row is from Blob, with Blob's picture", () => {
+  const html = renderToStaticMarkup(
+    <NotificationRow
+      thread={{
+        id: "supervisor:si-1",
+        subject: {
+          type: "supervisor",
+          id: "si-1",
+          title: "Turn off the flapping check?",
+          context: "acme",
+        },
+        kind: "supervisor_needs_you",
+        reason: "Needs you",
+        body: "1. Turn it off  2. Keep it",
+        actor: "Blob \u00b7 acme lead",
+        url: "/session/os-sup?item=si-1",
+        updatedAt: 1_000,
+        unread: true,
+        done: false,
+      }}
+    />,
+  );
+  expect(html).toContain("Blob \u00b7 acme lead");
+  expect(html).not.toContain("Blob \u00b7 acme lead \u00b7 acme");
+  expect(html).toContain("/bot-icon/blob.png");
+});

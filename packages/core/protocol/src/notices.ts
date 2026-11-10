@@ -536,25 +536,35 @@ export function parseLoopTick(content?: string): { body: string } | null {
 /**
  * A message one agent sent into another session. New deliveries carry the
  * sentinel. The strict `agent <session-id>` attribution recovers messages
- * already stored before every send_to_session payload was marked.
+ * already stored before every send_to_session payload was marked. Blob's
+ * sends arrive as `blob <session-id>` (server session-actors.ts blobActor):
+ * they name the supervisor session like an agent's, and read as from Blob.
  */
 const SESSION_NOTICE_SENTINEL_RE = /^<!--os:session-notice-->\s*/;
-const AGENT_ATTR_RE = /^\[agent\s+((?:os|bks)-[a-z0-9-]+)\]\s*/i;
+const AGENT_ATTR_RE = /^\[(agent|blob)\s+((?:os|bks)-[a-z0-9-]+)\]\s*/i;
 const LEGACY_SESSION_NOTICE_RE =
   /^Heads-up from another session(?:\s*\([^\n)]*\))?:/i;
 
+/** Blob, the supervisor (server session-actors.ts BLOB_ACTOR): the one
+ *  named sender of a session notice. Every other notice reads as from
+ *  another session. */
+export const BLOB_SENDER = "Blob";
+
 export function parseSessionNotice(
   content?: string,
-): { body: string; sessionId: string | null } | null {
+): { body: string; sessionId: string | null; from?: string } | null {
   if (!content) return null;
   let text = content;
   let sessionId: string | null = null;
+  let blob = false;
   const agent = text.match(AGENT_ATTR_RE);
   if (agent) {
-    sessionId = agent[1];
+    blob = agent[1].toLowerCase() === "blob";
+    sessionId = agent[2];
     text = text.slice(agent[0].length);
   } else {
-    text = text.replace(ATTR_PREFIX_RE, "");
+    const attribution = text.match(ATTR_PREFIX_RE);
+    if (attribution) text = text.slice(attribution[0].length);
   }
   const sentinel = text.match(SESSION_NOTICE_SENTINEL_RE);
   const body = (sentinel ? text.slice(sentinel[0].length) : text).trim();
@@ -563,7 +573,7 @@ export function parseSessionNotice(
   // prompt. Keep that mixed entry visible rather than hiding the prompt inside
   // a collapsed notice. New delegated messages drain alone at the queue layer.
   if (/\n\s*\n\[[^\]\n]{1,80}\]\s+/.test(body)) return null;
-  return { body, sessionId };
+  return { body, sessionId, ...(blob ? { from: BLOB_SENDER } : {}) };
 }
 
 /**
@@ -922,9 +932,13 @@ function classifyDelivery(entry: TranscriptEntry): TranscriptEntry {
     return {
       ...entry,
       content: sessionNotice.body,
+      // Blob's messages say they are from Blob, not from "another session".
+      ...(sessionNotice.from ? { sender: sessionNotice.from } : {}),
       notice: {
         kind: "session-notice",
-        title: "Message from another session",
+        title: sessionNotice.from
+          ? `Message from ${sessionNotice.from}`
+          : "Message from another session",
         tone: "info",
         body: "collapsed",
         ...(sessionNotice.sessionId

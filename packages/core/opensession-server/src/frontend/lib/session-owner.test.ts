@@ -7,7 +7,9 @@ import {
   ownerKeyOf,
   sessionHasOwner,
   sessionOwners,
+  startedByLabel,
 } from "./session-owner";
+import { agentStartedLabel } from "./sidebar-placement";
 import type { Person } from "./people";
 import type { UnifiedSession } from "./types";
 
@@ -115,5 +117,32 @@ describe("session owner lens", () => {
       ),
     ).toBe(false);
     expect(sessionHasOwner(session({}), "kent", canonical)).toBe(false);
+  });
+});
+
+describe("sessions Blob started", () => {
+  test("say Blob started them for the person, who still owns them", () => {
+    const s = session({ startedBy: "Kent", actedBy: "Blob" });
+    expect(startedByLabel(s)).toBe("Blob for Kent");
+    expect(agentStartedLabel(s)).toBe("Started by Blob for Kent");
+    // The owner lens still files it under Kent.
+    expect(ownerKeyOf(s, canonical)).toBe("kent");
+    expect(sessionHasOwner(s, "kent", canonical)).toBe(true);
+    expect(startedByLabel(session({ startedBy: "Kent" }))).toBe("Kent");
+  });
+
+  test("with no person behind them, name Blob alone or as a lead", () => {
+    const lead = session({ startedBy: "Lead: acme (goal)", actedBy: "Blob" });
+    expect(startedByLabel(lead)).toBe("Blob \u00b7 acme lead");
+    for (const startedBy of [
+      "Nightly (goal)",
+      "Triage (automation)",
+      "agent os-01a01e56-a1fc-7000-bb91-bc99b916c4ad",
+      "Project lead",
+      "",
+    ])
+      expect(startedByLabel(session({ startedBy, actedBy: "Blob" }))).toBe(
+        "Blob",
+      );
   });
 });

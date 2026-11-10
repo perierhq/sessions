@@ -22,7 +22,7 @@ import { stageFileAttachments, stageInlineImages } from "./uploads";
 import type { SlackReplyTarget, TranscriptEntry } from "./types";
 import { broadcastToSession } from "./ws-hub";
 import { AUTO_CONTINUE_USER } from "./auto-continue";
-import { delegatedActorParent, isWorkerActor } from "./session-actors";
+import { isAgentSender, isWorkerActor } from "./session-actors";
 import { userMatchesAny } from "./shared/user-mappings";
 import {
   DeliveryOwnedMap,
@@ -130,9 +130,9 @@ export function isWorkerQueueItem(item?: QueueItem): boolean {
 }
 
 /** Any message sent by another session, whether it is a parent-linked worker
- * report or a peer session's coordination prompt. */
+ * report, a peer session's coordination prompt or Blob's. */
 export function isDelegatedQueueItem(item?: QueueItem): boolean {
-  return delegatedActorParent(item?.user) !== null;
+  return isAgentSender(item?.user);
 }
 
 /** A workflow completion nudge is attributed to the person who launched the

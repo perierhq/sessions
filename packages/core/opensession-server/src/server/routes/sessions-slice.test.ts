@@ -225,6 +225,13 @@ describe("archivedIndexRow", () => {
     );
   });
 
+  test("keeps Blob's credit for a session it started", () => {
+    expect(archivedIndexRow(archivedSession({ actedBy: "Blob" })).actedBy).toBe(
+      "Blob",
+    );
+    expect(archivedIndexRow(archivedSession())).not.toHaveProperty("actedBy");
+  });
+
   test("keeps the worker marker the history menu reads", () => {
     // A workspace closes far more agent runs than conversations, and the
     // menu marks them so the sessions people had still stand out.

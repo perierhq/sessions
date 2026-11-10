@@ -30,6 +30,11 @@ final class TeamDirectory {
     /// answer to one option (`ArchivedOwners`). The key already IS the first
     /// name, so no second map is needed the way the web needs one.
     private(set) var displayNames: [String: String] = [:]
+    /// First-party bots (Blob, the supervisor), first name → their picture
+    /// as a server-relative path. Seeded so Blob is drawn as itself before
+    /// the roster loads; a bot is never in `names`, so no picker offers it.
+    private(set) var botImages: [String: String] = TeamDirectory.builtInBots
+    private static let builtInBots = ["blob": "/bot-icon/blob.png"]
     private var fullNames: [String: String] = [:]
     private var accountID: String?
     private var loading = false
@@ -44,10 +49,16 @@ final class TeamDirectory {
     }
 
     /// The picture this person uploaded, or nil when they have not set one and
-    /// their face should come from GitHub.
+    /// their face should come from GitHub. A bot's is its own picture.
     func profileImage(for name: String) -> String? {
+        if let bot = botImages[Self.botKey(name)], !bot.isEmpty { return bot }
         guard let key = Self.key(name) else { return nil }
         return profileImages[key]
+    }
+
+    /// True for a first-party bot (Blob), never a person.
+    func isBot(_ name: String) -> Bool {
+        botImages[Self.botKey(name)] != nil
     }
 
     /// The display name behind a GitHub login ("kentdebruin" → "Kent"), or nil
@@ -95,6 +106,7 @@ final class TeamDirectory {
             names = []
             reviewTeams = []
             displayNames = [:]
+            botImages = Self.builtInBots
             fullNames = [:]
             loading = false
             lastFailureAt = nil
@@ -112,7 +124,17 @@ final class TeamDirectory {
         guard accountID == currentAccountID,
               ServerConfig.shared.activeId == currentAccountID
         else { return }
-        let people = roster.people ?? []
+        // A bot never joins the people roster, even if a server listed one
+        // there: pickers and the owner lens read `names`.
+        let listed = roster.people ?? []
+        let people = listed.filter { $0.kind != "bot" }
+        if roster.bots != nil {
+            let bots = listed.filter { $0.kind == "bot" } + (roster.bots ?? [])
+            botImages = Dictionary(
+                bots.map { (Self.botKey($0.name), $0.image ?? "") },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
         names = people.map(\.name)
         reviewTeams = roster.reviewTeams ?? []
         for person in people {
@@ -129,6 +151,10 @@ final class TeamDirectory {
             if let fullName = person.fullName, !fullName.isEmpty { fullNames[key] = fullName }
         }
         lastFailureAt = nil
+    }
+
+    private static func botKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func key(_ name: String) -> String? {

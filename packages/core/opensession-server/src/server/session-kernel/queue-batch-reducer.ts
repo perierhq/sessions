@@ -6,16 +6,14 @@
  */
 import { AUTO_CONTINUE_USER } from "../auto-continue";
 import type { QueueItem } from "../queue-state";
-import { delegatedActorParent } from "../session-actors";
+import { isAgentSender } from "../session-actors";
 
 export type QueueBatchPlan =
   | { kind: "deliver"; batch: QueueItem[]; rest: QueueItem[] }
   | { kind: "hold"; heldCount: number };
 
 function splitAtDelegatedMessage(queue: QueueItem[]): QueueBatchPlan | null {
-  const index = queue.findIndex(
-    (item) => delegatedActorParent(item.user) !== null,
-  );
+  const index = queue.findIndex((item) => isAgentSender(item.user));
   if (index < 0) return null;
   const batch = index === 0 ? [queue[0]] : queue.slice(0, index);
   const selected = new Set(batch);

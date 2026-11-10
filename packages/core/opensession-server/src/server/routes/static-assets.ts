@@ -280,6 +280,14 @@ export async function handleStaticAssetsRoutes(
   // side by side in the sidebar, in the phone app and in the PWA, and a mark
   // with more built-in padding than its neighbour just reads as a smaller
   // icon. Keep new icons on those proportions.
+  // A bot teammate's picture (session-actors.ts BLOB_ICON_PATH). Its own
+  // prefix, so no repository id can shadow or claim it.
+  const botIcon = { "/bot-icon/blob.png": "blob-icon.png" }[path];
+  if (botIcon && req.method === "GET") {
+    const served = await localIcon(frontendSourcePath(botIcon), botIcon);
+    return served ?? new Response("Not found", { status: 404 });
+  }
+
   const repoIcon = path.match(/^\/repo-icon\/([\w.-]+)\.png$/);
   if (repoIcon && req.method === "GET") {
     const id = repoIcon[1];

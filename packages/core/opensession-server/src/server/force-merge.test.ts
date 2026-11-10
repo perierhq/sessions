@@ -188,6 +188,34 @@ describe("force merge", () => {
     ]);
   });
 
+  test("a merge Blob asked for records that Blob asked and the driver approved", async () => {
+    const { deps, calls } = fake();
+    const outcome = requestForceMerge(
+      "s-blob",
+      {
+        target,
+        reason: "e2e is down for everyone",
+        driver,
+        requestedBy: "Blob",
+      },
+      undefined,
+      deps,
+    );
+    for (let i = 0; i < 20 && !pendingForceMerge("s-blob"); i++)
+      await Promise.resolve();
+    const card = pendingForceMerge("s-blob");
+    // The driver's own confirmation and token, as for any merge.
+    await confirmForceMerge("s-blob", card!.request.id, "Ada", credential);
+    await outcome;
+    expect(calls.audit[0]).toMatchObject({ event: "requested", actor: "Blob" });
+    expect(calls.audit.find((e) => e.event === "merged")).toMatchObject({
+      actor: "Blob",
+      confirmed_by: "Ada",
+      attribution: "Blob asked, Ada approved",
+    });
+    expect(calls.comment[0]).not.toContain("Blob");
+  });
+
   test("a push after the card was shown aborts the merge", async () => {
     const { deps, calls } = fake({ head: "c".repeat(40) });
     const { outcome, open: card } = await open("s-moved", deps);

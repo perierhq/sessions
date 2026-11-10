@@ -16,7 +16,7 @@ import { extBadge } from "../lib/images";
 import { useOpenAsset, useOpenAssetPaths } from "../lib/open-asset";
 import { assetPathForMediaSrc } from "../lib/asset-preview";
 import { fullTime, shortTime } from "../lib/time";
-import { UserAvatar } from "./UserAvatar";
+import { BotBadge, isBotName, UserAvatar } from "./UserAvatar";
 import { openGalleryFrom } from "../lib/media-lightbox-gallery";
 import { unplacedMedia } from "../lib/placed-media";
 import {
@@ -472,6 +472,18 @@ function TeammateAvatar({ name }: { name: string }) {
   );
 }
 
+/** A credited name: the teammate's, or a bot's with its "Bot" label, so
+ *  Blob's words never pass for a person's. */
+function CreditedName({ name }: { name: string }) {
+  return (
+    <>
+      <TeammateAvatar name={name} />
+      {name}
+      {isBotName(name) && <BotBadge />}
+    </>
+  );
+}
+
 const bubbleActionClass =
   "flex size-7 flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-faint select-none hover:bg-hover hover:text-dim [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:transition-opacity [@media(hover:hover)]:group-hover/bubble:opacity-100 [@media(hover:hover)]:group-focus-within/bubble:opacity-100";
 
@@ -921,6 +933,9 @@ export const MessageBubble = function MessageBubble({
     e.notice?.kind === "session-notice" || e.notice?.kind === "worker-report";
   if (outgoing || peerMessage) {
     const senderId = outgoing ? sessionId : e.notice?.link?.sessionId;
+    // Blob names itself (protocol parseSessionNotice) and still links the
+    // supervisor session it spoke from; every other peer is that session.
+    const fromBot = !outgoing && isBotName(e.sender) ? e.sender : null;
     return (
       <div
         className={cn(msgRow, enterClass)}
@@ -942,14 +957,33 @@ export const MessageBubble = function MessageBubble({
             <IconArrowUpRight
               className={cn("size-3.5", !outgoing && "rotate-180")}
             />
-            {outgoing ? "To agent" : "From agent"}
+            {outgoing ? "To agent" : fromBot ? "From" : "From agent"}
           </span>
-          <AgentIdentity
-            sessionId={outgoing?.to ?? senderId}
-            linked
-            current={(outgoing?.to ?? senderId) === sessionId}
-            className="max-w-96 flex-1"
-          />
+          {fromBot ? (
+            <>
+              <span className="inline-flex shrink-0 items-center gap-1">
+                <CreditedName name={fromBot} />
+              </span>
+              {senderId && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <AgentIdentity
+                    sessionId={senderId}
+                    linked
+                    current={senderId === sessionId}
+                    className="max-w-96 flex-1"
+                  />
+                </>
+              )}
+            </>
+          ) : (
+            <AgentIdentity
+              sessionId={outgoing?.to ?? senderId}
+              linked
+              current={(outgoing?.to ?? senderId) === sessionId}
+              className="max-w-96 flex-1"
+            />
+          )}
           <MsgTime ts={e.timestamp} />
           {outgoing && <AgentDeliveryMark result={toolResult} />}
         </div>
@@ -1013,8 +1047,7 @@ export const MessageBubble = function MessageBubble({
         data-eid={e.id}
       >
         <div className={cn(msgLabel, msgLabelHuman)}>
-          <TeammateAvatar name={e.sender} />
-          {e.sender} · via Slack
+          <CreditedName name={e.sender} /> · via Slack
           <MsgTime ts={e.timestamp} />
         </div>
         <ClampedBody
@@ -1081,8 +1114,7 @@ export const MessageBubble = function MessageBubble({
       >
         {fromOther && (
           <div className={msgLabel}>
-            <TeammateAvatar name={fromOther} />
-            {fromOther}
+            <CreditedName name={fromOther} />
             <MsgTime ts={e.timestamp} />
           </div>
         )}

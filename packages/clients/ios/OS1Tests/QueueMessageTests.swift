@@ -86,6 +86,17 @@ final class QueueMessageTests: XCTestCase {
         XCTAssertTrue(message.isSessionMessage)
     }
 
+    func testBlobMessageSaysItIsFromBlob() {
+        let id = "os-01a01e56-a1fc-7000-bb91-bc99b916c4ad"
+        let message = present(
+            "[blob \(id)] <!--os:session-notice-->\nCheck the deploy.",
+            user: "blob \(id)"
+        )
+        XCTAssertEqual(message.label, "Message from Blob")
+        XCTAssertEqual(message.body, "Check the deploy.")
+        XCTAssertTrue(message.isSessionMessage)
+    }
+
     func testHumanReplyCreditsTheTeammate() {
         let message = present("💬 **Kent** answered your question\n\nShip it.")
         XCTAssertEqual(message.label, "Kent")

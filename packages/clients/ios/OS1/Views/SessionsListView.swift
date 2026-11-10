@@ -1160,7 +1160,7 @@ struct SessionsListView: View {
                 keywords: [
                     session.effectiveRepo,
                     session.branch ?? "",
-                    session.startedBy ?? "",
+                    session.startedByLabel ?? "",
                     session.isAutomation ? "automation" : ""
                 ].filter { !$0.isEmpty },
                 symbol: paletteSymbol(for: session.lane),
@@ -4789,7 +4789,7 @@ private struct ArchivedSessionsView: View {
         var parts = [RepoTile.label(for: session.effectiveRepo)]
         // Only under "Everyone": with one person picked, their name on every
         // row is the one thing the list already told you.
-        if owner == ArchivedOwners.everyone, let startedBy = session.startedBy {
+        if owner == ArchivedOwners.everyone, let startedBy = session.startedByLabel {
             parts.append(startedBy)
         }
         if reason == "all", isAutoArchived(session) { parts.append("Auto-archived") }

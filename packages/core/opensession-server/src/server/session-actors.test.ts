@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { productMark } from "./config";
+import { __setIdentitiesForTest, gitIdentityFor } from "./shared/user-mappings";
 import {
+  BLOB_ACTOR,
+  agentSenderSession,
+  blobActor,
+  blobActorSession,
+  blobItemActor,
+  isAgentSender,
+  isBlobActor,
+  isReservedTeamName,
+  PROJECT_LEAD_ACTOR,
   agentActor,
   delegatedActorParent,
   humanPrompter,
@@ -171,6 +181,86 @@ describe("machine actors", () => {
     expect(machineActorLabel(agentActor(SESSION))).toBe("Agent sessions");
     expect(machineActorLabel("auto-continue")).toBe("Auto-continue");
     expect(machineActorLabel("Automation")).toBe("Automation");
+  });
+});
+
+describe("Blob", () => {
+  test("is a machine actor, never a person, and never credits its owner", () => {
+    expect(isMachineActor(BLOB_ACTOR)).toBe(true);
+    expect(isMachineActor("blob")).toBe(true);
+    expect(humanPrompter(BLOB_ACTOR)).toBeNull();
+    expect(interactivePrompter(BLOB_ACTOR)).toBeNull();
+    // A turn Blob sends runs on its owner's account, never Blob's.
+    expect(providerAccountUser(BLOB_ACTOR, "Ada")).toBe("Ada");
+    // What Blob starts still belongs to the person it works for.
+    expect(sessionCreationOwner(BLOB_ACTOR, { startedBy: "Ada" })).toBe("Ada");
+  });
+
+  test("a project lead's goal is a machine actor too", () => {
+    expect(isMachineActor(PROJECT_LEAD_ACTOR)).toBe(true);
+    expect(humanPrompter(PROJECT_LEAD_ACTOR)).toBeNull();
+  });
+
+  test("a teammate named Blob gains nothing from a blob sender", () => {
+    const restore = __setIdentitiesForTest([
+      {
+        name: "Blob",
+        aliases: ["blob"],
+        github: "blob",
+        email: "blob@example.test",
+      },
+    ]);
+    try {
+      // The roster would resolve the bare name to that person...
+      expect(gitIdentityFor(BLOB_ACTOR)).not.toBeNull();
+      // ...but every Blob sender is a machine actor first, so it never
+      // lends Blob their presence, account or session ownership.
+      for (const sender of [BLOB_ACTOR, blobActor(SESSION)]) {
+        expect(isMachineActor(sender)).toBe(true);
+        expect(humanPrompter(sender)).toBeNull();
+        expect(interactivePrompter(sender)).toBeNull();
+        expect(providerAccountUser(sender, "Ada")).toBe("Ada");
+        expect(sessionCreationOwner(sender, { startedBy: "Ada" })).toBe("Ada");
+        expect(machineActorLabel(sender)).toBe("Blob");
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  test("its sends name the supervisor session they came from", () => {
+    expect(blobActor(SESSION)).toBe(`blob ${SESSION}`);
+    expect(blobActorSession(blobActor(SESSION))).toBe(SESSION);
+    expect(agentSenderSession(blobActor(SESSION))).toBe(SESSION);
+    expect(agentSenderSession(agentActor(SESSION))).toBe(SESSION);
+    expect(blobActorSession("blob Kent")).toBeNull();
+    expect(isBlobActor(blobActor(SESSION))).toBe(true);
+    expect(isBlobActor("Blobby")).toBe(false);
+  });
+
+  test("nobody can be named Blob", () => {
+    for (const name of ["Blob", "blob", " BLOB ", "Blob Smith"])
+      expect(isReservedTeamName(name)).toBe(true);
+    for (const name of ["Blobby", "Ada Blob", "", null])
+      expect(isReservedTeamName(name)).toBe(false);
+  });
+
+  test("its messages drain like another agent's", () => {
+    expect(isAgentSender(BLOB_ACTOR)).toBe(true);
+    expect(isAgentSender(blobActor(SESSION))).toBe(true);
+    expect(isAgentSender("agent os-01a01e56-a1fc-7000-bb91-bc99b916c4ad")).toBe(
+      true,
+    );
+    expect(isAgentSender("Ada")).toBe(false);
+  });
+
+  test("inbox items say whether Blob or Blob as a lead raised them", async () => {
+    const { leadSource } = await import("./leads/report");
+    expect(blobItemActor("supervisor")).toBe("Blob");
+    expect(blobItemActor(leadSource("acme"))).toBe("Blob \u00b7 acme lead");
+    expect(blobItemActor(leadSource("acme"), "Acme web")).toBe(
+      "Blob \u00b7 Acme web lead",
+    );
   });
 });
 

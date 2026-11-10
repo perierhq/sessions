@@ -33,6 +33,14 @@ final class MessageAttributionTests: XCTestCase {
         XCTAssertEqual(credit(sender: "Jaap", owner: "Kent")?.name, "Jaap")
     }
 
+    /// Blob is credited as a bot, even to a viewer whose name it prefixes.
+    func testBlobIsCreditedAsABot() {
+        let blob = credit(sender: "Blob", owner: "Kent", me: "Bl", login: "bl")
+        XCTAssertEqual(blob?.name, "Blob")
+        XCTAssertTrue(blob?.isBot == true)
+        XCTAssertFalse(credit(owner: "Kent")?.isBot == true)
+    }
+
     func testSlackRepliesAreMarked() {
         let slack = credit(sender: "Kent", via: "slack")
         XCTAssertEqual(slack?.name, "Kent")
