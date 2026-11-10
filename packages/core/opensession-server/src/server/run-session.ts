@@ -295,7 +295,12 @@ import {
   supervisorInboxContext,
   supervisorStyleContext,
 } from "./supervisor-inbox";
-import { supervisorInboxOwner, supervisorMcpFor } from "./supervisor-mcp";
+import {
+  SUPERVISOR_WITHHELD_SERVERS,
+  supervisorInboxOwner,
+  supervisorMcpFor,
+  withoutSupervisorWithheld,
+} from "./supervisor-mcp";
 import {
   refreshSupervisorMemoryAfterCompaction,
   refreshSupervisorMemoryDaily,
@@ -2014,7 +2019,13 @@ export function sandboxRunSecuritySpec(
                 ),
                 ...(session.goalId ? ["opensession-goal-self"] : []),
                 ...Object.keys(supervisorMcpFor(session, opts.user)),
-              ],
+              ].filter(
+                (name) =>
+                  !session.supervisor ||
+                  !(SUPERVISOR_WITHHELD_SERVERS as readonly string[]).includes(
+                    name,
+                  ),
+              ),
     reposNote: undefined,
     deniedTools: opts.deniedTools,
     publicationPolicy: descendant
@@ -3721,7 +3732,7 @@ async function runSessionPromptInner(
           : session.plainDiscussionId
             ? plainDiscussionSessionMcp(sessionId, session.plainDiscussionId)
             : session.goalId
-              ? {
+              ? withoutSupervisorWithheld(session, {
                   ...interactiveMcpServers(
                     user,
                     sessionId,
@@ -3731,13 +3742,21 @@ async function runSessionPromptInner(
                     session.goalId,
                   ),
                   ...supervisorMcpFor(session, user),
-                }
+                })
               : // A supervisor session's owner also gets its inbox tools
-                // (supervisor-mcp.ts); every other turn gets nothing.
-                // Assigned, not spread, so the lazy set stays lazy.
-                Object.assign(
-                  interactiveMcpServers(user, sessionId, durablePromptEntryId),
-                  supervisorMcpFor(session, user),
+                // (supervisor-mcp.ts), and no timers of its own; every
+                // other turn gets nothing. Assigned, not spread, so the
+                // lazy set stays lazy.
+                withoutSupervisorWithheld(
+                  session,
+                  Object.assign(
+                    interactiveMcpServers(
+                      user,
+                      sessionId,
+                      durablePromptEntryId,
+                    ),
+                    supervisorMcpFor(session, user),
+                  ),
                 );
   const hostedRun =
     !fixedSubscriptionRefusal &&

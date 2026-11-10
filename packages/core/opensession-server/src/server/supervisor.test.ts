@@ -536,6 +536,33 @@ describe("standing sessions", () => {
     expect(note).toContain("create_session");
   });
 
+  test("the charter keeps no timers and hands follow-ups to the watch", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain("You keep no timers and wait on nothing.");
+    expect(note).toContain("Never use wait_for");
+    expect(note).toContain("opensession-supervisor watch_for");
+    expect(note).toContain("## Your watch");
+    expect(note).toContain("It never speaks in this conversation");
+  });
+
+  test("each ensure tells the listeners, which never fail it", async () => {
+    const seen: string[] = [];
+    const off = supervisor.onSupervisorEnsured((user) => {
+      seen.push(user);
+    });
+    const offThrowing = supervisor.onSupervisorEnsured(() => {
+      throw new Error("listener down");
+    });
+    try {
+      await supervisor.ensureSupervisorSession("Ada");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(seen).toEqual(["Ada"]);
+    } finally {
+      off();
+      offThrowing();
+    }
+  });
+
   test("the charter says to read and keep the ledger", () => {
     const note = supervisor.supervisorNote("Pat");
     expect(note).toContain("## Your ledger");

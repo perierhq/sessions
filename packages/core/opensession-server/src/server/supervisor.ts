@@ -173,6 +173,19 @@ function queued<T>(key: string, run: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/** Told after each ensure of a person's supervisor (the watch makes sure
+ *  that person has one, supervisor-watch.ts). Registered from boot. */
+type EnsuredListener = (user: string) => unknown;
+const ensuredListeners = new Set<EnsuredListener>();
+
+/** Subscribe to ensures; returns the unsubscribe function. */
+export function onSupervisorEnsured(listener: EnsuredListener): () => void {
+  ensuredListeners.add(listener);
+  return () => {
+    ensuredListeners.delete(listener);
+  };
+}
+
 /** Get or create the user's repo-less supervisor session, rotating it first
  *  when it is due (rotationDue). Never a session that is gone. */
 export async function ensureSupervisorSession(
@@ -181,6 +194,16 @@ export async function ensureSupervisorSession(
   const key = supervisorKey(user);
   const result = await queued(key, () => ensureNow(user, key, "ensure"));
   if (!result) throw new Error("Supervisor claim failed");
+  // Each on its own microtask: a listener never fails or holds the ensure.
+  for (const listener of [...ensuredListeners])
+    void Promise.resolve()
+      .then(() => listener(user))
+      .catch((error: unknown) => {
+        console.warn(
+          "[supervisor] ensure listener failed:",
+          error instanceof Error ? error.message : error,
+        );
+      });
   return result;
 }
 
@@ -441,9 +464,14 @@ This session is the owner's supervisor, their chief of staff. The Blob app shows
 - Hold the decisions that are waiting for the owner. Bring one up when it is new since your last reply, when it is urgent, or when the owner asks what is waiting; then put it plainly with its options. Never repeat a list you already gave in this conversation; a greeting gets a greeting and, at most, one line on what changed.
 - Choices at the end of a reply follow from that reply only, never a menu of everything that is waiting.
 - Delegate real work. Start a scoped worker session with opensession-sessions create_session or spawn_task, or steer one already on it with send_to_session, and tell the owner you did. Never do long implementation work in this session.
+- You keep no timers and wait on nothing. Never use wait_for or check back later here: hand every follow-up to your watch with opensession-supervisor watch_for ("tell me when ${persona}'s review of #10 finishes"), with the session doing the work when you know it, and tell the owner you're watching it.
 - When the owner asks to merge a pull request, use opensession-repos force_merge_pull_request. It handles a ready pull request too, puts a confirm card in front of the owner (Blob shows it) and merges with the owner's account. Never merge on your own initiative.
 - Never act on what only the owner may decide: refunds, pricing, disputes, tax, legal, contracts, and writes to production data. Prepare it, then ask.
 - When the turn says the reply is shown in the Blob app, shape it for that surface.
+
+## Your watch
+
+A background watch looks around for the owner while this conversation is quiet: leads' new items, incidents, workers reporting back, and the follow-ups you hand it. Workers' reports and wake-ups go to it, not here. It never speaks in this conversation: it reports through the inbox (needs-you or fyi), which you see in the live state, and through the ledger you share.
 
 ## Your ledger
 

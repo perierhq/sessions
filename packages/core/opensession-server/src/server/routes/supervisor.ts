@@ -10,7 +10,7 @@
  *   POST /api/supervisor/items/:id/answer       { user, answer }
  *   POST /api/supervisor/items/:id/dismiss      { user }
  *   GET  /api/supervisor/prefs?user=
- *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle? }
+ *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle?, watch?: { enabled?, everyMinutes?, activeStart?, activeEnd? } }
  *   GET  /api/supervisor/bark                    keys masked; signed in only
  *   PUT  /api/supervisor/bark                    { enabled?, serverUrl?, openIn?, deviceKey?, encryption? }
  *   POST /api/supervisor/bark/test
@@ -133,7 +133,19 @@ export async function handleSupervisorRoutes(
     const patch = validatePrefsPatch(fields);
     if ("error" in patch)
       return Response.json({ error: patch.error }, { status: 400 });
-    return Response.json({ prefs: await setSupervisorPrefs(user, patch) });
+    const prefs = await setSupervisorPrefs(user, patch);
+    // The watch follows the prefs: turned off it pauses, turned on it
+    // starts (supervisor-watch.ts). Not awaited: the prefs are saved.
+    if (patch.watch)
+      void import("../supervisor-watch")
+        .then(({ ensureWatchGoal }) => ensureWatchGoal(user))
+        .catch((error: unknown) =>
+          console.warn(
+            "[watch] could not apply the prefs:",
+            error instanceof Error ? error.message : error,
+          ),
+        );
+    return Response.json({ prefs });
   }
 
   // Bark holds the person's device and encryption keys: signed-in people

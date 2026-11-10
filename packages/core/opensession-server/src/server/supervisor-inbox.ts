@@ -39,6 +39,7 @@ import {
   localClock,
   quietHoursEnd,
   type SupervisorPrefs,
+  type SupervisorPrefsPatch,
 } from "./supervisor-quiet-hours";
 import { reportStyleInstruction } from "./supervisor-report-style";
 import { CATALOG_DOCUMENT_MAX_VALUE_BYTES } from "./session-kernel/catalog-document-protocol";
@@ -158,6 +159,9 @@ export interface SupervisorInboxDeps {
   /** Rotate the person's supervisor session when it is due (supervisor.ts
    *  rotationDue). Creates nothing for a person without one. */
   rotateSupervisor(user: string): Promise<unknown>;
+  /** Make sure the person's background watch exists and matches their
+   *  prefs (supervisor-watch.ts). Cheap after the first call. */
+  ensureWatch(user: string): Promise<unknown>;
   /** The person's profile time zone (identity.team[].timezone, else the
    *  instance default, else UTC). */
   timeZone(user: string): string;
@@ -180,6 +184,8 @@ const defaultDeps: SupervisorInboxDeps = {
       .sessionId,
   rotateSupervisor: async (user) =>
     (await import("./supervisor")).rotateSupervisorIfDue(user),
+  ensureWatch: async (user) =>
+    (await import("./supervisor-watch")).ensureWatchGoalOnce(user),
   timeZone: (user) => timezoneForUser(user) || "UTC",
 };
 
@@ -651,6 +657,7 @@ export async function postSupervisorItem(
   if (already) return { item: already, created: false, delivery: "none" };
   const item = outcome.item as SupervisorItem | null;
   if (!item) throw new Error("supervisor item was not recorded");
+  announcePosted(item, outcome.created);
 
   let delivery: PostDelivery = outcome.plan === "hold" ? "held" : "none";
   if (outcome.plan === "push")
@@ -675,6 +682,39 @@ async function getItem(
   id: string,
 ): Promise<SupervisorItem | undefined> {
   return (await readDocument(user)).items.find((item) => item.id === id);
+}
+
+// ── Posted listeners ────────────────────────────────────────────────────────
+
+/** Told about every item raised or updated, after it is recorded. */
+export type PostedListener = (
+  item: SupervisorItem,
+  created: boolean,
+) => unknown;
+
+const postedListeners = new Set<PostedListener>();
+
+/** Subscribe to recorded posts (the watch wakes on a lead's new item);
+ *  returns the unsubscribe function. */
+export function onSupervisorItemPosted(listener: PostedListener): () => void {
+  postedListeners.add(listener);
+  return () => {
+    postedListeners.delete(listener);
+  };
+}
+
+/** Each listener on its own microtask: one that throws or never settles
+ *  cannot fail or hold up the post. */
+function announcePosted(item: SupervisorItem, created: boolean): void {
+  for (const listener of [...postedListeners])
+    void Promise.resolve()
+      .then(() => listener(item, created))
+      .catch((error: unknown) => {
+        console.warn(
+          "[supervisor-inbox] posted listener failed:",
+          error instanceof Error ? error.message : error,
+        );
+      });
 }
 
 // ── Reading ─────────────────────────────────────────────────────────────────
@@ -868,12 +908,19 @@ export async function getSupervisorPrefs(
 
 export async function setSupervisorPrefs(
   user: string,
-  patch: Partial<SupervisorPrefs>,
+  patch: SupervisorPrefsPatch,
 ): Promise<SupervisorPrefsView> {
-  const doc = await updateDocument(user, (current) => ({
-    ...current,
-    prefs: { ...cleanPrefs(current.prefs), ...patch },
-  }));
+  const doc = await updateDocument(user, (current) => {
+    const base = cleanPrefs(current.prefs);
+    return {
+      ...current,
+      prefs: {
+        ...base,
+        ...patch,
+        watch: { ...base.watch, ...patch.watch },
+      },
+    };
+  });
   const { prefs, timeZone } = prefsAndZone(doc, user);
   return { ...prefs, effectiveTimezone: timeZone };
 }
@@ -1036,6 +1083,15 @@ export function sweepSupervisorInbox(): Promise<{
           error instanceof Error ? error.message : error,
         );
       }
+      // A person who got a supervisor after boot gets their watch here.
+      try {
+        await deps.ensureWatch(user);
+      } catch (error) {
+        console.warn(
+          "[supervisor-inbox] watch check failed:",
+          error instanceof Error ? error.message : error,
+        );
+      }
     }
     return totals;
   })().finally(() => {
@@ -1064,6 +1120,7 @@ export function __resetSupervisorInboxForTest(): void {
     clearInterval(globalThis.__supervisorInboxSweep);
   globalThis.__supervisorInboxSweep = undefined;
   answerHandlers.length = 0;
+  postedListeners.clear();
   sweeping = null;
 }
 

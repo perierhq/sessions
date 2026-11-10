@@ -221,6 +221,11 @@ What landed from this proposal, and the decisions made on the way:
   `blob://item/<id>`. The paid Apple team is unavailable, so Blob has no APNs of its own.
 - **Long-lived supervisor** (#154): a ledger, weekly rotation reseeded from it, daily
   memory refresh, more recent context kept per compaction.
+- **Watch:** the supervisor's conversation only talks with its owner. A per-person watch goal
+  (`supervisor-watch.ts`) wakes on leads' new items, incidents, workers' reports and its own
+  schedule (every 30 minutes from 08:00 to 22:00 by default), skips the model when nothing
+  changed, and reports only through the inbox and the shared ledger. The conversation keeps no
+  timers and hands follow-ups over with `watch_for` (`docs/research/always-on-agents.md`).
 - **Voice** (#150, #155): Fish Audio read-aloud on the server; the OpenAI live call is
   opt-in in Blob because it is billed per minute.
 

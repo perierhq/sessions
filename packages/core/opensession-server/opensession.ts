@@ -158,6 +158,7 @@ import { startIncidentNotifications } from "./src/server/incidents/notifier";
 import { startSupportNotifications } from "./src/server/support/notify";
 import { startSupervisorInbox } from "./src/server/supervisor-inbox";
 import { startProjectLeads } from "./src/server/leads/goal";
+import { startSupervisorWatch } from "./src/server/supervisor-watch";
 import { startSupportRetention } from "./src/server/support/retention";
 import { installSupportPipeline } from "./src/server/support/routing";
 import { startSupportTick } from "./src/server/support/tick";
@@ -956,6 +957,12 @@ if (!g.__opensessionBooted) {
     // its settings; the owner's answers reach the lead's ledger.
     startProjectLeads().catch((error: unknown) =>
       console.error("[leads] start failed:", error),
+    );
+    // The supervisor's watch: a background goal per person that wakes on
+    // leads' items, incidents, workers' reports and its schedule, and
+    // reports only through the inbox.
+    startSupervisorWatch().catch((error: unknown) =>
+      console.error("[watch] start failed:", error),
     );
     // Incident, signal and access changes reach open incident views.
     startIncidentBroadcasts();
