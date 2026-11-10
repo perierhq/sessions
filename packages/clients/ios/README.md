@@ -718,6 +718,15 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   long-press for "Dismiss", which closes it on the server. `fyi` items never
   show on the home unless a link opens one. Blob reads each decision's first
   paragraph aloud once, when it comes up.
+- Thinking steps (`Blob/BlobSteps.swift`, `Blob/BlobThinkingView.swift`):
+  while the supervisor works on your message, one line above Blob says what
+  it is doing ("Reading my notes", "Reading PR #212 · 12s"), read from the
+  transcript entries after your message. Tap it for the turn's steps with
+  their times. If nothing has been said 4 s after the message went out and
+  reading aloud is on, Blob says a short filler once (`Blob/BlobFiller.swift`):
+  the server voice's three fillers are fetched once per voice and model into
+  `Caches/BlobFiller/<voiceId>/` and played from there; until then an Apple
+  voice says it.
 - Links (`blob` URL scheme): `blob://item/<id>`, as Bark notifications open
   it, shows that item as the current decision, even after "Not now";
   `blob://` alone just opens Blob.
@@ -729,6 +738,8 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   for screenshots and motion checks. `BLOB_DEMO_HISTORY=1` fills history
   with canned exchanges; `BLOB_DEMO_HISTORY=open` also opens it.
   `BLOB_DEMO_DECISIONS=1` shows two canned decisions.
+  `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1
+  BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking.
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 

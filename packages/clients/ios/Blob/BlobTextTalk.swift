@@ -21,12 +21,12 @@ final class BlobTextTalk {
     private(set) var heard = ""
     let listener = BlobListener()
     let speaker = BlobSpeaker()
-    private var desk: SessionViewModel?
+    private(set) var desk: SessionViewModel?
     private let owner = UUID()
     /// The last transcript entry when the message went out; the answer is
     /// what comes after it. An id, not a count, because history paging
     /// prepends older entries.
-    private var sentAfter: String?
+    private(set) var sentAfter: String?
     private var connecting: Task<SessionViewModel, Error>?
 
     var active: Bool { phase != .idle }

@@ -76,6 +76,14 @@ struct BlobHomeView: View {
                     historyOpen ? closeHistory() : openHistory()
                 }
 
+                // What the supervisor is doing, just above Blob while it thinks.
+                BlobThinkingLayer(
+                    talk: text,
+                    blobCenter: CGPoint(x: insets.leading + (geo.size.width - insets.leading - insets.trailing) / 2, y: geo.size.height * 0.4),
+                    blobRadius: 66,
+                    hidden: historyOpen
+                )
+
                 if !historyOpen {
                     captions(insets: insets)
                         .transition(.opacity)
