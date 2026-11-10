@@ -6,8 +6,7 @@
  * goals.ts; this is the runner + ticker (they need the run/MCP wiring).
  */
 
-import { randomUUIDv7 } from "bun";
-import { existsSync } from "fs";
+import { access } from "node:fs/promises";
 import { createHumansMcpServer } from "../agents/slack/humans-tools";
 import { createGoalSelfMcpServer } from "../agents/slack/goal-tools";
 import { runAgent, isAgentSessionBusy } from "./agent-runner";
@@ -17,13 +16,9 @@ import { getGoal, listGoals, saveGoal, type Goal } from "./goals";
 import { automaticFallbackModel, providerFor } from "./models";
 import { engineSessionPatch } from "./sessions";
 import { STRIPE_CONFIRM_TOOLS } from "./runner-shared";
+import { checkoutHeadBranch } from "./session-branch-ownership";
 import { gitIdentityFor } from "./shared/user-mappings";
-import {
-  createWorktree,
-  getRepo,
-  reviveWorktree,
-  worktreeHeadBranch,
-} from "./worktree";
+import { createWorktree, getRepo, reviveWorktree } from "./worktree";
 import { updateSessionFile } from "./session-cache";
 import { attachSessionWatchersToEngineTranscript } from "./run-session";
 import type { NativeSessionFile } from "./types";
@@ -121,7 +116,7 @@ export async function runGoal(goal: Goal): Promise<void> {
     if (goal.mode === "code") {
       const repo = getRepo(goal.repo);
       branch = goal.branch || `goal-${goal.id.slice(-8)}`;
-      if (goal.worktreePath && existsSync(goal.worktreePath)) {
+      if (goal.worktreePath && (await pathExists(goal.worktreePath))) {
         cwd = goal.worktreePath;
       } else {
         try {
@@ -132,7 +127,7 @@ export async function runGoal(goal: Goal): Promise<void> {
       }
     }
 
-    saveGoal({
+    await saveGoal({
       ...goal,
       osSessionId: bksId,
       branch: branch || undefined,
@@ -151,8 +146,10 @@ export async function runGoal(goal: Goal): Promise<void> {
     // engine-id/model fields plus the goal's live config projection
     // (mode/repo/worktree/branch/title track the goal record). Serialized
     // via updateSessionFile.
-    const persistSession = (engineSessionId: string) =>
-      updateSessionFile(bksId, (data) => {
+    const persistSession = async (engineSessionId: string) => {
+      // Read before the mutator, which is synchronous.
+      const head = goal.mode === "code" ? await checkoutHeadBranch(cwd) : null;
+      await updateSessionFile(bksId, (data) => {
         // Widen to Partial: the file may not exist yet (create-if-absent).
         const existing: Partial<NativeSessionFile> = data;
         return {
@@ -169,7 +166,7 @@ export async function runGoal(goal: Goal): Promise<void> {
           ...(selectedModel ? { model: selectedModel } : {}),
           // Actual worktree HEAD wins over the recorded name — the agent may
           // have switched branches mid-run (see run-session.ts's same sync).
-          branch: goal.mode === "code" ? worktreeHeadBranch(cwd) || branch : "",
+          branch: goal.mode === "code" ? head || branch : "",
           worktreeDir: cwd,
           ...(goal.mode === "code" ? { repo: getRepo(goal.repo).id } : {}),
           title: `${goal.name} — goal`,
@@ -178,6 +175,7 @@ export async function runGoal(goal: Goal): Promise<void> {
           lastActivity: new Date().toISOString(),
         };
       });
+    };
 
     console.log(`[goals] Wake #${wake} of "${goal.name}" → ${bksId}`);
 
@@ -230,8 +228,8 @@ export async function runGoal(goal: Goal): Promise<void> {
           effectiveProvider = providerFor(to);
           if (shouldPersistModelSwitch(event)) {
             selectedModel = to;
-            const current = getGoal(goal.id) || goal;
-            saveGoal({ ...current, model: to });
+            const current = (await getGoal(goal.id)) || goal;
+            await saveGoal({ ...current, model: to });
           }
         }
       }
@@ -247,7 +245,7 @@ export async function runGoal(goal: Goal): Promise<void> {
     // The run may have rescheduled / paused / finished itself via
     // opensession-goal-self — reload so we don't clobber those, then apply
     // bookkeeping and a 24h fallback if it left no next wake.
-    const fresh = getGoal(goal.id) || goal;
+    const fresh = (await getGoal(goal.id)) || goal;
     const next: Goal = {
       ...fresh,
       osSessionId: bksId,
@@ -271,26 +269,36 @@ export async function runGoal(goal: Goal): Promise<void> {
         `[goals] "${goal.name}" set no next wake — defaulting to +24h`,
       );
     }
-    saveGoal(next);
+    await saveGoal(next);
     console.log(
       `[goals] "${goal.name}" wake #${wake} ${errorMsg ? `error: ${errorMsg}` : "ok"} (status ${next.status})`,
     );
   } catch (e: any) {
     console.error(`[goals] "${goal.name}" wake failed:`, e);
-    const fresh = getGoal(goal.id);
-    if (fresh) {
-      saveGoal({
-        ...fresh,
-        lastRunAt: startedAt.toISOString(),
-        lastRunStatus: "error",
-        lastRunError: e?.message || String(e),
-        // Back off a day on a hard failure so it can't hot-loop crashing.
-        nextWakeAt:
-          fresh.status === "active" &&
-          Date.parse(fresh.nextWakeAt) <= startedAt.getTime()
-            ? new Date(startedAt.getTime() + 24 * 60 * 60 * 1000).toISOString()
-            : fresh.nextWakeAt,
-      });
+    try {
+      const fresh = await getGoal(goal.id);
+      if (fresh) {
+        await saveGoal({
+          ...fresh,
+          lastRunAt: startedAt.toISOString(),
+          lastRunStatus: "error",
+          lastRunError: e?.message || String(e),
+          // Back off a day on a hard failure so it can't hot-loop crashing.
+          nextWakeAt:
+            fresh.status === "active" &&
+            Date.parse(fresh.nextWakeAt) <= startedAt.getTime()
+              ? new Date(
+                  startedAt.getTime() + 24 * 60 * 60 * 1000,
+                ).toISOString()
+              : fresh.nextWakeAt,
+        });
+      }
+    } catch (saveError) {
+      // The catalog may be what failed; callers fire and forget this run.
+      console.error(
+        `[goals] "${goal.name}" could not record the failed wake:`,
+        saveError,
+      );
     }
   } finally {
     runningGoals.delete(goal.id);
@@ -306,28 +314,50 @@ export async function runGoal(goal: Goal): Promise<void> {
  */
 export function startGoalTicker(): void {
   if (g.__goalTicker || isDevInstance()) return;
+  // Listing is a catalog round trip; a tick still waiting on it is skipped
+  // rather than stacked behind.
+  let ticking = false;
   g.__goalTicker = setInterval(() => {
-    const now = Date.now();
-    for (const goal of listGoals()) {
-      if (goal.status !== "active") continue;
-      if (Date.parse(goal.nextWakeAt) > now) continue;
-      if (runningGoals.has(goal.id)) continue;
-      // A prior process's run may still be resuming from the journal — don't
-      // double-drive the same engine session.
-      if (isAgentSessionBusy(goal.engineSessionId, goal.osSessionId)) continue;
-      // Safety cap: stop an out-of-control mission until a human resumes it.
-      if (goal.maxWakes && goal.wakeCount >= goal.maxWakes) {
-        saveGoal({
-          ...goal,
-          status: "paused",
-          pauseReason: `Hit safety cap of ${goal.maxWakes} wakes — resume to continue.`,
-        });
-        console.log(
-          `[goals] "${goal.name}" hit maxWakes ${goal.maxWakes}; paused`,
-        );
-        continue;
-      }
-      void runGoal(goal);
-    }
+    if (ticking) return;
+    ticking = true;
+    tickGoals()
+      .catch((error) => console.error("[goals] tick failed:", error))
+      .finally(() => {
+        ticking = false;
+      });
   }, 60_000);
+}
+
+async function tickGoals(): Promise<void> {
+  const now = Date.now();
+  for (const goal of await listGoals()) {
+    if (goal.status !== "active") continue;
+    if (Date.parse(goal.nextWakeAt) > now) continue;
+    if (runningGoals.has(goal.id)) continue;
+    // A prior process's run may still be resuming from the journal — don't
+    // double-drive the same engine session.
+    if (isAgentSessionBusy(goal.engineSessionId, goal.osSessionId)) continue;
+    // Safety cap: stop an out-of-control mission until a human resumes it.
+    if (goal.maxWakes && goal.wakeCount >= goal.maxWakes) {
+      await saveGoal({
+        ...goal,
+        status: "paused",
+        pauseReason: `Hit safety cap of ${goal.maxWakes} wakes — resume to continue.`,
+      });
+      console.log(
+        `[goals] "${goal.name}" hit maxWakes ${goal.maxWakes}; paused`,
+      );
+      continue;
+    }
+    void runGoal(goal);
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }

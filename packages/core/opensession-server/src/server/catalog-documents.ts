@@ -84,6 +84,10 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   "knowledge-jobs",
   // Knowledge capture queue, `capture:<messageId>` (knowledge/ingest/capture.ts).
   "knowledge-pending",
+  // Goals, keyed by goal id (goals.ts). Imported once from the legacy
+  // `<id>.json` files in the goals state directory; each goal's
+  // `<id>.ledger.md` stays a file there, which the import skips.
+  "goals",
 ] as const;
 
 export type ApplicationCatalogNamespace =
@@ -122,7 +126,9 @@ function validateNamespace(namespace: string): void {
     throw new Error(`Unsupported application catalog namespace: ${namespace}`);
 }
 
-function isValidKey(key: string): boolean {
+/** Whether `key` can name a document: callers holding an untrusted id (a
+ *  URL segment) treat an invalid one as a miss instead of a thrown error. */
+export function isValidCatalogKey(key: string): boolean {
   return !(
     !key ||
     key.length > 256 ||
@@ -133,7 +139,7 @@ function isValidKey(key: string): boolean {
 }
 
 function validateKey(key: string): void {
-  if (!isValidKey(key))
+  if (!isValidCatalogKey(key))
     throw new Error("Invalid application catalog document key");
 }
 
@@ -238,7 +244,7 @@ async function seedDerived(
   for (const row of rows) {
     const size = Buffer.byteLength(row.key) + Buffer.byteLength(row.value);
     if (
-      !isValidKey(row.key) ||
+      !isValidCatalogKey(row.key) ||
       Buffer.byteLength(row.value) > CATALOG_DOCUMENT_MAX_VALUE_BYTES
     ) {
       console.warn(`[catalog] skipped unimportable ${namespace}/${row.key}`);
