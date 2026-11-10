@@ -19,6 +19,12 @@ struct BlobHomeView: View {
     /// Writing instead of speaking.
     @State private var typing = false
     @State private var draft = ""
+    /// Earlier exchanges, opened with a swipe up.
+    @State private var historyOpen = false
+    /// Whether a long reply is scrolled to its end, so a swipe up there opens
+    /// history instead of fighting the reply's own scrolling.
+    @State private var replyAtEnd = true
+    @State private var dragStartedAtEnd: Bool?
     @FocusState private var fieldFocused: Bool
     @AppStorage("blob.hasTalked") private var hasTalked = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -32,6 +38,21 @@ struct BlobHomeView: View {
             let insets = outer.safeAreaInsets
             GeometryReader { geo in
             ZStack(alignment: .bottom) {
+                if historyOpen {
+                    BlobHistoryView(
+                        exchanges: text.history,
+                        relay: text.relay,
+                        canLoadEarlier: text.canLoadEarlier,
+                        loadingEarlier: text.loadingEarlier,
+                        loadEarlier: { text.loadEarlier() },
+                        dismiss: closeHistory,
+                        margins: Self.historyMargins(insets: insets)
+                    )
+                    .transition(reduceMotion ? .opacity : .offset(y: 48).combined(with: .opacity))
+                }
+
+                // Drawn over history, so Blob stays visible in its slot, but
+                // never in the way of a scroll: taps are handled below.
                 TimelineView(.animation(paused: scenePhase != .active)) { timeline in
                     let targets = targets(in: geo.size, insets: insets, at: timeline.date)
                     Canvas { context, _ in
@@ -39,18 +60,28 @@ struct BlobHomeView: View {
                         physics.draw(in: &context, dark: colorScheme == .dark, reduceMotion: reduceMotion)
                     }
                 }
+                .allowsHitTesting(false)
                 .accessibilityElement()
                 .accessibilityLabel("Blob")
-                .accessibilityValue(talking ? statusLabel : "Asleep")
-                .accessibilityHint(talking ? "Ends the conversation" : "Starts a conversation")
+                .accessibilityValue(historyOpen ? "History" : talking ? statusLabel : "Asleep")
+                .accessibilityHint(historyOpen ? "Closes history" : talking ? "Ends the conversation" : "Starts a conversation")
                 .accessibilityAddTraits(.isButton)
-                .accessibilityAction { toggleTalk() }
+                .accessibilityAction { historyOpen ? closeHistory() : toggleTalk() }
+                .accessibilityAction(named: historyOpen ? "Close history" : "Show history") {
+                    historyOpen ? closeHistory() : openHistory()
+                }
 
-                captions(insets: insets)
+                if !historyOpen {
+                    captions(insets: insets)
+                        .transition(.opacity)
+                }
             }
             .contentShape(Rectangle())
+            .simultaneousGesture(historySwipe)
             .onTapGesture(coordinateSpace: .local) { location in
-                if hit(location) {
+                if historyOpen {
+                    if hit(location) { closeHistory() }
+                } else if hit(location) {
                     toggleTalk()
                 } else if typing && draft.isEmpty {
                     typing = false
@@ -76,13 +107,22 @@ struct BlobHomeView: View {
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
         .onChange(of: text.settled) { _, settled in if settled { text.answerSettled() } }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: typing)
-        .task { voiceConfigured = await BlobTextTalk.voiceConfigured() }
+        .onChange(of: text.phase) { _, phase in
+            // A chip tapped in history is the next thing you say: its answer
+            // comes on the home.
+            if phase == .waiting, historyOpen { closeHistory() }
+        }
+        .task {
+            text.connect()
+            voiceConfigured = await BlobTextTalk.voiceConfigured()
+        }
         #if DEBUG
         .onAppear {
             if ProcessInfo.processInfo.environment["BLOB_DEMO_TYPING"] != nil {
                 draft = "what shipped this week?"
                 typing = true
             }
+            if BlobExchange.demoOpen { historyOpen = true }
         }
         #endif
         .onChange(of: scenePhase) { _, phase in
@@ -143,6 +183,8 @@ struct BlobHomeView: View {
         // A reply on screen gets the room: Blob moves up and keeps talking from there.
         let showingReply = text.answer != nil || Self.demoReply != nil
         let top = CGPoint(x: center.x, y: max(insets.top, 20) + 56)
+        // History gets the screen; Blob waits in its slot, small.
+        if historyOpen { talking = false }
         return BlobTargets(
             mode: mode,
             position: talking ? (showingReply ? top : center) : slot,
@@ -205,6 +247,50 @@ struct BlobHomeView: View {
         #else
         false
         #endif
+    }
+
+    /// Swipe up to look back. Over a long reply it counts only once the reply
+    /// is scrolled to its end, so reading it never opens history by accident.
+    private var historySwipe: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onChanged { _ in
+                if dragStartedAtEnd == nil { dragStartedAtEnd = !replyOnScreen || replyAtEnd }
+            }
+            .onEnded { value in
+                defer { dragStartedAtEnd = nil }
+                let dy = value.translation.height
+                guard !historyOpen, dragStartedAtEnd ?? true,
+                      dy < -60, abs(value.translation.width) < -dy else { return }
+                openHistory()
+            }
+    }
+
+    private var replyOnScreen: Bool { text.replyEntry != nil || text.answer != nil || Self.demoReply != nil }
+
+    private static func atEnd(_ geometry: ScrollGeometry) -> Bool {
+        geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 2
+    }
+
+    private func openHistory() {
+        if typing && draft.isEmpty { typing = false }
+        fieldFocused = false
+        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35)) { historyOpen = true }
+    }
+
+    private func closeHistory() {
+        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.3)) { historyOpen = false }
+    }
+
+    /// History keeps clear of the safe area and of Blob: beside it when Blob
+    /// sits in the Duo's system strip, above it in a phone's corner.
+    private static func historyMargins(insets: EdgeInsets) -> EdgeInsets {
+        let inStrip = insets.trailing >= 60 || insets.leading >= 60
+        return EdgeInsets(
+            top: max(insets.top, 20) + 16,
+            leading: insets.leading + 24,
+            bottom: inStrip ? max(insets.bottom, 20) + 16 : insets.bottom + 88,
+            trailing: insets.trailing + 24
+        )
     }
 
     private func toggleTalk() {
@@ -291,7 +377,7 @@ struct BlobHomeView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 10)
             .transition(.move(edge: .bottom).combined(with: .opacity))
-        } else if !engine.active && text.phase != .listening {
+        } else if !engine.active && text.phase != .listening && !historyOpen {
             HStack {
                 Button {
                     typing = true
@@ -353,6 +439,7 @@ struct BlobHomeView: View {
             }
             .frame(maxHeight: replyHeight)
             .scrollBounceBehavior(.basedOnSize)
+            .onScrollGeometryChange(for: Bool.self, of: Self.atEnd) { _, atEnd in replyAtEnd = atEnd }
         } else if let answer = text.answer {
             // Still being written: plain text until the reply settles.
             ScrollView {

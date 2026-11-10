@@ -21,8 +21,11 @@ final class BlobTextTalk {
     let speaker = BlobSpeaker()
     private var desk: SessionViewModel?
     private let owner = UUID()
-    /// Transcript size when the message went out; the answer is what comes after.
-    private var sentAt = 0
+    /// The last transcript entry when the message went out; the answer is
+    /// what comes after it. An id, not a count, because history paging
+    /// prepends older entries.
+    private var sentAfter: String?
+    private var connecting: Task<SessionViewModel, Error>?
 
     var active: Bool { phase != .idle }
     /// Voice level for Blob's body: yours while listening, its own while it reads.
@@ -44,7 +47,29 @@ final class BlobTextTalk {
     /// draws it with the block catalog (`MarkdownBody`); see adrs/blob-views.md.
     var replyEntry: TranscriptEntry? {
         guard let desk, phase == .waiting, !desk.isStreaming else { return nil }
-        return desk.entries.dropFirst(sentAt).last { $0.type == "assistant" && $0.isReasoning != true }
+        let start = sentAfter.flatMap { id in desk.entries.lastIndex { $0.id == id } }.map { $0 + 1 } ?? 0
+        return desk.entries[start...].last { $0.type == "assistant" && $0.isReasoning != true }
+    }
+
+    /// Earlier exchanges with the supervisor, oldest first, read from its
+    /// transcript. Voice-call turns are mirrored into the same transcript.
+    var history: [BlobExchange] {
+        #if DEBUG
+        if let demo = BlobExchange.demo { return demo }
+        #endif
+        return BlobExchange.exchanges(in: desk?.entries ?? [])
+    }
+
+    var canLoadEarlier: Bool { desk?.canLoadEarlier ?? false }
+    var loadingEarlier: Bool { desk?.loadingEarlier ?? false }
+    func loadEarlier() { desk?.loadEarlier() }
+
+    /// Connects to the supervisor ahead of the first message so history is
+    /// there to scroll back through. Only the latest page of the transcript
+    /// loads; earlier pages come as you scroll.
+    func connect() {
+        guard desk == nil, ServerConfig.shared.isConfigured else { return }
+        Task { _ = try? await supervisorModel() }
     }
 
     /// The supervisor's quick-reply relay, so `choices` chips in a reply send.
@@ -123,7 +148,7 @@ final class BlobTextTalk {
         guard !text.isEmpty else { reset(); return }
         do {
             let model = try await supervisorModel()
-            sentAt = model.entries.count
+            sentAfter = model.entries.last?.id
             model.sendQuickReply(text)
         } catch {
             phase = .failed(error.localizedDescription)
@@ -136,7 +161,7 @@ final class BlobTextTalk {
         spokenAnswer = nil
         heard = text
         phase = .waiting
-        sentAt = desk.entries.count
+        sentAfter = desk.entries.last?.id
         desk.sendQuickReply(text)
     }
 
@@ -144,14 +169,27 @@ final class BlobTextTalk {
     /// screen (adrs/supervisor-and-leads.md).
     private func supervisorModel() async throws -> SessionViewModel {
         if let desk { return desk }
-        let ensure = try await OS1API.ensureSupervisor()
-        let model = SessionViewModel(session: Session(id: ensure.sessionId))
-        // A chip in a reply is the next thing you say: send it and wait for
-        // the answer to that, not the one already on screen.
-        model.quickReplies.send = { [weak self] text in self?.follow(up: text) }
-        model.start(owner: owner)
-        desk = model
-        return model
+        // One connection, even when the first message races `connect()`.
+        if let connecting { return try await connecting.value }
+        let task = Task { [owner] in
+            let ensure = try await OS1API.ensureSupervisor()
+            let model = SessionViewModel(session: Session(id: ensure.sessionId))
+            // A chip in a reply is the next thing you say: send it and wait for
+            // the answer to that, not the one already on screen.
+            model.quickReplies.send = { [weak self] text in self?.follow(up: text) }
+            model.start(owner: owner)
+            return model
+        }
+        connecting = task
+        do {
+            let model = try await task.value
+            desk = model
+            connecting = nil
+            return model
+        } catch {
+            connecting = nil
+            throw error
+        }
     }
 
     /// Whether the server can run the live voice call. Nil when it can't say

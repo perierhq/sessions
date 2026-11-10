@@ -697,9 +697,15 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   prototype in `design/blob-motion/blob.js`. Keep the two in step.
 - Tap Blob to talk. The conversation is the Desk's live voice call
   (`DeskVoiceEngine.desk`); long-press for settings.
+- Swipe up on the home for history (`Blob/BlobHistoryView.swift`): earlier
+  exchanges from the supervisor transcript, newest at the bottom, replies
+  drawn with the block catalog. Pull down past the oldest, or tap Blob, to
+  go back. Blob connects to the supervisor on launch so it is there before
+  the first message.
 - Debug builds launched with `BLOB_DEMO=1` play a scripted conversation with
   no server or microphone, and `BLOB_DEMO_AT=<seconds>` freezes one moment,
-  for screenshots and motion checks.
+  for screenshots and motion checks. `BLOB_DEMO_HISTORY=1` fills history
+  with canned exchanges; `BLOB_DEMO_HISTORY=open` also opens it.
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 
