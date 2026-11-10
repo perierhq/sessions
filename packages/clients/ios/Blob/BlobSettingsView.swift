@@ -9,6 +9,7 @@ struct BlobSettingsView: View {
     @AppStorage(BlobSpeaker.voiceKey) private var voiceId = ""
     @AppStorage(BlobSpeaker.liveCallKey) private var liveCall = false
     @State private var voices: [AVSpeechSynthesisVoice] = []
+    @State private var modelError: String?
     @State private var showAccount = false
     @Environment(\.dismiss) private var dismiss
 
@@ -27,7 +28,9 @@ struct BlobSettingsView: View {
                     Text("Talk to Blob over an OpenAI live call instead. Needs a voice key on your server and is paid per minute.")
                 }
 
-                if readAloud {
+                if readAloud, let server = speaker.server, server.configured {
+                    serverVoiceSection(server)
+                } else if readAloud {
                     Section {
                         if voices.isEmpty {
                             Text("No Premium or Enhanced voices installed")
@@ -80,7 +83,53 @@ struct BlobSettingsView: View {
             }
             .sheet(isPresented: $showAccount) { SettingsView() }
             .onAppear { voices = BlobSpeaker.goodVoices() }
+            .task { await speaker.refreshServerVoice(force: true) }
             .onDisappear { speaker.stop() }
+        }
+    }
+
+    /// Fish Audio models the server accepts, best first.
+    private static let serverModels = [
+        (id: "s2.1-pro", name: "Best quality"),
+        (id: "s2.1-pro-free", name: "Free"),
+    ]
+
+    private func serverVoiceSection(_ server: OS1API.BlobSpeechStatus) -> some View {
+        let current = server.model ?? "s2.1-pro"
+        return Section {
+            ForEach(Self.serverModels, id: \.id) { model in
+                Button {
+                    guard model.id != current else { return }
+                    Task {
+                        do {
+                            try await speaker.setServerModel(model.id)
+                            modelError = nil
+                        } catch {
+                            modelError = error.localizedDescription
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(model.name)
+                            .foregroundStyle(OS1VisualStyle.text)
+                        Spacer()
+                        if model.id == current {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(OS1VisualStyle.accentInk)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            Text("Voice \u{00B7} Fish Audio")
+        } footer: {
+            if let modelError {
+                Text(modelError)
+            } else {
+                Text("Free requests may be used by Fish to train its models.")
+            }
         }
     }
 

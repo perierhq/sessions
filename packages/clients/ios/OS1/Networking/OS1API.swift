@@ -2396,6 +2396,33 @@ enum OS1API {
         try await post("/api/supervisor/ensure", body: ["user": ServerConfig.shared.userName])
     }
 
+    /// The server voice Blob reads answers with: Fish Audio text to speech,
+    /// with the key kept on the server (server: blob-speech.ts).
+    struct BlobSpeechStatus: Decodable, Sendable, Equatable {
+        let configured: Bool
+        /// `s2.1-pro` (best quality) or `s2.1-pro-free`.
+        let model: String?
+        let voiceId: String?
+    }
+
+    static func blobSpeechStatus() async throws -> BlobSpeechStatus {
+        try await get("/api/blob/speech/status")
+    }
+
+    /// Picks the Fish model and keeps the voice as it is.
+    static func setBlobSpeechModel(_ model: String) async throws -> BlobSpeechStatus {
+        try await put("/api/blob/speech/settings", body: ["model": model])
+    }
+
+    /// One piece of an answer as mp3, synthesized by the server.
+    static func blobSpeech(_ text: String) async throws -> Data {
+        try await mutateData(
+            "/api/blob/speech",
+            method: "POST",
+            body: ["text": text, "user": ServerConfig.shared.userName]
+        )
+    }
+
     /// Something the supervisor raised for its owner (server:
     /// supervisor-inbox.ts). `needs-you` items wait for an answer; `fyi` ones
     /// go into the daily digest. Decoded tolerantly: a field the server adds

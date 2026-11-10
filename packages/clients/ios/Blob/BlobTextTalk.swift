@@ -4,7 +4,8 @@ import Observation
 /// Talking to Blob when the server has no voice key: you speak, Apple's
 /// on-device recognizer (`BlobListener`) turns it into text, the text goes to
 /// the supervisor like a typed message, and Blob shows the answer and reads it aloud
-/// with a Premium or Enhanced voice (`BlobSpeaker`) when one fits.
+/// (`BlobSpeaker`): with the server's Fish Audio voice when it has one, else
+/// with a Premium or Enhanced Apple voice when one fits.
 ///
 /// The live voice call needs an OpenAI key on the server
 /// (`GET /api/desk/voice/status` reports it). Without one, this keeps the same
@@ -70,6 +71,7 @@ final class BlobTextTalk {
     func connect() {
         guard desk == nil, ServerConfig.shared.isConfigured else { return }
         Task { _ = try? await supervisorModel() }
+        Task { await speaker.refreshServerVoice() }
     }
 
     /// The supervisor's quick-reply relay, so `choices` chips in a reply send.
