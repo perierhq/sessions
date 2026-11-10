@@ -122,3 +122,10 @@ describe("Desk voice Realtime session", () => {
     ).toBe(true);
   });
 });
+
+test("a supervisor voice call introduces itself as Blob, not the Desk", async () => {
+  const { voiceInstructions } = await import("./desk-voice");
+  expect(voiceInstructions("supervisor")).toStartWith("You are Blob");
+  expect(voiceInstructions("supervisor")).not.toContain("Desk");
+  expect(voiceInstructions()).toStartWith("You are the user's Desk");
+});

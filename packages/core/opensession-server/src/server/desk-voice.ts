@@ -189,14 +189,25 @@ export async function setVoiceBackendModel(
 // ---------------------------------------------------------------------------
 // Ephemeral secret mint — the OpenAI API key never reaches the browser.
 
-const VOICE_INSTRUCTIONS = `You are the user's Desk — their standing concierge for the Open Session workspace — currently on a voice call. You are the same Desk they type to; this call is one conversation with that Desk, not a separate assistant.
+const DESK_VOICE_INTRO = `You are the user's Desk — their standing concierge for the Open Session workspace — currently on a voice call. You are the same Desk they type to; this call is one conversation with that Desk, not a separate assistant.`;
 
-Voice discipline:
+/** Blob talks to the supervisor (supervisor.ts), which must not introduce
+ *  itself as the Desk. */
+const SUPERVISOR_VOICE_INTRO = `You are Blob, the user's supervisor for the projects they run with Open Session, currently on a voice call. You are the same supervisor they type to in the Blob app; this call continues that conversation, not a separate assistant.`;
+
+const VOICE_DISCIPLINE = `Voice discipline:
 - Spoken register: short, natural sentences. One or two per reply. No markdown, no lists, no IDs read aloud unless asked — refer to sessions by title.
 - You are an orchestrator, not the worker. For anything beyond a quick answer or a list edit, start a scoped worker session (start_session) and say you did.
 - Use the tools for anything about real state — sessions, todos — never guess or invent. If a tool fails, say so plainly.
 - Capture todos the moment the user mentions wanting or needing to do something. Never drop a todo unprompted.
 - Before steering or starting sessions, a one-line confirmation of what you're about to do is enough; don't over-confirm reads.`;
+
+/** The voice call's instructions for the standing session it belongs to. */
+export function voiceInstructions(standing: StandingSession = "desk"): string {
+  const intro =
+    standing === "supervisor" ? SUPERVISOR_VOICE_INTRO : DESK_VOICE_INTRO;
+  return `${intro}\n\n${VOICE_DISCIPLINE}`;
+}
 
 export const VOICE_TOOLS = [
   {
@@ -365,13 +376,17 @@ export async function recentDeskTurns(
   }
 }
 
-async function recentDeskContext(sessionId: string): Promise<string> {
+async function recentDeskContext(
+  sessionId: string,
+  standing: StandingSession = "desk",
+): Promise<string> {
   const turns = await recentDeskTurns(sessionId);
   if (!turns.length) return "";
+  const name = standing === "supervisor" ? "Blob" : "Desk";
   const lines = turns.map(
-    (t) => `${t.role === "user" ? "User" : "Desk"}: ${t.text}`,
+    (t) => `${t.role === "user" ? "User" : name}: ${t.text}`,
   );
-  return `\n\nRecent Desk conversation (text mode, continue from it):\n${lines.join("\n")}`;
+  return `\n\nRecent ${name} conversation (text mode, continue from it):\n${lines.join("\n")}`;
 }
 
 /** Server-owned Realtime session policy. Exported for contract tests so a
@@ -379,11 +394,14 @@ async function recentDeskContext(sessionId: string): Promise<string> {
 export async function buildVoiceSessionConfig(
   sessionId: string,
   user = "Open Session",
+  standing: StandingSession = "desk",
 ) {
   return {
     type: "realtime",
     model: DESK_VOICE_MODEL,
-    instructions: VOICE_INSTRUCTIONS + (await recentDeskContext(sessionId)),
+    instructions:
+      voiceInstructions(standing) +
+      (await recentDeskContext(sessionId, standing)),
     tools: [...VOICE_TOOLS, ...(await listVoiceMcpTools(user, sessionId))],
     tool_choice: "auto",
     audio: {
@@ -411,7 +429,7 @@ export async function mintVoiceSecret(
 }> {
   const key = await requireVoiceApiKey();
   const { sessionId } = await standingSessionFor(user, standing);
-  const session = await buildVoiceSessionConfig(sessionId, user);
+  const session = await buildVoiceSessionConfig(sessionId, user, standing);
   const res = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
     method: "POST",
     headers: {
