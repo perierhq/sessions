@@ -54,6 +54,9 @@ export interface SupervisorPrefs {
   reportStyle: ReportStyle;
   /** The background watch's schedule. */
   watch: WatchPrefs;
+  /** Turn the owner's conversations with Blob into personal memory
+   *  (supervisor-memory-writer.ts). */
+  memoryWriter: boolean;
 }
 
 /** A prefs change from a client: every field optional, `watch` too. */
@@ -68,6 +71,7 @@ export const DEFAULT_SUPERVISOR_PREFS: SupervisorPrefs = {
   timezone: "",
   reportStyle: DEFAULT_REPORT_STYLE,
   watch: DEFAULT_WATCH_PREFS,
+  memoryWriter: true,
 };
 
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -284,6 +288,10 @@ export function cleanPrefs(value: unknown): SupervisorPrefs {
       ? raw.reportStyle
       : DEFAULT_REPORT_STYLE,
     watch: cleanWatchPrefs(raw.watch),
+    memoryWriter:
+      typeof raw.memoryWriter === "boolean"
+        ? raw.memoryWriter
+        : DEFAULT_SUPERVISOR_PREFS.memoryWriter,
   };
 }
 
@@ -376,6 +384,11 @@ export function validatePrefsPatch(
     const watch = validateWatchPatch(raw.watch);
     if ("error" in watch) return watch;
     patch.watch = watch;
+  }
+  if (raw.memoryWriter !== undefined) {
+    if (typeof raw.memoryWriter !== "boolean")
+      return { error: "memoryWriter must be true or false" };
+    patch.memoryWriter = raw.memoryWriter;
   }
   return patch;
 }

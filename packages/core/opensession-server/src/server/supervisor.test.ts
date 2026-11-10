@@ -413,10 +413,12 @@ describe("rotation", () => {
     const first = await supervisor.ensureSupervisorSession("Ada");
     expect(await supervisor.supervisorSeedDue("Ada", first.sessionId)).toEqual({
       rotated: false,
+      previous: [],
     });
     // Nothing recorded yet (a failed turn records nothing): still due.
     expect(await supervisor.supervisorSeedDue("Ada", first.sessionId)).toEqual({
       rotated: false,
+      previous: [],
     });
     expect(await supervisor.markSupervisorSeeded("Ada", first.sessionId)).toBe(
       true,
@@ -427,7 +429,7 @@ describe("rotation", () => {
     clock += 8 * DAY;
     const second = await supervisor.ensureSupervisorSession("Ada");
     expect(await supervisor.supervisorSeedDue("Ada", second.sessionId)).toEqual(
-      { rotated: true },
+      { rotated: true, previous: [first.sessionId] },
     );
     // The retired session is never seeded or marked again.
     expect(
@@ -437,6 +439,34 @@ describe("rotation", () => {
       false,
     );
     expect((await record()).seededSessionId).toBeUndefined();
+  });
+
+  test("the memory writer's cursor moves by compare-and-set and survives a rotation", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    // A new record's writer starts at the new session's beginning.
+    const start = { sessionId: first.sessionId, seq: 0 };
+    expect((await record()).memoryCursor).toEqual(start);
+    const at = { sessionId: first.sessionId, seq: 12 };
+    expect(
+      await supervisor.advanceSupervisorMemoryCursor("Ada", start, at),
+    ).toBe(true);
+    // A run that started from an older cursor never winds it back.
+    expect(
+      await supervisor.advanceSupervisorMemoryCursor("Ada", start, {
+        sessionId: first.sessionId,
+        seq: 3,
+      }),
+    ).toBe(false);
+    expect((await record()).memoryCursor).toEqual(at);
+    clock += 8 * DAY;
+    const second = await supervisor.ensureSupervisorSession("Ada");
+    expect(second.sessionId).not.toBe(first.sessionId);
+    // The retired session's tail is still the writer's to read.
+    expect((await record()).memoryCursor).toEqual(at);
+    expect(await supervisor.markSupervisorSeeded("Ada", second.sessionId)).toBe(
+      true,
+    );
+    expect((await record()).memoryCursor).toEqual(at);
   });
 
   test("a prompt to a retired session points at the current one", () => {

@@ -85,7 +85,7 @@ import {
   linkPr,
   resolveSessionRepoContext,
   presentMemoryRepos,
-  sessionRepoIds,
+  sessionMemoryRepoIds,
   sessionWorkspaceIsRemote,
   switchPrimaryRepo,
 } from "./session-repos";
@@ -329,7 +329,7 @@ export function interactiveMcpServers(
               sessionId,
               repos: () => {
                 const s = findSession(sessionId);
-                return s ? sessionRepoIds(s) : [];
+                return s ? sessionMemoryRepoIds(s) : [];
               },
               fileTools: () => {
                 const s = findSession(sessionId);

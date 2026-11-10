@@ -185,6 +185,15 @@ describe("prefs", () => {
   });
 
   test("the report style defaults to BLUF and fails closed", () => {
+    expect(DEFAULT_SUPERVISOR_PREFS.memoryWriter).toBe(true);
+    expect(cleanPrefs({ memoryWriter: false }).memoryWriter).toBe(false);
+    expect(cleanPrefs({ memoryWriter: "no" }).memoryWriter).toBe(true);
+    expect(validatePrefsPatch({ memoryWriter: false })).toEqual({
+      memoryWriter: false,
+    });
+    expect(validatePrefsPatch({ memoryWriter: "off" })).toEqual({
+      error: "memoryWriter must be true or false",
+    });
     expect(DEFAULT_SUPERVISOR_PREFS.reportStyle).toBe("bluf");
     expect(cleanPrefs({ reportStyle: "sbar" }).reportStyle).toBe("sbar");
     expect(cleanPrefs({ reportStyle: "plain" }).reportStyle).toBe("plain");

@@ -49,6 +49,30 @@ export interface SupervisorRecord {
   /** The session whose seed (supervisor-memory.ts) a turn delivered without
    *  error. Until it equals sessionId, each turn carries the seed. */
   seededSessionId?: string;
+  /** How far the memory writer (supervisor-memory-writer.ts) has read: the
+   *  last transcript seq it turned into memory, in that session. Carried
+   *  across rotations so the retired session's tail is still read. Set at
+   *  seq 0 when the record is created; a record without one (made before
+   *  the writer existed) starts at its session's current end. */
+  memoryCursor?: SupervisorMemoryCursor;
+}
+
+export interface SupervisorMemoryCursor {
+  sessionId: string;
+  seq: number;
+}
+
+function cursorOf(value: unknown): SupervisorMemoryCursor | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const sessionId = Reflect.get(value, "sessionId");
+  const seq = Reflect.get(value, "seq");
+  return typeof sessionId === "string" &&
+    sessionId &&
+    typeof seq === "number" &&
+    Number.isFinite(seq) &&
+    seq >= 0
+    ? { sessionId, seq: Math.floor(seq) }
+    : undefined;
 }
 
 export interface SupervisorEnsured {
@@ -65,6 +89,7 @@ function recordOf(value: unknown): SupervisorRecord | null {
   const previous = Reflect.get(value, "previous");
   const compactions = Reflect.get(value, "compactions");
   const seededSessionId = Reflect.get(value, "seededSessionId");
+  const memoryCursor = cursorOf(Reflect.get(value, "memoryCursor"));
   return typeof sessionId === "string" && sessionId
     ? {
         sessionId,
@@ -84,6 +109,7 @@ function recordOf(value: unknown): SupervisorRecord | null {
         ...(typeof seededSessionId === "string" && seededSessionId
           ? { seededSessionId }
           : {}),
+        ...(memoryCursor ? { memoryCursor } : {}),
       }
     : null;
 }
@@ -339,6 +365,9 @@ async function mint(
         createdAt: now,
         previous,
         compactions: 0,
+        // The writer finishes the retired session's tail first; a new
+        // record's writer starts at the new session's beginning.
+        memoryCursor: current?.memoryCursor ?? { sessionId: id, seq: 0 },
       };
       return next;
     }),
@@ -368,22 +397,61 @@ export function retiredSupervisorMessage(
 
 class NotCurrent extends Error {}
 
+/** The person's supervisor record, or null when they have none. */
+export async function readSupervisorRecord(
+  user: string,
+): Promise<SupervisorRecord | null> {
+  return recordOf(
+    await catalogDocuments(SUPERVISORS_NAMESPACE).get(supervisorKey(user)),
+  );
+}
+
 /**
  * Whether a supervisor session's turn should carry the seed: it is the
  * person's current session and no turn has delivered the seed to it yet.
- * `rotated` says whether earlier supervisor sessions came before it. Null
- * when no seed is due.
+ * `rotated` says whether earlier supervisor sessions came before it, and
+ * `previous` lists them, newest first. Null when no seed is due.
  */
 export async function supervisorSeedDue(
   user: string,
   sessionId: string,
-): Promise<{ rotated: boolean } | null> {
-  const record = recordOf(
-    await catalogDocuments(SUPERVISORS_NAMESPACE).get(supervisorKey(user)),
-  );
+): Promise<{ rotated: boolean; previous: string[] } | null> {
+  const record = await readSupervisorRecord(user);
   if (record?.sessionId !== sessionId || record.seededSessionId === sessionId)
     return null;
-  return { rotated: record.previous.length > 0 };
+  return { rotated: record.previous.length > 0, previous: record.previous };
+}
+
+/**
+ * Move the memory writer's cursor from `from` (what the writer read when it
+ * started; undefined for none) to `to`. Refused, and false, when another run
+ * moved it meanwhile, so a slow run never winds it back.
+ */
+export async function advanceSupervisorMemoryCursor(
+  user: string,
+  from: SupervisorMemoryCursor | undefined,
+  to: SupervisorMemoryCursor,
+): Promise<boolean> {
+  try {
+    await catalogDocuments(SUPERVISORS_NAMESPACE).update(
+      supervisorKey(user),
+      (value) => {
+        const current = recordOf(value);
+        // Abort without writing: returning null would store a tombstone.
+        if (
+          !current ||
+          current.memoryCursor?.sessionId !== from?.sessionId ||
+          current.memoryCursor?.seq !== from?.seq
+        )
+          throw new NotCurrent();
+        return { ...current, memoryCursor: to };
+      },
+    );
+  } catch (error) {
+    if (error instanceof NotCurrent) return false;
+    throw error;
+  }
+  return true;
 }
 
 /** Record that a turn carrying the seed completed without error, so later

@@ -39,7 +39,7 @@ import { getCodexAccountById } from "./codex-accounts";
 import { getXaiAccountById } from "./xai-accounts";
 import { githubUserLoginForRun } from "./github-auth";
 import { sessionMemoryScopes } from "./session-memory";
-import { sessionRepoIds } from "./session-repos";
+import { sessionMemoryRepoIds } from "./session-repos";
 import {
   isRunnableSandboxProvider,
   sandboxProviderConfigured,
@@ -461,7 +461,7 @@ export async function buildSessionEffectiveConfig(
 
   const scopes = sessionMemoryScopes({
     user: inputs.user,
-    repos: sessionRepoIds(session),
+    repos: sessionMemoryRepoIds(session),
   });
   const memory: Record<string, ConfigRow> = {
     injected: row(inputs.sessionNote, "run-session.ts session note"),

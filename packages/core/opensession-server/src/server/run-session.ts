@@ -286,7 +286,7 @@ import {
   buildSessionNote,
   retrievedMemoryNoteFor,
   sessionNotePerson,
-  sessionRepoIds,
+  sessionMemoryRepoIds,
 } from "./session-repos";
 import { deskStateContext } from "./desk-state";
 import { blobSurfaceContext } from "./blob-surface";
@@ -306,6 +306,7 @@ import {
   refreshSupervisorMemoryDaily,
   supervisorSeedContext,
 } from "./supervisor-memory";
+import { scheduleSupervisorMemoryWriter } from "./supervisor-memory-writer";
 import {
   currentSupervisorSessionId,
   markSupervisorSeeded,
@@ -3369,7 +3370,8 @@ async function runSessionPromptInner(
     }
     if (style) prompt = `${style}\n\n${prompt}`;
     // A new supervisor session (a rotation or a new person) starts from
-    // the ledger and the last week's digests (supervisor-memory.ts). Every
+    // the ledger, the last exchanges of the sessions before it and the
+    // last week's digests (supervisor-memory.ts). Every
     // turn carries it until one completes without error; that turn records
     // it on the supervisor's record (below).
     const due = await supervisorSeedDue(inboxOwner, session.id).catch(
@@ -3402,7 +3404,7 @@ async function runSessionPromptInner(
     const memoryContext = await retrievedMemoryNoteFor(
       content,
       user,
-      sessionRepoIds(session),
+      sessionMemoryRepoIds(session),
       session.id,
     );
     if (memoryContext) prompt = `${memoryContext}\n\n${prompt}`;
@@ -4308,6 +4310,11 @@ async function runSessionPromptInner(
         error instanceof Error ? error.message : error,
       ),
     );
+  // And the owner said something: once the conversation has been quiet a
+  // few minutes, the memory writer turns it into personal memory
+  // (supervisor-memory-writer.ts).
+  if (inboxOwner && !endedWithError && !runFailure)
+    scheduleSupervisorMemoryWriter(inboxOwner);
 
   // Persist activity on our own session store. Slack/linear stores stay the
   // owning agent's property, with one surgical exception: engine-id/model

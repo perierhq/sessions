@@ -162,6 +162,178 @@ describe("seed context", () => {
   });
 });
 
+describe("recent conversations in the seed", () => {
+  type Row = import("./supervisor-conversation").SeqTranscriptEntry;
+  let seq = 0;
+  const row = (over: Partial<Row>): Row => ({
+    id: `e${++seq}`,
+    type: "user",
+    content: "",
+    timestamp: "2026-06-30T10:00:00Z",
+    seq,
+    ...over,
+  });
+  /** One owner message and Blob's turn: narration, a tool call, the reply. */
+  const exchange = (owner: string, reply: string, at: string): Row[] => [
+    row({ type: "user", content: owner, timestamp: at }),
+    row({ type: "assistant", content: "Let me look.", timestamp: at }),
+    row({ type: "tool_use", content: "", toolName: "read", timestamp: at }),
+    row({ type: "assistant", content: reply, timestamp: at }),
+  ];
+  let reads: string[] = [];
+  let restoreSeed: () => void = () => {};
+  const tails = new Map<string, Row[]>();
+
+  beforeEach(() => {
+    seq = 0;
+    reads = [];
+    tails.clear();
+    restoreSeed = memory.__setSupervisorSeedDepsForTest({
+      readTail: async (sessionId, limit) => {
+        reads.push(sessionId);
+        if (sessionId === "os-broken") throw new Error("actor down");
+        return { entries: (tails.get(sessionId) ?? []).slice(-limit) };
+      },
+    });
+  });
+  afterEach(() => restoreSeed());
+
+  test("one line per exchange: owner words, Blob's spoken line, local time, labelled", async () => {
+    await inbox.setSupervisorPrefs("Ada", { timezone: "Europe/Warsaw" });
+    tails.set("os-old", [
+      // Work before the first owner message (a wake) is not an exchange.
+      row({ type: "assistant", content: "Checked CI on my own." }),
+      ...exchange(
+        "Keep the Friday deploy freeze. " + "x".repeat(300),
+        "Freeze kept.\n\n| table | shown |\n| a | b |",
+        "2026-06-30T10:05:00Z",
+      ),
+      // A worker report, a teammate and injected context are not the owner.
+      row({
+        type: "user",
+        content: "<!--os:worker-report:os-w1-->\nDone with the migration.",
+      }),
+      // Blob's answer to the report is not its reply to the owner.
+      row({ type: "assistant", content: "Noted the migration." }),
+      row({ type: "user", content: "[Bob] ship it now" }),
+      row({
+        type: "system",
+        content: "inbox briefing",
+        noticeKind: "context-injection",
+      }),
+      ...exchange("Who owns billing?", "Mia does.", "2026-06-30T11:30:00Z"),
+    ]);
+    const seed = (await memory.supervisorSeedContext("Ada", {
+      rotated: true,
+      previous: ["os-old"],
+    }))!;
+    expect(seed).toContain(
+      "### Recent conversations: conversation history, not new requests",
+    );
+    expect(seed).toContain("The Owner lines are the owner's own words");
+    const lines = seed.split("\n").filter((line) => line.startsWith("- 2026-"));
+    expect(lines).toHaveLength(2);
+    // 12:05 in Warsaw; the owner's words cut to one short line.
+    expect(lines[0]).toStartWith(
+      '- 2026-06-30 12:05 Owner: "Keep the Friday deploy freeze.',
+    );
+    expect(lines[0]).toContain('…" Blob: "Freeze kept."');
+    expect(lines[0]!.length).toBeLessThan(300);
+    expect(lines[1]).toBe(
+      '- 2026-06-30 13:30 Owner: "Who owns billing?" Blob: "Mia does."',
+    );
+    expect(seed).not.toContain("Let me look.");
+    expect(seed).not.toContain("ship it now");
+    expect(seed).not.toContain("Done with the migration");
+    expect(seed).not.toContain("Checked CI on my own");
+    expect(seed).not.toContain("Noted the migration");
+  });
+
+  test("is bounded: the newest 20 exchanges from at most three known sessions, within 4 KB", async () => {
+    const many = (prefix: string, count: number) =>
+      Array.from({ length: count }, (_, i) =>
+        exchange(
+          `${prefix} question ${String(i).padStart(2, "0")} ${"q".repeat(150)}`,
+          `${prefix} answer ${i} ${"a".repeat(150)}`,
+          "2026-06-29T09:00:00Z",
+        ),
+      ).flat();
+    tails.set("os-newest", many("newest", 8));
+    tails.set("os-middle", many("middle", 8));
+    tails.set("os-third", many("third", 8));
+    tails.set("os-fourth", many("fourth", 8));
+    const lines = await memory.recentSupervisorConversations(
+      ["os-newest", "os-broken", "os-middle", "os-third", "os-fourth"],
+      "UTC",
+    );
+    // Three sessions read, newest first; a failing one is skipped.
+    expect(reads).toEqual(["os-newest", "os-broken", "os-middle"]);
+    expect(lines.length).toBeLessThanOrEqual(
+      memory.SEED_CONVERSATION_EXCHANGES,
+    );
+    expect(
+      lines.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0),
+    ).toBeLessThanOrEqual(memory.SEED_CONVERSATION_BYTES);
+    // The newest are kept, oldest first.
+    expect(lines.at(-1)).toContain("newest question 07");
+    expect(lines.some((line) => line.includes("fourth"))).toBe(false);
+
+    // Short lines: all twenty fit.
+    tails.set("os-newest", []);
+    for (const id of ["os-a", "os-b"])
+      tails.set(
+        id,
+        Array.from({ length: 15 }, (_, i) =>
+          exchange(`${id} q${i}`, `${id} a${i}`, "2026-06-29T09:00:00Z"),
+        ).flat(),
+      );
+    const twenty = await memory.recentSupervisorConversations(
+      ["os-a", "os-b"],
+      "UTC",
+    );
+    expect(twenty).toHaveLength(20);
+    expect(twenty[0]).toContain("os-b q10");
+    expect(twenty.at(-1)).toContain("os-a q14");
+  });
+
+  test("a first-ever session reads no transcript", async () => {
+    await ledger.appendSupervisorLedger("Ada", "Owner prefers SBAR.");
+    const seed = (await memory.supervisorSeedContext("Ada", {
+      rotated: false,
+      previous: [],
+    }))!;
+    expect(reads).toEqual([]);
+    expect(seed).not.toContain("Recent conversations");
+  });
+
+  test("conversations alone make a seed", async () => {
+    tails.set("os-old", exchange("Hi", "Hey.", "2026-06-30T10:00:00Z"));
+    const seed = await memory.supervisorSeedContext("Ada", {
+      rotated: true,
+      previous: ["os-old"],
+    });
+    expect(seed).toContain('Owner: "Hi" Blob: "Hey."');
+  });
+
+  test("quotes inside a line are escaped", async () => {
+    tails.set(
+      "os-old",
+      exchange(
+        'Tell Bob "ship it" today',
+        'Told him: "ship it".',
+        "2026-06-30T10:00:00Z",
+      ),
+    );
+    const seed = await memory.supervisorSeedContext("Ada", {
+      rotated: true,
+      previous: ["os-old"],
+    });
+    expect(seed).toContain(
+      'Owner: "Tell Bob \\"ship it\\" today" Blob: "Told him: \\"ship it\\"."',
+    );
+  });
+});
+
 describe("memory snapshot refresh", () => {
   let builds = 0;
   const note = () =>
@@ -224,6 +396,14 @@ describe("memory snapshot refresh", () => {
     // answers.
     expect(source).toContain(
       "if (inboxOwner && seedDue && !endedWithError && !runFailure)\n    await markSupervisorSeeded(inboxOwner, session.id)",
+    );
+    // So is the memory writer, debounced (supervisor-memory-writer.ts).
+    expect(source).toContain(
+      "if (inboxOwner && !endedWithError && !runFailure)\n    scheduleSupervisorMemoryWriter(inboxOwner);",
+    );
+    // Memory for the supervisor is the owner's and the team's only.
+    expect(source).toContain(
+      "retrievedMemoryNoteFor(\n      content,\n      user,\n      sessionMemoryRepoIds(session),",
     );
     // A retired supervisor session takes no new turns.
     expect(source).toMatch(

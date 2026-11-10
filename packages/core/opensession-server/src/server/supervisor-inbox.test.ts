@@ -926,6 +926,7 @@ describe("routes", () => {
         activeStart: "08:00",
         activeEnd: "22:00",
       },
+      memoryWriter: true,
       effectiveTimezone: "Europe/Warsaw",
     });
     const sbar = await call("PUT", "/api/supervisor/prefs", {
