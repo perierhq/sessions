@@ -476,7 +476,8 @@ struct BlobHomeView: View {
                     position: decisions.position,
                     count: decisions.count,
                     sending: decisions.sending == decision.id,
-                    maxHeight: max(160, replyHeight - 160),
+                    // What the options and "Not now" take; the question gets the rest.
+                    maxHeight: max(160, replyHeight - CGFloat(decision.options.count) * 56 - 44),
                     answer: { option in Task { await decisions.answer(decision, with: option) } },
                     notNow: { decisions.skip(decision) },
                     dismiss: { Task { await decisions.dismiss(decision) } }
