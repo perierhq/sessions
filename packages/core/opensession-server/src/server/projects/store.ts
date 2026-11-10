@@ -933,6 +933,8 @@ export function changedFieldPaths(
     "enabled",
     "stage",
     "budgetUsdPerMonth",
+    "dailyWakeLimit",
+    "wakeTokenLimit",
     "goalId",
     "owner",
   ] as const)

@@ -75,7 +75,10 @@ export interface LeadOverview {
     enabled: boolean;
     stage: ProjectSettingsDocument["lead"]["stage"];
     owner: string | null;
-    budgetUsdPerMonth: number;
+    /** Optional monthly dollar cap; null is no cap. */
+    budgetUsdPerMonth: number | null;
+    dailyWakeLimit: number;
+    wakeTokenLimit: number;
   };
   incidents: {
     open: number;
@@ -135,7 +138,7 @@ export interface LeadOverview {
     /** What the lead's own goal runs cost this UTC month; null without a
      *  lead goal. */
     leadUsd: number | null;
-    leadBudgetUsdPerMonth: number;
+    leadBudgetUsdPerMonth: number | null;
   };
 }
 
@@ -268,6 +271,8 @@ export async function buildLeadOverview(
       stage: doc.lead.stage,
       owner: doc.lead.owner ?? null,
       budgetUsdPerMonth: doc.lead.budgetUsdPerMonth,
+      dailyWakeLimit: doc.lead.dailyWakeLimit,
+      wakeTokenLimit: doc.lead.wakeTokenLimit,
     },
     incidents: {
       open: open.length,
@@ -381,7 +386,7 @@ export function overviewMarkdown(o: LeadOverview): string {
     : `off (${o.lead.stage} stage when on)`;
   const lines = [
     `# ${o.project} at ${o.at}`,
-    `Lead: ${lead}; owner ${o.lead.owner ?? "not set"}; budget $${o.lead.budgetUsdPerMonth} a month.`,
+    `Lead: ${lead}; owner ${o.lead.owner ?? "not set"}; ${o.lead.dailyWakeLimit} wakes a day; ${o.lead.budgetUsdPerMonth === null ? "no dollar cap" : `dollar cap $${o.lead.budgetUsdPerMonth} a month`}.`,
     "",
     `## Incidents: ${o.incidents.open} open`,
     ...(o.incidents.items.length ? [untrustedLabel("incident titles")] : []),
@@ -429,7 +434,7 @@ export function overviewMarkdown(o: LeadOverview): string {
     o.ci.unavailable,
     "",
     "## Spend this month",
-    `Incident agents: $${o.spend.incidentAgentsUsd}. The lead: ${o.spend.leadUsd === null ? "no goal yet" : `$${o.spend.leadUsd}`} of its $${o.spend.leadBudgetUsdPerMonth} a month.`,
+    `Incident agents: $${o.spend.incidentAgentsUsd}. The lead: ${o.spend.leadUsd === null ? "no goal yet" : `$${o.spend.leadUsd}`}${o.spend.leadBudgetUsdPerMonth === null ? " (no dollar cap)" : ` of its $${o.spend.leadBudgetUsdPerMonth} cap a month`}.`,
   );
   const text = lines.join("\n");
   return text.length > OVERVIEW_MAX_CHARS

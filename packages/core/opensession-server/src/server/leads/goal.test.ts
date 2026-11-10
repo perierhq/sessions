@@ -168,7 +168,7 @@ describe("ensureLeadGoal", () => {
     expect((await ensureLeadGoal(PROJECT)).action).toBe("updated");
     const goal = await leadGoal();
     expect(goal.mission).toContain("report to Grace");
-    expect(goal.mission).toContain("may cost $20 a month");
+    expect(goal.mission).toContain("cost $20 a month");
   });
 
   test("off pauses the goal; on makes it active again", async () => {
@@ -213,6 +213,7 @@ describe("ensureLeadGoal", () => {
       LEAD_UNAVAILABLE_REASON,
       "Its wake check failed: settings unreadable",
       "Over the lead's budget: $5 of $5 this month",
+      "Loop guard: 24 wakes today, the daily limit is 24",
     ]) {
       await mutateGoal(goal.id, (g) => ({
         ...g,
@@ -386,6 +387,7 @@ describe("leadWakeCheck", () => {
       repo: PROJECT,
     });
     expect(plan.budgetUsd).toBe(15.5);
+    expect(plan.wakeTokens).toBe(1_000_000);
     // Watching: no web reader.
     expect(plan.web).toBe(false);
     await setLead({ stage: "coordinate" });
@@ -476,6 +478,94 @@ describe("leadWakeCheck", () => {
   });
 });
 
+describe("the loop guard", () => {
+  test("no dollar cap by default: spend never blocks", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      spend: { month: "2026-11", usd: 900 },
+    }));
+    const plan = await leadWakeCheck(await leadGoal());
+    if ("block" in plan) throw new Error(plan.block);
+    expect(plan.budgetUsd).toBeNull();
+  });
+
+  test("the daily wake limit pauses, asks once, and Resume lifts it for the day", async () => {
+    await setLead({ enabled: true, dailyWakeLimit: 3 });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      guard: { day: "2026-11-10", wakes: 2 },
+    }));
+    expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      guard: { day: "2026-11-10", wakes: 3 },
+    }));
+    const reason = "Loop guard: 3 wakes today, the daily limit is 3";
+    expect(await leadWakeCheck(await leadGoal())).toEqual({ block: reason });
+    await leadWakeCheck(await leadGoal());
+    const items = await listSupervisorItems("Ada", { kind: "needs-you" });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      title: "Acme: the lead paused itself",
+      body: "3 wakes today, the daily limit is 3. The lead may be stuck in a loop. Resume lets it run for the rest of today; otherwise it starts again tomorrow.",
+      options: ["Resume", "Keep paused"],
+      dedupeKey: "lead:acme:guard:2026-11-10",
+    });
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: reason,
+    }));
+    onSupervisorAnswer("lead:", handleLeadAnswer);
+    await answerSupervisorItem("Ada", items[0]!.id, "1", "owner");
+    const resumed = await leadGoal();
+    expect(resumed.status).toBe("active");
+    expect(resumed.guard).toMatchObject({ day: "2026-11-10", lifted: true });
+    expect("fields" in (await leadWakeCheck(resumed))).toBe(true);
+  });
+
+  test("Keep paused leaves it paused until the next day", async () => {
+    await setLead({ enabled: true, dailyWakeLimit: 1 });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    const reason = "Loop guard: 1 wakes today, the daily limit is 1";
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: reason,
+      guard: { day: "2026-11-10", wakes: 1 },
+    }));
+    await leadWakeCheck(await leadGoal());
+    const [item] = await listSupervisorItems("Ada", { kind: "needs-you" });
+    await handleLeadAnswer(item!, "Keep paused", "owner");
+    expect((await leadGoal()).status).toBe("paused");
+    await leadGoalIdle(await leadGoal(), clock);
+    expect((await leadGoal()).status).toBe("paused");
+    clock = Date.parse("2026-11-11T00:05:00.000Z");
+    await leadGoalIdle(await leadGoal(), clock);
+    expect((await leadGoal()).status).toBe("active");
+  });
+
+  test("a wake past its token limit blocks the next one", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      guard: { day: "2026-11-10", wakes: 1, trippedTokens: 1_250_000 },
+    }));
+    expect(await leadWakeCheck(await leadGoal())).toEqual({
+      block:
+        "Loop guard: a wake used 1,250,000 tokens, over its limit of 1,000,000",
+    });
+  });
+});
+
 describe("leadGoalIdle", () => {
   test("a budget pause lapses when the month turns", async () => {
     await setLead({ enabled: true, budgetUsdPerMonth: 5 });
@@ -518,15 +608,18 @@ describe("leadGoalIdle", () => {
     expect((await leadGoal()).status).toBe("active");
   });
 
-  test("a $0 budget's pause is retried at most every ten minutes", async () => {
-    await setLead({ enabled: true, budgetUsdPerMonth: 0 });
+  test("a lapsed pause that stays blocked is retried at most every ten minutes", async () => {
+    await setLead(
+      { enabled: true, budgetUsdPerMonth: 5 },
+      { incidents: { agentsPaused: true } },
+    );
     await ensureLeadGoal(PROJECT);
     const goal = await leadGoal();
     await mutateGoal(goal.id, (g) => ({
       ...g,
       status: "paused",
-      pauseReason: "Over the lead's budget: $0 of $0 this month",
-      spend: { month: "2026-10", usd: 0.5 },
+      pauseReason: "Over the lead's budget: $5 of $5 this month",
+      spend: { month: "2026-10", usd: 5 },
     }));
     let reads = 0;
     __setLeadGoalDepsForTest({

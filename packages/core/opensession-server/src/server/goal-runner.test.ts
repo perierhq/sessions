@@ -111,6 +111,8 @@ const {
   runningGoals,
   settleInterruptedGoalRun,
   tickGoals,
+  wakeTokens,
+  __setBackgroundHeadroomForTest,
 } = await import("./goal-runner");
 const { createGoalSelfMcpServer } = await import("../agents/slack/goal-tools");
 const { createGoal, getGoal, mutateGoal, updateGoal } = realGoals;
@@ -389,7 +391,7 @@ describe("a project lead's goal", () => {
   let offHooks: () => void = () => {};
 
   beforeEach(() => {
-    plan = { fields, budgetUsd: 2, web: false };
+    plan = { fields, wakeTokens: 1_000_000, budgetUsd: 2, web: false };
     idles = [];
     offHooks = registerLeadGoalHooks({
       wake: async () => plan,
@@ -442,9 +444,9 @@ describe("a project lead's goal", () => {
     expect(lastRun!.prompt).not.toContain("ask_human");
     expect(lastRun!.prompt).not.toContain("mark_paused");
     expect(lastRun!.prompt).not.toContain("mark_done");
-    expect(lastRun!.prompt).toContain("this wake may spend about $2");
+    expect(lastRun!.prompt).toContain("spend about $2");
     // Past watch it may read the web.
-    plan = { fields, budgetUsd: 2, web: true };
+    plan = { fields, wakeTokens: 1_000_000, budgetUsd: 2, web: true };
     await runGoal((await getGoal(lead.id))!);
     expect(Object.keys(lastRun!.inProcessMcp!)).toContain("opensession-web");
 
@@ -578,8 +580,79 @@ describe("a project lead's goal", () => {
     const month = new Date().toISOString().slice(0, 7);
     expect(await getGoal(goal.id)).toMatchObject({
       spend: { month, usd: 3.4 },
-      lastRunError: "Stopped: it reached its budget",
+      lastRunError: "Stopped: it reached its limit",
     });
+  });
+
+  test("past its token limit it wraps up, stops, and trips the guard", async () => {
+    plan = { fields, wakeTokens: 100_000, budgetUsd: null, web: false };
+    const usage = (inputTokens: number) => ({
+      costUsd: 0,
+      inputTokens,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      contextTokens: 1,
+    });
+    script = async function* () {
+      yield { type: "init", sessionId: "engine-1" } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(50_000) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(110_000) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(160_000) } as StreamEvent;
+    };
+    const goal = await leadGoal();
+    await runGoal(goal);
+    expect(lastRun!.prompt).toContain("about 100,000 tokens");
+    expect(lastRun!.prompt).not.toContain("spend about");
+    expect(steers).toHaveLength(1);
+    expect(cancels).toHaveLength(1);
+    const after = (await getGoal(goal.id))!;
+    expect(after.guard).toMatchObject({
+      day: new Date().toISOString().slice(0, 10),
+      wakes: 1,
+      trippedTokens: 160_000,
+    });
+    expect(after.lastRunError).toBe("Stopped: it reached its limit");
+    // Due again now, so the wake check pauses it and asks.
+    expect(Date.parse(after.nextWakeAt)).toBeLessThanOrEqual(Date.now());
+  });
+
+  test("cache reads count at a tenth", () => {
+    expect(
+      wakeTokens({
+        inputTokens: 10,
+        outputTokens: 20,
+        cacheCreationTokens: 30,
+        cacheReadTokens: 1_000,
+      }),
+    ).toBe(160);
+  });
+
+  test("every wake counts towards the day's wakes", async () => {
+    const goal = await leadGoal();
+    await runGoal(goal);
+    await runGoal((await getGoal(goal.id))!);
+    expect((await getGoal(goal.id))!.guard?.wakes).toBe(2);
+  });
+
+  test("a due goal waits 30 minutes when the Claude pool is low, without pausing", async () => {
+    __setBackgroundHeadroomForTest(async () => false);
+    try {
+      const lead = await leadGoal();
+      const plain = await dueGoal();
+      const before = Date.now();
+      await tickGoals();
+      expect(runs).toBe(0);
+      for (const id of [lead.id, plain.id]) {
+        const after = (await getGoal(id))!;
+        expect(after.status).toBe("active");
+        expect(Date.parse(after.nextWakeAt)).toBeGreaterThanOrEqual(
+          before + 29 * 60_000,
+        );
+      }
+    } finally {
+      __setBackgroundHeadroomForTest(undefined);
+    }
   });
 
   test("an ordinary goal has no budget to hold to", async () => {
@@ -656,7 +729,7 @@ describe("a project lead's goal", () => {
     // Tried at 3.2, again at 3.4, then stopped; never a third time.
     expect(cancels).toEqual([token, token]);
     expect((await getGoal(goal.id))?.lastRunError).toBe(
-      "Stopped: it reached its budget",
+      "Stopped: it reached its limit",
     );
 
     cancelResults = [false, false, false];

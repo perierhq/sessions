@@ -39,7 +39,9 @@ describe("the defaults", () => {
       enabled: false,
       stage: "watch",
       rules: { ...DEFAULT_LEAD_RULES },
-      budgetUsdPerMonth: 50,
+      budgetUsdPerMonth: null,
+      dailyWakeLimit: 24,
+      wakeTokenLimit: 1_000_000,
     });
     const by = (level: LeadLevel) =>
       LEAD_CATEGORIES.filter((c) => DEFAULT_LEAD_RULES[c] === level);

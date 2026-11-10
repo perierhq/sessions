@@ -16,7 +16,11 @@ const harness = createHookHarness();
 const realReact = await import("react");
 mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 
-const { LeadSection, LeadBudgetDialog } = await import("./LeadSection");
+const { LeadSection, LeadBudgetDialog, LeadWakesDialog, LEAD_HEADROOM_HINT } =
+  await import("./LeadSection");
+const { SettingLinkRow } = await import("../incidents/SettingLinkRow");
+const { SettingsHint } = await import("../../../ui/settings");
+const { Input } = await import("../../../ui/input");
 const { Switch } = await import("../../../ui/switch");
 const { OptionSelect } = await import("../../../ui/select");
 const { InlineAlert } = await import("../../../ui/state");
@@ -118,7 +122,52 @@ test("a refused budget shows in the dialog, not again above", async () => {
   const dialog = harness.mount(LeadBudgetDialog, budget!.props);
   find(dialog.output(), SettingsDialog)!.props.onSave!();
   await settle();
-  expect(saves).toEqual([{ lead: { budgetUsdPerMonth: 50 } }]);
+  // Off by default: saving the empty field keeps it off.
+  expect(saves).toEqual([{ lead: { budgetUsdPerMonth: null } }]);
   expect(find(dialog.output(), SettingsDialog)?.props.error).toBe("Too much");
   expect(find(section.output(), InlineAlert)).toBeUndefined();
+});
+
+test("daily wakes and an optional dollar cap, with the headroom line", () => {
+  const section = harness.mount(LeadSection, {
+    view: withLead({ enabled: true }),
+    onSave,
+  });
+  const row = (title: string) =>
+    find(section.output(), SettingLinkRow, (p) => p.title === title)?.props
+      .value;
+  expect(row("Daily wakes")).toBe("24");
+  expect(row("Dollar cap")).toBe("Off");
+  expect(row("Budget per month")).toBeUndefined();
+  expect(find(section.output(), SettingsHint)?.props.children).toBe(
+    LEAD_HEADROOM_HINT,
+  );
+  expect(LEAD_HEADROOM_HINT).toBe(
+    "Leads wait when your Claude accounts are low and never take capacity from your own sessions.",
+  );
+  const capped = harness.mount(LeadSection, {
+    view: withLead({ enabled: true, budgetUsdPerMonth: 80 }),
+    onSave,
+  });
+  expect(
+    find(capped.output(), SettingLinkRow, (p) => p.title === "Dollar cap")
+      ?.props.value,
+  ).toBe("$80 a month");
+});
+
+test("the wakes dialog saves a whole number", async () => {
+  const section = harness.mount(LeadSection, {
+    view: withLead({ enabled: true }),
+    onSave,
+  });
+  const wakes = find(section.output(), LeadWakesDialog);
+  const dialog = harness.mount(LeadWakesDialog, wakes!.props);
+  // SAFETY: the handler reads only currentTarget.value.
+  find(dialog.output(), Input)!.props.onChange!({
+    currentTarget: { value: "12" },
+  } as never);
+  await settle();
+  find(dialog.output(), SettingsDialog)!.props.onSave!();
+  await settle();
+  expect(saves).toEqual([{ lead: { dailyWakeLimit: 12 } }]);
 });

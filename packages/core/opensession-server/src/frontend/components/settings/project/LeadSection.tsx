@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   MAX_LEAD_BUDGET_USD,
+  MAX_LEAD_DAILY_WAKES,
   type LeadCategory,
   type LeadLevel,
   isLeadStage,
@@ -33,6 +34,7 @@ import { OptionSelect } from "../../../ui/select";
 import {
   SettingCard,
   SettingsGroupLabel,
+  SettingsHint,
   StatusChip,
 } from "../../../ui/settings";
 import { InlineAlert } from "../../../ui/state";
@@ -42,9 +44,12 @@ import { SettingsDialog } from "../incidents/SettingsDialog";
 import { SettingRow } from "../shared";
 
 const ALWAYS_ONLY_YOU = "Always only you";
+export const LEAD_HEADROOM_HINT =
+  "Leads wait when your Claude accounts are low and never take capacity from your own sessions.";
 
 /**
- * The project lead's charter: on or off, its stage, its monthly budget, who
+ * The project lead's charter: on or off, its stage, its wakes a day and an
+ * optional dollar cap, who
  * it answers to, and who decides each kind of action. A refusal (a change
  * that gives the lead more room from someone who may not, or a stale
  * revision) shows above the controls.
@@ -59,6 +64,7 @@ export function LeadSection({
   const lead = view.document.lead;
   const [error, setError] = useState<string | null>(null);
   const [budgetOpen, setBudgetOpen] = useState(0);
+  const [wakesOpen, setWakesOpen] = useState(0);
 
   // Immediate saves report a refusal above the section; the budget dialog
   // calls `onSave` itself and shows its refusal inside, so it shows once.
@@ -126,9 +132,19 @@ export function LeadSection({
               }
             />
             <SettingLinkRow
-              title="Budget per month"
-              description="The lead stops and asks you at the cap"
-              value={formatUsd(lead.budgetUsdPerMonth, { whole: true })}
+              title="Daily wakes"
+              description="The lead pauses and asks you past this"
+              value={String(lead.dailyWakeLimit)}
+              onClick={() => setWakesOpen(Date.now())}
+            />
+            <SettingLinkRow
+              title="Dollar cap"
+              description="A monthly cap, off by default"
+              value={
+                lead.budgetUsdPerMonth === null
+                  ? "Off"
+                  : `${formatUsd(lead.budgetUsdPerMonth, { whole: true })} a month`
+              }
               onClick={() => setBudgetOpen(Date.now())}
             />
             <SettingRow
@@ -141,6 +157,7 @@ export function LeadSection({
               }
             />
           </SettingCard>
+          <SettingsHint>{LEAD_HEADROOM_HINT}</SettingsHint>
           <SettingsGroupLabel>Rules</SettingsGroupLabel>
           <SettingCard>
             {leadRuleRows(lead).map((row) => (
@@ -174,6 +191,13 @@ export function LeadSection({
             budget={lead.budgetUsdPerMonth}
             onSave={(amount) => onSave({ lead: { budgetUsdPerMonth: amount } })}
           />
+          <LeadWakesDialog
+            key={`wakes-${wakesOpen}`}
+            open={wakesOpen > 0}
+            onClose={() => setWakesOpen(0)}
+            wakes={lead.dailyWakeLimit}
+            onSave={(wakes) => onSave({ lead: { dailyWakeLimit: wakes } })}
+          />
         </>
       )}
     </>
@@ -197,23 +221,27 @@ export function LeadBudgetDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  budget: number;
-  onSave: (amount: number) => Promise<void>;
+  budget: number | null;
+  /** null turns the cap off. */
+  onSave: (amount: number | null) => Promise<void>;
 }) {
-  const [text, setText] = useState(String(budget));
+  const [text, setText] = useState(budget === null ? "" : String(budget));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const amount = parseUsd(text, 0, MAX_LEAD_BUDGET_USD);
+  // Empty or 0 is off.
+  const off = text.trim() === "" || parseUsd(text, 0, 0) === 0;
+  const amount = off ? null : parseUsd(text, 0.01, MAX_LEAD_BUDGET_USD);
+  const valid = off || amount !== null;
   return (
     <SettingsDialog
       open={open}
       onClose={onClose}
-      title="Lead budget per month"
+      title="Lead dollar cap"
       error={error}
       busy={busy}
-      canSave={amount !== null}
+      canSave={valid}
       onSave={() => {
-        if (amount === null) return;
+        if (!valid) return;
         setBusy(true);
         setError(null);
         onSave(amount).then(
@@ -228,21 +256,89 @@ export function LeadBudgetDialog({
         );
       }}
     >
-      <Field label="Amount in dollars">
+      <Field label="Dollars a month">
         <Input
           type="number"
           inputMode="decimal"
+          placeholder="Off"
           min={0}
           max={MAX_LEAD_BUDGET_USD}
           step={1}
           value={text}
-          aria-invalid={amount === null || undefined}
+          aria-invalid={!valid || undefined}
           className={DIALOG_INPUT}
           onChange={(event) => setText(event.currentTarget.value)}
         />
       </Field>
-      <p className={amount === null ? FIELD_ERROR : FIELD_HINT}>
-        {`From $0 to ${formatUsd(MAX_LEAD_BUDGET_USD, { whole: true })}`}
+      <p className={valid ? FIELD_HINT : FIELD_ERROR}>
+        {`Leave empty for no cap, or up to ${formatUsd(MAX_LEAD_BUDGET_USD, { whole: true })}`}
+      </p>
+    </SettingsDialog>
+  );
+}
+
+/** Whole wakes from 1 to the server's limit, or null. */
+export function parseWakes(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  return n >= 1 && n <= MAX_LEAD_DAILY_WAKES ? n : null;
+}
+
+export function LeadWakesDialog({
+  open,
+  onClose,
+  wakes,
+  onSave,
+}: {
+  open: boolean;
+  onClose: () => void;
+  wakes: number;
+  onSave: (wakes: number) => Promise<void>;
+}) {
+  const [text, setText] = useState(String(wakes));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const value = parseWakes(text);
+  return (
+    <SettingsDialog
+      open={open}
+      onClose={onClose}
+      title="Lead wakes a day"
+      error={error}
+      busy={busy}
+      canSave={value !== null}
+      onSave={() => {
+        if (value === null) return;
+        setBusy(true);
+        setError(null);
+        onSave(value).then(
+          () => {
+            setBusy(false);
+            onClose();
+          },
+          (cause) => {
+            setBusy(false);
+            setError(leadSaveErrorText(cause));
+          },
+        );
+      }}
+    >
+      <Field label="Wakes a day">
+        <Input
+          type="number"
+          inputMode="numeric"
+          min={1}
+          max={MAX_LEAD_DAILY_WAKES}
+          step={1}
+          value={text}
+          aria-invalid={value === null || undefined}
+          className={DIALOG_INPUT}
+          onChange={(event) => setText(event.currentTarget.value)}
+        />
+      </Field>
+      <p className={value === null ? FIELD_ERROR : FIELD_HINT}>
+        {`From 1 to ${MAX_LEAD_DAILY_WAKES}`}
       </p>
     </SettingsDialog>
   );

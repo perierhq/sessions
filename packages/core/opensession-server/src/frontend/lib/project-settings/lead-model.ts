@@ -88,6 +88,8 @@ export function applyLeadPatch(
     ...rest,
     rules: { ...view.document.lead.rules, ...rules },
   };
+  // 0 turns the dollar cap off, as the server stores it.
+  if (rest.budgetUsdPerMonth === 0) lead.budgetUsdPerMonth = null;
   if (owner === null) delete lead.owner;
   else if (owner !== undefined) lead.owner = owner;
   return { ...view, document: { ...view.document, lead } };

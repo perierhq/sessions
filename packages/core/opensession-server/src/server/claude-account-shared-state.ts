@@ -56,6 +56,9 @@ function siblingPath(suffix: string): string {
 }
 
 const usagePath = () => siblingPath("usage");
+/** The shared usage snapshot file, for readers off the pick path
+ *  (claude-headroom.ts). */
+export const claudeAccountsUsagePath = usagePath;
 // Round-robin turns and session memory are separate files: every pick
 // rewrites the turns, a handful of timestamps, under the lock; the session
 // map (up to SESSION_PICK_LIMIT entries) is rewritten only when a session

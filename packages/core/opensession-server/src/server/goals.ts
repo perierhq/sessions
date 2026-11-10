@@ -88,8 +88,34 @@ export interface Goal {
   /** What this goal's runs cost in one UTC month (`YYYY-MM`), as their
    *  terminal usage reported it. Runner-owned. */
   spend?: { month: string; usd: number };
+  /** A project lead's loop guard for one UTC day (`YYYY-MM-DD`): wakes
+   *  started, the token limit a wake tripped, and whether the owner lifted
+   *  the guard for the rest of the day. Runner- and lead-owned. */
+  guard?: GoalGuard;
   createdBy: string;
   createdAt: string;
+}
+
+export interface GoalGuard {
+  day: string;
+  wakes: number;
+  /** Set when a wake hit its token limit: how many tokens it used. */
+  trippedTokens?: number;
+  lifted?: boolean;
+}
+
+/** The UTC day (`YYYY-MM-DD`) of `at`. */
+export function dayOf(at: number): string {
+  return new Date(at).toISOString().slice(0, 10);
+}
+
+/** The goal's guard for the day of `now`; a new day starts empty. */
+export function goalGuardToday(
+  goal: Pick<Goal, "guard">,
+  now: number,
+): GoalGuard {
+  const day = dayOf(now);
+  return goal.guard?.day === day ? goal.guard : { day, wakes: 0 };
 }
 
 /** Why the runner paused a project lead's goal without running it: no lead
@@ -288,7 +314,7 @@ export async function createGoal(
 
 /** Fields an operator (via opensession-goals or the goals API) may patch.
  *  Runtime/scheduling fields (engineSessionId, wakeCount, lastRun*,
- *  worktreePath, spend) are owned by the runner, `leadProject` by the
+ *  worktreePath, spend, guard) are owned by the runner, `leadProject` by the
  *  project lead, and `id` and `stateFile` are fixed
  *  at creation: the ledger tools read and write `stateFile` by path. */
 const PATCHABLE_GOAL_FIELDS = [

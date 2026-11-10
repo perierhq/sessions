@@ -23,6 +23,7 @@ import {
   WAKE_CHECK_FAILED_REASON,
   addGoalSpend,
   getGoal,
+  goalGuardToday,
   listGoals,
   mutateGoal,
   type Goal,
@@ -41,6 +42,8 @@ import { shouldPersistModelSwitch } from "./run-events";
 import { shellQuoteWord } from "./sandbox/adapters/bootstrap";
 import { newSessionId } from "./paths";
 import { createWebMcpServer } from "./web-mcp";
+import { backgroundHeadroomOk } from "./claude-headroom";
+import type { SessionUsage } from "./types";
 
 const g = globalThis as any;
 
@@ -102,11 +105,13 @@ export type LeadGoalFields = Pick<
   "name" | "mission" | "mode" | "repo" | "minWakeMinutes"
 > & { mcpServers: string[] };
 
-/** A lead's goal may wake: its fields from the settings, what it may still
- *  spend this month, and whether it reads the web. */
+/** A lead's goal may wake: its fields from the settings, the tokens this
+ *  wake may use, what it may still spend this month when it has a dollar
+ *  cap (null: no cap), and whether it reads the web. */
 export interface LeadRunPlan {
   fields: LeadGoalFields;
-  budgetUsd: number;
+  wakeTokens: number;
+  budgetUsd: number | null;
   web: boolean;
 }
 
@@ -147,9 +152,41 @@ async function leadWakePlan(goal: Goal): Promise<LeadWakePlan> {
   }
 }
 
-/** A lead's run past its budget is asked once to finish, and stopped at
- *  this many times its budget (the incident post-release check's rule). */
+/** A lead's run past its token limit or dollar cap is asked once to
+ *  finish, and stopped at this many times it (the incident post-release
+ *  check's rule). */
 const LEAD_WRAP_UP_FACTOR = 1.5;
+
+/**
+ * The tokens a wake used, for its loop guard: input, output and cache
+ * writes in full, cache reads at a tenth. That is the weight they carry in
+ * the run's cost (cache reads are billed at 0.1x), so a long wake that
+ * mostly rereads its cached context isn't stopped for it. Usage is
+ * run-cumulative.
+ */
+export function wakeTokens(usage: Partial<SessionUsage>): number {
+  return Math.round(
+    (usage.inputTokens ?? 0) +
+      (usage.outputTokens ?? 0) +
+      (usage.cacheCreationTokens ?? 0) +
+      (usage.cacheReadTokens ?? 0) / 10,
+  );
+}
+
+/** How long a background goal waits when the Claude pool is low. */
+export const HEADROOM_POSTPONE_MS = 30 * 60_000;
+
+let headroomCheck: () => Promise<boolean> = () => backgroundHeadroomOk();
+
+export function __setBackgroundHeadroomForTest(
+  fn: (() => Promise<boolean>) | undefined,
+): void {
+  headroomCheck = fn ?? (() => backgroundHeadroomOk());
+  postponedForHeadroom.clear();
+}
+
+/** Goals waiting for headroom, so each logs once until it runs again. */
+const postponedForHeadroom = new Set<string>();
 const LEAD_WRAP_UP =
   "You reached what this wake may spend. Stop reading and proposing now: append what you have to the ledger with append_ledger, set your next wake with set_next_wake, and end the wake.";
 
@@ -181,7 +218,7 @@ function buildGoalWakePrompt(
   ];
   if (lead)
     parts.push(
-      `Budget: this wake may spend about $${Number(lead.budgetUsd.toFixed(2))}, what is left of this month's. At that you are asked to wrap up, and past it the wake is stopped.`,
+      `Limits: this wake may use about ${lead.wakeTokens.toLocaleString("en-US")} tokens${lead.budgetUsd === null ? "" : ` and spend about $${Number(lead.budgetUsd.toFixed(2))}, what is left of this month's cap`}. At that you are asked to wrap up, and past it the wake is stopped and the lead pauses until the owner resumes it.`,
     );
   if (goal.mode === "code") {
     const repo = getRepo(goal.repo);
@@ -221,6 +258,7 @@ export async function runGoal(stored: Goal): Promise<void> {
   // The run's cost so far: usage is run-cumulative, so the largest figure
   // seen is the cost. Recorded whatever way the wake ends.
   let runCostUsd = 0;
+  let runTokens = 0;
   let spendRecorded = false;
   try {
     // A lead's goal runs on what its settings say now, never on what a
@@ -267,6 +305,14 @@ export async function runGoal(stored: Goal): Promise<void> {
       lastRunAt: startedAt.toISOString(),
       lastRunStatus: "running",
       lastRunError: undefined,
+      // A lead's wake counts towards its day's wakes when it starts, so a
+      // wake that crashes still counts.
+      ...(lead
+        ? (() => {
+            const today = goalGuardToday(current, startedAt.getTime());
+            return { guard: { ...today, wakes: today.wakes + 1 } };
+          })()
+        : {}),
     }));
     if (!started) {
       console.log(`[goals] "${goal.name}" was deleted; skipping its wake`);
@@ -320,22 +366,26 @@ export async function runGoal(stored: Goal): Promise<void> {
     const runToken = randomUUID();
     let wrappedUp = false;
     let stopped = false;
-    // A lead's wake past what it may spend: asked once to wrap up, stopped
-    // if it keeps going.
+    // A lead's wake past its token limit or dollar cap: asked once to wrap
+    // up, stopped if it keeps going.
+    const over = (factor: number) =>
+      !!lead &&
+      (runTokens >= lead.wakeTokens * factor ||
+        (lead.budgetUsd !== null && runCostUsd >= lead.budgetUsd * factor));
     const holdToBudget = async () => {
-      if (!lead || stopped || runCostUsd < lead.budgetUsd) return;
+      if (!lead || stopped || !over(1)) return;
       if (!wrappedUp) {
         wrappedUp = true;
         if (steerAgentRunToken(runToken, LEAD_WRAP_UP)) {
-          console.log(`[goals] "${goal.name}" reached its budget; wrapping up`);
+          console.log(`[goals] "${goal.name}" reached its limit; wrapping up`);
           return;
         }
-      } else if (runCostUsd < lead.budgetUsd * LEAD_WRAP_UP_FACTOR) return;
+      } else if (!over(LEAD_WRAP_UP_FACTOR)) return;
       // Only a cancel that landed counts: otherwise the next usage event
       // tries again.
       if (!(await cancelAgentRunToken(runToken).catch(() => false))) return;
       stopped = true;
-      console.log(`[goals] "${goal.name}" is past its budget; stopped it`);
+      console.log(`[goals] "${goal.name}" is past its limit; stopped it`);
     };
     for await (const event of runAgent({
       prompt: buildGoalWakePrompt(goal, wake, cwd, lead),
@@ -401,8 +451,10 @@ export async function runGoal(stored: Goal): Promise<void> {
         if (event.model) effectiveModel = event.model;
       }
       if (event.type === "error") errorMsg = event.content || "Unknown error";
-      if (typeof event.usage?.costUsd === "number") {
-        runCostUsd = Math.max(runCostUsd, event.usage.costUsd);
+      if (event.usage) {
+        if (typeof event.usage.costUsd === "number")
+          runCostUsd = Math.max(runCostUsd, event.usage.costUsd);
+        runTokens = Math.max(runTokens, wakeTokens(event.usage));
         await holdToBudget();
       }
     }
@@ -428,8 +480,19 @@ export async function runGoal(stored: Goal): Promise<void> {
         spend: addGoalSpend(fresh.spend, runCostUsd, Date.now()),
       };
       if (stopped && !errorMsg)
-        merged.lastRunError = "Stopped: it reached its budget";
+        merged.lastRunError = "Stopped: it reached its limit";
       if (!merged.spend) delete merged.spend;
+      // A wake that went past its token limit trips the lead's guard: the
+      // wake check runs on the next tick, pauses the lead and asks.
+      const tripped = !!lead && wrappedUp && runTokens >= lead.wakeTokens;
+      if (tripped && merged.status === "active") {
+        merged.guard = {
+          ...goalGuardToday(merged, Date.now()),
+          trippedTokens: runTokens,
+        };
+        merged.nextWakeAt = new Date().toISOString();
+        return merged;
+      }
       defaulted =
         merged.status === "active" &&
         Date.parse(merged.nextWakeAt) <= startedAt.getTime();
@@ -614,6 +677,24 @@ async function tickGoal(goal: Goal, now: number): Promise<void> {
   }
   if (Date.parse(goal.nextWakeAt) > now) return;
   if (runningGoals.has(goal.id)) return;
+  // Unattended work waits while the Claude pool is low, so it never takes
+  // the capacity the owner's own sessions need. Postponed, not paused.
+  if (!(await headroomCheck().catch(() => true))) {
+    const nextWakeAt = new Date(now + HEADROOM_POSTPONE_MS).toISOString();
+    await mutateGoal(goal.id, (current) =>
+      current.status === "active" && current.nextWakeAt === goal.nextWakeAt
+        ? { ...current, nextWakeAt }
+        : current,
+    );
+    if (!postponedForHeadroom.has(goal.id)) {
+      postponedForHeadroom.add(goal.id);
+      console.log(
+        `[goals] "${goal.name}" waits: the Claude accounts are close to their limits`,
+      );
+    }
+    return;
+  }
+  postponedForHeadroom.delete(goal.id);
   // A prior process's run may still be resuming from the journal — don't
   // double-drive the same engine session.
   if (isAgentSessionBusy(goal.engineSessionId, goal.osSessionId)) return;
