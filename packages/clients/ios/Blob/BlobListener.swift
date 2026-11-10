@@ -42,6 +42,9 @@ final class BlobListener {
         let text: String
         /// 16 kHz mono Float32; empty on the `Dictation` fallback.
         let samples: [Float]
+        /// False when the model missed `stop`'s deadline and `text` is what
+        /// it had shown by then.
+        var finished = true
     }
 
     private var finalized = ""
@@ -98,8 +101,10 @@ final class BlobListener {
     }
 
     /// Stops listening and returns everything heard, once the model has
-    /// finished its last phrase.
-    func stop() async -> Heard {
+    /// finished its last phrase, or after `seconds` with the text shown so
+    /// far: the model can stall (a first Parakeet compile competing for the
+    /// Neural Engine), and what you said must still go.
+    func stop(within seconds: Double) async -> Heard {
         ended = true
         if let fallback {
             fallback.stop()
@@ -119,9 +124,37 @@ final class BlobListener {
         self.analyzer = nil
         self.results = nil
         level = 0
-        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
-        await results?.value
-        return Heard(text: text, samples: samples)
+        let finished = await Self.finishes(within: seconds) {
+            try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+            await results?.value
+        }
+        if !finished {
+            results?.cancel()
+            if let analyzer { Task { await analyzer.cancelAndFinishNow() } }
+        }
+        return Heard(text: text, samples: samples, finished: finished)
+    }
+
+    /// Whether `work` ends within `seconds`. Returns at the deadline even
+    /// when `work` never does.
+    private static func finishes(within seconds: Double, _ work: @escaping @MainActor () async -> Void) async -> Bool {
+        final class Once {
+            var continuation: CheckedContinuation<Bool, Never>?
+            func resume(_ value: Bool) { continuation?.resume(returning: value); continuation = nil }
+        }
+        let once = Once()
+        return await withCheckedContinuation { continuation in
+            once.continuation = continuation
+            let timer = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(seconds))
+                once.resume(false)
+            }
+            Task { @MainActor in
+                await work()
+                timer.cancel()
+                once.resume(true)
+            }
+        }
     }
 
     /// Drops everything without waiting for the model.

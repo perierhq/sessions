@@ -76,7 +76,7 @@ struct BlobThinkingLayer: View {
 
     /// Where the turn's entries start: settles a beat after the message goes out.
     private var anchorKey: String {
-        "\(talk.sentAfter ?? "")|\(talk.heard)"
+        "\(talk.sentAfter ?? "")|\(talk.acceptedEntry?.id ?? "")|\(talk.heard)"
     }
 
     /// Changes when the turn's transcript does, including when a live tool
@@ -290,25 +290,5 @@ final class BlobThinkingTurn {
             }
         }
         return out
-    }
-}
-
-extension BlobTextTalk {
-    /// The supervisor's entries after the message you sent, durable then
-    /// streamed. Anchored like `replyEntry`: on the user entry carrying what
-    /// was said, after where the transcript ended when it went out. Empty
-    /// until that entry lands.
-    var turnEntries: [TranscriptEntry] {
-        guard let desk, phase == .waiting else { return [] }
-        let entries = desk.entries
-        let floor = sentAfter.flatMap { id in entries.lastIndex { $0.id == id } }.map { $0 + 1 } ?? 0
-        guard floor < entries.count else { return [] }
-        let said = heard.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let mine = entries[floor...].lastIndex(where: { entry in
-            entry.type == "user" && (said.isEmpty || (entry.content ?? "").contains(said))
-        }) else { return [] }
-        let durable = Array(entries[entries.index(after: mine)...])
-        let landed = Set(durable.map(BlobThinkingTurn.key))
-        return durable + desk.liveEntries.filter { !landed.contains(BlobThinkingTurn.key($0)) }
     }
 }

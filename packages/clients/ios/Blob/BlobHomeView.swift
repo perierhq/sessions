@@ -122,6 +122,7 @@ struct BlobHomeView: View {
                 #endif
         }
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
+        .onChange(of: text.acceptedEntry?.id) { _, _ in text.accepted() }
         .onChange(of: text.streamingText) { _, _ in text.answerStreamed() }
         .onChange(of: text.settled) { _, settled in if settled { text.answerSettled() } }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: typing)
@@ -197,7 +198,7 @@ struct BlobHomeView: View {
             // A backgrounded app must never hold the mic open.
             if phase == .background {
                 if !engine.shownOutsideApp { engine.stop() }
-                text.reset()
+                text.pause()
                 BlobParakeet.shared.unload()
             } else if phase == .active, BlobTranscriber.current == .parakeet {
                 BlobParakeet.shared.warm()

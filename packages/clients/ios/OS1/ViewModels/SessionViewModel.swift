@@ -1524,7 +1524,16 @@ final class SessionViewModel {
     /// A task a voice call heard the person ask for. It steers a busy run,
     /// as the web call does, and leaves the draft alone. False when the
     /// outbox refused it, so the call can say nothing was sent.
-    func sendVoiceTask(_ text: String) -> Bool {
+    func sendVoiceTask(_ text: String) -> Bool { sendSteer(text) != nil }
+
+    /// A message that folds into a busy run at its next tool boundary
+    /// instead of waiting behind it, and starts a turn when nothing runs.
+    /// The server falls back to the next turn when the run can't take a
+    /// steer. The draft and the composer's busy-send setting are left
+    /// alone. Returns the outbox item's id, which the server's user entry
+    /// for it carries; nil when the outbox refused the message.
+    @discardableResult
+    func sendSteer(_ text: String) -> String? {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty,
               let item = outbox.enqueue(
@@ -1536,12 +1545,12 @@ final class SessionViewModel {
                   busyMode: "steer",
                   user: ServerConfig.shared.userName
               )
-        else { return false }
+        else { return nil }
         appendOutboxEcho(item)
         rebuildDisplayItems()
         HideStore.shared.unhide(for: session)
         sendSeq += 1
-        return true
+        return item.id
     }
 
     /// A quick reply into the composer instead of straight to the session,
