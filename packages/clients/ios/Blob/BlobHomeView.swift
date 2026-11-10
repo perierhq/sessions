@@ -138,8 +138,11 @@ struct BlobHomeView: View {
         }
         .haptic(.commit, trigger: decisions.answered)
         // Blob reads a decision's first paragraph when it comes up, once.
+        // The reply to your message wins: while one is on its way or being
+        // read, decisions stay silent.
         .onChange(of: decision?.id, initial: true) { old, new in
-            if old != nil, old != new { text.speaker.stop() }
+            guard !text.replyHasVoice else { return }
+            if old != nil, old != new { text.hush() }
             if let decision, decisions.shouldSpeak(decision) {
                 let say = BlobReply(decision.body).say
                 if !say.isEmpty { text.speaker.speak(say) }
@@ -204,7 +207,7 @@ struct BlobHomeView: View {
 
     /// Esc stops Blob reading, then closes history, then the write bar.
     private func escapeKey() -> Bool {
-        if text.speaker.speaking {
+        if text.reading {
             text.hush()
         } else if historyOpen {
             closeHistory()

@@ -9,9 +9,9 @@ import Foundation
 /// A sentence is complete at `.`, `!`, `?` or `…` (closing emphasis, quotes
 /// or brackets allowed) followed by whitespace or a line break. A dot inside
 /// a number or a URL, or after an abbreviation or initial, is not an end;
-/// nor is one followed by a lowercase word.
-/// When the Say part closes, or the reply settles (`finish`), the rest of it
-/// is read too. Sentences already read in this reply are never read again,
+/// nor is one followed by a lowercase word, so a sentence waits until the
+/// next word has started. When the Say part closes, or the reply settles
+/// (`finish`), the rest of it is read too. Sentences already read in this reply are never read again,
 /// even when the finished reply rewrites what streamed.
 ///
 /// Pure and Foundation-only, like `BlobReply`. No test target compiles
@@ -23,7 +23,7 @@ import Foundation
 ///
 ///     feed("Version 3.5 is out, e.g. on iOS. See example.com/a.b now")
 ///                                       → ["Version 3.5 is out, e.g. on iOS."]
-///     finish(say: "Version 3.5 is out, e.g. on iOS. See example.com/a.b now.")
+///     finish("Version 3.5 is out, e.g. on iOS. See example.com/a.b now.")
 ///                                       → ["See example.com/a.b now."]
 ///
 ///     feed("Two things:\n- one")        → ["Two things:"]
@@ -36,9 +36,15 @@ struct BlobSentenceStreamer {
     private var source: [Character] = []
     /// Where the next sentence starts in `source`.
     private var cursor = 0
+    /// The reply as fed when its Say part closed; nil while it is open.
+    private var closedAt: String?
 
     /// The complete sentences in `markdown` (the reply so far) not yet returned.
     mutating func feed(_ markdown: String) -> [String] {
+        // The Say part has closed and this is the same message growing:
+        // nothing after it is read.
+        if let closedAt, markdown.hasPrefix(closedAt) { return [] }
+        closedAt = nil
         let (say, closed) = Self.sayPart(of: markdown)
         let chars = Array(say)
         // A different message (the text before a tool call gave way to the
@@ -53,14 +59,16 @@ struct BlobSentenceStreamer {
         if closed {
             take(chars[cursor...], into: &out)
             cursor = chars.count
+            closedAt = markdown
         }
         return out
     }
 
-    /// The reply has settled: the sentences of its final Say part (plain
-    /// text, `BlobReply(reply).say`) that have not been read yet.
-    mutating func finish(say: String) -> [String] {
-        let chars = Array(say)
+    /// The reply has settled: the sentences of its final Say part, cut the
+    /// same way as while streaming, that have not been read yet.
+    mutating func finish(_ markdown: String) -> [String] {
+        // Two line breaks end the last line and close the Say part.
+        let chars = Array(Self.sayPart(of: markdown + "\n\n").0)
         var out: [String] = []
         var start = 0
         while let end = Self.sentenceEnd(in: chars, from: start) {
@@ -70,6 +78,7 @@ struct BlobSentenceStreamer {
         take(chars[start...], into: &out)
         source = []
         cursor = 0
+        closedAt = nil
         return out
     }
 
@@ -132,21 +141,17 @@ struct BlobSentenceStreamer {
             while end < chars.count, terminators.contains(chars[end]) { end += 1 }
             while end < chars.count, closers.contains(chars[end]) { end += 1 }
             guard end < chars.count else { return nil }
-            if chars[end].isWhitespace, !(char == "." && abbreviation(before: index, in: chars)),
-               !continuesLowercase(after: end, in: chars) {
-                return end
+            if chars[end].isWhitespace, !(char == "." && abbreviation(before: index, in: chars)) {
+                // The next word decides: lowercase ("Then… nothing") goes
+                // on. Until it has started, the sentence isn't complete.
+                var next = end
+                while next < chars.count, chars[next].isWhitespace { next += 1 }
+                guard next < chars.count else { return nil }
+                if !chars[next].isLowercase { return end }
             }
             index = end
         }
         return nil
-    }
-
-    /// Whether the next word, once it has started, begins with a lowercase
-    /// letter ("Then… nothing"): the sentence goes on.
-    private static func continuesLowercase(after end: Int, in chars: [Character]) -> Bool {
-        var next = end
-        while next < chars.count, chars[next].isWhitespace { next += 1 }
-        return next < chars.count && chars[next].isLowercase
     }
 
     /// Whether the word before the dot at `dot` is an abbreviation or an

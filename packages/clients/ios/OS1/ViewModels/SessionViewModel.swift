@@ -33,6 +33,10 @@ final class SessionViewModel {
     /// precedes them in the file, because that text lands ~1s later.)
     private(set) var liveEntries: [TranscriptEntry] = []
     private(set) var liveText = ""
+    /// Whether stream_text fills `liveText`, overriding the account's live
+    /// typing preference; nil follows the preference. When set, reasoning
+    /// frames are left out of `liveText`.
+    var streamsLiveText: Bool?
     /// A run finishing settles the trailing turn — "Working" becomes
     /// "Worked", its duration resolves and its footer appears — so the block
     /// list has to be rebuilt on the flip, not just on entry mutations.
@@ -2404,7 +2408,7 @@ final class SessionViewModel {
             streamEnded = false
             rebuildDisplayItems()
 
-        case .streamText(let id, let text, let blockId) where id == session.id:
+        case .streamText(let id, let text, let blockId, let reasoning) where id == session.id:
             isStreaming = true
             // Live typing is the account's choice (Settings > Preferences),
             // default off. Dropping the frame is the whole implementation:
@@ -2412,7 +2416,10 @@ final class SessionViewModel {
             // transcript_append, which is what filled the transcript before
             // streaming existed. isStreaming is set above either way, so the
             // run still reads as working.
-            guard NativePreferences.liveTypingIsOn else { break }
+            guard streamsLiveText ?? NativePreferences.liveTypingIsOn else { break }
+            // A viewer that asks for live text itself (Blob) reads it as the
+            // reply, so the model's thinking stays out of it.
+            if reasoning, streamsLiveText != nil { break }
             if let blockId {
                 guard !landedBlockIds.contains(blockId) else { break }
                 liveBlockText[blockId, default: ""] += text

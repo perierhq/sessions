@@ -40,7 +40,18 @@ final class BlobTextTalk {
     /// The Say sentences of the reply being written, read as each completes.
     private var sentences = BlobSentenceStreamer()
     /// Reading was cut off (Esc); the rest of this reply stays silent.
-    private var hushed = false
+    private(set) var hushed = false
+
+    /// A reply to your message is on its way: sent and not yet settled. It
+    /// has Blob's voice; decisions are not read meanwhile.
+    var replying: Bool { phase == .waiting && !settled }
+
+    /// The reply is on its way or still being read.
+    var replyHasVoice: Bool { replying || speaker.readingReply }
+
+    /// Blob is reading, or will read the next sentence of the reply being
+    /// written: steady between sentences, so Esc still hushes it.
+    var reading: Bool { speaker.speaking || (replying && !hushed) }
 
     /// The reply text while the supervisor is still writing it; nil otherwise.
     var streamingText: String? {
@@ -53,7 +64,7 @@ final class BlobTextTalk {
     /// changes.
     func answerStreamed() {
         guard !hushed, let text = streamingText else { return }
-        for sentence in sentences.feed(text) { speaker.enqueue(sentence) }
+        speaker.enqueue(sentences.feed(text))
     }
 
     /// Blob's answer so far: streaming text while the supervisor writes, then the
@@ -142,7 +153,7 @@ final class BlobTextTalk {
     func answerSettled() {
         guard !hushed, let answer, answer != spokenAnswer else { return }
         spokenAnswer = answer
-        for sentence in sentences.finish(say: BlobReply(answer).say) { speaker.enqueue(sentence) }
+        speaker.enqueue(sentences.finish(answer))
     }
 
     /// Stops reading and forgets what was read: the next reply starts fresh.
@@ -225,6 +236,9 @@ final class BlobTextTalk {
         let task = Task { [owner] in
             let ensure = try await OS1API.ensureSupervisor()
             let model = SessionViewModel(session: Session(id: ensure.sessionId))
+            // Blob reads the reply as it streams, whatever the account's live
+            // typing preference; the model's thinking stays out of it.
+            model.streamsLiveText = true
             // A chip in a reply is the next thing you say: send it and wait for
             // the answer to that, not the one already on screen.
             model.quickReplies.send = { [weak self] text in self?.follow(up: text) }

@@ -46,8 +46,14 @@ final class BlobSpeaker: NSObject {
     /// ready when the current one ends.
     private var queue: [Queued] = []
     private var queueTask: Task<Void, Never>?
+    /// Sentences of a reply are being read (`enqueue`).
+    var readingReply: Bool { queueTask != nil }
     /// Audio requests kept in flight ahead of playback.
     static let queueAhead = 2
+    /// A server request for this reply failed (a 429, say): the rest of it
+    /// is read with an Apple voice and asks the server for nothing more.
+    /// Cleared by `stop`, which every new reply starts with.
+    private var appleForReply = false
 
     private struct Queued {
         let text: String
@@ -111,19 +117,24 @@ final class BlobSpeaker: NSObject {
         return speakWithApple(plain)
     }
 
-    /// Adds one sentence of a streaming answer to what Blob reads, if reading
-    /// aloud is on. Sentences play in order, each right after the last; its
-    /// server audio is requested at once, up to `queueAhead` at a time. A
-    /// sentence whose request fails is read with an Apple voice. Cuts off
-    /// anything `speak` was reading; `stop` clears the queue.
-    func enqueue(_ sentence: String) {
+    /// Adds sentences of a streaming answer to what Blob reads, if reading
+    /// aloud is on. They play in order, each right after the last; their
+    /// server audio is requested at once, up to `queueAhead` at a time.
+    /// Sentences that come together are joined by the `pieces` rules: the
+    /// first alone when nothing is reading yet, then up to
+    /// `serverPieceChars`. Once a request fails, the rest of the reply is
+    /// read with an Apple voice. Only a reply calls this, so it cuts off
+    /// anything `speak` was reading (a decision); `stop` clears the queue.
+    func enqueue(_ sentences: [String]) {
         guard UserDefaults.standard.object(forKey: Self.readAloudKey) as? Bool ?? true else { return }
-        let plain = Self.plain(sentence)
+        let plain = sentences.map(Self.plain).filter { !$0.isEmpty }
         guard !plain.isEmpty else { return }
-        if queueTask == nil { stop() }
-        queue.append(Queued(text: plain))
+        if queueTask == nil { cutOff() }
+        for piece in Self.pieces(sentences: plain, firstAlone: queueTask == nil) {
+            queue.append(Queued(text: piece))
+        }
         speaking = true
-        if usesServerVoice { requestAhead() }
+        if usesServerVoice, !appleForReply { requestAhead() }
         if queueTask == nil { queueTask = Task { await readQueue() } }
     }
 
@@ -144,6 +155,7 @@ final class BlobSpeaker: NSObject {
         }
         try? BlobListener.activateSession(record: false)
         while let next = queue.first {
+            if appleForReply { useServer = false }
             var data: Data?
             if useServer {
                 requestAhead()
@@ -155,9 +167,15 @@ final class BlobSpeaker: NSObject {
                     }
                 }
                 if Task.isCancelled { return }
+                if data == nil {
+                    // Failed: Apple reads the rest; drop what was requested ahead.
+                    appleForReply = true
+                    useServer = false
+                    for index in queue.indices { queue[index].audio?.cancel(); queue[index].audio = nil }
+                }
             }
-            queue.removeFirst()
-            if useServer { requestAhead() }
+            let item = queue.removeFirst()
+            if useServer { requestAhead() } else { item.audio?.cancel() }
             // Audio that won't play is read with an Apple voice too.
             var played = false
             if let data { played = await play(data) }
@@ -266,6 +284,12 @@ final class BlobSpeaker: NSObject {
     }
 
     func stop() {
+        cutOff()
+        appleForReply = false
+    }
+
+    /// Stops whatever is reading and clears the queue.
+    private func cutOff() {
         serverTask?.cancel()
         serverTask = nil
         queueTask?.cancel()
@@ -312,18 +336,17 @@ final class BlobSpeaker: NSObject {
     /// The answer in pieces for the server voice: the first sentence alone,
     /// then sentences joined up to `serverPieceChars`.
     static func pieces(_ plain: String) -> [String] {
-        let tokenizer = NLTokenizer(unit: .sentence)
-        tokenizer.string = plain
-        var sentences: [String] = []
-        tokenizer.enumerateTokens(in: plain.startIndex..<plain.endIndex) { range, _ in
-            let sentence = plain[range].trimmingCharacters(in: .whitespacesAndNewlines)
-            if !sentence.isEmpty { sentences.append(sentence) }
-            return true
-        }
-        guard let first = sentences.first else { return [] }
-        var pieces = [first]
+        pieces(sentences: sentences(plain), firstAlone: true)
+    }
+
+    /// `sentences` joined up to `serverPieceChars` a piece, the first one
+    /// alone when `firstAlone`.
+    static func pieces(sentences: [String], firstAlone: Bool) -> [String] {
+        var pieces: [String] = []
+        var rest = sentences[...]
+        if firstAlone, let first = rest.popFirst() { pieces.append(first) }
         var current = ""
-        for sentence in sentences.dropFirst() {
+        for sentence in rest {
             if !current.isEmpty, current.count + sentence.count + 1 > serverPieceChars {
                 pieces.append(current)
                 current = ""
@@ -332,6 +355,18 @@ final class BlobSpeaker: NSObject {
         }
         if !current.isEmpty { pieces.append(current) }
         return pieces
+    }
+
+    private static func sentences(_ plain: String) -> [String] {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = plain
+        var sentences: [String] = []
+        tokenizer.enumerateTokens(in: plain.startIndex..<plain.endIndex) { range, _ in
+            let sentence = plain[range].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sentence.isEmpty { sentences.append(sentence) }
+            return true
+        }
+        return sentences
     }
 
     /// Markdown read aloud sounds like punctuation; speak the words only.

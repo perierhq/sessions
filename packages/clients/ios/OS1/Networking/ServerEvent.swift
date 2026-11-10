@@ -23,7 +23,9 @@ enum ServerEvent: Sendable {
     /// `blockId` names the assistant block this text belongs to when the
     /// engine names its blocks; the durable entry that lands it carries the
     /// same id, which is what makes cancelling the live copy exact.
-    case streamText(sessionId: String, text: String, blockId: String?)
+    /// `reasoning` is true for the model's thinking (`kind: "reasoning"`),
+    /// false for its reply or when the engine did not say.
+    case streamText(sessionId: String, text: String, blockId: String?, reasoning: Bool = false)
     case streamEntry(sessionId: String, entry: TranscriptEntry)
     case streamDone(sessionId: String)
     case sessionStatus(
@@ -173,7 +175,9 @@ enum ServerEvent: Sendable {
             return .streamStart(sessionId: id)
         case "stream_text":
             guard let id = frame.sessionId, let text = frame.text else { return .ignored }
-            return .streamText(sessionId: id, text: text, blockId: frame.blockId)
+            return .streamText(
+                sessionId: id, text: text, blockId: frame.blockId, reasoning: frame.kind == "reasoning"
+            )
         case "stream_tool_use", "stream_tool_result":
             guard let id = frame.sessionId, let entry = frame.entry else { return .ignored }
             return .streamEntry(sessionId: id, entry: entry)
@@ -627,6 +631,8 @@ private struct RawFrame: Decodable {
     let threadId: String?
     let text: String?
     let blockId: String?
+    /// stream_text: "reasoning" or "text"; absent when the engine did not say.
+    let kind: String?
     struct WireViewing: Decodable {
         let user: String?
         let sessionId: String?
