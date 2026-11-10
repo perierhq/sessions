@@ -206,6 +206,7 @@ final class BlobSpeaker: NSObject {
         utteranceId = ObjectIdentifier(utterance)
         synthesizer.speak(utterance)
         speaking = true
+        BlobMetrics.shared.audioStarted(voice: voice.quality == .premium ? "apple:premium" : "apple:enhanced")
         return true
     }
 
@@ -260,7 +261,12 @@ final class BlobSpeaker: NSObject {
         var started = true
         await withCheckedContinuation { continuation in
             finished = continuation
-            if !player.play() { started = false; endPlayback() }
+            if player.play() {
+                BlobMetrics.shared.audioStarted(voice: "fish:\(server?.model ?? "default")")
+            } else {
+                started = false
+                endPlayback()
+            }
         }
         return started
     }

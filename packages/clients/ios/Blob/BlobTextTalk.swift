@@ -60,6 +60,9 @@ final class BlobTextTalk {
     @ObservationIgnored private var sentAt: ContinuousClock.Instant?
     /// The reply was logged as anchored for this message.
     @ObservationIgnored private var anchoredLogged = false
+    /// How the last listen ended and who wrote its text, for `BlobMetrics`.
+    @ObservationIgnored private var endOfSpeech = BlobMetrics.EndOfSpeech.tap
+    @ObservationIgnored private var transcribedBy = BlobMetrics.Transcriber.apple
 
     /// Each step of a turn, with ids, lengths and times only: never what was said.
     static let log = Logger(subsystem: "pl.sessions.blob", category: "talk")
@@ -120,8 +123,11 @@ final class BlobTextTalk {
     func answerStreamed() {
         guard let text = streamingText else { return }
         logAnchored(streaming: true)
+        BlobMetrics.shared.firstToken()
         guard !hushed else { return }
-        speaker.enqueue(sentences.feed(text))
+        let next = sentences.feed(text)
+        BlobMetrics.shared.willSpeak(next.count)
+        speaker.enqueue(next)
     }
 
     /// Blob's answer so far: streaming text while the supervisor writes, then the
@@ -152,6 +158,7 @@ final class BlobTextTalk {
     /// so it is never taken for the answer. Called when `acceptedEntry` changes.
     func accepted() {
         guard let desk, foreignText == nil, let entry = acceptedEntry else { return }
+        BlobMetrics.shared.accepted()
         foreignText = desk.liveText
         foreignIds = Set(desk.liveEntries.map { $0.toolUseId ?? $0.id })
         let ms = sentAt.map { Self.ms(since: $0) } ?? -1
@@ -261,6 +268,7 @@ final class BlobTextTalk {
         Task { _ = try? await supervisorModel() }
         Task { await speaker.refreshServerVoice() }
         if BlobTranscriber.current == .parakeet { BlobParakeet.shared.warm() }
+        BlobMetrics.shared.flush()
     }
 
     /// The supervisor's quick-reply relay, so `choices` chips in a reply send.
@@ -329,6 +337,7 @@ final class BlobTextTalk {
         heard = ""
         sentAfter = anchor
         startTurn(answeringAsk: true)
+        BlobMetrics.shared.began(.ask, inputChars: 0)
         phase = .waiting
     }
 
@@ -349,6 +358,7 @@ final class BlobTextTalk {
             if let unsent { send(typed: unsent) } else { listen() }
         case .listening:
             Self.log.info("endpoint decision=tap")
+            endOfSpeech = .tap
             send()
         case .waiting: reset()
         }
@@ -357,6 +367,8 @@ final class BlobTextTalk {
     func reset() {
         generation += 1
         listener.cancel()
+        BlobMetrics.shared.stopping(speaking: replyHasVoice)
+        BlobMetrics.shared.close()
         stopReading()
         notice = nil
         unsent = nil
@@ -393,13 +405,16 @@ final class BlobTextTalk {
     func answerSettled() {
         guard let answer else { return }
         logAnchored(streaming: false)
+        BlobMetrics.shared.settled(answer: answer, replyEntryId: replyEntry?.id, turnEntries: turnEntries)
         if answer != spokenAnswer {
             let ms = sentAt.map { Self.ms(since: $0) } ?? -1
             Self.log.info("settled chars=\(answer.count, privacy: .public) ms=\(ms, privacy: .public)")
         }
         guard !hushed, answer != spokenAnswer else { return }
         spokenAnswer = answer
-        speaker.enqueue(sentences.finish(answer))
+        let rest = sentences.finish(answer)
+        BlobMetrics.shared.willSpeak(rest.count)
+        speaker.enqueue(rest)
     }
 
     /// Stops reading and forgets what was read: the next reply starts fresh.
@@ -412,18 +427,21 @@ final class BlobTextTalk {
 
     /// Stops reading the current reply, including sentences still to stream.
     func hush() {
+        BlobMetrics.shared.stopping(speaking: replyHasVoice, by: .hush)
         speaker.stop()
         if phase == .waiting { hushed = true }
     }
 
     private func listen() {
         // Blob may be reading a decision; the mic must not hear it.
+        BlobMetrics.shared.stopping(speaking: replyHasVoice)
         stopReading()
         notice = nil
         unsent = nil
         generation += 1
         heard = ""
         phase = .listening
+        BlobMetrics.shared.listeningStarted()
         Self.log.info("listen start transcriber=\(BlobTranscriber.current.rawValue, privacy: .public) parakeet=\(String(describing: BlobParakeet.shared.state), privacy: .public)")
         if BlobTranscriber.current == .parakeet {
             // Load while you talk; a first download only over Wi-Fi.
@@ -447,7 +465,9 @@ final class BlobTextTalk {
         guard phase == .listening else { return }
         Self.log.info("endpoint decision=\(String(describing: decision), privacy: .public)")
         switch decision {
-        case .send: send()
+        case .send:
+            endOfSpeech = .auto
+            send()
         case .giveUp: reset()
         case .listen: break
         }
@@ -456,6 +476,7 @@ final class BlobTextTalk {
     private func send() {
         phase = .waiting
         startTurn(answeringAsk: false)
+        BlobMetrics.shared.speechEnded()
         let listen = generation
         Task {
             let started = ContinuousClock.now
@@ -466,6 +487,12 @@ final class BlobTextTalk {
             heard = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let text = await finalText(said)
             guard isCurrent(listen) else { return }
+            if !text.isEmpty {
+                BlobMetrics.shared.began(
+                    .voice, inputChars: text.count, transcriber: transcribedBy,
+                    transcribeMs: Self.ms(since: started), endOfSpeech: endOfSpeech
+                )
+            }
             await deliver(text)
         }
     }
@@ -498,6 +525,7 @@ final class BlobTextTalk {
     private func finalText(_ said: BlobListener.Heard) async -> String {
         let started = ContinuousClock.now
         func used(_ source: String, _ text: String) -> String {
+            transcribedBy = BlobMetrics.Transcriber(rawValue: String(source.prefix { $0 != " " })) ?? .apple
             Self.log.info("transcriber used=\(source, privacy: .public) ms=\(Self.ms(since: started), privacy: .public) chars=\(text.count, privacy: .public)")
             return text
         }
@@ -559,10 +587,12 @@ final class BlobTextTalk {
 
     /// A typed message, for when speaking isn't an option. Same path as speech
     /// from here on, whether or not the server has a voice key.
-    func send(typed raw: String) {
+    func send(typed raw: String, as input: BlobMetrics.Input = .typed) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         listener.cancel()
+        BlobMetrics.shared.stopping(speaking: replyHasVoice)
+        BlobMetrics.shared.began(input, inputChars: text.count)
         stopReading()
         notice = nil
         unsent = nil
@@ -608,13 +638,14 @@ final class BlobTextTalk {
 
     private func couldNotSend(_ text: String, _ reason: String) {
         Self.log.error("deliver failed chars=\(text.count, privacy: .public) reason=\(reason, privacy: .public)")
+        BlobMetrics.shared.failed()
         unsent = text
         heard = text
         notice = "Couldn\u{2019}t send. Tap to try again."
         phase = .failed(reason)
     }
 
-    private func follow(up text: String) { send(typed: text) }
+    private func follow(up text: String) { send(typed: text, as: .chip) }
 
     /// The supervisor session, connected once and kept for the life of the
     /// screen (adrs/supervisor-and-leads.md).
