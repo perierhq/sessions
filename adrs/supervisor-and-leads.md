@@ -174,3 +174,28 @@ What that means for the rollout:
 - **The supervisor's voice:** voice secret minting is wired to the Desk
   (`mintVoiceSecret`). Generalize it to "the user's standing session" rather
   than copy it.
+
+## Built (November 2026)
+
+What landed from this proposal, and the decisions made on the way:
+
+- **Goals on the catalog** (#146): the sync I/O prerequisite.
+- **Supervisor session** (#147): its own standing session, separate from the Desk; Blob
+  talks to it, voice included, and the Blob surface hint follows it.
+- **Supervisor inbox** (#148): needs-you and fyi items, fixed push copy, per-person quiet
+  hours (02:00 to 08:00 by default) with "down" breaking through, a daily digest at 09:00.
+- **Project lead** (#149): settings block with the rules, watch stage, flap triage,
+  overview, proposals to the inbox, budget held mid-run, fail-closed wake checks.
+  Turned on per project in settings (#153).
+- **How Blob reports** (#152): the first paragraph is what Blob says, the rest is shown;
+  BLUF, SBAR or plain per person; Blob hands GitHub work to Pat, the public persona, and
+  never posts as itself.
+- **Native push** (#151): Bark as a second transport, AES-GCM optional, opening
+  `blob://item/<id>`. The paid Apple team is unavailable, so Blob has no APNs of its own.
+- **Long-lived supervisor** (#154): a ledger, weekly rotation reseeded from it, daily
+  memory refresh, more recent context kept per compaction.
+- **Voice** (#150, #155): Fish Audio read-aloud on the server; the OpenAI live call is
+  opt-in in Blob because it is billed per minute.
+
+Not built yet: the coordinate and act stages, applying approved changes, the classifier
+(Haiku 5.5 rather than a separate vendor), more leads, and Duo posture APIs.
