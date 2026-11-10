@@ -131,6 +131,11 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSMicrophoneUsageDescription: Talk to Blob.
+        # Bark notifications open `blob://item/<id>` to show that item.
+        CFBundleURLTypes:
+          - CFBundleURLName: pl.sessions.blob
+            CFBundleURLSchemes:
+              - blob
         # The shared sources include the OS composer's camera and dictation
         # paths. Blob doesn't use them yet, but the keys keep them safe.
         NSCameraUsageDescription: Attach a photo you take to a message.

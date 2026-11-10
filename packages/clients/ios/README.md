@@ -697,9 +697,16 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   prototype in `design/blob-motion/blob.js`. Keep the two in step.
 - Tap Blob to talk. The conversation is the Desk's live voice call
   (`DeskVoiceEngine.desk`); long-press for settings.
+- Say and show (`Blob/BlobReply.swift`): the first paragraph of a reply
+  (the prose before the first blank line, fence, heading, list or table) is
+  what Blob says: read aloud and shown as the Say line. Everything after it
+  is only shown, with the block catalog. A reply that opens with a block
+  says nothing aloud. Decisions split their body the same way. No test
+  target compiles `Blob/`; the examples in `BlobReply`'s doc comment are
+  the cases to check with a scratch `swiftc` run when the rule changes.
 - Swipe up on the home for history (`Blob/BlobHistoryView.swift`): earlier
   exchanges from the supervisor transcript, newest at the bottom, replies
-  drawn with the block catalog. Pull down past the oldest, or tap Blob, to
+  split into the Say line and the rest drawn with the block catalog. Pull down past the oldest, or tap Blob, to
   go back. Blob connects to the supervisor on launch so it is there before
   the first message.
 - Decisions (`Blob/BlobDecisions.swift`, `Blob/BlobDecisionView.swift`): the
@@ -709,7 +716,14 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   title, body with the block catalog, then the options as buttons, the first
   (recommended) one filled. "Not now" hides it until the next launch;
   long-press for "Dismiss", which closes it on the server. `fyi` items never
-  show on the home.
+  show on the home unless a link opens one. Blob reads each decision's first
+  paragraph aloud once, when it comes up.
+- Links (`blob` URL scheme): `blob://item/<id>`, as Bark notifications open
+  it, shows that item as the current decision, even after "Not now";
+  `blob://` alone just opens Blob.
+- Long-press settings include "How Blob reports" (bottom line first, SBAR
+  or plain), the `reportStyle` field of `/api/supervisor/prefs`. The row is
+  hidden when the server doesn't return the field.
 - Debug builds launched with `BLOB_DEMO=1` play a scripted conversation with
   no server or microphone, and `BLOB_DEMO_AT=<seconds>` freezes one moment,
   for screenshots and motion checks. `BLOB_DEMO_HISTORY=1` fills history

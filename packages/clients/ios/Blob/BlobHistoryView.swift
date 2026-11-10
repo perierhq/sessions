@@ -5,8 +5,9 @@ struct BlobExchange: Identifiable, Equatable {
     let id: String
     /// What you said: typed, dictated, or spoken on the voice call.
     var said: String
-    /// Blob's reply as markdown, drawn with the block catalog. Nil while
-    /// there is no answer yet.
+    /// Blob's reply as markdown: its first paragraph as the Say line, the
+    /// rest drawn with the block catalog (`BlobReply`). Nil while there is
+    /// no answer yet.
     var reply: String?
     /// The entry the reply came from, so its `choices` know whether they are
     /// still current.
@@ -153,10 +154,7 @@ struct BlobHistoryView: View {
                 .multilineTextAlignment(.trailing)
                 .accessibilityLabel("You: \(exchange.said)")
             if let reply = exchange.reply {
-                MarkdownBody(reply)
-                    .environment(\.quickReplyRelay, relay)
-                    .environment(\.transcriptEntryId, exchange.replyId)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                BlobReplyView(reply: BlobReply(reply), entryId: exchange.replyId, relay: relay)
             }
         }
         .accessibilityElement(children: .contain)

@@ -30,8 +30,21 @@ final class BlobDecisions {
     /// after the first one rather than starting over.
     private var handledInRound = 0
 
+    /// Opened from a `blob://item/<id>` link: shown first, even if it was
+    /// skipped or is not a needs-you item.
+    private var focused: Item?
+    /// Items Blob has already read aloud, so each is read once.
+    private var spoken: Set<String> = []
+
     /// The items still to show, first one current.
-    var pending: [Item] { items.filter { !skipped.contains($0.id) && !closed.contains($0.id) } }
+    var pending: [Item] {
+        var list = items.filter { !skipped.contains($0.id) && !closed.contains($0.id) }
+        if let focused, !closed.contains(focused.id) {
+            list.removeAll { $0.id == focused.id }
+            list.insert(focused, at: 0)
+        }
+        return list
+    }
     var current: Item? { pending.first }
     /// The current item's place in this round, 1-based.
     var position: Int { handledInRound + 1 }
@@ -56,6 +69,10 @@ final class BlobDecisions {
         else { return }
         let open = fetched.filter { $0.needsYou && $0.isOpen }
         items = Self.ordered(open)
+        // A linked needs-you item that is no longer open was settled elsewhere.
+        if let focused, focused.needsYou {
+            self.focused = open.first { $0.id == focused.id }
+        }
         // Closed here and now gone there: nothing left to hide.
         closed.formIntersection(open.map(\.id))
         if pending.isEmpty { handledInRound = 0 }
@@ -72,7 +89,36 @@ final class BlobDecisions {
 
     func skip(_ item: Item) {
         skipped.insert(item.id)
+        if focused?.id == item.id { focused = nil }
         handled()
+    }
+
+    /// Shows the item a `blob://item/<id>` link names as the current
+    /// decision, even after "Not now". The list endpoint is the only read,
+    /// so it looks among the open items of any kind.
+    func focus(id: String) async {
+        skipped.remove(id)
+        if let item = items.first(where: { $0.id == id }) {
+            focused = item
+            return
+        }
+        #if DEBUG
+        if Self.demoEnabled { return }
+        #endif
+        guard ServerConfig.shared.isConfigured,
+              let fetched = try? await OS1API.supervisorItems(),
+              let item = fetched.first(where: { $0.id == id && $0.isOpen })
+        else {
+            say("That one is already settled.")
+            return
+        }
+        closed.remove(id)
+        focused = item
+    }
+
+    /// True the first time an item comes up, so Blob reads it once.
+    func shouldSpeak(_ item: Item) -> Bool {
+        spoken.insert(item.id).inserted
     }
 
     /// Sends the answer. Success, or the item already closed elsewhere,

@@ -3,9 +3,10 @@ import Observation
 
 /// Talking to Blob when the server has no voice key: you speak, Apple's
 /// on-device recognizer (`BlobListener`) turns it into text, the text goes to
-/// the supervisor like a typed message, and Blob shows the answer and reads it aloud
-/// (`BlobSpeaker`): with the server's Fish Audio voice when it has one, else
-/// with a Premium or Enhanced Apple voice when one fits.
+/// the supervisor like a typed message, and Blob shows the answer and reads its
+/// first paragraph aloud (`BlobReply`, `BlobSpeaker`): with the server's Fish
+/// Audio voice when it has one, else with a Premium or Enhanced Apple voice
+/// when one fits.
 ///
 /// The live voice call needs an OpenAI key on the server
 /// (`GET /api/desk/voice/status` reports it). Without one, this keeps the same
@@ -103,14 +104,18 @@ final class BlobTextTalk {
         return !desk.isRunning && !desk.isStreaming && answer != nil
     }
 
-    /// Reads the finished answer aloud, once. Called when `settled` turns true.
+    /// Reads the finished answer's first paragraph aloud, once; the rest is
+    /// only shown (`BlobReply`). Called when `settled` turns true.
     func answerSettled() {
         guard let answer, answer != spokenAnswer else { return }
         spokenAnswer = answer
-        speaker.speak(answer)
+        let say = BlobReply(answer).say
+        if !say.isEmpty { speaker.speak(say) }
     }
 
     private func listen() {
+        // Blob may be reading a decision; the mic must not hear it.
+        speaker.stop()
         heard = ""
         phase = .listening
         Task {

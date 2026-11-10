@@ -131,6 +131,23 @@ struct BlobHomeView: View {
             }
         }
         .haptic(.commit, trigger: decisions.answered)
+        // Blob reads a decision's first paragraph when it comes up, once.
+        .onChange(of: decision?.id, initial: true) { old, new in
+            if old != nil, old != new { text.speaker.stop() }
+            if let decision, decisions.shouldSpeak(decision) {
+                let say = BlobReply(decision.body).say
+                if !say.isEmpty { text.speaker.speak(say) }
+            }
+        }
+        // A Bark notification's link: `blob://item/<id>` shows that item as
+        // the current decision; `blob://` alone just opens Blob.
+        .onOpenURL { url in
+            guard let id = BlobLink.itemId(url) else { return }
+            if historyOpen { closeHistory() }
+            if typing && draft.isEmpty { typing = false; fieldFocused = false }
+            if text.phase != .listening { text.reset() }
+            Task { await decisions.focus(id: id) }
+        }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: decisionKey)
         #if DEBUG
         .onAppear {
@@ -224,12 +241,13 @@ struct BlobHomeView: View {
         if historyOpen { talking = false }
         // Something needs you: Blob wakes and moves up, as for a reply.
         if !talking && showingDecision {
+            let reading = text.speaker.speaking
             return BlobTargets(
-                mode: decisionSaid != nil ? .speak : .you,
+                mode: decisionSaid != nil || reading ? .speak : .you,
                 position: top,
                 size: 72,
                 look: nil,
-                level: 0
+                level: reading ? text.speaker.level(at: date) : 0
             )
         }
         return BlobTargets(
@@ -342,6 +360,8 @@ struct BlobHomeView: View {
 
     private func toggleTalk() {
         if typing { typing = false; fieldFocused = false }
+        // Blob may be reading a decision; talking cuts it off.
+        if !text.active { text.speaker.stop() }
         if text.active || !usesVoice {
             hasTalked = true
             text.tap()
@@ -495,13 +515,10 @@ struct BlobHomeView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         if let content = Self.demoReply ?? text.replyEntry?.content, !content.isEmpty {
-            // The finished reply, drawn with the block catalog: metrics, charts,
-            // tables, choices and the rest render as they do in the OS app.
+            // The finished reply: what Blob says, then what it shows, drawn
+            // with the block catalog as in the OS app.
             ScrollView {
-                MarkdownBody(content)
-                    .environment(\.quickReplyRelay, text.relay)
-                    .environment(\.transcriptEntryId, text.replyEntry?.id)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                BlobReplyView(reply: BlobReply(content), entryId: text.replyEntry?.id, relay: text.relay)
             }
             .frame(maxHeight: replyHeight)
             .scrollBounceBehavior(.basedOnSize)
@@ -509,10 +526,7 @@ struct BlobHomeView: View {
         } else if let answer = text.answer {
             // Still being written: plain text until the reply settles.
             ScrollView {
-                Text(answer)
-                    .font(.body)
-                    .foregroundStyle(OS1VisualStyle.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                BlobReplyView(reply: BlobReply(answer), streaming: true)
             }
             .frame(maxHeight: replyHeight)
             .scrollBounceBehavior(.basedOnSize)

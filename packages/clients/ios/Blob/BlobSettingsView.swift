@@ -10,6 +10,10 @@ struct BlobSettingsView: View {
     @AppStorage(BlobSpeaker.liveCallKey) private var liveCall = false
     @State private var voices: [AVSpeechSynthesisVoice] = []
     @State private var modelError: String?
+    /// How Blob reports, from the server's supervisor prefs. Nil hides the
+    /// row: not loaded yet, or a server that doesn't have the setting.
+    @State private var reportStyle: String?
+    @State private var reportError: String?
     @State private var showAccount = false
     @Environment(\.dismiss) private var dismiss
 
@@ -66,6 +70,10 @@ struct BlobSettingsView: View {
                     }
                 }
 
+                if let reportStyle {
+                    reportSection(reportStyle)
+                }
+
                 Section {
                     Button("Server and account") { showAccount = true }
                 }
@@ -84,6 +92,7 @@ struct BlobSettingsView: View {
             .sheet(isPresented: $showAccount) { SettingsView() }
             .onAppear { voices = BlobSpeaker.goodVoices() }
             .task { await speaker.refreshServerVoice(force: true) }
+            .task { reportStyle = try? await OS1API.supervisorPrefs().reportStyle }
             .onDisappear { speaker.stop() }
         }
     }
@@ -129,6 +138,55 @@ struct BlobSettingsView: View {
                 Text(modelError)
             } else {
                 Text("Free requests may be used by Fish to train its models.")
+            }
+        }
+    }
+
+    /// Report styles the server accepts.
+    private static let reportStyles = [
+        (id: "bluf", name: "Bottom line first"),
+        (id: "sbar", name: "SBAR"),
+        (id: "plain", name: "Plain"),
+    ]
+
+    private func reportSection(_ current: String) -> some View {
+        Section {
+            ForEach(Self.reportStyles, id: \.id) { style in
+                Button {
+                    guard style.id != current else { return }
+                    reportStyle = style.id
+                    Task {
+                        do {
+                            let prefs = try await OS1API.setSupervisorReportStyle(style.id)
+                            reportStyle = prefs.reportStyle ?? style.id
+                            reportError = nil
+                        } catch {
+                            reportStyle = current
+                            reportError = error.localizedDescription
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(style.name)
+                            .foregroundStyle(OS1VisualStyle.text)
+                        Spacer()
+                        if style.id == current {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(OS1VisualStyle.accentInk)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(style.id == current ? .isSelected : [])
+            }
+        } header: {
+            Text("How Blob reports")
+        } footer: {
+            if let reportError {
+                Text(reportError)
+            } else {
+                Text("Bottom line first leads with the answer. SBAR gives situation, background, assessment and a recommendation.")
             }
         }
     }

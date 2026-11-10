@@ -1,8 +1,10 @@
 import SwiftUI
 
 /// One decision the supervisor is waiting on, shown where Blob's replies
-/// render: the question, what it is about (drawn with the block catalog,
-/// like a reply), then its options as numbered buttons. The first option is
+/// render: the question, what it is about (split like a reply: the first
+/// paragraph, which Blob reads aloud when the decision comes up, as the Say
+/// line, the rest drawn with the block catalog), then its options as
+/// numbered buttons. The first option is
 /// the recommended one and the only filled button on the screen.
 ///
 /// "Not now" skips it for this launch. Long-press for "Dismiss", which closes
@@ -47,9 +49,9 @@ struct BlobDecisionView: View {
                                 .accessibilityLabel(metaSpoken ?? meta)
                         }
                     }
-                    if !item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        MarkdownBody(item.body)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    let reply = BlobReply(item.body)
+                    if !reply.isEmpty {
+                        BlobReplyView(reply: reply)
                             .padding(.top, 10)
                     }
                 }

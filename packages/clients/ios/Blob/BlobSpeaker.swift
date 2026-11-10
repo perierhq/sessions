@@ -3,7 +3,8 @@ import Foundation
 import NaturalLanguage
 import Observation
 
-/// Reads Blob's answers aloud in text mode. When the server has a Fish Audio
+/// Reads aloud what Blob says in text mode: the first paragraph of an answer
+/// or a decision (`BlobReply.say`), never the blocks after it. When the server has a Fish Audio
 /// key (`GET /api/blob/speech/status`), the server voice reads every answer,
 /// Polish included. Otherwise, or when a request fails, Apple's Premium or
 /// Enhanced voices read it. Apps can't use the current Siri voices, and the

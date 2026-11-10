@@ -2533,6 +2533,43 @@ enum OS1API {
         )
     }
 
+    /// The owner's supervisor preferences (server: supervisor-inbox.ts).
+    /// Only what Blob reads; nil when the server doesn't send the field.
+    struct SupervisorPrefs: Decodable, Sendable, Equatable {
+        /// How Blob reports: `bluf`, `sbar` or `plain`.
+        let reportStyle: String?
+
+        private enum CodingKeys: String, CodingKey { case reportStyle }
+
+        init(reportStyle: String? = nil) { self.reportStyle = reportStyle }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            reportStyle = (try? c.decodeIfPresent(String.self, forKey: .reportStyle)) ?? nil
+        }
+    }
+
+    private struct SupervisorPrefsResponse: Decodable, Sendable {
+        let prefs: SupervisorPrefs?
+    }
+
+    static func supervisorPrefs() async throws -> SupervisorPrefs {
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "user", value: ServerConfig.shared.userName)]
+        let response: SupervisorPrefsResponse = try await get(
+            "/api/supervisor/prefs?\(components.percentEncodedQuery ?? "")"
+        )
+        return response.prefs ?? SupervisorPrefs()
+    }
+
+    static func setSupervisorReportStyle(_ style: String) async throws -> SupervisorPrefs {
+        let response: SupervisorPrefsResponse = try await put(
+            "/api/supervisor/prefs",
+            body: ["user": ServerConfig.shared.userName, "reportStyle": style]
+        )
+        return response.prefs ?? SupervisorPrefs()
+    }
+
     private static func standingBody(_ standing: StandingSession, _ body: inout [String: Any]) {
         if standing != .desk { body["standing"] = standing.rawValue }
     }
