@@ -66,14 +66,21 @@ final class DeskVoiceEngine {
     /// Nil for the Desk; set for a session call. Fixed for the engine's life.
     let session: SessionVoiceLink?
 
-    init(session: SessionVoiceLink? = nil) {
+    /// The standing session a call without `session` talks to.
+    let standing: OS1API.StandingSession
+
+    init(session: SessionVoiceLink? = nil, standing: OS1API.StandingSession = .desk) {
         self.session = session
+        self.standing = standing
     }
 
     /// The one Desk call. It is shared rather than owned by the Desk sheet
     /// because "Talk to Desk" starts it with no sheet on screen, and on iOS
     /// it keeps running in the Dynamic Island after the sheet goes away.
     static let desk = DeskVoiceEngine()
+
+    /// The supervisor's call, which the Blob app uses instead of the Desk.
+    static let supervisor = DeskVoiceEngine(standing: .supervisor)
 
     /// Called whenever `state` or `muted` changes. The Desk's Live Activity
     /// follows the call through this.
@@ -85,9 +92,10 @@ final class DeskVoiceEngine {
     var shownOutsideApp = false
 
     /// The call screen's title: the Desk, or the thread being discussed.
-    var callTitle: String { session?.title ?? "Desk" }
+    var callTitle: String { session?.title ?? standingName }
     /// Who the captions say spoke.
-    var counterpartName: String { session == nil ? "Desk" : "Voice" }
+    var counterpartName: String { session == nil ? standingName : "Voice" }
+    private var standingName: String { standing == .supervisor ? "Blob" : "Desk" }
 
     private(set) var state: DeskVoiceState = .idle {
         didSet { if state != oldValue { onCallChange?() } }
@@ -233,7 +241,7 @@ final class DeskVoiceEngine {
                 let minted = try await OS1API.sessionVoiceSecret(sessionId: session.sessionId)
                 secret = (minted.clientSecret, minted.model)
             } else {
-                let minted = try await OS1API.deskVoiceSecret()
+                let minted = try await OS1API.deskVoiceSecret(standing: standing)
                 secret = (minted.clientSecret, minted.model)
             }
         } catch {
@@ -682,7 +690,7 @@ final class DeskVoiceEngine {
 
         let output: String
         do {
-            output = try await OS1API.deskVoiceTool(callId: callId, name: name, args: args)
+            output = try await OS1API.deskVoiceTool(callId: callId, name: name, args: args, standing: standing)
         } catch {
             if let data = try? JSONSerialization.data(withJSONObject: ["error": error.localizedDescription]),
                let text = String(data: data, encoding: .utf8) {
@@ -834,7 +842,7 @@ final class DeskVoiceEngine {
         transcriptChain = Task { [id, role, trimmed] in
             _ = await previous?.value
             do {
-                try await OS1API.deskVoiceTranscript(entries: [(id: id, role: role, text: trimmed)])
+                try await OS1API.deskVoiceTranscript(entries: [(id: id, role: role, text: trimmed)], standing: standing)
             } catch {
                 print("DeskVoiceEngine: transcript mirror failed: \(error)")
             }
@@ -1047,7 +1055,7 @@ final class DeskVoiceEngine {
             "error": errorMessage ?? "",
             "hint": hint ?? "",
         ]
-        Task { try? await OS1API.deskVoiceDiag(report) }
+        Task { try? await OS1API.deskVoiceDiag(report, standing: standing) }
     }
 
     // MARK: - Teardown

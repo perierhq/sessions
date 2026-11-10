@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blob · motion prototype</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --dim: #646464;
+        --faint: #949494;
+        --raised: #f6f6f6;
+        --line: #e2e2e2;
+        --accent: #1d82bc;
+        --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #ececec;
+        font-family:
+          "SF Pro",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        color: var(--fg);
+      }
+      body {
+        display: flex;
+        gap: 32px;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 32px;
+      }
+      .device {
+        position: relative;
+        width: 466px;
+        height: 678px;
+        background: var(--bg);
+        overflow: hidden;
+        border-radius: 8px 59px 59px 8px;
+        box-shadow: 0 20px 60px rgb(0 0 0 / 12%);
+      }
+      .strip {
+        position: absolute;
+        left: 382px;
+        top: 0;
+        width: 84px;
+        height: 678px;
+      }
+      .camera {
+        position: absolute;
+        left: 17.5px;
+        top: 29.5px;
+        width: 37px;
+        height: 37px;
+        border-radius: 50%;
+        background: #000;
+      }
+      .time {
+        position: absolute;
+        left: 0;
+        top: 82px;
+        width: 72px;
+        text-align: center;
+        font-size: 15px;
+        line-height: 20px;
+        font-weight: 600;
+      }
+      .wifi {
+        position: absolute;
+        left: 24px;
+        top: 108px;
+      }
+      .space {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 382px;
+        height: 678px;
+        padding: 40px 22px 30px 24px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+      .line {
+        font-size: 19px;
+        line-height: 26px;
+        opacity: 0;
+        transform: translateY(6px);
+        transition:
+          opacity 240ms var(--ease-out),
+          transform 240ms var(--ease-out);
+      }
+      .line.show {
+        opacity: 1;
+        transform: none;
+      }
+      .you {
+        align-self: flex-end;
+        font-size: 14px;
+        line-height: 19px;
+        color: var(--faint);
+      }
+      .blob {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 200px;
+        pointer-events: none;
+        will-change: transform;
+      }
+      .halo {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 200px;
+        border-radius: 50%;
+        pointer-events: none;
+        will-change: transform, opacity;
+      }
+      .panel {
+        width: 300px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        font-size: 13px;
+      }
+      .panel h1 {
+        font-size: 19px;
+        line-height: 23px;
+        margin: 0;
+      }
+      .panel p {
+        margin: 0;
+        color: var(--dim);
+        line-height: 18px;
+      }
+      .group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      button {
+        font: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        height: 32px;
+        padding: 0 12px;
+        border-radius: 9.25px;
+        border: 0;
+        background: rgb(26 26 26 / 8%);
+        color: var(--dim);
+        cursor: pointer;
+      }
+      button[aria-pressed="true"] {
+        background: var(--fg);
+        color: #fff;
+      }
+      label {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: var(--dim);
+      }
+      .meta {
+        color: var(--faint);
+        font-variant-numeric: tabular-nums;
+      }
+      @media (hover: hover) and (pointer: fine) {
+        button:hover {
+          background: rgb(26 26 26 / 12%);
+        }
+        button[aria-pressed="true"]:hover {
+          background: #000;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="device" id="device">
+      <div class="space" id="space">
+        <div class="you" id="you"></div>
+        <div class="line" id="line"></div>
+      </div>
+      <div class="strip">
+        <div class="camera"></div>
+        <div class="time">9:41</div>
+        <svg class="wifi" width="24" height="24" viewBox="0 0 24 24">
+          <path
+            d="M2.5 9.2a13.6 13.6 0 0 1 19 0M5.7 12.6a9 9 0 0 1 12.6 0M9 16a4.4 4.4 0 0 1 6 0"
+            fill="none"
+            stroke="#000"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+          <circle cx="12" cy="19.2" r="1.6" />
+        </svg>
+      </div>
+      <div class="halo" id="halo"></div>
+      <svg
+        class="blob"
+        id="blob"
+        viewBox="0 0 200 200"
+        width="200"
+        height="200"
+      >
+        <defs>
+          <radialGradient id="g" cx="38%" cy="28%" r="85%">
+            <stop id="s0" offset="0%" />
+            <stop id="s1" offset="60%" />
+            <stop id="s2" offset="100%" />
+          </radialGradient>
+        </defs>
+        <g id="body"><path id="shape" fill="url(#g)" /></g>
+        <g id="eyes">
+          <ellipse id="eyeL" rx="9" ry="14" fill="#fff" />
+          <ellipse id="eyeR" rx="9" ry="14" fill="#fff" />
+          <path
+            id="smileL"
+            fill="none"
+            stroke="#fff"
+            stroke-width="8"
+            stroke-linecap="round"
+          />
+          <path
+            id="smileR"
+            fill="none"
+            stroke="#fff"
+            stroke-width="8"
+            stroke-linecap="round"
+          />
+        </g>
+      </svg>
+    </div>
+
+    <div class="panel">
+      <h1>Blob · motion</h1>
+      <p>
+        Springs for everything that moves, so it can be interrupted mid-move.
+        Shape, eyes and colour follow its state; travel squashes along its
+        speed.
+      </p>
+      <div class="group" id="states"></div>
+      <div class="group">
+        <button id="travel">Talk mode</button>
+        <button id="look">Look at the text</button>
+      </div>
+      <div class="group">
+        <button id="play">Play sequence</button>
+        <span class="meta" id="clock">0.0 s</span>
+      </div>
+      <div class="group" id="speeds"></div>
+      <label><input type="checkbox" id="reduce" /> Reduced motion</label>
+      <p class="meta">seek(ms) is on window for frame checks.</p>
+    </div>
+
+    <script src="blob.js"></script>
+    <script>
+      const el = (id) => document.getElementById(id);
+      const SLOT = { x: 382 + 36, y: 600, size: 52 }; // strip slot under the thumb
+      const CENTER = { x: 191, y: 300, size: 132 }; // talk mode
+      const LOOK_TEXT = { x: 120, y: 560 }; // where the caption sits
+
+      const blob = createBlob(el("blob"), el("halo"), SLOT);
+      blob.st.reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const S = { talk: false, speed: 1 };
+      const place = () => blob.set({ at: S.talk ? CENTER : SLOT });
+
+      /* scripted sequence, also used by seek */
+      const SCRIPT = [
+        [
+          0.0,
+          () => {
+            blob.set({ mode: "quiet", look: null });
+            S.talk = false;
+            say("", "");
+          },
+        ],
+        [1.5, () => blob.set({ mode: "you" })],
+        [
+          3.5,
+          () => {
+            blob.set({ mode: "listen" });
+            say("what came in on support", "");
+          },
+        ],
+        [5.5, () => blob.set({ mode: "think" })],
+        [
+          7.0,
+          () => {
+            S.talk = true;
+            blob.set({ mode: "speak" });
+            say(
+              "what came in on support",
+              "Mostly refunds, after the payout delay. Two need you.",
+            );
+          },
+        ],
+        [10.0, () => blob.set({ look: LOOK_TEXT })],
+        [
+          12.0,
+          () => {
+            S.talk = false;
+            blob.set({ mode: "quiet", look: null });
+            say("", "");
+          },
+        ],
+        [15.0, () => {}],
+      ];
+      let clock = 0;
+      const seq = { playing: false, start: 0, idx: 0 };
+      function runSequence() {
+        const st = clock - seq.start;
+        while (seq.idx < SCRIPT.length && st >= SCRIPT[seq.idx][0]) {
+          SCRIPT[seq.idx][1]();
+          place();
+          seq.idx++;
+          syncButtons();
+        }
+        el("clock").textContent = st.toFixed(1) + " s";
+        if (seq.idx >= SCRIPT.length) seq.playing = false;
+      }
+      function say(you, line) {
+        el("you").textContent = you;
+        const l = el("line");
+        l.textContent = line;
+        l.classList.toggle("show", !!line);
+      }
+
+      /* live loop */
+      let last = performance.now(),
+        live = true;
+      function frame(now) {
+        if (live) {
+          const dt = Math.min(0.05, (now - last) / 1000) * S.speed;
+          clock += dt;
+          blob.tick(dt);
+          if (seq.playing) runSequence();
+          blob.render();
+        }
+        last = now;
+        requestAnimationFrame(frame);
+      }
+
+      /* seek(ms): re-simulate from zero at 240 Hz so any frame is reproducible */
+      window.seek = (ms) => {
+        live = false;
+        clock = 0;
+        S.talk = false;
+        blob.reset({ at: SLOT });
+        seq.playing = true;
+        seq.start = 0;
+        seq.idx = 0;
+        while (clock < ms / 1000) {
+          clock += 1 / 240;
+          blob.tick(1 / 240);
+          runSequence();
+        }
+        seq.playing = false;
+        blob.render();
+        document
+          .querySelectorAll(".line")
+          .forEach((n) => (n.style.transition = "none"));
+        return { t: +clock.toFixed(3), mode: blob.st.mode, talk: S.talk };
+      };
+      window.resume = () => {
+        live = true;
+        document
+          .querySelectorAll(".line")
+          .forEach((n) => (n.style.transition = ""));
+      };
+
+      /* controls */
+      const MODES = [
+        ["quiet", "Quiet"],
+        ["listen", "Listening"],
+        ["think", "Thinking"],
+        ["speak", "Speaking"],
+        ["you", "Needs you"],
+      ];
+      const stEl = el("states");
+      for (const [m, label] of MODES) {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.dataset.mode = m;
+        b.onclick = () => {
+          resume();
+          seq.playing = false;
+          blob.set({ mode: m });
+          syncButtons();
+        };
+        stEl.appendChild(b);
+      }
+      el("travel").onclick = () => {
+        resume();
+        seq.playing = false;
+        S.talk = !S.talk;
+        place();
+        syncButtons();
+      };
+      el("look").onclick = () => {
+        resume();
+        blob.set({ look: blob.st.look ? null : LOOK_TEXT });
+        syncButtons();
+      };
+      el("play").onclick = () => {
+        resume();
+        seq.playing = true;
+        seq.start = clock;
+        seq.idx = 0;
+      };
+      const spEl = el("speeds");
+      for (const v of [1, 0.5, 0.2]) {
+        const b = document.createElement("button");
+        b.textContent = v + "×";
+        b.dataset.speed = v;
+        b.onclick = () => {
+          S.speed = v;
+          syncButtons();
+        };
+        spEl.appendChild(b);
+      }
+      el("reduce").checked = blob.st.reduce;
+      el("reduce").onchange = (e) => {
+        blob.st.reduce = e.target.checked;
+      };
+      function syncButtons() {
+        stEl
+          .querySelectorAll("button")
+          .forEach((b) =>
+            b.setAttribute("aria-pressed", b.dataset.mode === blob.st.mode),
+          );
+        spEl
+          .querySelectorAll("button")
+          .forEach((b) =>
+            b.setAttribute("aria-pressed", +b.dataset.speed === S.speed),
+          );
+        el("travel").setAttribute("aria-pressed", S.talk);
+        el("look").setAttribute("aria-pressed", !!blob.st.look);
+      }
+
+      syncButtons();
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

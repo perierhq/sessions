@@ -1,21 +1,5 @@
 import SwiftUI
 
-#if os(macOS)
-extension Notification.Name {
-    /// Posted by the File > New Session menu command; the sessions list opens
-    /// its new-session sheet in response.
-    static let os1NewSession = Notification.Name("os1.newSession")
-    /// File > New Session in This Workspace: a sibling of the open session,
-    /// sharing its workspace, worktree and branch.
-    static let os1NewSessionInWorkspace = Notification.Name("os1.newSessionInWorkspace")
-    /// View > Command Palette. Toggles like the web command does.
-    static let os1CommandPalette = Notification.Name("os1.commandPalette")
-    /// File > Reopen Archived: restore the last workspace or tab archived in
-    /// the window.
-    static let os1ReopenArchived = Notification.Name("os1.reopenArchived")
-}
-#endif
-
 @main
 struct OS1App: App {
     #if os(macOS)
@@ -165,6 +149,7 @@ private struct RootSceneLifecycle: View {
         // Reports from a launch that had no server yet go up once there is one.
         await CrashReporter.shared.flush()
         await NativePreferences.hydrate()
+        await AccentStore.shared.hydrate()
         await HideStore.shared.hydrate()
         await RowColorStore.shared.hydrate()
         await PinStore.shared.hydrate()

@@ -57,6 +57,9 @@ final class QuickCapture {
     }
 }
 
+// The Blob app shares these intents but offers its own shortcuts, so its
+// Siri phrases never say "Start an agent in Blob".
+#if !BLOB
 /// Makes the intent show up without any setup: in Spotlight, in the Action
 /// Button's shortcut picker, and as a Siri phrase.
 struct AgentShortcuts: AppShortcutsProvider {
@@ -82,3 +85,4 @@ struct AgentShortcuts: AppShortcutsProvider {
         )
     }
 }
+#endif

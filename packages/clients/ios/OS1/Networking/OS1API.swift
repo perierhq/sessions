@@ -2283,6 +2283,10 @@ enum OS1API {
         if let effort, !effort.isEmpty { body["effort"] = effort }
         if let fastMode { body["fastMode"] = fastMode }
         if let speed { body["speed"] = speed }
+        #if BLOB
+        // Where Blob will show the reply, so the Desk can fit it (adrs/blob-views.md).
+        if let surface = BlobSurfaceReport.current { body["surface"] = surface }
+        #endif
         return body
     }
 
@@ -2375,6 +2379,201 @@ enum OS1API {
         try await post("/api/desk/ensure", body: ["user": ServerConfig.shared.userName])
     }
 
+    /// Which standing session a voice call or message is for: the Desk behind
+    /// the OS apps, or the supervisor that Blob talks to (server: supervisor.ts,
+    /// adrs/supervisor-and-leads.md). The voice routes default to the Desk.
+    enum StandingSession: String, Sendable {
+        case desk
+        case supervisor
+    }
+
+    struct SupervisorEnsure: Decodable, Sendable {
+        let sessionId: String
+    }
+
+    /// Get-or-create the user's standing supervisor session.
+    static func ensureSupervisor() async throws -> SupervisorEnsure {
+        try await post("/api/supervisor/ensure", body: ["user": ServerConfig.shared.userName])
+    }
+
+    /// The server voice Blob reads answers with: Fish Audio text to speech,
+    /// with the key kept on the server (server: blob-speech.ts).
+    struct BlobSpeechStatus: Decodable, Sendable, Equatable {
+        let configured: Bool
+        /// `s2.1-pro` (best quality) or `s2.1-pro-free`.
+        let model: String?
+        let voiceId: String?
+    }
+
+    static func blobSpeechStatus() async throws -> BlobSpeechStatus {
+        try await get("/api/blob/speech/status")
+    }
+
+    /// Picks the Fish model and keeps the voice as it is.
+    static func setBlobSpeechModel(_ model: String) async throws -> BlobSpeechStatus {
+        try await put("/api/blob/speech/settings", body: ["model": model])
+    }
+
+    /// One piece of an answer as mp3, synthesized by the server.
+    static func blobSpeech(_ text: String) async throws -> Data {
+        try await mutateData(
+            "/api/blob/speech",
+            method: "POST",
+            body: ["text": text, "user": ServerConfig.shared.userName]
+        )
+    }
+
+    /// Something the supervisor raised for its owner (server:
+    /// supervisor-inbox.ts). `needs-you` items wait for an answer; `fyi` ones
+    /// go into the daily digest. Decoded tolerantly: a field the server adds
+    /// or drops never loses the item, and an item without an id or a title is
+    /// skipped by `SupervisorItemList`.
+    struct SupervisorItem: Decodable, Sendable, Identifiable, Equatable {
+        let id: String
+        /// `needs-you` or `fyi`.
+        let kind: String
+        let title: String
+        /// Markdown; may hold the fenced blocks of docs/blocks.md.
+        let body: String
+        /// Numbered choices; the first is the recommended one.
+        let options: [String]
+        let project: String?
+        /// Who raised it, e.g. `lead:betterbahn` or `supervisor`.
+        let source: String?
+        /// `down` when something is fully down; otherwise `normal` or nil.
+        let urgency: String?
+        /// `open`, `answered`, `dismissed` or `expired`.
+        let state: String
+        /// Milliseconds since the epoch.
+        let createdAt: Double?
+
+        var needsYou: Bool { kind == "needs-you" }
+        var isOpen: Bool { state == "open" }
+        var created: Date? { createdAt.map { Date(timeIntervalSince1970: $0 / 1000) } }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, kind, title, body, options, project, source, urgency, state, createdAt
+        }
+
+        init(
+            id: String, kind: String, title: String, body: String = "", options: [String] = [],
+            project: String? = nil, source: String? = nil, urgency: String? = nil,
+            state: String = "open", createdAt: Double? = nil
+        ) {
+            self.id = id; self.kind = kind; self.title = title; self.body = body
+            self.options = options; self.project = project; self.source = source
+            self.urgency = urgency; self.state = state; self.createdAt = createdAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            title = try c.decode(String.self, forKey: .title)
+            kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "fyi"
+            body = ((try? c.decodeIfPresent(String.self, forKey: .body)) ?? nil) ?? ""
+            options = (((try? c.decodeIfPresent([String?].self, forKey: .options)) ?? nil) ?? [])
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            project = (try? c.decodeIfPresent(String.self, forKey: .project)) ?? nil
+            source = (try? c.decodeIfPresent(String.self, forKey: .source)) ?? nil
+            urgency = (try? c.decodeIfPresent(String.self, forKey: .urgency)) ?? nil
+            state = ((try? c.decodeIfPresent(String.self, forKey: .state)) ?? nil) ?? "open"
+            createdAt = (try? c.decodeIfPresent(Double.self, forKey: .createdAt)) ?? nil
+        }
+    }
+
+    struct SupervisorItemList: Decodable, Sendable {
+        let items: [SupervisorItem]
+
+        private enum CodingKeys: String, CodingKey { case items }
+        private struct Lossy: Decodable {
+            let item: SupervisorItem?
+            init(from decoder: Decoder) throws { item = try? SupervisorItem(from: decoder) }
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            items = (((try? c.decodeIfPresent([Lossy].self, forKey: .items)) ?? nil) ?? [])
+                .compactMap(\.item)
+        }
+    }
+
+    private struct SupervisorItemResponse: Decodable, Sendable {
+        let item: SupervisorItem?
+    }
+
+    /// The owner's open items, newest first. `kind` narrows to `needs-you`
+    /// or `fyi`.
+    static func supervisorItems(kind: String? = nil) async throws -> [SupervisorItem] {
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "state", value: "open"),
+            URLQueryItem(name: "user", value: ServerConfig.shared.userName),
+        ] + (kind.map { [URLQueryItem(name: "kind", value: $0)] } ?? [])
+        let response: SupervisorItemList = try await get(
+            "/api/supervisor/items?\(components.percentEncodedQuery ?? "")"
+        )
+        return response.items
+    }
+
+    /// Answer an item with one of its options (or any text). The server
+    /// answers 409 when it was already closed somewhere else.
+    static func answerSupervisorItem(id: String, answer: String) async throws {
+        let _: SupervisorItemResponse = try await post(
+            "/api/supervisor/items/\(pathComponent(id))/answer",
+            body: ["user": ServerConfig.shared.userName, "answer": answer]
+        )
+    }
+
+    /// Close an item without answering it.
+    static func dismissSupervisorItem(id: String) async throws {
+        let _: SupervisorItemResponse = try await post(
+            "/api/supervisor/items/\(pathComponent(id))/dismiss",
+            body: ["user": ServerConfig.shared.userName]
+        )
+    }
+
+    /// The owner's supervisor preferences (server: supervisor-inbox.ts).
+    /// Only what Blob reads; nil when the server doesn't send the field.
+    struct SupervisorPrefs: Decodable, Sendable, Equatable {
+        /// How Blob reports: `bluf`, `sbar` or `plain`.
+        let reportStyle: String?
+
+        private enum CodingKeys: String, CodingKey { case reportStyle }
+
+        init(reportStyle: String? = nil) { self.reportStyle = reportStyle }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            reportStyle = (try? c.decodeIfPresent(String.self, forKey: .reportStyle)) ?? nil
+        }
+    }
+
+    private struct SupervisorPrefsResponse: Decodable, Sendable {
+        let prefs: SupervisorPrefs?
+    }
+
+    static func supervisorPrefs() async throws -> SupervisorPrefs {
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "user", value: ServerConfig.shared.userName)]
+        let response: SupervisorPrefsResponse = try await get(
+            "/api/supervisor/prefs?\(components.percentEncodedQuery ?? "")"
+        )
+        return response.prefs ?? SupervisorPrefs()
+    }
+
+    static func setSupervisorReportStyle(_ style: String) async throws -> SupervisorPrefs {
+        let response: SupervisorPrefsResponse = try await put(
+            "/api/supervisor/prefs",
+            body: ["user": ServerConfig.shared.userName, "reportStyle": style]
+        )
+        return response.prefs ?? SupervisorPrefs()
+    }
+
+    private static func standingBody(_ standing: StandingSession, _ body: inout [String: Any]) {
+        if standing != .desk { body["standing"] = standing.rawValue }
+    }
+
     struct DeskVoiceSecret: Decodable, Sendable {
         let clientSecret: String
         let expiresAt: Double?
@@ -2384,8 +2583,10 @@ enum OS1API {
 
     /// Mint a short-lived Realtime client secret for a Desk voice call — the
     /// real OpenAI key stays on the server (desk-voice.ts).
-    static func deskVoiceSecret() async throws -> DeskVoiceSecret {
-        try await post("/api/desk/voice/secret", body: ["user": ServerConfig.shared.userName])
+    static func deskVoiceSecret(standing: StandingSession = .desk) async throws -> DeskVoiceSecret {
+        var body: [String: Any] = ["user": ServerConfig.shared.userName]
+        standingBody(standing, &body)
+        return try await post("/api/desk/voice/secret", body: body)
     }
 
     struct SessionVoiceSecret: Decodable, Sendable {
@@ -2445,9 +2646,11 @@ enum OS1API {
     static func deskVoiceTool(
         callId: String,
         name: String,
-        args: [String: Any]
+        args: [String: Any],
+        standing: StandingSession = .desk
     ) async throws -> String {
         var body: [String: Any] = ["callId": callId, "name": name, "args": args]
+        standingBody(standing, &body)
         let user = ServerConfig.shared.userName
         if !user.isEmpty { body["user"] = user }
         let data = try await mutateData("/api/desk/voice/tool", method: "POST", body: body)
@@ -2466,12 +2669,14 @@ enum OS1API {
     /// Mirror finalized voice-call turns into the Desk transcript (and the
     /// next text turn's handoff note, server-side).
     static func deskVoiceTranscript(
-        entries: [(id: String, role: String, text: String)]
+        entries: [(id: String, role: String, text: String)],
+        standing: StandingSession = .desk
     ) async throws {
         struct OkResponse: Decodable, Sendable { let ok: Bool? }
         var body: [String: Any] = [
             "entries": entries.map { ["id": $0.id, "role": $0.role, "text": $0.text] }
         ]
+        standingBody(standing, &body)
         let user = ServerConfig.shared.userName
         if !user.isEmpty { body["user"] = user }
         let _: OkResponse = try await post("/api/desk/voice/transcript", body: body)
@@ -2481,9 +2686,10 @@ enum OS1API {
     /// audio, no transcript). A call that fails does so on the user's device
     /// with nothing to inspect; this is what makes the next report of one
     /// answerable. Best effort by design: the caller ignores failures.
-    static func deskVoiceDiag(_ report: [String: Any]) async throws {
+    static func deskVoiceDiag(_ report: [String: Any], standing: StandingSession = .desk) async throws {
         struct OkResponse: Decodable, Sendable { let ok: Bool? }
         var body = report
+        standingBody(standing, &body)
         let user = ServerConfig.shared.userName
         if !user.isEmpty { body["user"] = user }
         let _: OkResponse = try await post("/api/desk/voice/diag", body: body)

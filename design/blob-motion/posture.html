@@ -1,0 +1,1130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blob · Duo postures prototype</title>
+    <style>
+      :root {
+        --bg: #fff;
+        --fg: #1a1a1a;
+        --dim: #646464;
+        --faint: #949494;
+        --raised: #f6f6f6;
+        --accent: #1d82bc;
+        --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #ececec;
+        font-family:
+          "SF Pro",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        color: var(--fg);
+      }
+      body {
+        display: flex;
+        gap: 24px;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 24px;
+      }
+      .stage {
+        position: relative;
+        width: 1000px;
+        height: 1000px;
+        perspective: 2400px;
+        transform: scale(0.74);
+        transform-origin: top left;
+        margin-right: -260px;
+        margin-bottom: -260px;
+      }
+
+      /* outer display, closed */
+      .outer {
+        position: absolute;
+        left: 267px;
+        top: 161px;
+        width: 466px;
+        height: 678px;
+        background: var(--bg);
+        border-radius: 8px 59px 59px 8px;
+        overflow: hidden;
+        box-shadow: 0 20px 60px rgb(0 0 0 / 14%);
+      }
+      .strip {
+        position: absolute;
+        left: 382px;
+        top: 0;
+        width: 84px;
+        height: 678px;
+      }
+      .camera {
+        position: absolute;
+        left: 17.5px;
+        top: 29.5px;
+        width: 37px;
+        height: 37px;
+        border-radius: 50%;
+        background: #000;
+      }
+      .time {
+        position: absolute;
+        font-size: 15px;
+        line-height: 20px;
+        font-weight: 600;
+        text-align: center;
+        width: 72px;
+      }
+      .wifi {
+        position: absolute;
+      }
+
+      /* inner display: two halves that fold in 3D */
+      .inner {
+        position: absolute;
+        transform-style: preserve-3d;
+      }
+      .inner.land {
+        left: 24.5px;
+        top: 165.5px;
+        width: 951px;
+        height: 669px;
+      }
+      .inner.port {
+        left: 165.5px;
+        top: 24.5px;
+        width: 669px;
+        height: 951px;
+      }
+      .half {
+        position: absolute;
+        background: var(--bg);
+        overflow: hidden;
+        backface-visibility: hidden;
+        box-shadow: 0 20px 60px rgb(0 0 0 / 12%);
+      }
+      .land .half {
+        top: 0;
+        width: 475.5px;
+        height: 669px;
+      }
+      .land .a {
+        left: 0;
+        border-radius: 55px 0 0 55px;
+        transform-origin: right center;
+      }
+      .land .b {
+        left: 475.5px;
+        border-radius: 0 55px 55px 0;
+        transform-origin: left center;
+      }
+      .port .half {
+        left: 0;
+        width: 669px;
+        height: 475.5px;
+      }
+      .port .a {
+        top: 0;
+        border-radius: 55px 55px 0 0;
+        transform-origin: center bottom;
+      }
+      .port .b {
+        top: 475.5px;
+        border-radius: 0 0 55px 55px;
+        transform-origin: center top;
+      }
+      .shade {
+        position: absolute;
+        inset: 0;
+        background: #000;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .fold {
+        position: absolute;
+        pointer-events: none;
+        display: none;
+      }
+      .land .a .fold {
+        right: 0;
+        top: 0;
+        width: 20px;
+        height: 100%;
+      }
+      .land .b .fold {
+        left: 0;
+        top: 0;
+        width: 20px;
+        height: 100%;
+      }
+      .port .a .fold {
+        bottom: 0;
+        left: 0;
+        height: 20px;
+        width: 100%;
+      }
+      .port .b .fold {
+        top: 0;
+        left: 0;
+        height: 20px;
+        width: 100%;
+      }
+      .fold.flat {
+        display: block;
+        background: #ff2d781a;
+      }
+      .fold.active {
+        display: block;
+        background: repeating-linear-gradient(
+          45deg,
+          rgba(255, 45, 120, 0.25) 0 6px,
+          rgba(255, 45, 120, 0.08) 6px 12px
+        );
+      }
+
+      .pane {
+        position: absolute;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .faint {
+        font-size: 13px;
+        line-height: 16px;
+        color: var(--faint);
+      }
+      .answer {
+        font-size: 19px;
+        line-height: 25px;
+      }
+      .stat {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+      }
+      .stat b {
+        font-size: 28px;
+        line-height: 32px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .stat span {
+        font-size: 13px;
+        color: var(--dim);
+      }
+      .bars {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 14px;
+      }
+      .bar i {
+        display: block;
+        height: 10px;
+        border-radius: 5px;
+        background: var(--fg);
+      }
+      .bar > span:first-child {
+        width: 118px;
+        white-space: nowrap;
+      }
+      .bar > span:last-child {
+        font-size: 13px;
+        color: var(--dim);
+      }
+      .ticket {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 14px;
+        border-radius: 16px;
+        background: var(--raised);
+        font-size: 14px;
+        line-height: 20px;
+      }
+      .ticket .who {
+        display: flex;
+        justify-content: space-between;
+        font-weight: 500;
+      }
+      .ticket .who small {
+        font-weight: 400;
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .ticket .draft {
+        font-size: 13px;
+        line-height: 19px;
+        color: var(--dim);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      .btn {
+        flex: 1;
+        height: 36px;
+        border-radius: 9.25px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        font-weight: 500;
+        background: rgb(26 26 26 / 8%);
+        color: var(--dim);
+      }
+      .btn.primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      .video {
+        position: relative;
+        border-radius: 22px;
+        background: var(--raised);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .pass {
+        width: 210px;
+        height: 182px;
+        border-radius: 14px;
+        background: #1f3b2c;
+        padding: 13px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        color: #fff;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .stamps {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        width: 82px;
+      }
+      .stamps i {
+        width: 13px;
+        height: 13px;
+        border-radius: 50%;
+        background: #f5c451;
+      }
+      .stamps i.o {
+        background: none;
+        border: 1.5px solid rgb(255 255 255 / 35%);
+      }
+      .say {
+        position: absolute;
+        font-size: 17px;
+        line-height: 22px;
+        opacity: 0;
+        transform: translateY(6px);
+        transition:
+          opacity 240ms var(--ease-out),
+          transform 240ms var(--ease-out);
+        pointer-events: none;
+      }
+      .say.show {
+        opacity: 1;
+        transform: none;
+      }
+      .say b {
+        font-weight: 600;
+      }
+      .say .row {
+        margin-top: 12px;
+        pointer-events: auto;
+      }
+      .say .btn {
+        flex: 0 0 auto;
+        padding: 0 14px;
+        height: 32px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+        font-variant-numeric: tabular-nums;
+      }
+      th {
+        text-align: right;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--faint);
+        padding: 0 0 8px;
+      }
+      th:first-child,
+      td:first-child {
+        text-align: left;
+      }
+      td {
+        text-align: right;
+        padding: 9px 0;
+        border-top: 1px solid rgb(226 226 226 / 55%);
+      }
+      td.up {
+        color: #9a6700;
+      }
+      td.down {
+        color: #009740;
+      }
+      .mk {
+        display: inline-flex;
+        width: 16px;
+        height: 16px;
+        border-radius: 4px;
+        color: #fff;
+        font-size: 9px;
+        font-weight: 600;
+        align-items: center;
+        justify-content: center;
+        margin-right: 8px;
+        vertical-align: -3px;
+      }
+      .blob {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 200px;
+        pointer-events: none;
+        will-change: transform;
+      }
+      .halo {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 200px;
+        border-radius: 50%;
+        pointer-events: none;
+      }
+
+      .panel {
+        width: 320px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        font-size: 13px;
+      }
+      .panel h1 {
+        font-size: 19px;
+        line-height: 23px;
+        margin: 0;
+      }
+      .panel p {
+        margin: 0;
+        color: var(--dim);
+        line-height: 18px;
+      }
+      .group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      button {
+        font: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        height: 32px;
+        padding: 0 12px;
+        border-radius: 9.25px;
+        border: 0;
+        background: rgb(26 26 26 / 8%);
+        color: var(--dim);
+        cursor: pointer;
+      }
+      button[aria-pressed="true"] {
+        background: var(--fg);
+        color: #fff;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      input[type="range"] {
+        width: 100%;
+      }
+      label {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: var(--dim);
+      }
+      .readout {
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: #fff;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-variant-numeric: tabular-nums;
+      }
+      .readout b {
+        font-weight: 600;
+      }
+      .meta {
+        color: var(--faint);
+      }
+      @media (hover: hover) and (pointer: fine) {
+        button:hover:not(:disabled) {
+          background: rgb(26 26 26 / 12%);
+        }
+        button[aria-pressed="true"]:hover {
+          background: #000;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage" id="stage">
+      <!-- closed -->
+      <div class="outer" id="outer">
+        <div
+          class="pane"
+          id="cOuter"
+          style="left: 24px; top: 40px; width: 338px"
+        ></div>
+        <div
+          class="say"
+          id="sayOuter"
+          style="left: 24px; bottom: 40px; width: 330px"
+        ></div>
+        <div class="strip">
+          <div class="camera"></div>
+          <div class="time" style="left: 0; top: 82px">9:41</div>
+          <svg
+            class="wifi"
+            style="left: 24px; top: 108px"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+          >
+            <path
+              d="M2.5 9.2a13.6 13.6 0 0 1 19 0M5.7 12.6a9 9 0 0 1 12.6 0M9 16a4.4 4.4 0 0 1 6 0"
+              fill="none"
+              stroke="#000"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            />
+            <circle cx="12" cy="19.2" r="1.6" />
+          </svg>
+        </div>
+      </div>
+
+      <!-- open, landscape: flat or book -->
+      <div class="inner land" id="land">
+        <div class="half a">
+          <div class="fold"></div>
+          <div
+            class="pane"
+            id="cLandA"
+            style="left: 40px; top: 40px; width: 395px"
+          ></div>
+          <div class="shade"></div>
+        </div>
+        <div class="half b">
+          <div class="fold"></div>
+          <div
+            class="pane"
+            id="cLandB"
+            style="left: 40px; top: 40px; width: 331px"
+          ></div>
+          <div class="time" style="left: 391.5px; top: 22px">9:41</div>
+          <svg
+            class="wifi"
+            style="left: 415.5px; top: 46px"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+          >
+            <path
+              d="M2.5 9.2a13.6 13.6 0 0 1 19 0M5.7 12.6a9 9 0 0 1 12.6 0M9 16a4.4 4.4 0 0 1 6 0"
+              fill="none"
+              stroke="#000"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            />
+            <circle cx="12" cy="19.2" r="1.6" />
+          </svg>
+          <div class="shade"></div>
+        </div>
+      </div>
+
+      <!-- open, portrait: flat or tabletop -->
+      <div class="inner port" id="port">
+        <div class="half a">
+          <div class="fold"></div>
+          <div class="time" style="left: 48px; top: 16px; width: auto">
+            9:41
+          </div>
+          <svg
+            class="wifi"
+            style="right: 44px; top: 14px"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+          >
+            <path
+              d="M2.5 9.2a13.6 13.6 0 0 1 19 0M5.7 12.6a9 9 0 0 1 12.6 0M9 16a4.4 4.4 0 0 1 6 0"
+              fill="none"
+              stroke="#000"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            />
+            <circle cx="12" cy="19.2" r="1.6" />
+          </svg>
+          <div
+            class="pane"
+            id="cPortA"
+            style="left: 24px; top: 52px; width: 621px"
+          ></div>
+          <div class="shade"></div>
+        </div>
+        <div class="half b">
+          <div class="fold"></div>
+          <div
+            class="pane"
+            id="cPortB"
+            style="left: 24px; top: 40px; width: 540px"
+          ></div>
+          <div class="shade"></div>
+        </div>
+      </div>
+
+      <div class="halo" id="halo"></div>
+      <svg
+        class="blob"
+        id="blob"
+        viewBox="0 0 200 200"
+        width="200"
+        height="200"
+      >
+        <defs>
+          <radialGradient id="g" cx="38%" cy="28%" r="85%">
+            <stop id="s0" offset="0%" />
+            <stop id="s1" offset="60%" />
+            <stop id="s2" offset="100%" />
+          </radialGradient>
+        </defs>
+        <path id="shape" fill="url(#g)" />
+        <ellipse id="eyeL" rx="9" ry="14" fill="#fff" />
+        <ellipse id="eyeR" rx="9" ry="14" fill="#fff" />
+        <path
+          id="smileL"
+          fill="none"
+          stroke="#fff"
+          stroke-width="8"
+          stroke-linecap="round"
+        />
+        <path
+          id="smileR"
+          fill="none"
+          stroke="#fff"
+          stroke-width="8"
+          stroke-linecap="round"
+        />
+      </svg>
+    </div>
+
+    <div class="panel">
+      <h1>Blob · Duo postures</h1>
+      <p>
+        Blob asks for more space only when what it wants to show does not fit
+        the space you have. Until you open it, you get the best version that
+        fits.
+      </p>
+      <label
+        >Hinge <input type="range" id="angle" min="0" max="180" value="0"
+      /></label>
+      <div class="group" id="orient"></div>
+      <div class="readout" id="readout"></div>
+      <div class="group">
+        <span class="meta" style="width: 100%">Blob shows</span>
+        <span id="views"></span>
+      </div>
+      <div class="group">
+        <button id="play">Play sequence</button>
+        <span class="meta" id="clock">0.0 s</span>
+      </div>
+      <div class="group" id="speeds"></div>
+      <label
+        ><input type="checkbox" id="bridge" checked /> Native hinge
+        bridge</label
+      >
+      <label
+        ><input type="checkbox" id="showFold" checked /> Show fold region</label
+      >
+      <label><input type="checkbox" id="reduce" /> Reduced motion</label>
+      <p class="meta">seek(ms) is on window for frame checks.</p>
+    </div>
+
+    <script src="blob.js"></script>
+    <script>
+      const el = (id) => document.getElementById(id);
+      const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+      const STAGE = {
+        outer: [267, 161],
+        land: [24.5, 165.5],
+        port: [165.5, 24.5],
+      };
+      const HOME = {
+        closed: { x: 267 + 382 + 36, y: 161 + 600, size: 52 },
+        open: { x: 24.5 + 475.5 + 427.5, y: 165.5 + 590, size: 52 },
+        book: { x: 24.5 + 475.5 + 427.5, y: 165.5 + 590, size: 52 },
+        openPort: { x: 165.5 + 609, y: 24.5 + 475.5 + 400, size: 52 },
+        tabletop: { x: 165.5 + 609, y: 24.5 + 475.5 + 400, size: 52 },
+      };
+      const blob = createBlob(el("blob"), el("halo"), HOME.closed);
+      blob.st.reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const S = {
+        angle: 0,
+        orient: "land",
+        bridge: true,
+        speed: 1,
+        view: "answer",
+        asked: null,
+        dismissed: {},
+        thanksUntil: 0,
+        nod: -9,
+        last: "closed",
+        drawn: "",
+      };
+
+      /* ---------- what Blob can show, and how much room each view needs ----------
+       * need: "one" fits a single pane (the closed screen). "two" needs two panes to be complete.
+       * compact(): the best version that fits one pane, shown until there is room. */
+      const LEADS = [
+        ["H", "#2F6FE4", "habit", 38, 31],
+        ["S", "#7C5CD6", "sessions", 51, 44],
+        ["F", "#C98A1B", "franking", 22, 25],
+        ["", "#EBEBEB", "Support", 17, 15],
+        ["B", "#2E9E6A", "betterbahn", 4, 6],
+        ["", "#EBEBEB", "Infra", 3, 3],
+      ];
+      const mk = (l) =>
+        `<span class="mk" style="background:${l[1]}">${l[0]}</span>`;
+      const bars = (rows, max) =>
+        `<div class="bars">${rows.map((l) => `<div class="bar"><span>${mk(l)}${l[2]}</span><i style="width:${Math.round((l[3] / max) * 190)}px"></i><span>$${l[3]}</span></div>`).join("")}</div>`;
+      const VIEWS = {
+        answer: {
+          label: "Support answer",
+          need: "one",
+          one: () =>
+            `<div class="faint">Support today</div><div class="answer"><b>Mostly refunds, after the payout delay.</b> 21 of 23 answered. Two need you.</div><div class="stat"><b>23</b><span>tickets · median reply 4 min</span></div>${tickets(1)}`,
+          a: () =>
+            `<div class="faint">Support today</div><div class="answer"><b>Mostly refunds, after the payout delay.</b> 21 of 23 answered. Two need you, on the right.</div><div class="stat"><b>23</b><span>tickets · median reply 4 min</span></div>`,
+          b: () => tickets(2),
+        },
+        spend: {
+          label: "Spend by lead",
+          need: "two",
+          ask: "<b>All six leads don't fit here.</b> Open me and I'll put the chart next to the full table.",
+          one: () =>
+            `<div class="faint">Agent spend this week</div><div class="answer"><b>$135, up $11 on last week.</b> sessions and habit are most of it.</div>${bars(LEADS.slice(0, 3), 51)}<div class="faint">and 3 more</div>`,
+          a: () =>
+            `<div class="faint">Agent spend this week</div><div class="answer"><b>$135, up $11 on last week.</b> sessions and habit are most of it.</div>${bars(LEADS, 51)}`,
+          b: () =>
+            `<table><tr><th>Lead</th><th>This week</th><th>Last week</th><th>Change</th></tr>${LEADS.map(
+              (l) => {
+                const d = l[3] - l[4];
+                return `<tr><td>${mk(l)}${l[2]}</td><td>$${l[3]}</td><td>$${l[4]}</td><td class="${d > 0 ? "up" : d < 0 ? "down" : ""}">${d > 0 ? "+" : d < 0 ? "−" : ""}${d ? "$" + Math.abs(d) : "0"}</td></tr>`;
+              },
+            ).join(
+              "",
+            )}<tr><td><b>Total</b></td><td><b>$135</b></td><td>$124</td><td class="up">+$11</td></tr></table>`,
+        },
+        walk: {
+          label: "Walkthrough",
+          need: "one",
+          one: () => video(338, 200) + verdict(),
+          a: () => video(395, 260),
+          b: () => verdict(),
+        },
+      };
+      function tickets(n) {
+        const t = [
+          `<div class="ticket"><div class="who">Maya Chen <small>held · 5h</small></div>Wallet pass still shows the old balance after my refund.<div class="row"><div class="btn">Edit</div><div class="btn primary">Send</div></div></div>`,
+          `<div class="ticket"><div class="who">Mara Lind <small>new · 22m</small></div>Can I get last month's invoice in Polish?<div class="row"><div class="btn">Take it myself</div><div class="btn">Draft in Polish</div></div></div>`,
+        ];
+        return (
+          t.slice(0, n).join("") +
+          (n < 2 ? `<div class="faint">and 1 more</div>` : "")
+        );
+      }
+      function video(w, h) {
+        return `<div class="video" style="width:${w}px;height:${h}px"><div class="pass" style="transform:scale(${(h / 300).toFixed(2)})"><span>Kawa Bar</span><div class="stamps"><i></i><i></i><i></i><i></i><i></i><i></i><i class="o"></i><i class="o"></i><i class="o"></i><i class="o"></i></div><div style="height:26px;border-radius:3px;background:#fff;opacity:.92"></div></div><div style="position:absolute;left:14px;right:14px;bottom:12px;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--dim)"><div style="width:26px;height:26px;border-radius:50%;background:rgb(0 0 0 / 72%)"></div><div style="flex:1;height:3px;border-radius:2px;background:rgb(0 0 0 / 12%)"><div style="width:30%;height:3px;border-radius:2px;background:var(--fg)"></div></div>0:12 / 0:40</div></div>`;
+      }
+      const verdict = () =>
+        `<div class="faint">habit · #482</div><div class="answer"><b>Wallet pass shows stamp progress.</b> Checks and security review passed.</div><div class="row" style="width:300px"><div class="btn">Changes</div><div class="btn primary">Merge</div></div>`;
+
+      /* ---------- posture detection ----------
+       * Native (onHingeChange + reservedRegions): status, angle and which way the fold runs.
+       * Safari alone has no posture or viewport-segment API, so a plain PWA only sees the viewport:
+       * closed or open, and the orientation. That is all the asking needs. */
+      function sense() {
+        const open = S.angle >= 8;
+        const viewport = !open
+          ? "466 × 678"
+          : S.orient === "land"
+            ? "951 × 669"
+            : "669 × 951";
+        if (!open)
+          return { posture: "closed", panes: 1, status: "closed", viewport };
+        const flatName = S.orient === "land" ? "open" : "openPort";
+        if (!S.bridge)
+          return { posture: flatName, panes: 2, status: "unknown", viewport };
+        const fold = S.orient === "land" ? "vertical" : "horizontal";
+        if (S.angle > 172)
+          return {
+            posture: flatName,
+            panes: 2,
+            status: "fullyOpen",
+            viewport,
+            fold,
+          };
+        return {
+          posture: S.orient === "land" ? "book" : "tabletop",
+          panes: 2,
+          status: "partiallyOpen",
+          viewport,
+          fold,
+        };
+      }
+      const fits = (view, p) => VIEWS[view].need === "one" || p.panes >= 2;
+
+      /* ---------- render the device and the current view ---------- */
+      function renderDevice(p) {
+        const open = p.posture !== "closed",
+          land = S.orient === "land";
+        el("outer").style.display = open ? "none" : "block";
+        el("land").style.display = open && land ? "block" : "none";
+        el("port").style.display = open && !land ? "block" : "none";
+        const fold = 180 - S.angle;
+        el("land").querySelector(".a").style.transform =
+          `rotateY(${fold / 2}deg)`;
+        el("land").querySelector(".b").style.transform =
+          `rotateY(${-fold / 2}deg)`;
+        el("port").querySelector(".a").style.transform = `rotateX(${-fold}deg)`; // tabletop: top half stands, bottom lies flat
+        el("land")
+          .querySelectorAll(".shade")
+          .forEach((s) => (s.style.opacity = (fold / 180) * 0.18));
+        el("port").querySelector(".a .shade").style.opacity =
+          (fold / 180) * 0.22;
+        el("port").querySelector(".b .shade").style.opacity = 0;
+        const show = el("showFold").checked;
+        document
+          .querySelectorAll(".fold")
+          .forEach(
+            (f) =>
+              (f.className =
+                "fold" +
+                (!show
+                  ? ""
+                  : p.status === "partiallyOpen"
+                    ? " active"
+                    : " flat")),
+          );
+        // content only changes when the view or the number of panes changes
+        const key = S.view + "|" + p.panes + "|" + S.orient;
+        if (S.drawn !== key) {
+          const v = VIEWS[S.view];
+          el("cOuter").innerHTML = v.one();
+          el("cLandA").innerHTML = el("cPortA").innerHTML = v.a();
+          el("cLandB").innerHTML = el("cPortB").innerHTML = v.b();
+          S.drawn = key;
+        }
+      }
+
+      /* ---------- asking for space ---------- */
+      function askIfNeeded(p) {
+        const v = VIEWS[S.view];
+        const needs = !fits(S.view, p) && !S.dismissed[S.view];
+        if (needs && S.asked !== S.view) {
+          S.asked = S.view;
+          S.askAt = clock;
+          el("sayOuter").innerHTML =
+            `${v.ask}<div class="row"><div class="btn" onclick="notNow()">Not now</div></div>`;
+          el("sayOuter").classList.add("show");
+        } else if (!needs && S.asked) {
+          if (p.panes >= 2) S.thanksUntil = clock + 1.4; // it got the room it asked for
+          S.asked = null;
+          el("sayOuter").classList.remove("show");
+        }
+      }
+      window.notNow = () => {
+        S.dismissed[S.view] = true;
+        S.nod = clock;
+      };
+      function show(view) {
+        S.view = view;
+        S.asked = null;
+        el("sayOuter").classList.remove("show");
+        S.dismissed = {};
+      }
+
+      /* ---------- Blob behaviour per frame ---------- */
+      function behave(p) {
+        const home = HOME[p.posture];
+        if (p.posture !== S.last) {
+          const wasClosed = S.last === "closed",
+            nowClosed = p.posture === "closed";
+          if (wasClosed !== nowClosed && !blob.st.reduce) {
+            // opening: Blob tumbles out of the fold; closing: back in at the hinge edge
+            const from = nowClosed
+              ? { x: STAGE.outer[0] + 22, y: STAGE.outer[1] + 339, size: 26 }
+              : S.orient === "land"
+                ? { x: 24.5 + 475.5 + 18, y: 165.5 + 334, size: 26 }
+                : { x: 165.5 + 334, y: 24.5 + 475.5 + 16, size: 26 };
+            blob.reset({ at: from, mode: "think" });
+          }
+          S.last = p.posture;
+        }
+        askIfNeeded(p);
+        let at = home,
+          mode = clock < S.thanksUntil ? "speak" : "quiet",
+          look = null,
+          tilt = 0;
+        if (S.asked) {
+          // push against the hinge edge three times, then wait there
+          const k = clock - S.askAt,
+            push = Math.floor(k / 1.6) < 3 && k % 1.6 < 0.35;
+          at = {
+            x: STAGE.outer[0] + (push ? 30 : 46),
+            y: STAGE.outer[1] + 440,
+            size: 48,
+          }; // the empty band above the ask
+          mode = "speak";
+          look = { x: STAGE.outer[0], y: STAGE.outer[1] + 440 };
+        } else if (clock - S.nod < 0.5) {
+          at = { ...home, y: home.y + (clock - S.nod < 0.2 ? 8 : 0) }; // fine, later
+        }
+        if (p.posture === "book") {
+          tilt = -(180 - S.angle) * 0.12;
+          look = look || { x: 24.5 + 475.5, y: home.y - 20 };
+        } // hinge effect only
+        blob.set({ at, mode, look, tilt });
+      }
+
+      /* ---------- loop, sequence, seek ---------- */
+      let clock = 0;
+      const seq = { playing: false, start: 0, idx: 0 };
+      const anim = { from: 0, to: 0, t0: 0, dur: 0 };
+      const SCRIPT = [
+        [
+          0.0,
+          () => {
+            S.angle = 0;
+            S.orient = "land";
+            show("answer");
+          },
+        ], // fits closed: no ask
+        [2.0, () => show("spend")], // doesn't fit: compact + ask
+        [4.6, () => tweenAngle(180, 1.1)], // you open it
+        [7.4, () => show("walk")], // fits anywhere
+        [
+          9.0,
+          () => {
+            S.orient = "port";
+            tweenAngle(110, 1.0);
+          },
+        ], // tabletop: just rearranged
+        [11.6, () => tweenAngle(0, 0.9)], // closed again: still fits
+        [13.8, () => {}],
+      ];
+      function tweenAngle(to, dur) {
+        anim.from = S.angle;
+        anim.to = to;
+        anim.t0 = clock;
+        anim.dur = dur;
+      }
+      function tick(dt) {
+        clock += dt;
+        if (seq.playing) {
+          const st = clock - seq.start;
+          while (seq.idx < SCRIPT.length && st >= SCRIPT[seq.idx][0]) {
+            SCRIPT[seq.idx][1]();
+            seq.idx++;
+          }
+          if (seq.idx >= SCRIPT.length) seq.playing = false;
+        }
+        if (anim.dur) {
+          const k = clamp((clock - anim.t0) / anim.dur, 0, 1);
+          S.angle =
+            anim.from +
+            (anim.to - anim.from) * (0.5 - 0.5 * Math.cos(Math.PI * k));
+          if (k >= 1) anim.dur = 0;
+        }
+        const p = sense();
+        behave(p);
+        blob.tick(dt);
+        return p;
+      }
+      function draw(p) {
+        renderDevice(p);
+        const host =
+          p.posture === "closed"
+            ? el("outer")
+            : S.orient === "land"
+              ? el("land").querySelector(".b")
+              : el("port").querySelector(".b");
+        const origin =
+          p.posture === "closed"
+            ? STAGE.outer
+            : S.orient === "land"
+              ? [24.5 + 475.5, 165.5]
+              : [165.5, 24.5 + 475.5];
+        if (el("blob").parentNode !== host) {
+          host.appendChild(el("halo"));
+          host.appendChild(el("blob"));
+        }
+        blob.render();
+        for (const node of [el("blob"), el("halo")])
+          node.style.transform = node.style.transform.replace(
+            /^translate\(([-\d.]+)px, ([-\d.]+)px\)/,
+            (_, x, y) => `translate(${+x - origin[0]}px, ${+y - origin[1]}px)`,
+          );
+        el("angle").value = Math.round(S.angle);
+        const need = VIEWS[S.view].need === "two" ? "two panes" : "one pane";
+        el("readout").innerHTML =
+          (S.bridge
+            ? `<span>Hinge <b>${Math.round(S.angle)}°</b> · ${p.status}${p.fold ? " · fold " + p.fold : ""}</span><span>Posture <b>${p.posture}</b> · ${p.panes} pane${p.panes > 1 ? "s" : ""}</span>`
+            : `<span>Viewport <b>${p.viewport}</b> · ${p.panes} pane${p.panes > 1 ? "s" : ""}</span><span class="meta">No hinge without the native bridge: book and tabletop look like open.</span>`) +
+          `<span>${VIEWS[S.view].label} needs <b>${need}</b> · ${fits(S.view, p) ? "fits" : "doesn't fit, so Blob asks"}</span>`;
+        el("clock").textContent = clock.toFixed(1) + " s";
+        document
+          .querySelectorAll("#orient button")
+          .forEach((b) =>
+            b.setAttribute("aria-pressed", b.dataset.o === S.orient),
+          );
+        document
+          .querySelectorAll("#speeds button")
+          .forEach((b) =>
+            b.setAttribute("aria-pressed", +b.dataset.s === S.speed),
+          );
+        document
+          .querySelectorAll("#views button")
+          .forEach((b) =>
+            b.setAttribute("aria-pressed", b.dataset.v === S.view),
+          );
+      }
+      let last = performance.now(),
+        live = true;
+      function frame(now) {
+        if (live) {
+          const dt = Math.min(0.05, (now - last) / 1000) * S.speed;
+          draw(tick(dt));
+        }
+        last = now;
+        requestAnimationFrame(frame);
+      }
+      window.seek = (ms) => {
+        live = false;
+        clock = 0;
+        S.angle = 0;
+        S.orient = "land";
+        S.thanksUntil = 0;
+        S.nod = -9;
+        S.last = "closed";
+        anim.dur = 0;
+        show("answer");
+        el("sayOuter").style.transition = "none";
+        blob.reset({ at: HOME.closed });
+        seq.playing = true;
+        seq.start = 0;
+        seq.idx = 0;
+        let p = sense();
+        while (clock < ms / 1000) p = tick(1 / 240);
+        seq.playing = false;
+        draw(p);
+        return {
+          t: +clock.toFixed(2),
+          posture: p.posture,
+          view: S.view,
+          asked: S.asked,
+        };
+      };
+      window.resume = () => {
+        live = true;
+        el("sayOuter").style.transition = "";
+      };
+
+      /* ---------- controls ---------- */
+      el("angle").oninput = (e) => {
+        resume();
+        anim.dur = 0;
+        seq.playing = false;
+        S.angle = +e.target.value;
+      };
+      for (const [o, label] of [
+        ["land", "Landscape · book"],
+        ["port", "Portrait · tabletop"],
+      ]) {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.dataset.o = o;
+        b.onclick = () => {
+          resume();
+          S.orient = o;
+        };
+        el("orient").appendChild(b);
+      }
+      for (const v of Object.keys(VIEWS)) {
+        const b = document.createElement("button");
+        b.textContent = VIEWS[v].label;
+        b.dataset.v = v;
+        b.onclick = () => {
+          resume();
+          show(v);
+        };
+        el("views").appendChild(b);
+      }
+      for (const v of [1, 0.5, 0.2]) {
+        const b = document.createElement("button");
+        b.textContent = v + "×";
+        b.dataset.s = v;
+        b.onclick = () => {
+          S.speed = v;
+        };
+        el("speeds").appendChild(b);
+      }
+      el("views").className = "group";
+      el("play").onclick = () => {
+        resume();
+        S.angle = 0;
+        S.orient = "land";
+        show("answer");
+        seq.playing = true;
+        seq.start = clock;
+        seq.idx = 0;
+      };
+      el("bridge").onchange = (e) => {
+        S.bridge = e.target.checked;
+      };
+      el("reduce").checked = blob.st.reduce;
+      el("reduce").onchange = (e) => {
+        blob.st.reduce = e.target.checked;
+      };
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>
