@@ -19,6 +19,7 @@ import { __setLegacyEnvironmentForTest } from "../projects/legacy";
 import {
   __setProjectStoreContextForTest,
   getProjectDocument,
+  projectDocuments,
   updateProjectDocument,
 } from "../projects/store";
 import {
@@ -38,6 +39,7 @@ import {
   ensureLeadGoalsAtBoot,
   handleLeadAnswer,
   leadGoalIdle,
+  leadGoalWaiting,
   leadWakeCheck,
 } from "./goal";
 import { deliverLeadProposal } from "./report";
@@ -514,7 +516,7 @@ describe("the loop guard", () => {
       title: "Acme: the lead paused itself",
       body: "3 wakes today, the daily limit is 3. The lead may be stuck in a loop. Resume lets it run for the rest of today; otherwise it starts again tomorrow.",
       options: ["Resume", "Keep paused"],
-      dedupeKey: "lead:acme:guard:2026-11-10",
+      dedupeKey: "lead:acme:guard:wakes:2026-11-10",
     });
     await mutateGoal(goal.id, (g) => ({
       ...g,
@@ -551,17 +553,132 @@ describe("the loop guard", () => {
     expect((await leadGoal()).status).toBe("active");
   });
 
-  test("a wake past its token limit blocks the next one", async () => {
+  test("a wake past its token limit holds the lead 12 hours, across midnight", async () => {
+    clock = Date.parse("2026-11-10T20:00:00.000Z");
     await setLead({ enabled: true });
     await ensureLeadGoal(PROJECT);
     const goal = await leadGoal();
     await mutateGoal(goal.id, (g) => ({
       ...g,
-      guard: { day: "2026-11-10", wakes: 1, trippedTokens: 1_250_000 },
+      guard: {
+        day: "2026-11-10",
+        wakes: 1,
+        trips: 1,
+        trippedAt: new Date(clock).toISOString(),
+        trippedTokens: 1_250_000,
+      },
     }));
-    expect(await leadWakeCheck(await leadGoal())).toEqual({
+    const block = {
       block:
         "Loop guard: a wake used 1,250,000 tokens, over its limit of 1,000,000",
+    };
+    expect(await leadWakeCheck(await leadGoal())).toEqual(block);
+    const [item] = await listSupervisorItems("Ada", { kind: "needs-you" });
+    expect(item).toMatchObject({
+      body: "A wake used 1,250,000 tokens, over its limit of 1,000,000. The lead may be stuck in a loop. Resume lets it run again; otherwise it waits 12 hours.",
+      dedupeKey: "lead:acme:guard:trip:1",
+    });
+    clock = Date.parse("2026-11-11T07:59:00.000Z");
+    expect(await leadWakeCheck(await leadGoal())).toEqual(block);
+    clock = Date.parse("2026-11-11T08:00:00.000Z");
+    expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+  });
+
+  test("a trip after a Resume pauses again and asks again, under a new key", async () => {
+    await setLead({ enabled: true, dailyWakeLimit: 3 });
+    await ensureLeadGoal(PROJECT);
+    onSupervisorAnswer("lead:", handleLeadAnswer);
+    const goal = await leadGoal();
+    // The owner resumed today's wake limit...
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      guard: { day: "2026-11-10", wakes: 3, lifted: true },
+    }));
+    expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+    // ...then a wake tripped (goal-runner clears the Resume when it does).
+    const trip = (trips: number) =>
+      mutateGoal(goal.id, (g) => ({
+        ...g,
+        guard: {
+          day: "2026-11-10",
+          wakes: 4,
+          trips,
+          trippedAt: new Date(clock).toISOString(),
+          trippedTokens: 1_100_000,
+        },
+      }));
+    await trip(1);
+    const first = await leadWakeCheck(await leadGoal());
+    expect("block" in first).toBe(true);
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: (first as { block: string }).block,
+    }));
+    const [item1] = await listSupervisorItems("Ada", { kind: "needs-you" });
+    expect(item1!.dedupeKey).toBe("lead:acme:guard:trip:1");
+    await answerSupervisorItem("Ada", item1!.id, "1", "owner");
+    const resumed = await leadGoal();
+    expect(resumed.status).toBe("active");
+    // The Resume lifts the trip and today's wake limit, which the trip had
+    // cleared.
+    expect(resumed.guard).toEqual({
+      day: "2026-11-10",
+      wakes: 4,
+      trips: 1,
+      lifted: true,
+    });
+    await trip(2);
+    expect("block" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+    const keys = (await listSupervisorItems("Ada", { kind: "needs-you" })).map(
+      (i) => i.dedupeKey,
+    );
+    expect(keys).toContain("lead:acme:guard:trip:2");
+    expect(keys.filter((k) => k === "lead:acme:guard:trip:2")).toHaveLength(1);
+  });
+
+  test("wakes count on the owner's local day", async () => {
+    restoreInbox();
+    restoreInbox = __setSupervisorInboxDepsForTest({
+      now: () => clock,
+      notify: async () => ({}),
+      markDone: async () => {},
+      supervisorSessionId: async (user) => `os-sup-${user}`,
+      timeZone: () => "Pacific/Auckland",
+    });
+    // 12:00 UTC is already the 11th in Auckland.
+    await setLead({ enabled: true, dailyWakeLimit: 1 });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      guard: { day: "2026-11-10", wakes: 1 },
+    }));
+    const plan = await leadWakeCheck(await leadGoal());
+    if ("block" in plan) throw new Error(plan.block);
+    expect(plan.day).toBe("2026-11-11");
+  });
+});
+
+describe("waiting for headroom", () => {
+  test("a day of waiting tells the owner once", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const since = new Date(clock).toISOString();
+    const waiting = {
+      reason: "Your Claude accounts are near their limits",
+      since,
+    };
+    await leadGoalWaiting({ ...(await leadGoal()), waiting }, clock + 60_000);
+    expect(await listSupervisorItems("Ada", { kind: "needs-you" })).toEqual([]);
+    const later = clock + 24 * 60 * 60_000;
+    await leadGoalWaiting({ ...(await leadGoal()), waiting }, later);
+    await leadGoalWaiting({ ...(await leadGoal()), waiting }, later + 60_000);
+    const items = await listSupervisorItems("Ada", { kind: "needs-you" });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      title: "Acme: the lead has waited a day to run",
+      body: "Your Claude accounts are near their limits, so its wakes wait. It runs again once there is room.",
     });
   });
 });
@@ -851,6 +968,36 @@ describe("ensureLeadGoalsAtBoot", () => {
     });
     await ensureLeadGoalsAtBoot(20 * 60_000);
     expect(retries).toEqual([20 * 60_000]);
+  });
+
+  test("a lead held at a $0 budget before the loop guards stays off", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    const held = "Over the lead's budget: $0 of $0 this month";
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: held,
+    }));
+    // The block as an older build stored it: a $0 budget, no guard fields.
+    const doc = await getProjectDocument(PROJECT);
+    const {
+      dailyWakeLimit: _w,
+      wakeTokenLimit: _t,
+      ...older
+    } = doc.lead as unknown as Record<string, unknown>;
+    await projectDocuments().set(PROJECT, {
+      ...doc,
+      lead: { ...older, budgetUsdPerMonth: 0 },
+      revision: doc.revision + 1,
+    } as never);
+    expect((await getProjectDocument(PROJECT)).lead.enabled).toBe(false);
+    await ensureLeadGoalsAtBoot();
+    expect(await leadGoal()).toMatchObject({
+      status: "paused",
+      pauseReason: held,
+    });
   });
 
   test("leaves projects whose lead was never on alone", async () => {

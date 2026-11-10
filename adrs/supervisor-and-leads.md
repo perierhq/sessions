@@ -98,19 +98,30 @@ Rules:
 - **Capacity, not dollars:** the instance runs on Claude subscription
   accounts with 5-hour and weekly usage windows, so a dollar budget is the
   wrong unit and risks stopping useful work. Instead:
-  - **Headroom first:** lead wakes and other unattended goals wait 30 minutes
-    (postponed, not paused, no inbox item) while no shared Claude account has
-    at least 20% of its 5-hour window and 10% of its weekly window left
-    (`claude-headroom.ts`). Interactive sessions and Pat never wait on it.
+  - **Headroom first:** lead wakes and other unattended goals on
+    `pi/anthropic/*` wait 30 minutes (postponed, not paused; the goal shows
+    why) while none of the shared Claude accounts that report usage has at
+    least 20% of its 5-hour window and 10% of its weekly window left. When
+    none reports any usage they run. A run refused for a usage limit or a
+    429 holds that provider's goals for 30 minutes. Waiting goals start one
+    a tick once there is room, and a lead that has waited a day tells its
+    owner once. Headroom comes from a source per route
+    (`claude-headroom.ts`, `localClaudeAccounts` today), so a later hub in
+    front of the Claude accounts can report it from its own API.
+    Interactive sessions and Pat never wait on it.
   - **Loop guard:** each wake may use a token limit (1,000,000 by default;
     input, output and cache writes in full, cache reads at a tenth), and a
-    lead may wake 24 times a UTC day by default. A wake past its limit is
-    asked to wrap up and stopped, the way the old mid-run budget hold worked.
-    Tripping either pauses the lead with a needs-you item, Resume or Keep
-    paused; Resume lifts the guard for the rest of the day.
-  - **Dollar cap:** optional and off by default. Stored leads at the old
-    default of $50 read as off; a cap the owner set stays. Raising or
-    removing it is loosening.
+    lead may wake 24 times a day by default, counted on the owner's local
+    day. A wake past its token limit is asked to wrap up and stopped, the way
+    the old mid-run budget hold worked, and holds the lead for 12 hours;
+    the wake limit holds it until the owner's next day. Either asks the
+    owner with a needs-you item, Resume or Keep paused, once per hold: a
+    trip after a Resume asks again. Resume lifts the hold for the rest of
+    the day, until the next trip.
+  - **Dollar cap:** optional and off by default; `null` is off and 0 is
+    refused. Leads stored before the guards at the old default of $50 read
+    as off, and those held at $0 read as turned off; a cap the owner set
+    stays. Raising or removing it is loosening.
 - **Audit:** every decision is audited with the rule that made it.
 
 ### 4. A classifier routes; it can't grant

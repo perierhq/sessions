@@ -45,7 +45,7 @@ import { SettingRow } from "../shared";
 
 const ALWAYS_ONLY_YOU = "Always only you";
 export const LEAD_HEADROOM_HINT =
-  "Leads wait when your Claude accounts are low and never take capacity from your own sessions.";
+  "Leads wait while your Claude accounts are near their limits.";
 
 /**
  * The project lead's charter: on or off, its stage, its wakes a day and an
@@ -228,8 +228,8 @@ export function LeadBudgetDialog({
   const [text, setText] = useState(budget === null ? "" : String(budget));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Empty or 0 is off.
-  const off = text.trim() === "" || parseUsd(text, 0, 0) === 0;
+  // Empty is off; the server refuses 0, so it is no stand-in for off.
+  const off = text.trim() === "";
   const amount = off ? null : parseUsd(text, 0.01, MAX_LEAD_BUDGET_USD);
   const valid = off || amount !== null;
   return (

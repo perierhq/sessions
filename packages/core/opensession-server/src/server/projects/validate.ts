@@ -670,14 +670,26 @@ function validLeadBudget(v: unknown): v is number | null {
   return v === null || (numberIn(v, 0, MAX_LEAD_BUDGET_USD) && v > 0);
 }
 
-/** The dollar cap a stored block holds: the old default every lead got
- *  ($50), 0, missing or invalid read as off; a cap the owner chose stays. */
-function storedLeadBudget(v: unknown): number | null {
-  return typeof v === "number" &&
-    v !== LEGACY_DEFAULT_LEAD_BUDGET_USD &&
-    validLeadBudget(v)
-    ? v
-    : null;
+/** Whether a stored block was written before the loop guards: it has
+ *  neither guard field. Its cap was the old required budget. */
+function preGuardLead(raw: Record<string, unknown>): boolean {
+  return !("dailyWakeLimit" in raw) && !("wakeTokenLimit" in raw);
+}
+
+/** The dollar cap a stored block holds. Before the loop guards every lead
+ *  had $50 by default, so a pre-guard $50 reads as off; a $50 written with
+ *  the guards is the owner's. Missing or invalid reads as off. */
+function storedLeadBudget(raw: Record<string, unknown>): number | null {
+  const v = raw.budgetUsdPerMonth;
+  if (typeof v !== "number" || !validLeadBudget(v)) return null;
+  return v === LEGACY_DEFAULT_LEAD_BUDGET_USD && preGuardLead(raw) ? null : v;
+}
+
+/** A pre-guard block with a $0 budget held its lead stopped; with no cap
+ *  it would run unbounded, so it reads as off until the owner turns it on
+ *  again. */
+function heldAtZero(raw: Record<string, unknown>): boolean {
+  return raw.budgetUsdPerMonth === 0 && preGuardLead(raw);
 }
 
 /** A stored lead block merged over the defaults: unknown values read as
@@ -694,10 +706,10 @@ export function leadWithDefaults(raw: unknown): ProjectLeadSettings {
     ]),
   ) as Record<LeadCategory, LeadLevel>;
   return {
-    enabled: raw.enabled === true,
+    enabled: raw.enabled === true && !heldAtZero(raw),
     stage: isLeadStage(raw.stage) ? raw.stage : base.stage,
     rules,
-    budgetUsdPerMonth: storedLeadBudget(raw.budgetUsdPerMonth),
+    budgetUsdPerMonth: storedLeadBudget(raw),
     dailyWakeLimit: validDailyWakes(raw.dailyWakeLimit)
       ? raw.dailyWakeLimit
       : base.dailyWakeLimit,
@@ -748,10 +760,10 @@ export function applyLeadPatch(
     }
   }
   if ("budgetUsdPerMonth" in input) {
-    // 0 and null both turn the cap off.
-    const cap = input.budgetUsdPerMonth === 0 ? null : input.budgetUsdPerMonth;
-    if (!validLeadBudget(cap)) return { error: LEAD_BUDGET_ERROR };
-    next.budgetUsdPerMonth = cap;
+    // null is the only off: 0 is refused, so it never reads as "no cap".
+    if (!validLeadBudget(input.budgetUsdPerMonth))
+      return { error: LEAD_BUDGET_ERROR };
+    next.budgetUsdPerMonth = input.budgetUsdPerMonth;
   }
   if ("dailyWakeLimit" in input) {
     if (!validDailyWakes(input.dailyWakeLimit))

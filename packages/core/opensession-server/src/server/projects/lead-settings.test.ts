@@ -66,28 +66,38 @@ test("a project reads with the lead off, watching, at the ADR's defaults", async
   });
 });
 
+const LEAD_BUDGET_ERROR =
+  "Lead dollar cap (lead.budgetUsdPerMonth) must be off or from $0.01 to $100000";
+
 test("a stored lead from before the loop guards reads with its old default cap off", async () => {
   const doc = await getProjectDocument("acme-web");
   const stored = (lead: Record<string, unknown>) =>
     projectDocuments().set("acme-web", { ...doc, lead, revision: 2 });
-  await stored({ ...doc.lead, budgetUsdPerMonth: 50 });
+  const { dailyWakeLimit: _w, wakeTokenLimit: _t, ...older } = doc.lead;
+  await stored({ ...older, budgetUsdPerMonth: 50 });
   expect((await getProjectDocument("acme-web")).lead).toMatchObject({
     budgetUsdPerMonth: null,
     dailyWakeLimit: 24,
     wakeTokenLimit: 1_000_000,
   });
-  // A cap the owner chose stays; 0 now means no cap.
-  await stored({ ...doc.lead, budgetUsdPerMonth: 80 });
+  // A cap the owner chose stays, and so does a $50 written with the guards.
+  await stored({ ...older, budgetUsdPerMonth: 80 });
   expect((await getProjectDocument("acme-web")).lead.budgetUsdPerMonth).toBe(
     80,
   );
-  await stored({ ...doc.lead, budgetUsdPerMonth: 0 });
-  expect(
-    (await getProjectDocument("acme-web")).lead.budgetUsdPerMonth,
-  ).toBeNull();
+  await stored({ ...doc.lead, budgetUsdPerMonth: 50 });
+  expect((await getProjectDocument("acme-web")).lead.budgetUsdPerMonth).toBe(
+    50,
+  );
+  // A $0 budget held the lead stopped: it reads as off, not as no cap.
+  await stored({ ...older, enabled: true, budgetUsdPerMonth: 0 });
+  expect((await getProjectDocument("acme-web")).lead).toMatchObject({
+    enabled: false,
+    budgetUsdPerMonth: null,
+  });
 });
 
-test("the loop guards and the dollar cap validate, and 0 turns the cap off", async () => {
+test("the loop guards and the dollar cap validate, and only null turns the cap off", async () => {
   const set = await write({
     dailyWakeLimit: 12,
     wakeTokenLimit: 200_000,
@@ -99,10 +109,11 @@ test("the loop guards and the dollar cap validate, and 0 turns the cap off", asy
     wakeTokenLimit: 200_000,
     budgetUsdPerMonth: 30,
   });
-  const off = await write({ budgetUsdPerMonth: 0 });
+  const off = await write({ budgetUsdPerMonth: null });
   if ("error" in off) throw new Error(off.error);
   expect(off.lead.budgetUsdPerMonth).toBeNull();
   for (const [lead, error] of [
+    [{ budgetUsdPerMonth: 0 }, LEAD_BUDGET_ERROR],
     [
       { dailyWakeLimit: 0 },
       "Lead wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to 1000",
@@ -217,10 +228,7 @@ test("bad values are refused", async () => {
       { rules: { "ci-repair": "sometimes" } },
       "Lead rule (lead.rules.ci-repair) must be one of alone, asks-first, only-you",
     ],
-    [
-      { budgetUsdPerMonth: -1 },
-      "Lead dollar cap (lead.budgetUsdPerMonth) must be off or from $0.01 to $100000",
-    ],
+    [{ budgetUsdPerMonth: -1 }, LEAD_BUDGET_ERROR],
     [
       { owner: "Mallory" },
       'Lead owner (lead.owner): Nobody on the team is called "Mallory"',

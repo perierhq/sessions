@@ -125,7 +125,7 @@ export interface ProjectLeadPatch {
   enabled?: boolean;
   stage?: LeadStage;
   rules?: Partial<Record<LeadCategory, LeadLevel>>;
-  /** null or 0 turns the cap off. */
+  /** null turns the cap off. */
   budgetUsdPerMonth?: number | null;
   dailyWakeLimit?: number;
   wakeTokenLimit?: number;

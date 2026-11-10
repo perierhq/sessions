@@ -63,11 +63,11 @@ describe("lead section model", () => {
     expect(READY_4_OF_6.document.lead.owner).toBeUndefined();
   });
 
-  test("a dollar cap of 0 paints as off", () => {
+  test("a dollar cap paints, and null paints it off", () => {
     const capped = applyLeadPatch(READY_4_OF_6, { budgetUsdPerMonth: 30 });
     expect(capped.document.lead.budgetUsdPerMonth).toBe(30);
     expect(
-      applyLeadPatch(capped, { budgetUsdPerMonth: 0 }).document.lead
+      applyLeadPatch(capped, { budgetUsdPerMonth: null }).document.lead
         .budgetUsdPerMonth,
     ).toBeNull();
   });

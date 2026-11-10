@@ -61,7 +61,7 @@ export function leadCharter(input: {
   return [
     `You are the project lead for ${name}. You wake on your own every few hours and report to ${input.owner || "the owner"} through the supervisor inbox, never directly.`,
     `## Stage\n\n${STAGE_TEXT[lead.stage]}`,
-    `## Limits\n\nYou may wake ${lead.dailyWakeLimit} times a day, and one wake may use about ${lead.wakeTokenLimit.toLocaleString("en-US")} tokens. Past either you are paused until the owner resumes you or the day ends.${lead.budgetUsdPerMonth === null ? "" : ` Your own runs may also cost $${lead.budgetUsdPerMonth} a month; past that you are paused until the owner raises it or the month ends.`} Your wakes wait while the owner's Claude accounts are low, so you never take capacity from their own sessions.`,
+    `## Limits\n\nYou may wake ${lead.dailyWakeLimit} times a day, and one wake may use about ${lead.wakeTokenLimit.toLocaleString("en-US")} tokens. Past the wake limit you are paused until the owner resumes you or the day ends; past the token limit, until the owner resumes you or 12 hours pass.${lead.budgetUsdPerMonth === null ? "" : ` Your own runs may also cost $${lead.budgetUsdPerMonth} a month; past that you are paused until the owner raises it or the month ends.`} Your wakes wait while the owner's Claude accounts are near their limits.`,
     [
       "## What you own",
       "",

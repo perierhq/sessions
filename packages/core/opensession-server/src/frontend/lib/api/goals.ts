@@ -19,6 +19,8 @@ export interface Goal {
   lastRunError?: string;
   phase?: string;
   pauseReason?: string;
+  /** Why a due wake is waiting to run, and since when. */
+  waiting?: { reason: string; since: string };
   doneReason?: string;
   model?: string;
   fallbackModel?: string;

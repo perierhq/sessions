@@ -23,13 +23,13 @@ import {
   WAKE_CHECK_FAILED_REASON,
   addGoalSpend,
   getGoal,
-  goalGuardToday,
+  goalGuardFor,
   listGoals,
   mutateGoal,
   type Goal,
 } from "./goals";
 import { createLeadMcpServer } from "./leads/mcp";
-import { automaticFallbackModel, providerFor } from "./models";
+import { automaticFallbackModel, providerFor, routeModel } from "./models";
 import { engineSessionPatch } from "./sessions";
 import { STRIPE_CONFIRM_TOOLS } from "./runner-shared";
 import { checkoutHeadBranch } from "./session-branch-ownership";
@@ -42,7 +42,12 @@ import { shouldPersistModelSwitch } from "./run-events";
 import { shellQuoteWord } from "./sandbox/adapters/bootstrap";
 import { newSessionId } from "./paths";
 import { createWebMcpServer } from "./web-mcp";
-import { backgroundHeadroomOk } from "./claude-headroom";
+import {
+  backgroundHeadroom,
+  noteBackgroundUsageLimit,
+  type HeadroomVerdict,
+} from "./claude-headroom";
+import { isPiUsageLimitShape } from "./pi-usage-limit";
 import type { SessionUsage } from "./types";
 
 const g = globalThis as any;
@@ -105,11 +110,13 @@ export type LeadGoalFields = Pick<
   "name" | "mission" | "mode" | "repo" | "minWakeMinutes"
 > & { mcpServers: string[] };
 
-/** A lead's goal may wake: its fields from the settings, the tokens this
- *  wake may use, what it may still spend this month when it has a dollar
- *  cap (null: no cap), and whether it reads the web. */
+/** A lead's goal may wake: its fields from the settings, the owner's local
+ *  day its wake counts towards, the tokens this wake may use, what it may
+ *  still spend this month when it has a dollar cap (null: no cap), and
+ *  whether it reads the web. */
 export interface LeadRunPlan {
   fields: LeadGoalFields;
+  day: string;
   wakeTokens: number;
   budgetUsd: number | null;
   web: boolean;
@@ -125,6 +132,10 @@ export interface LeadGoalHooks {
   /** Run on each tick for a lead's goal that isn't active, to lift a pause
    *  that no longer holds (a new month under the budget). */
   idle(goal: Goal, now: number): Promise<void>;
+  /** Run on each tick a due wake of a lead's goal waits for headroom
+   *  (goal.waiting set), so the lead can tell its owner when it has waited
+   *  long. */
+  waiting?(goal: Goal, now: number): Promise<void>;
 }
 
 /** Set by startProjectLeads. A lead's goal never runs without it. */
@@ -173,20 +184,22 @@ export function wakeTokens(usage: Partial<SessionUsage>): number {
   );
 }
 
-/** How long a background goal waits when the Claude pool is low. */
+/** How long a background goal waits when its provider is low. */
 export const HEADROOM_POSTPONE_MS = 30 * 60_000;
 
-let headroomCheck: () => Promise<boolean> = () => backgroundHeadroomOk();
+type HeadroomCheck = (route: string, now: number) => Promise<HeadroomVerdict>;
+let headroomCheck: HeadroomCheck = backgroundHeadroom;
 
 export function __setBackgroundHeadroomForTest(
-  fn: (() => Promise<boolean>) | undefined,
+  fn: HeadroomCheck | undefined,
 ): void {
-  headroomCheck = fn ?? (() => backgroundHeadroomOk());
-  postponedForHeadroom.clear();
+  headroomCheck = fn ?? backgroundHeadroom;
 }
 
-/** Goals waiting for headroom, so each logs once until it runs again. */
-const postponedForHeadroom = new Set<string>();
+/** The route (`pi/<provider>/<model>`) a goal's wake runs on. */
+function goalRoute(goal: Pick<Goal, "model">): string {
+  return routeModel(goal.model).model;
+}
 const LEAD_WRAP_UP =
   "You reached what this wake may spend. Stop reading and proposing now: append what you have to the ledger with append_ledger, set your next wake with set_next_wake, and end the wake.";
 
@@ -309,10 +322,11 @@ export async function runGoal(stored: Goal): Promise<void> {
       // wake that crashes still counts.
       ...(lead
         ? (() => {
-            const today = goalGuardToday(current, startedAt.getTime());
+            const today = goalGuardFor(current, lead.day);
             return { guard: { ...today, wakes: today.wakes + 1 } };
           })()
         : {}),
+      waiting: undefined,
     }));
     if (!started) {
       console.log(`[goals] "${goal.name}" was deleted; skipping its wake`);
@@ -451,6 +465,17 @@ export async function runGoal(stored: Goal): Promise<void> {
         if (event.model) effectiveModel = event.model;
       }
       if (event.type === "error") errorMsg = event.content || "Unknown error";
+      // A run the provider refused for its usage limit holds the
+      // provider's background goals for a while (claude-headroom.ts).
+      if (event.type === "error" || event.type === "done") {
+        const route = goalRoute({ model: effectiveModel });
+        if (
+          event.usageLimitExhausted === true ||
+          (event.type === "error" &&
+            isPiUsageLimitShape(errorMsg, route.split("/")[1] ?? ""))
+        )
+          noteBackgroundUsageLimit(route);
+      }
       if (event.usage) {
         if (typeof event.usage.costUsd === "number")
           runCostUsd = Math.max(runCostUsd, event.usage.costUsd);
@@ -482,16 +507,19 @@ export async function runGoal(stored: Goal): Promise<void> {
       if (stopped && !errorMsg)
         merged.lastRunError = "Stopped: it reached its limit";
       if (!merged.spend) delete merged.spend;
-      // A wake that went past its token limit trips the lead's guard: the
-      // wake check runs on the next tick, pauses the lead and asks.
-      const tripped = !!lead && wrappedUp && runTokens >= lead.wakeTokens;
-      if (tripped && merged.status === "active") {
+      // A wake that went past its token limit trips the lead's guard. The
+      // next wake's check pauses the lead and asks again, under a new key,
+      // even if the owner lifted the guard earlier today. The next wake
+      // stays where the lead (or the default below) put it: a trip never
+      // wakes the lead early.
+      if (lead && wrappedUp && runTokens >= lead.wakeTokens) {
+        const { lifted: _lifted, ...guard } = goalGuardFor(merged, lead.day);
         merged.guard = {
-          ...goalGuardToday(merged, Date.now()),
+          ...guard,
+          trips: (guard.trips ?? 0) + 1,
+          trippedAt: new Date().toISOString(),
           trippedTokens: runTokens,
         };
-        merged.nextWakeAt = new Date().toISOString();
-        return merged;
       }
       defaulted =
         merged.status === "active" &&
@@ -548,7 +576,12 @@ export async function runGoal(stored: Goal): Promise<void> {
 async function pauseBeforeWake(goal: Goal, reason: string): Promise<void> {
   await mutateGoal(goal.id, (current) =>
     current.status === "active"
-      ? { ...current, status: "paused", pauseReason: reason }
+      ? {
+          ...current,
+          status: "paused",
+          pauseReason: reason,
+          waiting: undefined,
+        }
       : current,
   );
   console.log(`[goals] "${goal.name}" paused before its wake: ${reason}`);
@@ -656,9 +689,10 @@ export async function tickGoals(): Promise<void> {
   ticking = true;
   try {
     const now = Date.now();
+    const tick: TickState = { headroom: new Map(), startedWaiting: false };
     for (const goal of await listGoals()) {
       try {
-        await tickGoal(goal, now);
+        await tickGoal(goal, now, tick);
       } catch (error) {
         // One goal's failure must not hold back the others.
         console.error(`[goals] tick of "${goal.name}" failed:`, error);
@@ -669,7 +703,18 @@ export async function tickGoals(): Promise<void> {
   }
 }
 
-async function tickGoal(goal: Goal, now: number): Promise<void> {
+/** What one ticker pass shares across its goals: each route's headroom,
+ *  asked once, and whether a goal that waited for it has started. */
+interface TickState {
+  headroom: Map<string, Promise<HeadroomVerdict>>;
+  startedWaiting: boolean;
+}
+
+async function tickGoal(
+  goal: Goal,
+  now: number,
+  tick: TickState,
+): Promise<void> {
   if (goal.status !== "active") {
     // A lead's pause may lapse on its own (a new month under the budget).
     if (goal.leadProject) await leadHooks()?.idle(goal, now);
@@ -677,24 +722,39 @@ async function tickGoal(goal: Goal, now: number): Promise<void> {
   }
   if (Date.parse(goal.nextWakeAt) > now) return;
   if (runningGoals.has(goal.id)) return;
-  // Unattended work waits while the Claude pool is low, so it never takes
-  // the capacity the owner's own sessions need. Postponed, not paused.
-  if (!(await headroomCheck().catch(() => true))) {
+  // Unattended work waits while its provider is low, so it never takes
+  // the capacity the owner's own sessions need (claude-headroom.ts).
+  // Postponed, not paused; the goal says why while it waits.
+  const route = goalRoute(goal);
+  let check = tick.headroom.get(route);
+  if (!check) {
+    check = headroomCheck(route, now).catch((): HeadroomVerdict => ({
+      ok: true,
+    }));
+    tick.headroom.set(route, check);
+  }
+  const verdict = await check;
+  if (!verdict.ok) {
     const nextWakeAt = new Date(now + HEADROOM_POSTPONE_MS).toISOString();
-    await mutateGoal(goal.id, (current) =>
+    const since = new Date(now).toISOString();
+    const waited = await mutateGoal(goal.id, (current) =>
       current.status === "active" && current.nextWakeAt === goal.nextWakeAt
-        ? { ...current, nextWakeAt }
+        ? {
+            ...current,
+            nextWakeAt,
+            waiting: {
+              reason: verdict.reason,
+              since: current.waiting?.since ?? since,
+            },
+          }
         : current,
     );
-    if (!postponedForHeadroom.has(goal.id)) {
-      postponedForHeadroom.add(goal.id);
-      console.log(
-        `[goals] "${goal.name}" waits: the Claude accounts are close to their limits`,
-      );
-    }
+    if (!goal.waiting)
+      console.log(`[goals] "${goal.name}" waits: ${verdict.reason}`);
+    if (waited?.leadProject && waited.waiting)
+      await leadHooks()?.waiting?.(waited, now);
     return;
   }
-  postponedForHeadroom.delete(goal.id);
   // A prior process's run may still be resuming from the journal — don't
   // double-drive the same engine session.
   if (isAgentSessionBusy(goal.engineSessionId, goal.osSessionId)) return;
@@ -708,6 +768,12 @@ async function tickGoal(goal: Goal, now: number): Promise<void> {
     );
     console.log(`[goals] "${goal.name}" hit maxWakes ${goal.maxWakes}; paused`);
     return;
+  }
+  // Goals that waited start one a tick once there is room again, so they
+  // don't all take the room that just came back at once.
+  if (goal.waiting) {
+    if (tick.startedWaiting) return;
+    tick.startedWaiting = true;
   }
   void runGoal(goal);
 }

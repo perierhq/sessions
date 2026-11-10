@@ -143,7 +143,7 @@ test("daily wakes and an optional dollar cap, with the headroom line", () => {
     LEAD_HEADROOM_HINT,
   );
   expect(LEAD_HEADROOM_HINT).toBe(
-    "Leads wait when your Claude accounts are low and never take capacity from your own sessions.",
+    "Leads wait while your Claude accounts are near their limits.",
   );
   const capped = harness.mount(LeadSection, {
     view: withLead({ enabled: true, budgetUsdPerMonth: 80 }),

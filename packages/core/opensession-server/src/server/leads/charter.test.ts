@@ -26,10 +26,10 @@ describe("leadCharter", () => {
       "Watch. You read and propose; you change nothing, not even something the owner approved.",
     );
     expect(text).toContain(
-      "You may wake 24 times a day, and one wake may use about 1,000,000 tokens. Past either you are paused until the owner resumes you or the day ends.",
+      "You may wake 24 times a day, and one wake may use about 1,000,000 tokens. Past the wake limit you are paused until the owner resumes you or the day ends; past the token limit, until the owner resumes you or 12 hours pass.",
     );
     expect(text).toContain(
-      "Your wakes wait while the owner's Claude accounts are low",
+      "Your wakes wait while the owner's Claude accounts are near their limits.",
     );
     // No dollar cap by default.
     expect(text).not.toContain("a month");

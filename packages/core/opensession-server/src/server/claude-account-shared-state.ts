@@ -55,6 +55,12 @@ function siblingPath(suffix: string): string {
   return claudeAccountsStorePath().replace(/\.json$/, "") + `-${suffix}.json`;
 }
 
+/** The sideline (exhaustion) state beside the account store, in its own file
+ *  so it can never corrupt the accounts themselves. */
+export function claudeAccountsSidelinePath(): string {
+  return claudeAccountsStorePath().replace(/\.json$/, "-state.json");
+}
+
 const usagePath = () => siblingPath("usage");
 /** The shared usage snapshot file, for readers off the pick path
  *  (claude-headroom.ts). */

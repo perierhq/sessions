@@ -88,34 +88,49 @@ export interface Goal {
   /** What this goal's runs cost in one UTC month (`YYYY-MM`), as their
    *  terminal usage reported it. Runner-owned. */
   spend?: { month: string; usd: number };
-  /** A project lead's loop guard for one UTC day (`YYYY-MM-DD`): wakes
-   *  started, the token limit a wake tripped, and whether the owner lifted
-   *  the guard for the rest of the day. Runner- and lead-owned. */
+  /** A project lead's loop guard: its wakes on one of the owner's local
+   *  days and its last token trip. Runner- and lead-owned. */
   guard?: GoalGuard;
+  /** Why a due wake is waiting instead of running (the provider's
+   *  accounts are near their limits), and since when (ISO). Set by the
+   *  runner, cleared when the wake starts. */
+  waiting?: { reason: string; since: string };
   createdBy: string;
   createdAt: string;
 }
 
 export interface GoalGuard {
+  /** The owner's local day (`YYYY-MM-DD`) `wakes` and `lifted` are for. */
   day: string;
+  /** Wakes started on `day`. */
   wakes: number;
-  /** Set when a wake hit its token limit: how many tokens it used. */
-  trippedTokens?: number;
+  /** The owner's Resume lifted the daily wake limit for the rest of `day`. */
   lifted?: boolean;
+  /** Token trips so far, never reset: each trip's question has its own key. */
+  trips?: number;
+  /** The last token trip: when (ISO) and the tokens its wake used. Cleared
+   *  by the owner's Resume; lapses after a fixed span (leads/goal.ts). */
+  trippedAt?: string;
+  trippedTokens?: number;
 }
 
-/** The UTC day (`YYYY-MM-DD`) of `at`. */
-export function dayOf(at: number): string {
-  return new Date(at).toISOString().slice(0, 10);
-}
-
-/** The goal's guard for the day of `now`; a new day starts empty. */
-export function goalGuardToday(
+/** The goal's guard for the owner's local `day`: a new day starts the wake
+ *  count and the Resume again, and keeps the trip, which lapses on its own
+ *  clock. */
+export function goalGuardFor(
   goal: Pick<Goal, "guard">,
-  now: number,
+  day: string,
 ): GoalGuard {
-  const day = dayOf(now);
-  return goal.guard?.day === day ? goal.guard : { day, wakes: 0 };
+  const guard = goal.guard;
+  if (guard?.day === day) return guard;
+  return {
+    day,
+    wakes: 0,
+    ...(guard?.trips ? { trips: guard.trips } : {}),
+    ...(guard?.trippedAt
+      ? { trippedAt: guard.trippedAt, trippedTokens: guard.trippedTokens }
+      : {}),
+  };
 }
 
 /** Why the runner paused a project lead's goal without running it: no lead
@@ -314,7 +329,7 @@ export async function createGoal(
 
 /** Fields an operator (via opensession-goals or the goals API) may patch.
  *  Runtime/scheduling fields (engineSessionId, wakeCount, lastRun*,
- *  worktreePath, spend, guard) are owned by the runner, `leadProject` by the
+ *  worktreePath, spend, guard, waiting) are owned by the runner, `leadProject` by the
  *  project lead, and `id` and `stateFile` are fixed
  *  at creation: the ledger tools read and write `stateFile` by path. */
 const PATCHABLE_GOAL_FIELDS = [

@@ -1,10 +1,16 @@
-// backgroundHeadroomOk reads the account store, the shared usage file and
-// the sidelines, and answers whether any shared account has room.
+// backgroundHeadroom asks the source that serves a route; the local Claude
+// source reads the account store, the shared usage file and the sidelines.
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { backgroundHeadroomOk } from "./claude-headroom";
+import {
+  USAGE_LIMIT_BACKOFF_MS,
+  __setHeadroomSourcesForTest,
+  backgroundHeadroom,
+  noteBackgroundUsageLimit,
+  type HeadroomSource,
+} from "./claude-headroom";
 
 let dir = "";
 const previous = process.env.OPENSESSION_CLAUDE_ACCOUNTS_PATH;
@@ -19,6 +25,7 @@ beforeEach(() => {
   );
 });
 afterEach(() => {
+  __setHeadroomSourcesForTest(undefined);
   rmSync(dir, { recursive: true, force: true });
   if (previous === undefined)
     delete process.env.OPENSESSION_CLAUDE_ACCOUNTS_PATH;
@@ -27,7 +34,7 @@ afterEach(() => {
 
 function write(
   accounts: Array<{ id: string; owner?: string }>,
-  usage: Record<string, [number, number]> = {},
+  usage: Record<string, [number | null, number | null]> = {},
   sidelined: Record<string, number> = {},
 ) {
   writeFileSync(
@@ -55,18 +62,25 @@ function write(
   );
 }
 
+const CLAUDE = "pi/anthropic/claude-fable-5-1";
+const ok = async (now = NOW, route = CLAUDE) =>
+  (await backgroundHeadroom(route, now)).ok;
+
 test("no accounts: nothing to protect", async () => {
-  expect(await backgroundHeadroomOk(NOW)).toBe(true);
+  expect(await ok()).toBe(true);
 });
 
 test("one shared account with room is enough", async () => {
   write([{ id: "a" }, { id: "b" }], { a: [95, 20], b: [80, 90] });
-  expect(await backgroundHeadroomOk(NOW)).toBe(true);
+  expect(await ok()).toBe(true);
 });
 
 test("every shared account near its 5-hour or weekly limit: no room", async () => {
   write([{ id: "a" }, { id: "b" }], { a: [81, 10], b: [10, 91] });
-  expect(await backgroundHeadroomOk(NOW)).toBe(false);
+  expect(await backgroundHeadroom(CLAUDE, NOW)).toEqual({
+    ok: false,
+    reason: "Your Claude accounts are near their limits",
+  });
 });
 
 test("personal accounts and sidelined accounts don't count", async () => {
@@ -75,10 +89,46 @@ test("personal accounts and sidelined accounts don't count", async () => {
     { a: [0, 0], b: [0, 0] },
     { b: NOW + 60_000 },
   );
-  expect(await backgroundHeadroomOk(NOW)).toBe(false);
+  expect(await ok()).toBe(false);
+});
+
+test("a sideline for the route's model holds that account", async () => {
+  write([{ id: "a" }], { a: [0, 0] }, { "a:claude-fable-5-1": NOW + 60_000 });
+  expect(await ok()).toBe(false);
+  expect(await ok(NOW, "pi/anthropic/claude-other-5")).toBe(true);
+});
+
+test("accounts that report no usage don't count; with none reporting, allow", async () => {
+  write([{ id: "a" }, { id: "b" }], { a: [95, 20] });
+  expect(await ok()).toBe(false);
+  write([{ id: "a" }, { id: "b" }], { a: [null, null] });
+  expect(await ok()).toBe(true);
 });
 
 test("a window that reset since the poll counts as room", async () => {
   write([{ id: "a" }], { a: [99, 50] });
-  expect(await backgroundHeadroomOk(Date.parse(LATER) + 1)).toBe(true);
+  expect(await ok(Date.parse(LATER) + 1)).toBe(true);
+});
+
+test("a route no source serves is allowed", async () => {
+  write([{ id: "a" }], { a: [99, 99] });
+  expect(await ok(NOW, "pi/openai/gpt-6.1-sol")).toBe(true);
+});
+
+test("a usage limit holds the provider for the backoff, with or without a source", async () => {
+  const hub: HeadroomSource = {
+    label: "hub accounts",
+    serves: (route) => route.startsWith("pi/hub/"),
+    headroom: async () => null,
+  };
+  __setHeadroomSourcesForTest([hub]);
+  const route = "pi/hub/claude-fable-5-1";
+  expect(await ok(NOW, route)).toBe(true);
+  noteBackgroundUsageLimit(route, NOW);
+  expect(await backgroundHeadroom(route, NOW + 1)).toEqual({
+    ok: false,
+    reason: "The last background run hit a usage limit",
+  });
+  expect(await ok(NOW + 1, "pi/openai/gpt-6.1-sol")).toBe(true);
+  expect(await ok(NOW + USAGE_LIMIT_BACKOFF_MS, route)).toBe(true);
 });
