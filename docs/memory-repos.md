@@ -84,6 +84,18 @@ sends `session=<id>` as a push option), so history links commits to sessions
 regardless of commit messages. Reads compare each repository's `main` ref with
 the index and reindex only repositories that moved.
 
+## Supervisor
+
+The supervisor (Blob's session) has no code repository, so it reads the
+owner's personal repository and the team root only. Five quiet minutes after
+a turn the owner drove, a memory writer on a small model reads the new
+owner/Blob exchanges since its cursor and adds the facts the owner stated
+(preferences, decisions, people, projects) to their personal repository with
+`addEntry`: `via: supervisor`, the supervisor session as `source`, and
+`expires` on facts that hold for a while. The supervisor pref `memoryWriter`
+turns it off. The supervisor's snapshot picks the new entries up on its daily
+refresh; retrieval sees them on the next turn.
+
 ## Dreaming
 
 Every team and personal repository with content gets an automation named

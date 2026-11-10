@@ -338,6 +338,14 @@ export function sessionRepoIds(session: UnifiedSession): string[] {
   return [primary, ...(session.attachedRepos || []).map((r) => r.repo)];
 }
 
+/** Repo ids whose memory a session reads and writes. The supervisor works
+ *  across every project and has no code repository of its own, so it gets
+ *  the owner's personal memory and team memory only: the instance default
+ *  repository sessionRepoIds falls back to is not its project. */
+export function sessionMemoryRepoIds(session: UnifiedSession): string[] {
+  return session.supervisor ? [] : sessionRepoIds(session);
+}
+
 /** `owner/name` of each attached repository hosted on GitHub. A run's App
  * token covers these beside its own repository, so a turn nobody typed (a
  * review handoff, a worker report) reaches them as an owner turn does. */
@@ -429,7 +437,7 @@ export async function buildSessionNote(
       await (await import("./gpu-jobs")).gpuJobsNote(session).catch(() => ""),
       await memoryNoteFor(
         user,
-        sessionRepoIds(session),
+        sessionMemoryRepoIds(session),
         session.id,
         sessionWorkspaceIsRemote(session),
       ),

@@ -226,6 +226,10 @@ What landed from this proposal, and the decisions made on the way:
   schedule (every 30 minutes from 08:00 to 22:00 by default), skips the model when nothing
   changed, and reports only through the inbox and the shared ledger. The conversation keeps no
   timers and hands follow-ups over with `watch_for` (`docs/research/always-on-agents.md`).
+- **Recall** (this change): a rotation's seed also carries the last 20 owner/Blob
+  exchanges, one line each; a memory writer on Haiku 5.5 turns the owner's own words
+  into personal memory five quiet minutes after a turn (supervisor pref `memoryWriter`,
+  on by default), and the supervisor reads only personal and team memory.
 - **Voice** (#150, #155): Fish Audio read-aloud on the server; the OpenAI live call is
   opt-in in Blob because it is billed per minute.
 

@@ -12,7 +12,10 @@ import {
   resolvePrTarget,
   resolveSessionRepoContext,
   resolveWorktreeTarget,
+  sessionMemoryRepoIds,
+  sessionRepoIds,
 } from "./session-repos";
+import { sessionMemoryScopes } from "./session-memory";
 import type { UnifiedSession } from "./types";
 import { getRepo } from "./worktree";
 
@@ -79,6 +82,35 @@ const session = {
     },
   ],
 };
+
+describe("sessionMemoryRepoIds", () => {
+  test("a repo-less supervisor reads the owner's personal memory and team memory only", () => {
+    const supervisor = {
+      id: "os-sup",
+      supervisor: true,
+      repoLess: true,
+      worktreeDir: "",
+    } as unknown as UnifiedSession;
+    // Repo ids fall back to the instance default for a repo-less session...
+    expect(sessionRepoIds(supervisor)).toEqual(["opensession"]);
+    // ...which is not the supervisor's project: its memory has no repo.
+    expect(sessionMemoryRepoIds(supervisor)).toEqual([]);
+    expect(
+      sessionMemoryScopes({
+        user: "Ada",
+        repos: sessionMemoryRepoIds(supervisor),
+      }).map((scope) => scope.kind),
+    ).toEqual(["user", "team"]);
+  });
+
+  test("every other session keeps its repositories", () => {
+    expect(sessionMemoryRepoIds(session as unknown as UnifiedSession)).toEqual([
+      "opensession",
+      "tella-fusion",
+      "infra",
+    ]);
+  });
+});
 
 describe("buildBranchNote", () => {
   const directSession = () => ({
