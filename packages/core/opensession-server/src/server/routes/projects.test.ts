@@ -7,6 +7,7 @@ import {
   type ProjectSettingsPatch,
 } from "../../shared/project-settings";
 import { ALL_READY } from "../../shared/project-settings-fixtures";
+import { loosenedLeadFields } from "../projects/validate";
 import { __setProjectViewDepsForTest } from "../projects/view";
 import { testProjectViewDeps } from "../projects/view-test-deps";
 import type { RouteContext } from "./context";
@@ -35,8 +36,8 @@ let calls: {
   audits: Array<Record<string, unknown>>;
 };
 
-/** A store that checks only what these routes rely on: the revision and
- *  the person-only production fields. */
+/** A store that checks only what these routes rely on: the revision, the
+ *  person-only production fields and more room for the lead. */
 const update: ProjectRouteDeps["update"] = async (project, patch, actor) => {
   calls.update.push({ patch, verified: actor.verified });
   const doc = docs.get(project);
@@ -48,8 +49,18 @@ const update: ProjectRouteDeps["update"] = async (project, patch, actor) => {
       error: "Only a signed-in person can change actions or production Runners",
       status: 403,
     };
+  // The owner is not modelled here: these tests never change it.
+  const { owner: _owner, ...leadPatch } = patch.lead ?? {};
+  const lead = {
+    ...doc.lead,
+    ...leadPatch,
+    rules: { ...doc.lead.rules, ...leadPatch.rules },
+  };
+  if (loosenedLeadFields(doc.lead, lead).length && !actor.verified)
+    return { error: "No more room for the lead", status: 403 };
   const next: ProjectSettingsDocument = {
     ...doc,
+    lead,
     revision: doc.revision + 1,
     updatedBy: actor.name,
     production: {
@@ -203,6 +214,28 @@ test("PATCH by an unverified caller adding a runner is a 403", async () => {
   expect(calls.update[0]?.verified).toBe(false);
   // A claimed user never reaches the store.
   expect(calls.update[0]?.patch).not.toHaveProperty("user");
+});
+
+test("PATCH lead reaches the store and answers the new document", async () => {
+  const out = await call("PATCH", "/api/projects/acme-web/settings", {
+    expectedRevision: 4,
+    lead: { enabled: true },
+  });
+  expect(out?.status).toBe(200);
+  expect(out?.json.document.lead.enabled).toBe(true);
+  expect(calls.update[0]?.patch.lead).toEqual({ enabled: true });
+});
+
+test("PATCH by an unverified caller loosening the lead is a 403", async () => {
+  const out = await call(
+    "PATCH",
+    "/api/projects/acme-web/settings",
+    { expectedRevision: 4, lead: { enabled: true } },
+    null,
+  );
+  expect(out?.status).toBe(403);
+  expect(calls.update[0]?.verified).toBe(false);
+  expect(docs.get("acme-web")?.lead.enabled).toBe(false);
 });
 
 test("a valid PATCH returns readiness recomputed", async () => {

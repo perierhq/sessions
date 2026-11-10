@@ -1,5 +1,5 @@
 // The project page's Lead section: the switch saves, a refusal shows inline
-// with the server's reason, and pinned rules can't be changed.
+// with the server's reason (once), and pinned rules read as plain text.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import type { ProjectSettingsView } from "../../../../shared/project-settings";
 import { READY_4_OF_6 } from "../../../../shared/project-settings-fixtures";
@@ -16,11 +16,13 @@ const harness = createHookHarness();
 const realReact = await import("react");
 mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 
-const { LeadSection } = await import("./LeadSection");
+const { LeadSection, LeadBudgetDialog } = await import("./LeadSection");
 const { Switch } = await import("../../../ui/switch");
 const { OptionSelect } = await import("../../../ui/select");
 const { InlineAlert } = await import("../../../ui/state");
 const { Segmented } = await import("../../../ui/segmented");
+const { StatusChip } = await import("../../../ui/settings");
+const { SettingsDialog } = await import("../incidents/SettingsDialog");
 type SwitchChange = NonNullable<
   Parameters<typeof Switch>[0]["onCheckedChange"]
 >;
@@ -72,7 +74,7 @@ test("a refused loosening shows the server's reason inline", async () => {
   const select = find(
     section.output(),
     OptionSelect,
-    (p) => p.label === "Who decides ci repair",
+    (p) => p.label === "Who decides: CI repair",
   );
   select!.props.onChange("alone");
   await settle();
@@ -81,7 +83,7 @@ test("a refused loosening shows the server's reason inline", async () => {
   expect(alert?.props.children).toBe(reason);
 });
 
-test("pinned rules are disabled", () => {
+test("pinned rules are plain text, not a select", () => {
   const section = harness.mount(LeadSection, {
     view: withLead({ enabled: true }),
     onSave,
@@ -89,8 +91,34 @@ test("pinned rules are disabled", () => {
   const refund = find(
     section.output(),
     OptionSelect,
-    (p) => p.label === "Who decides refunds",
+    (p) => p.label === "Who decides: Refunds",
   );
-  expect(refund?.props.disabled).toBe(true);
-  expect(refund?.props.value).toBe("only-you");
+  expect(refund).toBeUndefined();
+  expect(JSON.stringify(section.output())).toContain("Always only you");
+});
+
+test("the chip says starting until the lead has its goal", () => {
+  const chip = (lead: Parameters<typeof withLead>[0]) =>
+    find(
+      harness.mount(LeadSection, { view: withLead(lead), onSave }).output(),
+      StatusChip,
+    )?.props.label;
+  expect(chip({ enabled: false })).toBe("Off");
+  expect(chip({ enabled: true, goalId: undefined })).toBe("Starting");
+  expect(chip({ enabled: true, goalId: "g1" })).toBe("Running");
+});
+
+test("a refused budget shows in the dialog, not again above", async () => {
+  refuse = new ApiError("Too much", 403);
+  const section = harness.mount(LeadSection, {
+    view: withLead({ enabled: true }),
+    onSave,
+  });
+  const budget = find(section.output(), LeadBudgetDialog);
+  const dialog = harness.mount(LeadBudgetDialog, budget!.props);
+  find(dialog.output(), SettingsDialog)!.props.onSave!();
+  await settle();
+  expect(saves).toEqual([{ lead: { budgetUsdPerMonth: 50 } }]);
+  expect(find(dialog.output(), SettingsDialog)?.props.error).toBe("Too much");
+  expect(find(section.output(), InlineAlert)).toBeUndefined();
 });

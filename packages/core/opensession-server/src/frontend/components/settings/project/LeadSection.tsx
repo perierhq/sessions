@@ -13,12 +13,14 @@ import {
   FIELD_HINT,
   SETTING_SELECT,
   SETTING_SWITCH_HIT,
+  SETTING_WIDE_CONTROL,
 } from "../../../lib/incident-settings-classes";
 import { formatUsd } from "../../../lib/incidents/copy";
 import { parseUsd } from "../../../lib/incidents/policy-copy";
 import {
   LEAD_LEVEL_OPTIONS,
   LEAD_STAGE_OPTIONS,
+  LEAD_STATUS_LABELS,
   leadRuleRows,
   leadSaveErrorText,
   leadStageHelp,
@@ -58,15 +60,15 @@ export function LeadSection({
   const [error, setError] = useState<string | null>(null);
   const [budgetOpen, setBudgetOpen] = useState(0);
 
-  const save = (patch: ProjectLeadPatch) => {
+  // Immediate saves report a refusal above the section; the budget dialog
+  // calls `onSave` itself and shows its refusal inside, so it shows once.
+  const saveNow = (patch: ProjectLeadPatch) => {
     setError(null);
-    return onSave({ lead: patch }).catch((cause) => {
+    onSave({ lead: patch }).catch((cause) => {
       setError(leadSaveErrorText(cause));
-      throw cause;
     });
   };
-  const saveNow = (patch: ProjectLeadPatch) => void save(patch).catch(() => {});
-  const running = leadStatus(lead) === "running";
+  const status = leadStatus(lead);
 
   return (
     <>
@@ -78,12 +80,12 @@ export function LeadSection({
       <SettingCard>
         <SettingRow
           title="Lead"
-          desc="Watches this project and reports to your supervisor."
+          desc="Watches this project and reports to your supervisor"
           control={
             <div className="flex items-center gap-3">
               <StatusChip
-                label={running ? "Running" : "Off"}
-                dot={running ? "var(--green)" : "var(--text-faint)"}
+                label={LEAD_STATUS_LABELS[status]}
+                dot={status === "off" ? "var(--text-faint)" : "var(--green)"}
               />
               <Switch
                 checked={lead.enabled}
@@ -101,6 +103,7 @@ export function LeadSection({
             <SettingRow
               title="Stage"
               desc={leadStageHelp(lead.stage)}
+              controlClassName={SETTING_WIDE_CONTROL}
               control={
                 <Segmented
                   label="Lead stage"
@@ -144,18 +147,22 @@ export function LeadSection({
               <SettingRow
                 key={row.category}
                 title={row.label}
-                desc={row.pinned ? ALWAYS_ONLY_YOU : undefined}
                 control={
-                  <OptionSelect<LeadLevel>
-                    label={`Who decides ${row.label.toLowerCase()}`}
-                    value={row.level}
-                    options={LEAD_LEVEL_OPTIONS}
-                    disabled={row.pinned}
-                    onChange={(level) =>
-                      saveNow({ rules: ruleChange(row.category, level) })
-                    }
-                    className={SETTING_SELECT}
-                  />
+                  row.pinned ? (
+                    <span className="text-label text-dim">
+                      {ALWAYS_ONLY_YOU}
+                    </span>
+                  ) : (
+                    <OptionSelect<LeadLevel>
+                      label={`Who decides: ${row.label}`}
+                      value={row.level}
+                      options={LEAD_LEVEL_OPTIONS}
+                      onChange={(level) =>
+                        saveNow({ rules: ruleChange(row.category, level) })
+                      }
+                      className={SETTING_SELECT}
+                    />
+                  )
                 }
               />
             ))}
@@ -165,7 +172,7 @@ export function LeadSection({
             open={budgetOpen > 0}
             onClose={() => setBudgetOpen(0)}
             budget={lead.budgetUsdPerMonth}
-            onSave={(amount) => save({ budgetUsdPerMonth: amount })}
+            onSave={(amount) => onSave({ lead: { budgetUsdPerMonth: amount } })}
           />
         </>
       )}
@@ -182,7 +189,7 @@ function ruleChange(
   return rules;
 }
 
-function LeadBudgetDialog({
+export function LeadBudgetDialog({
   open,
   onClose,
   budget,

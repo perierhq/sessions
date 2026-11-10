@@ -153,6 +153,7 @@ const PATCH_KEYS = new Set([
   "incidents",
   "production",
   "access",
+  "lead",
 ]);
 
 async function patchSettings(

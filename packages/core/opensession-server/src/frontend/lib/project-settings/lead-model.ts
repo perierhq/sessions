@@ -14,7 +14,6 @@ import {
   leadLevel,
 } from "../../../shared/project-lead";
 import type { ProjectSettingsView } from "../../../shared/project-settings";
-import { ApiError } from "../api/request";
 import { errorMessage } from "../error-message";
 import { isStaleRevision, STALE_SETTINGS_MESSAGE } from "./save";
 
@@ -64,10 +63,19 @@ export function leadRuleRows(lead: ProjectLeadSettings): LeadRuleRow[] {
   }));
 }
 
-/** Whether the lead is running: on and holding its goal. */
-export function leadStatus(lead: ProjectLeadSettings): "running" | "off" {
-  return lead.enabled && lead.goalId ? "running" : "off";
+export type LeadStatus = "off" | "starting" | "running";
+
+/** Off, on but without its goal yet (the server starts one), or running. */
+export function leadStatus(lead: ProjectLeadSettings): LeadStatus {
+  if (!lead.enabled) return "off";
+  return lead.goalId ? "running" : "starting";
 }
+
+export const LEAD_STATUS_LABELS: Record<LeadStatus, string> = {
+  off: "Off",
+  starting: "Starting",
+  running: "Running",
+};
 
 /** `view` with a lead patch applied, for painting before the server answers. */
 export function applyLeadPatch(
@@ -87,13 +95,8 @@ export function applyLeadPatch(
 
 /** The server's refusal, as the section shows it. A 403 carries the
  *  server's own reason (only the instance owner or the lead's owner may
- *  give the lead more room). */
+ *  give the lead more room), which `errorMessage` passes through. */
 export function leadSaveErrorText<Rejected>(error: Rejected): string {
   if (isStaleRevision(error)) return STALE_SETTINGS_MESSAGE;
-  if (error instanceof ApiError && error.status === 403)
-    return errorMessage(
-      error,
-      "Only the instance owner or the lead's owner can give the lead more room",
-    );
   return errorMessage(error, "Couldn't save the setting");
 }
