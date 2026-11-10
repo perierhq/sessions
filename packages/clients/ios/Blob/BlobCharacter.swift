@@ -78,15 +78,26 @@ final class BlobPhysics {
     private var blinkT = -1.0
     private var envelope = 0.0
     private var seed: UInt64 = 7
+    /// When Blob last jumped to a new place (`advance(jump:)`); it fades in
+    /// there.
+    private var arrivedAt = -1.0
 
     /// Where Blob is now, for hit testing.
     var position: CGPoint { CGPoint(x: x.x, y: y.x) }
     var radius: Double { size.x / 2 }
 
-    func advance(to date: Date, targets: BlobTargets) {
+    /// `jump` (Reduce Motion): Blob goes to a new place at once instead of
+    /// travelling; after a move of any distance it fades in there.
+    func advance(to date: Date, targets: BlobTargets, jump: Bool = false) {
         if !placed {
             x.snap(targets.position.x); y.snap(targets.position.y); size.snap(targets.size)
             placed = true
+        } else if jump {
+            let moved = hypot(targets.position.x - x.target, targets.position.y - y.target)
+            if moved > 0.5 || abs(targets.size - size.target) > 0.5 {
+                if moved > 40 { arrivedAt = t }
+                x.snap(targets.position.x); y.snap(targets.position.y); size.snap(targets.size)
+            }
         }
         let dt = min(0.05, max(0, date.timeIntervalSince(last ?? date)))
         last = date
@@ -149,6 +160,12 @@ final class BlobPhysics {
     }
 
     func draw(in context: inout GraphicsContext, dark: Bool, reduceMotion: Bool) {
+        if arrivedAt >= 0 {
+            // What leaves Blob's new place (a pane's visuals) fades out
+            // in 0.15 s first.
+            let fade = min(max((t - arrivedAt - 0.15) / 0.2, 0), 1)
+            context.opacity = 1 - (1 - fade) * (1 - fade)
+        }
         let s0 = size.x
         let vx = reduceMotion ? 0 : x.vel, vy = reduceMotion ? 0 : y.vel
         let stretch = 1 + min(max(hypot(vx, vy) / 2600, 0), 0.22) // stretch along travel

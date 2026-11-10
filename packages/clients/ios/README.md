@@ -726,17 +726,23 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   there before the first message.
 - Fluid panes (`Blob/BlobPanes.swift`): beside a vertical fold (the open
   Duo's inner display on its side, from its division region) or on a
-  surface 820 pt wide, the page is one centered reading column until a
-  reply has something for a second pane: its visual blocks (metrics,
-  tables, charts, slides, images, the rest of the block catalog), or a
-  decision waiting beside it. Then the conversation springs to the leading
-  pane and the visuals come in on the trailing one, top-aligned with their
-  own scroll; a later reply without any springs back. Beside the Duo's own
-  fold, centered means the middle of the leading pane, so no text and not
-  Blob's face ever sits across the fold. History keeps each exchange the
-  way it was shown: a reply with visuals split across the panes, one
-  without centered (`BlobColumns`, `BlobSplitRow`). The open Duo upright
-  and the closed Duo keep one column.
+  surface 820 pt wide, what is on the page decides the layout, and Blob
+  goes where it can (`BlobRoom`: the largest region the page leaves free,
+  with a 24 pt margin, never over text, cards or the write bar). With
+  nothing to read (idle, listening, thinking) Blob sits in the middle of
+  the whole surface, across the fold if there is one. A reply, a question
+  or a decision takes the leading pane and Blob moves to the middle of the
+  trailing one. A reply with visual blocks (metrics, tables, charts,
+  slides, images, the rest of the block catalog), or with a decision
+  waiting beside it, puts those in the trailing pane, top-aligned with
+  their own scroll, and Blob goes to its slot. Text never crosses a
+  physical fold, and Blob's thought stays in Blob's region. Blob travels
+  on its spring and the text column keeps its width, so nothing re-wraps;
+  under Reduce Motion Blob fades in at its new place instead. History
+  keeps each exchange the way it was shown: one with visuals beside it
+  split across the panes, any other centered (`BlobColumns`,
+  `BlobSplitRow`). The open Duo upright and the closed Duo keep one
+  column.
 - Decisions (`Blob/BlobDecisions.swift`, `Blob/BlobDecisionView.swift`): the
   supervisor's open `needs-you` items (`GET /api/supervisor/items`), read on
   launch, when the app comes back and every minute while it is in front.

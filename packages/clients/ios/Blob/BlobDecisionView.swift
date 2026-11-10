@@ -99,11 +99,6 @@ struct BlobDecisionView: View {
     private var place: String? { count > 1 ? "\(position) of \(count)" : nil }
 
     private func ago(_ style: Date.RelativeFormatStyle.UnitsStyle) -> String? {
-        Self.ago(item, style)
-    }
-
-    /// How long the item has waited: "12m ago", or "just now".
-    static func ago(_ item: OS1API.SupervisorItem, _ style: Date.RelativeFormatStyle.UnitsStyle) -> String? {
         item.created.map { date in
             Date.now.timeIntervalSince(date) < 60
                 ? "just now"

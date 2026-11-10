@@ -65,10 +65,11 @@ catalog. There is no `blob_show` tool and no second channel.
   later, a way to say which block goes in which pane. That is a later
   decision, made when a real reply needs it.
 - Update 2026-11-10: the app splits a reply itself. On a wide surface the
-  page is one centered column until a reply carries visual blocks; then
-  the conversation moves to the leading pane and the blocks to the
-  trailing one, and back when a later reply has none. Beside the Duo's own
-  fold, centered is the middle of the leading pane, so text never crosses
-  the fold. History shows each exchange in the arrangement it had. Visuals
-  spanning both panes are not done: a wide block stays in the trailing
-  pane until a reply needs more.
+  layout follows what is on the page, and Blob takes the largest space
+  left: the whole surface with nothing to read, the trailing pane beside
+  a reply that is only text, its corner when the reply's visual blocks
+  (or a decision beside it) take the trailing pane. The conversation
+  stays in the leading pane, so text never crosses the Duo's fold. History
+  shows each exchange in the arrangement it had. Visuals spanning both
+  panes are not done: a wide block stays in the trailing pane until a
+  reply needs more.

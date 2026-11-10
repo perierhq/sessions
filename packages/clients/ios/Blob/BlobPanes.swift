@@ -2,10 +2,10 @@ import SwiftUI
 
 /// Two panes on a wide surface, side by side across a vertical fold: the
 /// open Duo's inner display in landscape, or a wide iPad or Mac window.
-/// They are only used while there is something for the second one (see
-/// `BlobColumns`): then the conversation takes the leading pane and the
-/// current reply's visual blocks the trailing one, and nothing is drawn in
-/// `fold`.
+/// What is on the page decides what each pane holds (`BlobColumns`,
+/// `BlobRoom`): the conversation takes the leading pane, the current
+/// reply's visual blocks the trailing one, and Blob the largest space
+/// left. No text is drawn in `fold`.
 struct BlobPanes: Equatable {
     /// The division region, margins included, in the home's full-bleed space.
     var fold: CGRect
@@ -17,6 +17,22 @@ struct BlobPanes: Equatable {
 
     /// The trailing pane's width: what is left after the fold.
     var trailingWidth: CGFloat { width - fold.maxX }
+
+    /// The parts of `area` that nothing on the page holds: all of it with
+    /// nothing taken, otherwise the pane that is still free, if any.
+    /// Across the fold counts as free only when both panes are, so Blob
+    /// may sit on the fold but never beside content that reaches it.
+    func free(in area: CGRect, leadingTaken: Bool, trailingTaken: Bool) -> [CGRect] {
+        if !leadingTaken && !trailingTaken { return [area] }
+        var free: [CGRect] = []
+        if !leadingTaken {
+            free.append(CGRect(x: area.minX, y: area.minY, width: max(0, fold.minX - area.minX), height: area.height))
+        }
+        if !trailingTaken {
+            free.append(CGRect(x: fold.maxX, y: area.minY, width: max(0, area.maxX - fold.maxX), height: area.height))
+        }
+        return free
+    }
 
     /// The panes for a full-bleed proxy, or nil for one column. The Duo
     /// reports its fold as a division region (iOS 27.1); a fold across the
@@ -52,50 +68,46 @@ struct BlobPanes: Equatable {
     #endif
 }
 
-/// What the trailing pane holds on a wide surface while the current reply
-/// has nothing of its own for it (no visual blocks, no decision beside it).
-/// Two candidates are being compared; until one is picked, Release keeps
-/// `centered`. In DEBUG, `BLOB_DEMO_LAYOUT=blob|now` picks one.
-enum BlobWideLayout {
-    /// Nothing: the conversation is one centered column, and moves to the
-    /// leading pane only when there is something for the trailing one.
-    case centered
-    /// Blob itself, large in the middle of the trailing pane; the
-    /// conversation stays in the leading pane.
-    case blob
-    /// A quiet "Now" view (`BlobNowView`); the conversation stays in the
-    /// leading pane.
-    case now
+/// Where Blob goes on a wide surface: the middle of the largest region the
+/// page leaves free (`BlobPanes.free`), as large as fits with a margin, up
+/// to its talking size. With nothing free that fits, it rests in its slot
+/// (`region` nil), in the page's bottom margin.
+struct BlobRoom: Equatable {
+    var center: CGPoint
+    var size: CGFloat
+    /// The region Blob sits in; its thought stays inside it.
+    var region: CGRect
 
-    static let current: BlobWideLayout = {
-        #if DEBUG
-        switch ProcessInfo.processInfo.environment["BLOB_DEMO_LAYOUT"] {
-        case "blob": return .blob
-        case "now": return .now
-        default: return .centered
-        }
-        #else
-        return .centered
-        #endif
-    }()
+    static let margin: CGFloat = 24
+    static let largest: CGFloat = 132
+    /// Smaller than this, Blob would be squeezed into a gap; it rests in
+    /// its slot instead.
+    static let smallest: CGFloat = 88
+
+    /// The largest region that fits Blob, or nil.
+    static func find(in free: [CGRect]) -> BlobRoom? {
+        free
+            .map { region in (region, min(largest, region.width - 2 * margin, region.height - 2 * margin)) }
+            .filter { $0.1 >= smallest }
+            .max { $0.0.width * $0.0.height < $1.0.width * $1.0.height }
+            .map { region, size in BlobRoom(center: CGPoint(x: region.midX, y: region.midY), size: size, region: region) }
+    }
 }
 
-/// Where the page's columns go, in the home's full-bleed space. One column
-/// is centered (`centered`) until a reply has something for a second pane;
-/// then the conversation moves to `leading` and its visuals take
-/// `trailing`. An exchange shown that way is marked (`BlobExchange.split`),
-/// and history lays it out the same way again, so nothing the agent showed
-/// is re-flowed later; one shown in one column stays centered. A surface
-/// too narrow for two panes draws every exchange inline.
+/// Where the page's columns go, in the home's full-bleed space. With two
+/// panes the conversation is in `leading` and a reply's visual blocks (or a
+/// decision beside it) in `trailing`; Blob takes whatever is left
+/// (`BlobRoom`). An exchange shown with its visuals beside it is marked
+/// (`BlobExchange.split`), and history lays it out the same way again, so
+/// nothing the agent showed is re-flowed later; one shown alone is
+/// `centered` there. A surface too narrow for two panes draws every
+/// exchange inline in `centered`.
 ///
 /// Centered is the middle of the surface, except beside a physical fold:
-/// there it is the middle of the leading pane, so no line of text and not
-/// Blob's face ever sits across the fold, flat or half open, and splitting
-/// only adds the trailing pane without moving what you are reading.
-/// Otherwise it is as wide as the leading pane's column, so the move
-/// between them never re-wraps the text. With
-/// a `BlobWideLayout` that keeps the trailing pane in use, it is the
-/// middle of the leading pane too.
+/// there it is the leading pane's column, so no line of text ever sits
+/// across the fold, flat or half open. Otherwise it is as wide as the
+/// leading pane's column, so the move between them (history opening and
+/// closing) never re-wraps the text.
 struct BlobColumns: Equatable {
     struct Span: Equatable {
         var x: CGFloat
@@ -111,7 +123,7 @@ struct BlobColumns: Equatable {
     /// The widest a line of reading text runs.
     static let readable: CGFloat = 600
 
-    init(width: CGFloat, insets: EdgeInsets, panes: BlobPanes?, layout: BlobWideLayout = .centered) {
+    init(width: CGFloat, insets: EdgeInsets, panes: BlobPanes?) {
         let lo = insets.leading + 24
         let hi = width - insets.trailing - 24
         func reading(_ from: CGFloat, _ to: CGFloat) -> Span {
@@ -128,7 +140,7 @@ struct BlobColumns: Equatable {
         trailing = Span(x: panes.fold.maxX, width: max(0, min(560, hi - panes.fold.maxX)))
         // As wide as the leading pane's column, so moving between the two
         // only changes where the column is, never how its text wraps.
-        centered = panes.physical || layout != .centered
+        centered = panes.physical
             ? leading
             : Span(x: (lo + hi - leading.width) / 2, width: leading.width)
     }
@@ -143,7 +155,8 @@ extension View {
     }
 
     /// Puts the view in a column it moves between, such as the
-    /// conversation going from centered to the leading pane. The columns it
+    /// conversation going from the leading pane to centered as history
+    /// opens. The columns it
     /// moves between have one width (`BlobColumns`), so only its position
     /// animates and its text never re-wraps on the way.
     func blobColumn(_ span: BlobColumns.Span, moving animation: Animation?) -> some View {

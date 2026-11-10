@@ -241,11 +241,13 @@ private struct BlobThought: View {
 
     /// Where the tail and the bubble go for Blob at `center`. The tail
     /// leaves the head at about 50° up, toward the side with room; the
-    /// bubble's area stops at a physical fold on Blob's side of it.
+    /// bubble's area stops at a physical fold on Blob's side of it. Blob
+    /// sitting on the fold (the middle of the surface) thinks into the
+    /// trailing pane.
     static func shape(center: CGPoint, radius: CGFloat, bounds: CGRect, fold: CGRect?) -> Geometry {
         var area = bounds
         if let fold {
-            if center.x < fold.midX {
+            if center.x < fold.minX {
                 area.size.width = max(0, min(area.maxX, fold.minX) - area.minX)
             } else {
                 let minX = max(area.minX, fold.maxX)
