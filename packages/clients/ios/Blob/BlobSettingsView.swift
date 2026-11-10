@@ -7,6 +7,7 @@ struct BlobSettingsView: View {
 
     @AppStorage(BlobSpeaker.readAloudKey) private var readAloud = true
     @AppStorage(BlobSpeaker.voiceKey) private var voiceId = ""
+    @AppStorage(BlobSpeaker.liveCallKey) private var liveCall = false
     @State private var voices: [AVSpeechSynthesisVoice] = []
     @State private var showAccount = false
     @Environment(\.dismiss) private var dismiss
@@ -17,7 +18,13 @@ struct BlobSettingsView: View {
                 Section {
                     Toggle("Read answers aloud", isOn: $readAloud)
                 } footer: {
-                    Text("When your server has no voice key, Blob answers in text and can read it to you.")
+                    Text("Blob listens on this phone, answers in text and can read it to you.")
+                }
+
+                Section {
+                    Toggle("Live call", isOn: $liveCall)
+                } footer: {
+                    Text("Talk to Blob over an OpenAI live call instead. Needs a voice key on your server and is paid per minute.")
                 }
 
                 if readAloud {

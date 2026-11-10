@@ -12,6 +12,7 @@ import Observation
 final class BlobSpeaker: NSObject {
     static let readAloudKey = "blob.readAloud"
     static let voiceKey = "blob.voice"
+    static let liveCallKey = "blob.liveCall"
     /// Ava (Premium), then Aaron (Enhanced), then Zoe (Premium).
     static let preferredDefaults = [
         "com.apple.voice.premium.en-US.Ava",

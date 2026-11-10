@@ -12,6 +12,9 @@ struct BlobHomeView: View {
     @State private var text = BlobTextTalk()
     /// Nil until the server answers; voice stays the default when it can't say.
     @State private var voiceConfigured: Bool?
+    /// The OpenAI live call is billed per minute, so it is opt-in. Off, Blob
+    /// listens on the device and reads its answers aloud.
+    @AppStorage(BlobSpeaker.liveCallKey) private var liveCall = false
     @State private var physics = BlobPhysics()
     /// What the supervisor is waiting on you for, shown while Blob is idle.
     @State private var decisions = BlobDecisions()
@@ -147,8 +150,9 @@ struct BlobHomeView: View {
         }
     }
 
-    /// The live voice call, unless the server says it has no voice key.
-    private var usesVoice: Bool { voiceConfigured != false }
+    /// The live voice call: only when turned on in settings and the server
+    /// has a voice key.
+    private var usesVoice: Bool { liveCall && voiceConfigured != false }
     /// Typed messages, and speech without a voice key, go through `text`.
     private var talking: Bool { engine.active || text.active }
     private var textConversation: Bool { text.active || !usesVoice }
