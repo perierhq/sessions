@@ -183,6 +183,9 @@ struct BlobHomeView: View {
             if phase == .background {
                 if !engine.shownOutsideApp { engine.stop() }
                 text.reset()
+                BlobParakeet.shared.unload()
+            } else if phase == .active, BlobTranscriber.current == .parakeet {
+                BlobParakeet.shared.warm()
             }
         }
     }
@@ -570,7 +573,7 @@ struct BlobHomeView: View {
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         } else if text.phase == .listening {
-            Text("Listening\u{2026} tap me when you\u{2019}re done")
+            Text("Listening\u{2026}")
                 .font(.footnote)
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)

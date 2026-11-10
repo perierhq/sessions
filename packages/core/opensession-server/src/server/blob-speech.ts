@@ -119,8 +119,15 @@ async function resolvedSettings(): Promise<{
   };
 }
 
+/** The Fish API key, shared by speech and transcription (blob-transcribe.ts). */
+export async function blobFishKey(): Promise<string | undefined> {
+  return (await resolvedSettings()).key;
+}
+
 export interface BlobSpeechStatus {
   configured: boolean;
+  /** Whether POST /api/blob/transcribe can run: the same Fish key. */
+  transcribe: boolean;
   keyMasked?: string;
   model: BlobSpeechModel;
   models: readonly BlobSpeechModel[];
@@ -131,6 +138,7 @@ export async function blobSpeechStatus(): Promise<BlobSpeechStatus> {
   const { key, model, voiceId } = await resolvedSettings();
   return {
     configured: !!key,
+    transcribe: !!key,
     keyMasked: key ? `…${key.slice(-4)}` : undefined,
     model,
     models: BLOB_SPEECH_MODELS,
@@ -187,26 +195,44 @@ export async function setBlobSpeechSettings(body: {
 export const BLOB_SPEECH_PER_MINUTE = 30;
 const WINDOW_MS = 60_000;
 const MAX_TRACKED_USERS = 1000;
-const rateTable = new Map<string, { count: number; resetAt: number }>();
+
+/** A per-user limiter allowing `perMinute` requests in each window. */
+export function perUserMinuteLimiter(perMinute: number): {
+  limited(user: string, now?: number): boolean;
+  reset(): void;
+} {
+  const table = new Map<string, { count: number; resetAt: number }>();
+  return {
+    /** True when this request is over the user's budget (and counts it). */
+    limited(user, now = Date.now()) {
+      const rec = table.get(user);
+      if (!rec || rec.resetAt <= now) {
+        if (table.size >= MAX_TRACKED_USERS) {
+          for (const [key, value] of table)
+            if (value.resetAt <= now) table.delete(key);
+          if (table.size >= MAX_TRACKED_USERS) table.clear();
+        }
+        table.set(user, { count: 1, resetAt: now + WINDOW_MS });
+        return false;
+      }
+      rec.count++;
+      return rec.count > perMinute;
+    },
+    reset() {
+      table.clear();
+    },
+  };
+}
+
+const speechLimiter = perUserMinuteLimiter(BLOB_SPEECH_PER_MINUTE);
 
 /** True when this request is over the user's budget (and counts it). */
 export function blobSpeechRateLimited(user: string, now = Date.now()): boolean {
-  const rec = rateTable.get(user);
-  if (!rec || rec.resetAt <= now) {
-    if (rateTable.size >= MAX_TRACKED_USERS) {
-      for (const [key, value] of rateTable)
-        if (value.resetAt <= now) rateTable.delete(key);
-      if (rateTable.size >= MAX_TRACKED_USERS) rateTable.clear();
-    }
-    rateTable.set(user, { count: 1, resetAt: now + WINDOW_MS });
-    return false;
-  }
-  rec.count++;
-  return rec.count > BLOB_SPEECH_PER_MINUTE;
+  return speechLimiter.limited(user, now);
 }
 
 export function resetBlobSpeechRateLimit(): void {
-  rateTable.clear();
+  speechLimiter.reset();
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +244,7 @@ export type SpeechResult =
 
 /** Short, key-free text for an upstream failure. Fish's own message is not
  * passed through: it is not ours to word, and it could quote the request. */
-function upstreamError(status: number): string {
+export function upstreamError(status: number): string {
   if (status === 401 || status === 403)
     return "Fish Audio rejected the API key";
   if (status === 402) return "Fish Audio account is out of credit";

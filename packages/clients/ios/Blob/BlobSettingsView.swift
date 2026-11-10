@@ -8,6 +8,8 @@ struct BlobSettingsView: View {
     @AppStorage(BlobSpeaker.readAloudKey) private var readAloud = true
     @AppStorage(BlobSpeaker.voiceKey) private var voiceId = ""
     @AppStorage(BlobSpeaker.liveCallKey) private var liveCall = false
+    @AppStorage(BlobTranscriber.key) private var transcriber = BlobTranscriber.parakeet.rawValue
+    @AppStorage(BlobEndpointer.Wait.key) private var endWait = BlobEndpointer.Wait.normal.rawValue
     @State private var voices: [AVSpeechSynthesisVoice] = []
     @State private var modelError: String?
     /// How Blob reports, from the server's supervisor prefs. Nil hides the
@@ -24,6 +26,18 @@ struct BlobSettingsView: View {
                     Toggle("Read answers aloud", isOn: $readAloud)
                 } footer: {
                     Text("Blob listens on this phone, answers in text and can read it to you.")
+                }
+
+                transcriptionSection
+
+                Section {
+                    Picker("Wait after I stop", selection: $endWait) {
+                        ForEach(BlobEndpointer.Wait.allCases) { wait in
+                            Text(wait.name).tag(wait.rawValue)
+                        }
+                    }
+                } footer: {
+                    Text("Blob sends what you said once you pause this long. Tap Blob to send sooner.")
                 }
 
                 Section {
@@ -95,6 +109,76 @@ struct BlobSettingsView: View {
             .task { reportStyle = try? await OS1API.supervisorPrefs().reportStyle }
             .onDisappear { speaker.stop() }
         }
+    }
+
+    private var transcriptionSection: some View {
+        let parakeet = BlobParakeet.shared
+        let fishAvailable = speaker.server?.transcribe == true
+        return Section {
+            transcriberRow(.parakeet, name: "Parakeet on this phone", detail: parakeetDetail(parakeet.state))
+            if fishAvailable {
+                transcriberRow(.fish, name: "Fish Audio", detail: "On your server, $0.36 per hour of audio")
+            }
+            transcriberRow(.apple, name: "Apple", detail: nil)
+            if transcriber == BlobTranscriber.parakeet.rawValue {
+                switch parakeet.state {
+                case .absent, .failed:
+                    Button("Download Parakeet (\(BlobParakeet.sizeLabel))") { parakeet.download() }
+                case .downloading(let fraction):
+                    ProgressView(value: fraction) {
+                        Text("Downloading\u{2026} \(Int(fraction * 100))%")
+                            .font(.footnote)
+                            .foregroundStyle(OS1VisualStyle.textDim)
+                    }
+                default:
+                    EmptyView()
+                }
+            }
+        } header: {
+            Text("Transcription")
+        } footer: {
+            if case .failed(let message) = parakeet.state {
+                Text(message)
+            } else {
+                Text("Parakeet hears Polish and English on this phone. Until it has downloaded, Blob uses \(fishAvailable ? "Fish Audio" : "Apple"). Live captions always come from Apple.")
+            }
+        }
+    }
+
+    private func parakeetDetail(_ state: BlobParakeet.State) -> String {
+        switch state {
+        case .absent, .failed: "Not downloaded, \(BlobParakeet.sizeLabel)"
+        case .downloading: "Downloading"
+        case .downloaded, .loading, .ready: "Downloaded"
+        }
+    }
+
+    private func transcriberRow(_ choice: BlobTranscriber, name: String, detail: String?) -> some View {
+        let selected = transcriber == choice.rawValue
+        return Button {
+            transcriber = choice.rawValue
+            if choice == .parakeet { BlobParakeet.shared.warm() }
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .foregroundStyle(OS1VisualStyle.text)
+                    if let detail {
+                        Text(detail)
+                            .font(.footnote)
+                            .foregroundStyle(OS1VisualStyle.textDim)
+                    }
+                }
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(OS1VisualStyle.accentInk)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     /// Fish Audio models the server accepts, best first.
