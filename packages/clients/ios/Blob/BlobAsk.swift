@@ -16,6 +16,7 @@ enum BlobAsk: Equatable, Identifiable {
         let label: String
         var detail: String?
         let action: Action
+        var role: BlobOptionRole = .plain
     }
 
     init?(question: AskQuestion) {
@@ -40,36 +41,51 @@ enum BlobAsk: Equatable, Identifiable {
         }
     }
 
-    /// Markdown split like a reply (`BlobReply`): the first paragraph is the
-    /// question, read aloud and shown as the Say line.
-    var body: String {
+    /// What Blob says and shows. A question is the run's markdown, split
+    /// like a reply (`BlobReply`): the first paragraph is read aloud and shown
+    /// as the Say line. A merge is one sentence, said as written.
+    var reply: BlobReply {
         switch self {
         case .question(let ask):
-            return ask.questions.first?.question ?? ""
+            return BlobReply(ask.questions.first?.question ?? "")
         case .forceMerge(let pending):
             let request = pending.request
-            let ask = pending.canConfirm
+            let say = pending.canConfirm
                 ? "Should I merge #\(request.number), \(request.title)?"
                 : "Waiting for \(request.driver) to confirm a merge of #\(request.number), \(request.title)."
-            let bypass = request.bypass.isEmpty
-                ? "Nothing to bypass."
-                : request.bypass.map { "- \($0.label)" }.joined(separator: "\n")
-            var parts = [ask, bypass]
-            if !request.reason.isEmpty { parts.append("Reason: \(request.reason)") }
-            parts.append("\(request.head) into \(request.base), \(request.method), at `\(request.headSha.prefix(7))`.")
-            return parts.joined(separator: "\n\n")
+            return BlobReply(say: say, show: "")
         }
+    }
+
+    /// A merge's facts, one per line, shown as plain text: check labels,
+    /// the reason and branch names come from GitHub and the run, so none of
+    /// it is drawn as markdown. Empty for a question.
+    var facts: [String] {
+        guard case .forceMerge(let pending) = self else { return [] }
+        let request = pending.request
+        var lines = request.bypass.isEmpty ? ["Nothing to bypass."] : request.bypass.map { "\u{2022} \($0.label)" }
+        if !request.reason.isEmpty { lines.append("Reason: \(request.reason)") }
+        lines.append("\(request.head) into \(request.base), \(request.method), at \(request.headSha.prefix(7)).")
+        return lines
     }
 
     var options: [Option] {
         switch self {
         case .question(let ask):
-            return (ask.questions.first?.options ?? []).map {
-                Option(label: $0.label, detail: $0.description, action: .answer($0.label))
+            return (ask.questions.first?.options ?? []).enumerated().map { index, option in
+                Option(
+                    label: option.label,
+                    detail: option.description,
+                    action: .answer(option.label),
+                    role: index == 0 ? .recommended : .plain
+                )
             }
         case .forceMerge(let pending):
+            // Merging past checks can't be taken back: red, never the
+            // recommended one. Cancel stays plain, even when it is alone.
             let cancel = Option(label: "Cancel", action: .cancelMerge)
-            return pending.canConfirm ? [Option(label: "Merge anyway", action: .confirmMerge), cancel] : [cancel]
+            let merge = Option(label: "Merge anyway", action: .confirmMerge, role: .destructive)
+            return pending.canConfirm ? [merge, cancel] : [cancel]
         }
     }
 
@@ -81,8 +97,8 @@ enum BlobAsk: Equatable, Identifiable {
 }
 
 /// A `BlobAsk` where replies render, styled like `BlobDecisionView`: title,
-/// the question as the Say line, the rest with the block catalog, then the
-/// options as buttons, the first filled. A question can also be answered
+/// the question as the Say line, the rest with the block catalog (a merge's
+/// facts as plain text), then the options as buttons by role. A question can also be answered
 /// in writing ("Write an answer" opens the write bar) or skipped, which lets
 /// the run go on on its own judgment.
 struct BlobAskView: View {
@@ -107,10 +123,22 @@ struct BlobAskView: View {
                         .foregroundStyle(OS1VisualStyle.text)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityAddTraits(.isHeader)
-                    let reply = BlobReply(ask.body)
+                    let reply = ask.reply
                     if !reply.isEmpty {
                         BlobReplyView(reply: reply)
                             .padding(.top, 10)
+                    }
+                    let facts = ask.facts
+                    if !facts.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(facts.enumerated()), id: \.offset) { _, line in
+                                Text(verbatim: line)
+                                    .font(.callout)
+                                    .foregroundStyle(OS1VisualStyle.textDim)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.top, 8)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -121,7 +149,7 @@ struct BlobAskView: View {
 
             VStack(spacing: 8) {
                 ForEach(Array(ask.options.enumerated()), id: \.offset) { index, option in
-                    BlobOptionButton(label: option.label, detail: option.detail, number: index + 1) {
+                    BlobOptionButton(label: option.label, detail: option.detail, number: index + 1, role: option.role) {
                         if option.action == .confirmMerge {
                             confirmingMerge = true
                         } else {
@@ -172,12 +200,14 @@ struct BlobAskView: View {
     }
 
     private func submit(_ action: BlobAsk.Option.Action) {
+        guard !busy else { return }
         busy = true
         error = nil
         Task {
             do {
                 try await answer(action)
-                Haptics.play(.commit)
+                // Skipping or cancelling commits nothing.
+                if action != .skip, action != .cancelMerge { Haptics.play(.commit) }
             } catch {
                 self.error = (error as? LocalizedError)?.errorDescription ?? "Couldn't send that answer"
             }

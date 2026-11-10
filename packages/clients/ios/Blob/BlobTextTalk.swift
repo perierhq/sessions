@@ -57,9 +57,12 @@ final class BlobTextTalk {
         guard let desk, phase == .waiting, !desk.isStreaming else { return nil }
         let entries = desk.entries
         let anchored = sentAfter.flatMap { id in entries.lastIndex { $0.id == id } }.map { $0 + 1 }
+        let said = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        // With nothing said (an answered ask) only the anchor can place the
+        // reply; from the top of the transcript it would be an old answer.
+        if said.isEmpty, anchored == nil { return nil }
         let floor = anchored ?? 0
         guard floor < entries.count else { return nil }
-        let said = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         let mine = entries[floor...].lastIndex(where: { entry in
             entry.type == "user" && (said.isEmpty || (entry.content ?? "").contains(said))
         })
@@ -108,38 +111,56 @@ final class BlobTextTalk {
     private var spokenAsk: String?
 
     /// Reads an ask's question aloud when it comes up, once, unless you are
-    /// talking.
-    func askCameUp(_ ask: BlobAsk) {
-        guard ask.id != spokenAsk, phase != .listening else { return }
+    /// talking: dictating, or on the live voice call (`callActive`), whose own
+    /// voice is speaking. Not counted as read then, so it is read once the
+    /// call ends.
+    func askCameUp(_ ask: BlobAsk, callActive: Bool) {
+        guard ask.id != spokenAsk, phase != .listening, !callActive else { return }
         spokenAsk = ask.id
-        let say = BlobReply(ask.body).say
+        let say = ask.reply.say
         if !say.isEmpty { speaker.speak(say) }
     }
 
+    /// Why the last answer to an ask didn't go through after its card was
+    /// settled (a refused merge), shown over the run's reply.
+    private(set) var notice: String?
+
     /// Answers an ask the way the OS app does, then waits for the run's
-    /// reply like any message.
+    /// reply like any message. Throws only while the ask is still up, so its
+    /// card can say why; once settled the reason shows as `notice`.
     func answer(_ ask: BlobAsk, with action: BlobAsk.Option.Action) async throws {
         guard let desk else { return }
-        switch (ask, action) {
-        case (.question(let question), .answer(let text)):
-            guard let first = question.questions.first else { return }
-            desk.answer(question: question, answers: [first.question: text])
-        case (.question(let question), .skip):
-            desk.answer(question: question, answers: nil)
-        case (.forceMerge(let pending), .confirmMerge):
-            try await desk.actionCards.confirmForceMerge(pending.request)
-        case (.forceMerge(let pending), .cancelMerge):
-            try await desk.actionCards.cancelForceMerge(pending.request)
-        default:
-            return
+        // The reply comes after what is on screen now. Taken before the
+        // await: the run can write while the answer is on its way.
+        let anchor = desk.entries.last?.id
+        var failure: String?
+        do {
+            switch (ask, action) {
+            case (.question(let question), .answer(let text)):
+                guard let first = question.questions.first else { return }
+                desk.answer(question: question, answers: [first.question: text])
+            case (.question(let question), .skip):
+                desk.answer(question: question, answers: nil)
+            case (.forceMerge(let pending), .confirmMerge):
+                try await desk.actionCards.confirmForceMerge(pending.request)
+            case (.forceMerge(let pending), .cancelMerge):
+                try await desk.actionCards.cancelForceMerge(pending.request)
+            default:
+                return
+            }
+        } catch {
+            // Still pending: nothing happened, and the card shows why.
+            if self.ask?.id == ask.id { throw error }
+            failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
         speaker.stop()
         spokenAnswer = nil
+        notice = failure
         // Already waiting on a message: its reply still comes after it.
         guard phase != .waiting else { return }
         listener.cancel()
         heard = ""
-        sentAfter = desk.entries.last?.id
+        sentAfter = anchor
         phase = .waiting
     }
 
@@ -159,6 +180,7 @@ final class BlobTextTalk {
         listener.cancel()
         speaker.stop()
         spokenAnswer = nil
+        notice = nil
         heard = ""
         phase = .idle
     }
@@ -181,6 +203,7 @@ final class BlobTextTalk {
     private func listen() {
         // Blob may be reading a decision; the mic must not hear it.
         speaker.stop()
+        notice = nil
         heard = ""
         phase = .listening
         Task {
@@ -211,6 +234,7 @@ final class BlobTextTalk {
         listener.cancel()
         speaker.stop()
         spokenAnswer = nil
+        notice = nil
         phase = .waiting
         Task { await deliver(text) }
     }
@@ -231,6 +255,7 @@ final class BlobTextTalk {
         guard let desk else { return }
         speaker.stop()
         spokenAnswer = nil
+        notice = nil
         heard = text
         phase = .waiting
         sentAfter = desk.entries.last?.id

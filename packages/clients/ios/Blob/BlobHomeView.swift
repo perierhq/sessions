@@ -138,9 +138,13 @@ struct BlobHomeView: View {
                 if !say.isEmpty { text.speaker.speak(say) }
             }
         }
-        // Blob reads what the run asks you when it comes up, once.
+        // Blob reads what the run asks you when it comes up, once; during
+        // the live voice call it waits until the call ends.
         .onChange(of: ask?.id, initial: true) { _, _ in
-            if let ask { text.askCameUp(ask) }
+            if let ask { text.askCameUp(ask, callActive: engine.active) }
+        }
+        .onChange(of: engine.active) { _, active in
+            if !active, let ask { text.askCameUp(ask, callActive: false) }
         }
         // A Bark notification's link: `blob://item/<id>` shows that item as
         // the current decision; `blob://` alone just opens Blob.
@@ -605,6 +609,14 @@ struct BlobHomeView: View {
                 .font(.footnote)
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        if let notice = text.notice {
+            // An answered ask that didn't go through, like a refused merge.
+            Text(notice)
+                .font(.footnote)
+                .foregroundStyle(OS1VisualStyle.textDim)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
         }
         if let ask {
             // The run stopped to ask you something; its reply comes after.
