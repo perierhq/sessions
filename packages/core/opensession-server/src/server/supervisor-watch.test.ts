@@ -97,7 +97,10 @@ function baseDeps(): Partial<import("./supervisor-watch").WatchDeps> {
     hasSupervisor: async () => supervisor,
     openIncidents: async () => incidents,
     sessionStatus: async (id) => statuses[id] ?? "gone",
-    headroomOk: async () => headroom,
+    headroom: async () =>
+      headroom
+        ? { ok: true }
+        : { ok: false, reason: "Your Claude accounts are near their limits" },
     runnerReady: async () => runnerReady,
     random: () => 0,
   };
@@ -329,7 +332,7 @@ describe("the wake check", () => {
     const goal = await watchGoal();
     headroom = false;
     expect(await watch.watchWakeCheck(goal)).toEqual({
-      skip: "the Claude pool is low",
+      skip: "Your Claude accounts are near their limits",
       nextWakeAt: new Date(NOON + watch.WATCH_HEADROOM_RETRY_MS).toISOString(),
     });
   });
@@ -632,7 +635,7 @@ describe("follow-ups", () => {
   });
 });
 
-describe("the digest and the headroom rule", () => {
+describe("the digest", () => {
   test("leaves out the watch's own items and doesn't depend on order", () => {
     const a = {
       id: "a",
@@ -658,29 +661,6 @@ describe("the digest and the headroom rule", () => {
     );
     expect(watch.watchDigest({ ...base, items: [a] })).not.toBe(
       watch.watchDigest({ ...base, items: [a, b] }),
-    );
-  });
-
-  test("the pool is low when no shared account has room", () => {
-    const account = (five: number, week: number, extra = {}) => ({
-      usable: true,
-      usage: {
-        fiveHour: { utilization: five },
-        sevenDay: { utilization: week },
-      },
-      ...extra,
-    });
-    expect(watch.watchHeadroomOk([])).toBe(true);
-    expect(watch.watchHeadroomOk([account(50, 50)])).toBe(true);
-    expect(watch.watchHeadroomOk([account(85, 10), account(10, 95)])).toBe(
-      false,
-    );
-    expect(watch.watchHeadroomOk([account(10, 10, { usable: false })])).toBe(
-      false,
-    );
-    // Personal accounts never serve the watch: they don't count.
-    expect(watch.watchHeadroomOk([account(10, 10, { owner: "Bob" })])).toBe(
-      true,
     );
   });
 });
@@ -845,7 +825,10 @@ describe("the next decision after a wake", () => {
         "d-paused",
       ),
     ).toBeNull();
-    await watch.onWatchAnswer(breaker!, "Resume the watch", "owner");
+    expect(breaker?.options).toEqual(["Resume", "Keep paused"]);
+    await watch.onWatchAnswer(breaker!, "Keep paused", "owner");
+    expect((await goals.getGoal(goal.id))!.status).toBe("paused");
+    await watch.onWatchAnswer(breaker!, "Resume", "owner");
     expect((await goals.getGoal(goal.id))!.status).toBe("active");
     expect((await watch.readWatchState(USER)).events).toEqual([]);
   });
@@ -1022,6 +1005,8 @@ describe("taking a delivery", () => {
   test("a new watch's first wake is spread over half an hour", async () => {
     watch.__setWatchDepsForTest({ ...baseDeps(), random: () => 0.5 });
     const goal = await watchGoal();
+    // On the pinned model, so the ticker's headroom check asks its route.
+    expect(goal.model).toBe(watch.WATCH_MODEL);
     expect(goal.nextWakeAt).toBe(
       new Date(NOON + watch.WATCH_FIRST_WAKE_SPREAD_MS / 2).toISOString(),
     );

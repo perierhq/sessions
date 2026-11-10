@@ -999,7 +999,7 @@ describe("a person's watch goal", () => {
     expect(steers[0]!.text).not.toContain("set_next_wake");
     expect(cancels).toEqual([lastRun!.startToken!]);
     expect((await getGoal(goal.id))!.lastRunError).toBe(
-      "Stopped: it reached its budget",
+      "Stopped: it reached its limit",
     );
   });
 

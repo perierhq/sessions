@@ -1010,6 +1010,12 @@ export function createSessionsMcpServer(
             return text(
               "A timer wait is not available in this session. Use kind pr_checks, workflow_run, or session_turn.",
             );
+          // The supervisor's conversation keeps no timers or waits: its
+          // watch follows things up (supervisor-watch.ts).
+          if (getSessionControl().getSession(sessionId)?.supervisor)
+            return text(
+              "The supervisor's conversation waits on nothing. Hand the follow-up to your watch with opensession-supervisor watch_for instead.",
+            );
           const waitId = durableToolRequestId(ctx, "wait_for", extra, args);
           // In an automation-owned session a person's own turn (or the wake
           // of their earlier wait) registers this wait, so its wake keeps

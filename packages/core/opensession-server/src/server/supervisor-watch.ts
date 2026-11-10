@@ -31,8 +31,8 @@
  * per-session databases.
  *
  * Loop guards: wakes per local day, tokens per wake (goal-runner holds the
- * run to them), the Claude pool's headroom, at most three failed wakes per
- * event, and a breaker that pauses the watch after three failed wakes in
+ * run to them), the provider's headroom (claude-headroom.ts), at most
+ * three failed wakes per event, and a breaker that pauses the watch after three failed wakes in
  * a row until the owner resumes it.
  *
  * Deliveries reach the watch only while its goal is active and the goal
@@ -58,6 +58,7 @@ import {
   type Goal,
 } from "./goals";
 import type { Incident } from "../shared/incidents";
+import type { HeadroomVerdict } from "./claude-headroom";
 import {
   isScheduledActor,
   isWorkerActor,
@@ -94,8 +95,9 @@ export const WATCH_MAX_TOKENS_PER_WAKE = 300_000;
 export const WATCH_MIN_WAKE_MINUTES = 10;
 /** An event wakes the watch no sooner than this after its last wake. */
 export const WATCH_EVENT_GAP_MS = 5 * 60_000;
-/** A wake that waits for the Claude pool looks again after this. */
-export const WATCH_HEADROOM_RETRY_MS = 15 * 60_000;
+/** A wake that waits for headroom looks again after this, as the
+ *  ticker's postpone (goal-runner.ts HEADROOM_POSTPONE_MS). */
+export const WATCH_HEADROOM_RETRY_MS = 30 * 60_000;
 export const WATCH_OFF_REASON = "The watch is off in the supervisor settings";
 export const WATCH_STARTING_REASON =
   "Starting: the watch is recording its goal";
@@ -209,8 +211,9 @@ export interface WatchDeps {
   openIncidents(user: string): Promise<WatchIncident[]>;
   /** One known session's state, for a follow-up that names it. */
   sessionStatus(id: string): Promise<string>;
-  /** Whether the Claude pool has room for background work. */
-  headroomOk(): Promise<boolean>;
+  /** Whether the provider behind the watch's model has room for
+   *  background work (claude-headroom.ts, the rule leads wait on too). */
+  headroom(now: number): Promise<HeadroomVerdict>;
   /** Whether the goal runner has the watch's hooks, so its goal can wake. */
   runnerReady(): Promise<boolean>;
   /** In [0, 1): spreads first wakes. */
@@ -221,39 +224,6 @@ export interface WatchDeps {
   deleteGoal: (typeof import("./goals"))["deleteGoal"];
   mutateGoal: (typeof import("./goals"))["mutateGoal"];
   postSupervisorItem: (typeof import("./supervisor-inbox"))["postSupervisorItem"];
-}
-
-/** Shared Claude accounts at or past these, in percent, leave no room for
- *  background work. */
-const HEADROOM_FIVE_HOUR = 80;
-const HEADROOM_SEVEN_DAY = 90;
-
-/**
- * Whether the shared Claude pool has room for a background wake: some
- * usable shared account under 80% of its five-hour window and 90% of its
- * week. True when there is no shared pool to protect.
- *
- * TODO(feat/lead-loop-guards): switch to the shared backgroundHeadroomOk
- * once it lands on main, so leads and the watch wait on one rule.
- */
-export function watchHeadroomOk(
-  accounts: Array<{
-    owner?: string;
-    usable: boolean;
-    usage: {
-      fiveHour: { utilization: number | null } | null;
-      sevenDay: { utilization: number | null } | null;
-    } | null;
-  }>,
-): boolean {
-  const shared = accounts.filter((a) => !a.owner);
-  if (!shared.length) return true;
-  return shared.some(
-    (a) =>
-      a.usable &&
-      (a.usage?.fiveHour?.utilization ?? 0) < HEADROOM_FIVE_HOUR &&
-      (a.usage?.sevenDay?.utilization ?? 0) < HEADROOM_SEVEN_DAY,
-  );
 }
 
 const liveDeps: WatchDeps = {
@@ -293,8 +263,11 @@ const liveDeps: WatchDeps = {
     if (live.lastRunError) return "failed";
     return "idle";
   },
-  headroomOk: async () =>
-    watchHeadroomOk((await import("./claude-accounts")).listAccountsPublic()),
+  headroom: async (now) =>
+    (await import("./claude-headroom")).backgroundHeadroom(
+      (await import("./models")).routeModel(WATCH_MODEL).model,
+      now,
+    ),
   runnerReady: async () =>
     (await import("./goal-runner")).watchGoalHooksRegistered(),
   random: () => Math.random(),
@@ -540,6 +513,7 @@ function sameFields(goal: Goal, fields: LeadGoalFields): boolean {
     goal.mode === fields.mode &&
     goal.repo === fields.repo &&
     goal.minWakeMinutes === fields.minWakeMinutes &&
+    goal.model === WATCH_MODEL &&
     JSON.stringify(goal.mcpServers ?? null) ===
       JSON.stringify(fields.mcpServers)
   );
@@ -641,7 +615,7 @@ async function ensureNow(user: string): Promise<EnsureWatchResult> {
   const now = new Date(d.now()).toISOString();
   if (!existing) {
     const created = await d.createGoal(
-      { ...fields, createdBy: "Supervisor watch" },
+      { ...fields, model: WATCH_MODEL, createdBy: "Supervisor watch" },
       { watchOwner: user, pauseReason: WATCH_STARTING_REASON },
     );
     if ("error" in created) throw new Error(created.error);
@@ -671,6 +645,7 @@ async function ensureNow(user: string): Promise<EnsureWatchResult> {
   await d.mutateGoal(existing.id, (g) => ({
     ...g,
     ...fields,
+    model: WATCH_MODEL,
     ...(resume && watchOwnsPause(g)
       ? { status: "active" as const, pauseReason: undefined, nextWakeAt: now }
       : {}),
@@ -1179,9 +1154,14 @@ export async function watchWakeCheck(goal: Goal): Promise<WatchWakePlan> {
       nextWakeAt: iso(nextWatchWake(prefs, zone, nextLocalMidnight(zone, now))),
     };
   }
-  if (!(await d.headroomOk().catch(() => false)))
+  // The ticker already holds every goal to this; a wake started another
+  // way (the goals page's wake now) is held here too.
+  const headroom = await d
+    .headroom(now)
+    .catch((): HeadroomVerdict => ({ ok: true }));
+  if (!headroom.ok)
     return {
-      skip: "the Claude pool is low",
+      skip: headroom.reason,
       nextWakeAt: iso(now + WATCH_HEADROOM_RETRY_MS),
     };
   // Close what ran out before looking, so it shows as closed.
@@ -1343,7 +1323,8 @@ async function noteGaveUp(
     .catch(() => {});
 }
 
-const RESUME_OPTION = "Resume the watch";
+/** The same choices a lead's guard offers (leads/goal.ts). */
+const RESUME_OPTION = "Resume";
 
 /** Pause the watch after failed wakes in a row and ask the owner. Only
  *  they lift it (an answer here, or the goals page). */
@@ -1364,7 +1345,7 @@ async function tripBreaker(
       kind: "needs-you",
       title: "The watch stopped: its last wakes failed",
       body: `Its last ${WATCH_MAX_FAILED_WAKES} wakes failed, so it is paused. Workers' reports come to your conversation with Blob until it runs again.`,
-      options: [RESUME_OPTION, "Leave it paused"],
+      options: [RESUME_OPTION, "Keep paused"],
       dedupeKey: FAILING_KEY,
     })
     .catch(() => {});
