@@ -28,6 +28,7 @@
  * request and the waiting tool call with it, and nothing is merged.
  */
 import { auditAsync } from "./audit";
+import { BLOB_ACTOR } from "./session-actors";
 import {
   resolveGithubCredential,
   serviceGithubCredential,
@@ -288,7 +289,7 @@ function auditEvent(
     reason: r.reason,
     bypassed: r.bypass.map(describeBypass),
     // Blob asked; the driver decides. Both are on the record.
-    ...(entry.requestedBy ? { actor: "blob" } : {}),
+    ...(entry.requestedBy ? { actor: BLOB_ACTOR } : {}),
     ...(entry.requestedBy && typeof extra.confirmed_by === "string"
       ? { attribution: `Blob asked, ${r.driver} approved` }
       : {}),

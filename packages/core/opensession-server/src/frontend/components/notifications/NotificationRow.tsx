@@ -27,7 +27,7 @@ import {
 import { Button } from "../../ui/button";
 import { cn } from "../../ui/cn";
 import { Tooltip } from "../../ui/tooltip";
-import { UserAvatar } from "../UserAvatar";
+import { isBotName, UserAvatar } from "../UserAvatar";
 import {
   IconAtSign,
   IconCheck,
@@ -102,11 +102,11 @@ export function NotificationRow({
   const toggleDone = () =>
     markNotifications([thread.id], { done: !thread.done });
   const { title, line } = notificationRowText(thread);
-  // A supervisor row is from Blob, or Blob as one project's lead ("Blob ·
-  // acme lead"): its picture stands in for the kind icon, and the context
-  // line says who it is from.
-  const from =
-    thread.subject.type === "supervisor" && thread.actor ? thread.actor : null;
+  // A row the server recorded as from Blob, or Blob as one project's lead
+  // ("Blob · acme lead"): its picture stands in for the kind icon, and the
+  // context line says who it is from.
+  const fromName = thread.actor?.trim().split(/\s+/)[0];
+  const from = fromName && isBotName(fromName) ? thread.actor!.trim() : null;
   const context = from
     ? [
         from,

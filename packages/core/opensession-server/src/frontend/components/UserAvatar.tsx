@@ -22,7 +22,7 @@ const PROFILE_IMAGE: Record<string, string> = {};
  * supervisor. Seeded so Blob is drawn as itself before GET /api/people
  * lands; the directory's `bots` list (lib/people.ts) replaces it.
  */
-const BOT_IMAGE = new Map([["blob", "/repo-icon/blob.png"]]);
+const BOT_IMAGE = new Map([["blob", "/bot-icon/blob.png"]]);
 
 /** Replace the bot roster from the directory (lib/people.ts). */
 export function registerBots(entries: Record<string, string>) {

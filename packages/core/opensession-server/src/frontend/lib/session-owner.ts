@@ -90,10 +90,19 @@ export function ownerKeyOf(
   return ownerKey(session.startedBy, canonical);
 }
 
+/** A project lead's goal sender (server leads/goal.ts, goal-runner.ts):
+ *  "Lead: <project> (goal)". */
+const LEAD_GOAL_SENDER = /^Lead:\s*(.+?)\s*\(goal\)$/i;
+/** Senders no person owns: a goal, an automation, or another agent. */
+const MACHINE_SENDER =
+  /\((?:goal|automation)\)$|^(?:agent|worker|blob)\s+\S+$|^(?:blob|project lead)$/i;
+
 /**
  * Who started a session, as a row or card says it. Blob starts sessions for
  * a person; those read "Blob for Kacper", so Blob never passes for the
- * person, while every filter above still keys on `startedBy`.
+ * person, while every filter above still keys on `startedBy`. With no
+ * person behind it, Blob is named alone, or as one project's lead ("Blob ·
+ * acme lead"), never "Blob for Lead: acme (goal)".
  */
 export function startedByLabel(session: {
   startedBy?: string | null;
@@ -101,7 +110,9 @@ export function startedByLabel(session: {
 }): string {
   const owner = (session.startedBy || "").trim();
   if (session.actedBy !== "Blob") return owner;
-  return owner ? `Blob for ${owner}` : "Blob";
+  const lead = owner.match(LEAD_GOAL_SENDER);
+  if (lead) return `Blob · ${lead[1]} lead`;
+  return owner && !MACHINE_SENDER.test(owner) ? `Blob for ${owner}` : "Blob";
 }
 
 export function sessionHasOwner(

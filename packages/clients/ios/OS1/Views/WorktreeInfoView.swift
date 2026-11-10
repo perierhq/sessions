@@ -265,7 +265,7 @@ struct WorktreeInfoView: View {
                 value: (currentSession.mode ?? "ask").capitalized,
                 icon: "terminal"
             )
-            if let startedBy = oldestSession?.startedBy, !startedBy.isEmpty {
+            if let startedBy = oldestSession?.startedByLabel, !startedBy.isEmpty {
                 InfoRow(label: "Started by", value: startedBy, icon: "person")
             }
             ForEach(currentSession.attachedRepos ?? []) { repo in

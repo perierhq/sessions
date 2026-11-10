@@ -118,3 +118,55 @@ describe("GitHub organization member import", () => {
     expect(fetches).toBe(1);
   });
 });
+
+describe("Blob's name is reserved", () => {
+  function request(method: string, path: string, body: unknown): RouteContext {
+    const url = new URL(`http://localhost${path}`);
+    return {
+      req: new Request(url, { method, body: JSON.stringify(body) }),
+      url,
+      path: url.pathname,
+      publicPrefix: "",
+      authUser: { login: "ada", name: "Ada Lovelace" },
+    };
+  }
+
+  test("nobody can be named, aliased or logged in as Blob", async () => {
+    const configPath = await writeConfig();
+    for (const member of [
+      { name: "Blob" },
+      { name: "blob smith" },
+      { name: "Grace", aliases: ["Blob"] },
+      { name: "Grace", github: "blob" },
+    ]) {
+      const res = await handleSetupTeamRoutes(
+        request("POST", "/api/setup/team", member),
+      );
+      expect(res?.status).toBe(400);
+      expect((await res?.json()).error).toContain("reserved for Blob");
+    }
+    const rename = await handleSetupTeamRoutes(
+      request("PUT", "/api/setup/team/ada%20lovelace", { aliases: ["BLOB"] }),
+    );
+    expect(rename?.status).toBe(400);
+    const stored = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(stored.identity.team).toEqual([
+      { name: "Ada Lovelace", github: "ada" },
+    ]);
+  });
+
+  test("the GitHub organization sync skips a login called blob", async () => {
+    await writeConfig();
+    globalThis.fetch = (async () =>
+      Response.json([
+        { login: "blob", type: "User" },
+        { login: "grace", type: "User" },
+      ])) as unknown as typeof fetch;
+    const body = await (await handleSetupTeamRoutes(context()))?.json();
+    expect(body.added).toBe(1);
+    expect(body.members).toEqual([
+      { name: "Ada Lovelace", github: "ada" },
+      { name: "grace", github: "grace" },
+    ]);
+  });
+});

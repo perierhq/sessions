@@ -420,7 +420,7 @@ describe("supervisor delivery", () => {
     expect(pushes[0]!.payload).toMatchObject({
       title: "Blob · acme lead",
       body: "Needs you · acme: a decision is waiting",
-      icon: "/repo-icon/blob.png",
+      icon: "/bot-icon/blob.png",
       tag: `os-notification-supervisor:${item.id}`,
     });
     expect(JSON.stringify(pushes[0])).not.toContain("example.test");

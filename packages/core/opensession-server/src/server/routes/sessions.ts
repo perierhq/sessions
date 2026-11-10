@@ -779,6 +779,8 @@ export function archivedIndexRow(
     // Says the row came from an agent action rather than a person's composer.
     // History and sidebar rows keep that origin visible after archival too.
     ...(s.agentStarted ? { agentStarted: true } : {}),
+    // Blob started it for `startedBy`: archived rows still say so.
+    ...(s.actedBy === "Blob" ? { actedBy: s.actedBy } : {}),
     // Says the row is a worker rather than someone's own conversation.
     // The history menu marks those, so a workspace whose archive is mostly
     // review and worker runs still reads as a list of what PEOPLE closed.

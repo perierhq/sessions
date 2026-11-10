@@ -23,6 +23,7 @@ import {
 import { validateEnvValue } from "../env-file-edit";
 import { githubCredentialForLogin } from "../github-auth";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
+import { BLOB_ACTOR, isReservedTeamName } from "../session-actors";
 import type { RouteContext } from "./context";
 
 const STRING_FIELDS = [
@@ -101,6 +102,21 @@ export function rawTeam(config: Record<string, unknown>): MemberPatch[] {
 
 function memberName(entry: MemberPatch): string {
   return typeof entry.name === "string" ? entry.name.trim().toLowerCase() : "";
+}
+
+/** The error for a member who would take Blob's name (session-actors.ts
+ *  isReservedTeamName), or null. Senders resolve to a teammate by name,
+ *  first name, alias or GitHub login, so none of them may be Blob's. */
+function reservedNameError(entry: MemberPatch): string | null {
+  const field = (key: string) =>
+    typeof entry[key] === "string" ? [entry[key] as string] : [];
+  const aliases = Array.isArray(entry.aliases)
+    ? entry.aliases.filter((a): a is string => typeof a === "string")
+    : [];
+  const taken = [...field("name"), ...aliases, ...field("github")].find(
+    isReservedTeamName,
+  );
+  return taken ? `"${taken.trim()}" is reserved for ${BLOB_ACTOR}` : null;
 }
 
 function memberGithub(entry: MemberPatch): string {
@@ -292,6 +308,8 @@ async function syncGithubOrganizationMembers(
     for (const login of logins) {
       const key = login.toLowerCase();
       if (githubLogins.has(key) || names.has(key)) continue;
+      // A GitHub user called "blob" stays out: the name is Blob's.
+      if (isReservedTeamName(login)) continue;
       team.push({ name: login, github: login });
       githubLogins.add(key);
       names.add(key);
@@ -352,6 +370,8 @@ export async function handleSetupTeamRoutes(
     if (!member) {
       return Response.json({ error: "name is required" }, { status: 400 });
     }
+    const reserved = reservedNameError(body);
+    if (reserved) return Response.json({ error: reserved }, { status: 400 });
     return withConfigMutationLock(async () => {
       const config = rawConfig();
       const team = rawTeam(config);
@@ -440,6 +460,9 @@ export async function handleSetupTeamRoutes(
             { status: 400 },
           );
         }
+        const reserved = reservedNameError(merged);
+        if (reserved)
+          return Response.json({ error: reserved }, { status: 400 });
         const newKey = parsed.name.trim().toLowerCase();
         if (
           newKey !== targetName &&

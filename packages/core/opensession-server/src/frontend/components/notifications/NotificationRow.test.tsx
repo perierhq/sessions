@@ -133,5 +133,5 @@ test("a supervisor row is from Blob, with Blob's picture", () => {
   );
   expect(html).toContain("Blob \u00b7 acme lead");
   expect(html).not.toContain("Blob \u00b7 acme lead \u00b7 acme");
-  expect(html).toContain("/repo-icon/blob.png");
+  expect(html).toContain("/bot-icon/blob.png");
 });

@@ -185,6 +185,31 @@ struct Session: Identifiable, Decodable, Equatable, Hashable {
             }
     }
 
+    /// Who started this, as a list row says it: "Blob for Kent" when Blob
+    /// started it for Kent, "Blob · acme lead" for a project lead's goal,
+    /// plain "Blob" with no person behind it. Mirrors the web's
+    /// `startedByLabel` (lib/session-owner.ts); filters still key on
+    /// `startedBy`.
+    var startedByLabel: String? {
+        let owner = (startedBy ?? "").trimmingCharacters(in: .whitespaces)
+        guard actedBy == MessageAttribution.blobName else {
+            return owner.isEmpty ? nil : owner
+        }
+        let leadGoal = try? NSRegularExpression(
+            pattern: "^Lead:\\s*(.+?)\\s*\\(goal\\)$", options: [.caseInsensitive]
+        )
+        let whole = NSRange(owner.startIndex..., in: owner)
+        if let match = leadGoal?.firstMatch(in: owner, range: whole),
+           let project = Range(match.range(at: 1), in: owner) {
+            return "Blob · \(owner[project]) lead"
+        }
+        let machine = owner.range(
+            of: "\\((?:goal|automation)\\)$|^(?:agent|worker|blob)\\s+\\S+$|^(?:blob|project lead)$",
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+        return owner.isEmpty || machine ? "Blob" : "Blob for \(owner)"
+    }
+
     /// The ordinary user entries belong to this person when they carry no
     /// explicit sender. Stored sessions may have only the newer `createdBy`.
     var transcriptOwner: String? {

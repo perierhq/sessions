@@ -130,4 +130,19 @@ describe("sessions Blob started", () => {
     expect(sessionHasOwner(s, "kent", canonical)).toBe(true);
     expect(startedByLabel(session({ startedBy: "Kent" }))).toBe("Kent");
   });
+
+  test("with no person behind them, name Blob alone or as a lead", () => {
+    const lead = session({ startedBy: "Lead: acme (goal)", actedBy: "Blob" });
+    expect(startedByLabel(lead)).toBe("Blob \u00b7 acme lead");
+    for (const startedBy of [
+      "Nightly (goal)",
+      "Triage (automation)",
+      "agent os-01a01e56-a1fc-7000-bb91-bc99b916c4ad",
+      "Project lead",
+      "",
+    ])
+      expect(startedByLabel(session({ startedBy, actedBy: "Blob" }))).toBe(
+        "Blob",
+      );
+  });
 });

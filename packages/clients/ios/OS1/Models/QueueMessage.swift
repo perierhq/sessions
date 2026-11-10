@@ -23,6 +23,8 @@ struct QueueMessagePresentation: Equatable {
     let isReviewHandoff: Bool
     /// A peer session's agent-authored coordination message, not human prose.
     let isSessionMessage: Bool
+    /// The peer is Blob, the supervisor (`blob <session id>`).
+    let isFromBlob: Bool
 
     init(content: String, user: String?) {
         isGitHub = user == "GitHub" || user == "GitHub (automation)"
@@ -32,6 +34,8 @@ struct QueueMessagePresentation: Equatable {
             ?? Self.attributionPrefix.match(content)?.rest
             ?? content
         let legacyWorkerFailure = Self.legacyWorkerFailure.match(content)
+        isFromBlob = Self.blobActor.match(user ?? "") != nil
+            || Self.blobAttribution.match(content) != nil
         isSessionMessage = Self.agentActor.match(user ?? "") != nil
             || agentPrefixed != nil
             || Self.sessionNoticeSentinel.match(routingStripped) != nil
@@ -76,7 +80,7 @@ struct QueueMessagePresentation: Equatable {
         } else if Self.workflowSentinel.match(unprefixed) != nil {
             label = "Workflow"
         } else if isSessionMessage {
-            label = "Message from another session"
+            label = isFromBlob ? "Message from Blob" : "Message from another session"
         } else if isReviewHandoff {
             label = nil
             let clean = Self.stripLeadingSentinels(content)
@@ -123,9 +127,13 @@ struct QueueMessagePresentation: Equatable {
     /// prompt opening with "[WIP] …" isn't mistaken for an attribution.
     private static let attributionPrefix = Pattern("^\\[([^\\]\\n{}]{1,40})\\]\\s+")
     private static let workerAttribution = Pattern("^\\[worker\\s+([^\\]\\s]+)\\]\\s*")
+    /// `[agent <id>]`, or `[blob <id>]` for what Blob sends: both name the
+    /// session the message came from.
     private static let agentAttribution =
-        Pattern("^\\[agent\\s+((?:os|bks)-[a-z0-9-]+)\\]\\s*")
-    private static let agentActor = Pattern("^agent\\s+(?:os|bks)-[a-z0-9-]+$")
+        Pattern("^\\[(?:agent|blob)\\s+((?:os|bks)-[a-z0-9-]+)\\]\\s*")
+    private static let agentActor = Pattern("^(?:agent|blob)\\s+(?:os|bks)-[a-z0-9-]+$")
+    private static let blobAttribution = Pattern("^\\[blob\\s+(?:os|bks)-[a-z0-9-]+\\]")
+    private static let blobActor = Pattern("^blob\\s+(?:os|bks)-[a-z0-9-]+$")
     private static let workerSentinel =
         Pattern("^<!--os:worker-report(?::[^\\s>]+)?-->\\s*")
     private static let legacyWorkerFailure = Pattern(

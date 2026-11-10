@@ -390,7 +390,8 @@ test("Blob's messages say they are from Blob, a bot, never the owner", () => {
         id: "blob",
         type: "user",
         timestamp,
-        content: "[Blob] <!--os:session-notice-->\nCheck the deploy.",
+        content:
+          "[blob os-01a01e56-a1fc-7000-bb91-bc99b916c4ad] <!--os:session-notice-->\nCheck the deploy.",
       }}
       sessionId="os-self"
       owner="Alex"
@@ -400,7 +401,9 @@ test("Blob's messages say they are from Blob, a bot, never the owner", () => {
   expect(html).toContain("From");
   expect(html).toContain("Blob");
   expect(html).toContain(">Bot<");
-  expect(html).toContain("/repo-icon/blob.png");
+  expect(html).toContain("/bot-icon/blob.png");
+  // The supervisor session it spoke from stays one tap away.
+  expect(html).toContain("os-01a01e56-a1fc-7000-bb91-bc99b916c4ad");
   expect(html).not.toContain("From agent");
   expect(html).not.toContain("Alex");
 });

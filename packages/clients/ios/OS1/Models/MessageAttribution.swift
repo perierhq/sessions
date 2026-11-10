@@ -28,9 +28,15 @@ enum MessageAttribution {
     /// Blob's name as the server sends it (session-actors.ts BLOB_ACTOR).
     static let blobName = "Blob"
 
+    /// Blob by its bare name, or a `blob <session id>` sender: what Blob
+    /// sends another session names the supervisor session it came from.
     static func isBlob(_ name: String) -> Bool {
-        name.trimmingCharacters(in: .whitespaces)
-            .caseInsensitiveCompare(blobName) == .orderedSame
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return trimmed.caseInsensitiveCompare(blobName) == .orderedSame
+            || trimmed.range(
+                of: "^blob\\s+(?:os|bks)-[a-z0-9-]+$",
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
     }
 
     /// `viewerName` is the display name the app knows itself by, `viewerLogin`
@@ -46,7 +52,7 @@ enum MessageAttribution {
         let author = author(sender: sender, owner: owner)
         guard let author else { return nil }
         // Blob is never the viewer, whatever their name starts with.
-        if isBlob(author) { return Credit(name: author, viaSlack: false) }
+        if isBlob(author) { return Credit(name: blobName, viaSlack: false) }
         if isViewer(author, viewerName: viewerName, viewerLogin: viewerLogin) {
             return nil
         }

@@ -435,8 +435,8 @@ describe("push icon", () => {
     const blob = { title: "Blob", body: "Needs you", url: "/session/os-1" };
     const h = workerHarness("/opensession/");
     expect(
-      (await push(h, { ...blob, icon: "/repo-icon/blob.png" })).options.icon,
-    ).toBe("/opensession/repo-icon/blob.png");
+      (await push(h, { ...blob, icon: "/bot-icon/blob.png" })).options.icon,
+    ).toBe("/opensession/bot-icon/blob.png");
     for (const icon of [
       "//evil.example.test/x.png",
       "https://evil.example.test/x.png",

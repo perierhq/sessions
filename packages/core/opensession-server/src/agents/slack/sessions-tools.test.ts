@@ -982,7 +982,7 @@ describe("workerReportPayload", () => {
     expect(out).toEqual({ content: "ping", user: "agent bks-root" });
   });
 
-  it("a supervisor session sends as Blob, never as its owner", async () => {
+  it("a supervisor session sends as Blob from its session, never as its owner", async () => {
     const out = await workerReportPayload(
       "bks-someone-else",
       "Check the deploy.",
@@ -993,7 +993,11 @@ describe("workerReportPayload", () => {
       },
       deps,
     );
-    expect(out).toEqual({ content: "Check the deploy.", user: "Blob" });
+    // `blob <id>`: credited to Blob, still naming the session to reply to.
+    expect(out).toEqual({
+      content: "Check the deploy.",
+      user: "blob bks-root",
+    });
     // A lookup that fails is not Blob: provenance stays the session's.
     const failed = await workerReportPayload(
       "bks-someone-else",

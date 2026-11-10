@@ -933,8 +933,8 @@ export const MessageBubble = function MessageBubble({
     e.notice?.kind === "session-notice" || e.notice?.kind === "worker-report";
   if (outgoing || peerMessage) {
     const senderId = outgoing ? sessionId : e.notice?.link?.sessionId;
-    // Blob names itself (protocol parseSessionNotice); every other peer is
-    // the session it came from.
+    // Blob names itself (protocol parseSessionNotice) and still links the
+    // supervisor session it spoke from; every other peer is that session.
     const fromBot = !outgoing && isBotName(e.sender) ? e.sender : null;
     return (
       <div
@@ -960,9 +960,22 @@ export const MessageBubble = function MessageBubble({
             {outgoing ? "To agent" : fromBot ? "From" : "From agent"}
           </span>
           {fromBot ? (
-            <span className="inline-flex items-center gap-1">
-              <CreditedName name={fromBot} />
-            </span>
+            <>
+              <span className="inline-flex shrink-0 items-center gap-1">
+                <CreditedName name={fromBot} />
+              </span>
+              {senderId && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <AgentIdentity
+                    sessionId={senderId}
+                    linked
+                    current={senderId === sessionId}
+                    className="max-w-96 flex-1"
+                  />
+                </>
+              )}
+            </>
           ) : (
             <AgentIdentity
               sessionId={outgoing?.to ?? senderId}

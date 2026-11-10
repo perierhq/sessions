@@ -56,6 +56,8 @@ import { OPENSESSION_SESSIONS_DIR } from "../../server/paths";
 import {
   agentActor,
   BLOB_ACTOR,
+  blobActor,
+  isBlobActor,
   isWorkerActor,
   workerActor,
 } from "../../server/session-actors";
@@ -110,7 +112,7 @@ export interface SessionsToolContext {
   creationOwner?: () => Promise<string>;
   /**
    * Whether this session is Blob (a supervisor session), resolved at call
-   * time. Blob's sends arrive from `BLOB_ACTOR`, not `agent <id>`, and the
+   * time. Blob's sends arrive from `blobActor(<id>)`, not `agent <id>`, and the
    * sessions it creates record `actedBy: "Blob"` while the person stays their
    * owner (`createdBy`), so permissions never follow Blob.
    */
@@ -373,7 +375,7 @@ export async function workerReportPayload(
     user:
       me && me !== targetId
         ? (await actsAsBlob(ctx))
-          ? BLOB_ACTOR
+          ? blobActor(me)
           : agentActor(me)
         : ctx.createdBy,
   };
@@ -1258,7 +1260,7 @@ export function createSessionsMcpServer(
             target_session_id: args.id,
             outcome: res.status,
             user: ctx.createdBy,
-            ...(payload.user === BLOB_ACTOR ? { actor: "blob" } : {}),
+            ...(isBlobActor(payload.user) ? { actor: BLOB_ACTOR } : {}),
           });
           return text(
             `Delivery \`${res.deliveryId || deliveryId}\` status=${res.status}: ${res.message}`,
@@ -1377,7 +1379,7 @@ export function createSessionsMcpServer(
               source: "sessions_mcp",
               user: ctx.createdBy,
               cancelled_from: ctx.currentSessionId,
-              ...((await actsAsBlob(ctx)) ? { actor: "blob" } : {}),
+              ...((await actsAsBlob(ctx)) ? { actor: BLOB_ACTOR } : {}),
             });
           }
           return text(
@@ -1416,7 +1418,7 @@ export function createSessionsMcpServer(
             changed: result.changed,
             user: ctx.createdBy,
             source_session_id: ctx.currentSessionId,
-            ...((await actsAsBlob(ctx)) ? { actor: "blob" } : {}),
+            ...((await actsAsBlob(ctx)) ? { actor: BLOB_ACTOR } : {}),
           });
           if (!result.changed) {
             return text(

@@ -207,9 +207,9 @@ describe("force merge", () => {
     // The driver's own confirmation and token, as for any merge.
     await confirmForceMerge("s-blob", card!.request.id, "Ada", credential);
     await outcome;
-    expect(calls.audit[0]).toMatchObject({ event: "requested", actor: "blob" });
+    expect(calls.audit[0]).toMatchObject({ event: "requested", actor: "Blob" });
     expect(calls.audit.find((e) => e.event === "merged")).toMatchObject({
-      actor: "blob",
+      actor: "Blob",
       confirmed_by: "Ada",
       attribution: "Blob asked, Ada approved",
     });

@@ -16,7 +16,7 @@
  * Delivery is best-effort. A failed push or broadcast never fails the flow
  * that raised the event.
  */
-import { BLOB_ICON_PATH } from "./session-actors";
+import { BLOB_ICON_PATH, isBlobActor } from "./session-actors";
 import { catalogDocuments } from "./catalog-documents";
 import {
   alertPrefs,
@@ -142,9 +142,7 @@ export async function pushFor(
     tag: `os-notification-${thread.id}`,
     id: thread.id,
     // A row from Blob shows Blob's picture, as a message from a person would.
-    ...(thread.subject.type === "supervisor" && thread.actor
-      ? { icon: BLOB_ICON_PATH }
-      : {}),
+    ...(isBlobActor(thread.actor) ? { icon: BLOB_ICON_PATH } : {}),
   };
   if (!fixed) return { payload };
   const alert = delivery === "alert";

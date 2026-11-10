@@ -34,7 +34,7 @@ final class TeamDirectory {
     /// as a server-relative path. Seeded so Blob is drawn as itself before
     /// the roster loads; a bot is never in `names`, so no picker offers it.
     private(set) var botImages: [String: String] = TeamDirectory.builtInBots
-    private static let builtInBots = ["blob": "/repo-icon/blob.png"]
+    private static let builtInBots = ["blob": "/bot-icon/blob.png"]
     private var fullNames: [String: String] = [:]
     private var accountID: String?
     private var loading = false
