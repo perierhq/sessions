@@ -51,7 +51,7 @@ Shared pieces to build on:
   across leads, answers the owner, holds the decisions that are waiting, and
   writes the daily digest. The Desk stays the OS app's quick-question session.
 - **A lead** owns one project. It is a goal (`goal-runner.ts`) bound to a
-  project, with a charter: scope, the loops it owns, its spend ceiling and its
+  project, with a charter: scope, the loops it owns, its loop guards and its
   autonomy. The charter lives in the project's settings document as a new
   `lead` block next to `incidents`.
 
@@ -95,8 +95,33 @@ Rules:
   that one call. The existing loops keep their own policies; the lead's level
   can only lower theirs, never raise them.
 - **The kill switch:** `agentsPaused` stops every lead on the project.
-- **Spend:** every lead has a monthly ceiling, checked the way
-  `IncidentBudget` is.
+- **Capacity, not dollars:** the instance runs on Claude subscription
+  accounts with 5-hour and weekly usage windows, so a dollar budget is the
+  wrong unit and risks stopping useful work. Instead:
+  - **Headroom first:** lead wakes and other unattended goals on
+    `pi/anthropic/*` wait 30 minutes (postponed, not paused; the goal shows
+    why) while none of the shared Claude accounts that report usage has at
+    least 20% of its 5-hour window and 10% of its weekly window left. When
+    none reports any usage they run. A run refused for a usage limit or a
+    429 holds that provider's goals for 30 minutes. Waiting goals start one
+    a tick once there is room, and a lead that has waited a day tells its
+    owner once. Headroom comes from a source per route
+    (`claude-headroom.ts`, `localClaudeAccounts` today), so a later hub in
+    front of the Claude accounts can report it from its own API.
+    Interactive sessions and Pat never wait on it.
+  - **Loop guard:** each wake may use a token limit (1,000,000 by default;
+    input, output and cache writes in full, cache reads at a tenth), and a
+    lead may wake 24 times a day by default, counted on the owner's local
+    day. A wake past its token limit is asked to wrap up and stopped, the way
+    the old mid-run budget hold worked, and holds the lead for 12 hours;
+    the wake limit holds it until the owner's next day. Either asks the
+    owner with a needs-you item, Resume or Keep paused, once per hold: a
+    trip after a Resume asks again. Resume lifts the hold for the rest of
+    the day, until the next trip.
+  - **Dollar cap:** optional and off by default; `null` is off and 0 is
+    refused. Leads stored before the guards at the old default of $50 read
+    as off, and those held at $0 read as turned off; a cap the owner set
+    stays. Raising or removing it is loosening.
 - **Audit:** every decision is audited with the rule that made it.
 
 ### 4. A classifier routes; it can't grant
@@ -186,6 +211,8 @@ What landed from this proposal, and the decisions made on the way:
   hours (02:00 to 08:00 by default) with "down" breaking through, a daily digest at 09:00.
 - **Project lead** (#149): settings block with the rules, watch stage, flap triage,
   overview, proposals to the inbox, budget held mid-run, fail-closed wake checks.
+  The monthly dollar budget was later replaced by headroom waits and a loop guard
+  (rule "Capacity, not dollars" above).
   Turned on per project in settings (#153).
 - **How Blob reports** (#152): the first paragraph is what Blob says, the rest is shown;
   BLUF, SBAR or plain per person; Blob hands GitHub work to Pat, the public persona, and

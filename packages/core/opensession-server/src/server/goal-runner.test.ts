@@ -111,8 +111,11 @@ const {
   runningGoals,
   settleInterruptedGoalRun,
   tickGoals,
+  wakeTokens,
+  __setBackgroundHeadroomForTest,
 } = await import("./goal-runner");
 const { createGoalSelfMcpServer } = await import("../agents/slack/goal-tools");
+const { __setHeadroomSourcesForTest } = await import("./claude-headroom");
 const { createGoal, getGoal, mutateGoal, updateGoal } = realGoals;
 const { SessionKernelStore, __setSessionKernelStoreForTest } =
   await import("./session-kernel");
@@ -146,6 +149,7 @@ afterEach(() => {
 });
 
 const DAY = 24 * 60 * 60 * 1000;
+const LEAD_DAY = "2026-11-10";
 const PAST = "2020-01-01T00:00:00.000Z";
 
 async function dueGoal(
@@ -386,15 +390,26 @@ describe("a project lead's goal", () => {
   };
   let plan: LeadWakePlan;
   let idles: string[];
+  let waits: string[];
   let offHooks: () => void = () => {};
 
   beforeEach(() => {
-    plan = { fields, budgetUsd: 2, web: false };
+    plan = {
+      fields,
+      day: LEAD_DAY,
+      wakeTokens: 1_000_000,
+      budgetUsd: 2,
+      web: false,
+    };
     idles = [];
+    waits = [];
     offHooks = registerLeadGoalHooks({
       wake: async () => plan,
       idle: async (goal) => {
         idles.push(goal.id);
+      },
+      waiting: async (goal) => {
+        waits.push(goal.id);
       },
     });
   });
@@ -442,9 +457,15 @@ describe("a project lead's goal", () => {
     expect(lastRun!.prompt).not.toContain("ask_human");
     expect(lastRun!.prompt).not.toContain("mark_paused");
     expect(lastRun!.prompt).not.toContain("mark_done");
-    expect(lastRun!.prompt).toContain("this wake may spend about $2");
+    expect(lastRun!.prompt).toContain("spend about $2");
     // Past watch it may read the web.
-    plan = { fields, budgetUsd: 2, web: true };
+    plan = {
+      fields,
+      day: LEAD_DAY,
+      wakeTokens: 1_000_000,
+      budgetUsd: 2,
+      web: true,
+    };
     await runGoal((await getGoal(lead.id))!);
     expect(Object.keys(lastRun!.inProcessMcp!)).toContain("opensession-web");
 
@@ -578,8 +599,172 @@ describe("a project lead's goal", () => {
     const month = new Date().toISOString().slice(0, 7);
     expect(await getGoal(goal.id)).toMatchObject({
       spend: { month, usd: 3.4 },
-      lastRunError: "Stopped: it reached its budget",
+      lastRunError: "Stopped: it reached its limit",
     });
+  });
+
+  test("past its token limit it wraps up, stops, and trips the guard, even after a Resume", async () => {
+    plan = {
+      fields,
+      day: LEAD_DAY,
+      wakeTokens: 100_000,
+      budgetUsd: null,
+      web: false,
+    };
+    const usage = (inputTokens: number) => ({
+      costUsd: 0,
+      inputTokens,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      contextTokens: 1,
+    });
+    script = async function* () {
+      yield { type: "init", sessionId: "engine-1" } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(50_000) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(110_000) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(160_000) } as StreamEvent;
+    };
+    // The owner lifted the guard earlier today, after a first trip.
+    const goal = await leadGoal({
+      guard: { day: LEAD_DAY, wakes: 3, lifted: true, trips: 1 },
+    });
+    const before = Date.now();
+    await runGoal(goal);
+    expect(lastRun!.prompt).toContain("about 100,000 tokens");
+    expect(lastRun!.prompt).not.toContain("spend about");
+    expect(steers).toHaveLength(1);
+    expect(cancels).toHaveLength(1);
+    const after = (await getGoal(goal.id))!;
+    // A second trip: the Resume is gone and the next question has its own
+    // key (leads/goal.ts).
+    expect(after.guard).toEqual({
+      day: LEAD_DAY,
+      wakes: 4,
+      trips: 2,
+      trippedAt: expect.any(String),
+      trippedTokens: 160_000,
+    });
+    expect(Date.parse(after.guard!.trippedAt!)).toBeGreaterThanOrEqual(before);
+    expect(after.lastRunError).toBe("Stopped: it reached its limit");
+    // No early wake: the lead set none, so the usual next day applies.
+    expect(Date.parse(after.nextWakeAt)).toBeGreaterThanOrEqual(
+      before + DAY - 60_000,
+    );
+  });
+
+  test("cache reads count at a tenth", () => {
+    expect(
+      wakeTokens({
+        inputTokens: 10,
+        outputTokens: 20,
+        cacheCreationTokens: 30,
+        cacheReadTokens: 1_000,
+      }),
+    ).toBe(160);
+  });
+
+  test("every wake counts towards the day's wakes", async () => {
+    const goal = await leadGoal();
+    await runGoal(goal);
+    await runGoal((await getGoal(goal.id))!);
+    expect((await getGoal(goal.id))!.guard?.wakes).toBe(2);
+  });
+
+  test("a due goal waits 30 minutes when its provider is low, without pausing, and says why", async () => {
+    const reason = "Your Claude accounts are near their limits";
+    const routes: string[] = [];
+    __setBackgroundHeadroomForTest(async (route) => {
+      routes.push(route);
+      return route.startsWith("pi/anthropic/")
+        ? { ok: false, reason }
+        : { ok: true };
+    });
+    try {
+      const lead = await leadGoal();
+      const plain = await dueGoal({ model: "pi/anthropic/claude-fable-5-1" });
+      const before = Date.now();
+      await tickGoals();
+      expect(runs).toBe(0);
+      // One headroom question per route a tick.
+      expect(routes).toHaveLength(new Set(routes).size);
+      for (const id of [lead.id, plain.id]) {
+        const after = (await getGoal(id))!;
+        expect(after.status).toBe("active");
+        expect(after.waiting).toEqual({
+          reason,
+          since: expect.any(String),
+        });
+        expect(Date.parse(after.nextWakeAt)).toBeGreaterThanOrEqual(
+          before + 29 * 60_000,
+        );
+      }
+      // The lead hears about each wait, to tell its owner after a day.
+      expect(waits).toEqual([lead.id]);
+    } finally {
+      __setBackgroundHeadroomForTest(undefined);
+    }
+  });
+
+  test("a goal on another provider isn't held by the Claude pool", async () => {
+    __setBackgroundHeadroomForTest(async (route) =>
+      route.startsWith("pi/anthropic/")
+        ? { ok: false, reason: "low" }
+        : { ok: true },
+    );
+    try {
+      const goal = await dueGoal({ model: "pi/openai/gpt-6.1-sol" });
+      await tickGoals();
+      await settled(goal.id);
+      expect(runs).toBe(1);
+      expect((await getGoal(goal.id))!.waiting).toBeUndefined();
+    } finally {
+      __setBackgroundHeadroomForTest(undefined);
+    }
+  });
+
+  test("once there is room, goals that waited start one a tick", async () => {
+    const waiting = { reason: "low", since: PAST };
+    const a = await dueGoal({ name: "A" });
+    const b = await dueGoal({ name: "B" });
+    for (const g of [a, b]) await mutateGoal(g.id, (x) => ({ ...x, waiting }));
+    __setBackgroundHeadroomForTest(async () => ({ ok: true }));
+    try {
+      await tickGoals();
+      await settled(a.id);
+      await settled(b.id);
+      expect(runs).toBe(1);
+      await tickGoals();
+      await settled(a.id);
+      await settled(b.id);
+      expect(runs).toBe(2);
+      for (const g of [a, b])
+        expect((await getGoal(g.id))!.waiting).toBeUndefined();
+    } finally {
+      __setBackgroundHeadroomForTest(undefined);
+    }
+  });
+
+  test("a run refused for a usage limit holds its provider's goals", async () => {
+    __setHeadroomSourcesForTest([]);
+    script = async function* () {
+      yield {
+        type: "error",
+        content: "429 rate_limit_error: too many requests",
+      } as StreamEvent;
+    };
+    try {
+      const first = await dueGoal({ model: "pi/anthropic/claude-fable-5-1" });
+      await runGoal(first);
+      const second = await dueGoal({ model: "pi/anthropic/claude-fable-5-1" });
+      await tickGoals();
+      expect(runs).toBe(1);
+      expect((await getGoal(second.id))!.waiting?.reason).toBe(
+        "The last background run hit a usage limit",
+      );
+    } finally {
+      __setHeadroomSourcesForTest(undefined);
+    }
   });
 
   test("an ordinary goal has no budget to hold to", async () => {
@@ -656,7 +841,7 @@ describe("a project lead's goal", () => {
     // Tried at 3.2, again at 3.4, then stopped; never a third time.
     expect(cancels).toEqual([token, token]);
     expect((await getGoal(goal.id))?.lastRunError).toBe(
-      "Stopped: it reached its budget",
+      "Stopped: it reached its limit",
     );
 
     cancelResults = [false, false, false];

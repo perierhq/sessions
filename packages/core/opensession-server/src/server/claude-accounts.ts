@@ -22,6 +22,7 @@ import { writeFileAtomic } from "./shared/atomic-write";
 import { userMatchesAny } from "./shared/user-mappings";
 import { readJsonFileCopy } from "./shared/json-file-cache";
 import {
+  claudeAccountsSidelinePath,
   claudeAccountsStorePath,
   lastPickedTimes,
   recordPick as recordSharedPick,
@@ -33,11 +34,7 @@ const HOME = homeDir();
 // never read (or clobber) the real account pool. Resolved per call, not at
 // module load, so the override works regardless of import order.
 const storePath = claudeAccountsStorePath;
-// Sideline state lives beside the account store, in its own file so it can
-// never corrupt the accounts themselves.
-function sidelineStatePath(): string {
-  return storePath().replace(/\.json$/, "-state.json");
-}
+const sidelineStatePath = claudeAccountsSidelinePath;
 // Keep this conservative: the usage endpoint rate-limits per token with
 // ~hour-long lockouts (observed Retry-After of ~50m after 10-minute polling).
 const POLL_INTERVAL_MS = 60 * 60 * 1000;

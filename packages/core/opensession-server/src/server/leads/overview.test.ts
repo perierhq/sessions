@@ -147,7 +147,9 @@ describe("buildLeadOverview", () => {
       enabled: false,
       stage: "watch",
       owner: null,
-      budgetUsdPerMonth: 50,
+      budgetUsdPerMonth: null,
+      dailyWakeLimit: 24,
+      wakeTokenLimit: 1_000_000,
     });
     expect(json.incidents.open).toBe(1);
     expect(json.incidents.items[0]).toMatchObject({
@@ -186,7 +188,7 @@ describe("buildLeadOverview", () => {
     expect(json.spend).toEqual({
       incidentAgentsUsd: 1.25,
       leadUsd: null,
-      leadBudgetUsdPerMonth: 50,
+      leadBudgetUsdPerMonth: null,
     });
     expect(markdown).toContain("## Incidents: 1 open");
     expect(markdown).toContain("## Support: 2 waiting for a person");
@@ -250,7 +252,7 @@ describe("buildLeadOverview", () => {
     });
     const { json, markdown } = await buildLeadOverview(PROJECT);
     expect(json.spend.leadUsd).toBe(3.5);
-    expect(markdown).toContain("The lead: $3.5 of its $50 a month.");
+    expect(markdown).toContain("The lead: $3.5 (no dollar cap).");
     spend = { month: "2026-10", usd: 9 };
     expect((await buildLeadOverview(PROJECT)).json.spend.leadUsd).toBe(0);
   });

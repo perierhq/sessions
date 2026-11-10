@@ -63,6 +63,15 @@ describe("lead section model", () => {
     expect(READY_4_OF_6.document.lead.owner).toBeUndefined();
   });
 
+  test("a dollar cap paints, and null paints it off", () => {
+    const capped = applyLeadPatch(READY_4_OF_6, { budgetUsdPerMonth: 30 });
+    expect(capped.document.lead.budgetUsdPerMonth).toBe(30);
+    expect(
+      applyLeadPatch(capped, { budgetUsdPerMonth: null }).document.lead
+        .budgetUsdPerMonth,
+    ).toBeNull();
+  });
+
   test("refusals keep the server's reason", () => {
     const reason =
       "Only the instance owner or the lead's owner can give the project lead more room";

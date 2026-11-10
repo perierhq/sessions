@@ -17,7 +17,7 @@ function base() {
 }
 
 describe("leadCharter", () => {
-  test("names the project, the owner, the stage and the budget", () => {
+  test("names the project, the owner, the stage and the limits", () => {
     const text = charter();
     expect(text).toStartWith(
       "You are the project lead for Acme (acme). You wake on your own every few hours and report to Ada through the supervisor inbox, never directly.",
@@ -26,8 +26,13 @@ describe("leadCharter", () => {
       "Watch. You read and propose; you change nothing, not even something the owner approved.",
     );
     expect(text).toContain(
-      "Your own runs may cost $50 a month. Past that you are paused until the owner raises it or the month ends.",
+      "You may wake 24 times a day, and one wake may use about 1,000,000 tokens. Past the wake limit you are paused until the owner resumes you or the day ends; past the token limit, until the owner resumes you or 12 hours pass.",
     );
+    expect(text).toContain(
+      "Your wakes wait while the owner's Claude accounts are near their limits.",
+    );
+    // No dollar cap by default.
+    expect(text).not.toContain("a month");
   });
 
   test("tells the lead the body's first paragraph is what Blob says", () => {

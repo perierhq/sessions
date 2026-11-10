@@ -1,7 +1,8 @@
 // A project lead's goal (goals.ts): created when the lead is turned on,
 // its mission rewritten from the charter whenever the project's settings
-// change, paused when the lead is turned off or over its budget, and
-// active again whenever the lead is on and nothing blocks it. Each wake
+// change, paused when the lead is turned off, trips its loop guard (too
+// many wakes in the owner's day, or a wake past its token limit) or goes
+// over an optional dollar cap, and active again whenever the lead is on and nothing blocks it. Each wake
 // asks leadWakeCheck first, which rebuilds the goal's fields from the
 // settings. The owner's answers to the lead's proposals land in its ledger
 // and wake it. Nothing runs at import: `startProjectLeads` registers the
@@ -13,11 +14,13 @@ import type { LeadGoalFields, LeadWakePlan } from "../goal-runner";
 import {
   LEAD_UNAVAILABLE_REASON,
   WAKE_CHECK_FAILED_REASON,
+  goalGuardFor,
   goalMonthSpend,
   monthOf,
   type Goal,
 } from "../goals";
 import { supervisorInboxKey } from "../supervisor-inbox";
+import { localClock } from "../supervisor-quiet-hours";
 import {
   DEFAULT_REPORT_STYLE,
   type ReportStyle,
@@ -29,6 +32,17 @@ export const LEAD_MIN_WAKE_MINUTES = 60;
 export const LEAD_OFF_REASON = "The lead is off in the project settings";
 export const KILL_SWITCH_REASON = "Agents are paused for this project";
 const BUDGET_REASON_PREFIX = "Over the lead's budget";
+/** Pauses the loop guard makes; lifted by the owner's Resume, the owner's
+ *  next local day (the wake limit) or LEAD_TRIP_HOLD_MS after the trip
+ *  (the token limit). */
+const GUARD_REASON_PREFIX = "Loop guard";
+/** How long a wake past its token limit holds the lead without the
+ *  owner's Resume: a fixed span, so a trip late in the day still holds. */
+export const LEAD_TRIP_HOLD_MS = 12 * 60 * 60_000;
+/** A lead whose due wake waits for headroom this long asks its owner. */
+export const LEAD_WAIT_ASK_MS = 24 * 60 * 60_000;
+export const RESUME_OPTION = "Resume";
+export const KEEP_PAUSED_OPTION = "Keep paused";
 /** A new goal waits under this until its id is in the settings. */
 export const STARTING_REASON = "Starting: the lead is recording its goal";
 /** A goal leadProject names that the settings no longer point at. */
@@ -56,6 +70,8 @@ export interface LeadGoalDeps {
   postSupervisorItem: (typeof import("../supervisor-inbox"))["postSupervisorItem"];
   /** The owner's report style from their supervisor prefs. */
   reportStyle(owner: string): Promise<ReportStyle>;
+  /** The owner's time zone: their supervisor prefs, else their profile. */
+  timeZone(owner: string): Promise<string>;
   listProjectDocuments(): Promise<ProjectSettingsDocument[]>;
   /** Run `fn` once after `ms`; never holds the process open. */
   later(fn: () => void, ms: number): void;
@@ -84,6 +100,9 @@ const liveDeps: LeadGoalDeps = {
     (await import("../supervisor-inbox")).postSupervisorItem(...args),
   reportStyle: async (owner) =>
     (await import("../supervisor-inbox")).supervisorReportStyle(owner),
+  timeZone: async (owner) =>
+    (await (await import("../supervisor-inbox")).getSupervisorPrefs(owner))
+      .effectiveTimezone,
   listProjectDocuments: async () =>
     (await import("../projects/store")).listProjectDocuments(),
   later: (fn, ms) => {
@@ -156,17 +175,61 @@ function sameFields(goal: Goal, fields: LeadGoalFields) {
   );
 }
 
-/** Why the lead's goal must not run now, or null. */
+/** The owner's local day (`YYYY-MM-DD`) at `now`, the day a lead's wakes
+ *  count towards. UTC without an owner or when their zone can't be read. */
+export async function leadDay(
+  doc: ProjectSettingsDocument,
+  now: number,
+  d: Pick<LeadGoalDeps, "timeZone">,
+): Promise<string> {
+  const owner = leadOwner(doc);
+  const zone = owner ? await d.timeZone(owner).catch(() => "UTC") : "UTC";
+  return localClock(now, zone).day;
+}
+
+/** Why the lead's goal must not run now, or null. `day` is the owner's
+ *  local day at `now` (leadDay). */
 export function leadBlockReason(
   doc: ProjectSettingsDocument,
-  goal: Pick<Goal, "spend">,
+  goal: Pick<Goal, "spend" | "guard">,
   now: number,
+  day: string,
 ): string | null {
   if (!doc.lead.enabled) return LEAD_OFF_REASON;
   if (doc.incidents.agentsPaused) return KILL_SWITCH_REASON;
+  const cap = doc.lead.budgetUsdPerMonth;
   const spent = goalMonthSpend(goal, now);
-  if (!(spent < doc.lead.budgetUsdPerMonth))
-    return `${BUDGET_REASON_PREFIX}: $${Number(spent.toFixed(2))} of $${doc.lead.budgetUsdPerMonth} this month`;
+  if (cap !== null && !(spent < cap))
+    return `${BUDGET_REASON_PREFIX}: $${Number(spent.toFixed(2))} of $${cap} this month`;
+  return leadGuardHold(doc, goal, now, day)?.reason ?? null;
+}
+
+/** What the loop guard holds the lead for, or null: a wake went past its
+ *  token limit less than LEAD_TRIP_HOLD_MS ago, or the owner's day reached
+ *  its wake limit. Each hold has the key of the question that asks about
+ *  it: one per trip, one per day. The owner's Resume on that question lifts
+ *  that hold. */
+export function leadGuardHold(
+  doc: ProjectSettingsDocument,
+  goal: Pick<Goal, "guard">,
+  now: number,
+  day: string,
+): { kind: "trip" | "wakes"; reason: string; dedupeKey: string } | null {
+  const guard = goalGuardFor(goal, day);
+  const source = leadSource(doc.project);
+  const trippedAt = guard.trippedAt ? Date.parse(guard.trippedAt) : NaN;
+  if (now - trippedAt < LEAD_TRIP_HOLD_MS)
+    return {
+      kind: "trip",
+      reason: `${GUARD_REASON_PREFIX}: a wake used ${(guard.trippedTokens ?? 0).toLocaleString("en-US")} tokens, over its limit of ${doc.lead.wakeTokenLimit.toLocaleString("en-US")}`,
+      dedupeKey: `${source}:guard:trip:${guard.trips ?? 1}`,
+    };
+  if (!guard.lifted && guard.wakes >= doc.lead.dailyWakeLimit)
+    return {
+      kind: "wakes",
+      reason: `${GUARD_REASON_PREFIX}: ${guard.wakes} wakes today, the daily limit is ${doc.lead.dailyWakeLimit}`,
+      dedupeKey: `${source}:guard:wakes:${day}`,
+    };
   return null;
 }
 
@@ -184,6 +247,7 @@ export function leadOwnsPause(goal: Pick<Goal, "status" | "pauseReason">) {
     reason === NOT_THE_LEAD_REASON ||
     reason === LEAD_UNAVAILABLE_REASON ||
     reason.startsWith(BUDGET_REASON_PREFIX) ||
+    reason.startsWith(GUARD_REASON_PREFIX) ||
     reason.startsWith(WAKE_CHECK_FAILED_REASON)
   );
 }
@@ -260,7 +324,7 @@ async function createLeadGoal(
     throw error;
   }
   const now = d.now();
-  const block = leadBlockReason(doc, created, now);
+  const block = leadBlockReason(doc, created, now, await leadDay(doc, now, d));
   await d.mutateGoal(created.id, (g) =>
     g.status === "paused" && g.pauseReason === STARTING_REASON
       ? block
@@ -296,7 +360,7 @@ async function ensureNow(project: string): Promise<EnsureResult> {
     };
   const fields = await leadGoalFieldsNow(project, doc, d);
   const now = d.now();
-  const block = leadBlockReason(doc, existing, now);
+  const block = leadBlockReason(doc, existing, now, await leadDay(doc, now, d));
   const resume = !block && leadOwnsPause(existing);
   if (
     sameFields(existing, fields) &&
@@ -351,13 +415,50 @@ async function askAboutBudget(
   }
 }
 
+/** Ask the owner whether to resume a lead its loop guard holds: once per
+ *  hold, so a trip after an earlier Resume asks again. A failure to ask
+ *  never lets the wake run. */
+async function askAboutGuard(
+  project: string,
+  doc: ProjectSettingsDocument,
+  hold: NonNullable<ReturnType<typeof leadGuardHold>>,
+  d: LeadGoalDeps,
+): Promise<void> {
+  const owner = leadOwner(doc);
+  if (!owner) return;
+  const what = hold.reason.slice(GUARD_REASON_PREFIX.length + 2);
+  const after =
+    hold.kind === "trip"
+      ? "Resume lets it run again; otherwise it waits 12 hours."
+      : "Resume lets it run for the rest of today; otherwise it starts again tomorrow.";
+  try {
+    await d.postSupervisorItem({
+      user: owner,
+      source: leadSource(project),
+      project,
+      kind: "needs-you",
+      title: `${d.projectLabel(project) || project}: the lead paused itself`,
+      body: `${what.charAt(0).toUpperCase()}${what.slice(1)}. The lead may be stuck in a loop. ${after}`,
+      options: [RESUME_OPTION, KEEP_PAUSED_OPTION],
+      dedupeKey: hold.dedupeKey,
+      once: true,
+    });
+  } catch (error) {
+    console.warn(
+      `[leads] ${project}: could not ask about the loop guard:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
 /**
  * The wake check goal-runner runs before every wake of a lead's goal: it
- * doesn't wake while its lead is off, the project's kill switch is on, it
- * is over budget (which also asks the owner, once a month) or the settings
- * name another goal. Otherwise it runs on the fields the settings give it,
- * with what is left of this month's budget, and reads the web only past
- * the watch stage.
+ * doesn't wake while its lead is off, the project's kill switch is on, its
+ * loop guard holds it (which also asks the owner, once a hold), it is over
+ * an optional dollar cap (which asks once a month) or the settings name
+ * another goal. Otherwise it runs on the fields the settings give it, with
+ * its token limit and what is left of a dollar cap, and reads the web only
+ * past the watch stage.
  */
 export async function leadWakeCheck(goal: Goal): Promise<LeadWakePlan> {
   const project = goal.leadProject;
@@ -366,15 +467,22 @@ export async function leadWakeCheck(goal: Goal): Promise<LeadWakePlan> {
   const doc = await d.projectDocument(project);
   if (doc.lead.goalId !== goal.id) return { block: NOT_THE_LEAD_REASON };
   const now = d.now();
-  const reason = leadBlockReason(doc, goal, now);
+  const day = await leadDay(doc, now, d);
+  const reason = leadBlockReason(doc, goal, now, day);
   if (reason) {
     if (reason.startsWith(BUDGET_REASON_PREFIX))
       await askAboutBudget(project, doc, reason, now, d);
+    const hold = leadGuardHold(doc, goal, now, day);
+    if (hold && reason === hold.reason)
+      await askAboutGuard(project, doc, hold, d);
     return { block: reason };
   }
+  const cap = doc.lead.budgetUsdPerMonth;
   return {
     fields: await leadGoalFieldsNow(project, doc, d),
-    budgetUsd: doc.lead.budgetUsdPerMonth - goalMonthSpend(goal, now),
+    day,
+    wakeTokens: doc.lead.wakeTokenLimit,
+    budgetUsd: cap === null ? null : cap - goalMonthSpend(goal, now),
     web: doc.lead.stage !== "watch",
   };
 }
@@ -383,7 +491,8 @@ const idleRetries = new Map<string, number>();
 
 /**
  * On a tick, for a lead's goal that isn't active: a budget pause from an
- * earlier month lapses (its spend starts again at 0), and a pause the
+ * earlier month lapses (its spend starts again at 0), a loop guard pause
+ * lapses once its hold ends, and a pause the
  * runner made because it couldn't ask the lead is retried, each at most
  * every few minutes. Both go through ensureLeadGoal, which resumes the goal only
  * when nothing blocks it.
@@ -395,12 +504,15 @@ export async function leadGoalIdle(goal: Goal, now: number): Promise<void> {
   const monthTurned =
     reason.startsWith(BUDGET_REASON_PREFIX) &&
     goal.spend?.month !== monthOf(now);
+  // A guard hold lapses on the owner's next local day or LEAD_TRIP_HOLD_MS
+  // after its trip; ensureLeadGoal works out which, from the settings.
+  const guardPause = reason.startsWith(GUARD_REASON_PREFIX);
   const runnerPause =
     reason === LEAD_UNAVAILABLE_REASON ||
     reason.startsWith(WAKE_CHECK_FAILED_REASON);
-  if (!monthTurned && !runnerPause) return;
-  // Both are retried at most every few minutes: a budget of $0 stays over
-  // it in the new month, so its pause would otherwise be retried each tick.
+  if (!monthTurned && !guardPause && !runnerPause) return;
+  // Each is retried at most every few minutes: a pause that still holds
+  // would otherwise be retried each tick.
   if (now - (idleRetries.get(goal.id) ?? 0) < RETRY_MS) return;
   idleRetries.set(goal.id, now);
   try {
@@ -408,6 +520,37 @@ export async function leadGoalIdle(goal: Goal, now: number): Promise<void> {
   } catch (error) {
     console.warn(
       `[leads] ${project}:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
+/**
+ * On a tick a due wake of the lead's goal waited for headroom: once it has
+ * waited LEAD_WAIT_ASK_MS, tell the owner, once per wait.
+ */
+export async function leadGoalWaiting(goal: Goal, now: number): Promise<void> {
+  const project = goal.leadProject;
+  const waiting = goal.waiting;
+  if (!project || !waiting) return;
+  if (!(now - Date.parse(waiting.since) >= LEAD_WAIT_ASK_MS)) return;
+  const d = deps();
+  const owner = leadOwner(await d.projectDocument(project));
+  if (!owner) return;
+  try {
+    await d.postSupervisorItem({
+      user: owner,
+      source: leadSource(project),
+      project,
+      kind: "needs-you",
+      title: `${d.projectLabel(project) || project}: the lead has waited a day to run`,
+      body: `${waiting.reason}, so its wakes wait. It runs again once there is room.`,
+      dedupeKey: `${leadSource(project)}:waiting:${waiting.since}`,
+      once: true,
+    });
+  } catch (error) {
+    console.warn(
+      `[leads] ${project}: could not tell the owner the lead is waiting:`,
       error instanceof Error ? error.message : error,
     );
   }
@@ -461,9 +604,32 @@ export async function handleLeadAnswer(
     doc.lead.stage === "watch"
       ? "Watch stage: nothing was applied. If this approves a change, prepare it exactly on this wake and propose it again as ready to apply."
       : "Nothing was applied by answering; act on it within your rules.";
+  // The owner's Resume on the question about the hold that holds the lead
+  // now lifts it: the trip, and the wake limit for the rest of the owner's
+  // day (a trip clears an earlier Resume, so its Resume restores it). The
+  // next trip holds it again. Keep paused leaves it.
+  const now0 = d.now();
+  const day = await leadDay(doc, now0, d);
+  const hold = leadGuardHold(doc, goal, now0, day);
+  const resumeGuard =
+    answer === RESUME_OPTION && !!hold && item.dedupeKey === hold.dedupeKey;
+  if (resumeGuard)
+    await d.mutateGoal(goal.id, (g) => {
+      const {
+        trippedAt: _at,
+        trippedTokens: _tokens,
+        ...guard
+      } = goalGuardFor(g, day);
+      return { ...g, guard: { ...guard, lifted: true } };
+    });
   await d.appendLedger(
     goal,
-    [`Owner answered ${what}: ${answer}`, note].join("\n\n"),
+    [
+      `Owner answered ${what}: ${answer}`,
+      resumeGuard
+        ? "The loop guard is lifted for the rest of today, until a wake goes past its token limit again. Check the ledger for what kept you waking or spending, and change course."
+        : note,
+    ].join("\n\n"),
   );
   await ensureLeadGoal(project);
   const now = new Date(d.now()).toISOString();
@@ -532,6 +698,10 @@ export async function startProjectLeads(): Promise<void> {
     });
   });
   onSupervisorAnswer(LEAD_SOURCE_PREFIX, handleLeadAnswer);
-  runner.registerLeadGoalHooks({ wake: leadWakeCheck, idle: leadGoalIdle });
+  runner.registerLeadGoalHooks({
+    wake: leadWakeCheck,
+    idle: leadGoalIdle,
+    waiting: leadGoalWaiting,
+  });
   void ensureLeadGoalsAtBoot();
 }

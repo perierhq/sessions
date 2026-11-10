@@ -60,8 +60,74 @@ test("a project reads with the lead off, watching, at the ADR's defaults", async
     enabled: false,
     stage: "watch",
     rules: { ...DEFAULT_LEAD_RULES },
-    budgetUsdPerMonth: 50,
+    budgetUsdPerMonth: null,
+    dailyWakeLimit: 24,
+    wakeTokenLimit: 1_000_000,
   });
+});
+
+const LEAD_BUDGET_ERROR =
+  "Lead dollar cap (lead.budgetUsdPerMonth) must be off or from $0.01 to $100000";
+
+test("a stored lead from before the loop guards reads with its old default cap off", async () => {
+  const doc = await getProjectDocument("acme-web");
+  const stored = (lead: Record<string, unknown>) =>
+    projectDocuments().set("acme-web", { ...doc, lead, revision: 2 });
+  const { dailyWakeLimit: _w, wakeTokenLimit: _t, ...older } = doc.lead;
+  await stored({ ...older, budgetUsdPerMonth: 50 });
+  expect((await getProjectDocument("acme-web")).lead).toMatchObject({
+    budgetUsdPerMonth: null,
+    dailyWakeLimit: 24,
+    wakeTokenLimit: 1_000_000,
+  });
+  // A cap the owner chose stays, and so does a $50 written with the guards.
+  await stored({ ...older, budgetUsdPerMonth: 80 });
+  expect((await getProjectDocument("acme-web")).lead.budgetUsdPerMonth).toBe(
+    80,
+  );
+  await stored({ ...doc.lead, budgetUsdPerMonth: 50 });
+  expect((await getProjectDocument("acme-web")).lead.budgetUsdPerMonth).toBe(
+    50,
+  );
+  // A $0 budget held the lead stopped: it reads as off, not as no cap.
+  await stored({ ...older, enabled: true, budgetUsdPerMonth: 0 });
+  expect((await getProjectDocument("acme-web")).lead).toMatchObject({
+    enabled: false,
+    budgetUsdPerMonth: null,
+  });
+});
+
+test("the loop guards and the dollar cap validate, and only null turns the cap off", async () => {
+  const set = await write({
+    dailyWakeLimit: 12,
+    wakeTokenLimit: 200_000,
+    budgetUsdPerMonth: 30,
+  });
+  if ("error" in set) throw new Error(set.error);
+  expect(set.lead).toMatchObject({
+    dailyWakeLimit: 12,
+    wakeTokenLimit: 200_000,
+    budgetUsdPerMonth: 30,
+  });
+  const off = await write({ budgetUsdPerMonth: null });
+  if ("error" in off) throw new Error(off.error);
+  expect(off.lead.budgetUsdPerMonth).toBeNull();
+  for (const [lead, error] of [
+    [{ budgetUsdPerMonth: 0 }, LEAD_BUDGET_ERROR],
+    [
+      { dailyWakeLimit: 0 },
+      "Lead wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to 1000",
+    ],
+    [
+      { dailyWakeLimit: 2.5 },
+      "Lead wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to 1000",
+    ],
+    [
+      { wakeTokenLimit: 5 },
+      "Lead tokens a wake (lead.wakeTokenLimit) must be a whole number from 10000 to 50000000",
+    ],
+  ] as const)
+    expect(await write(lead)).toEqual({ error, status: 400 });
 });
 
 test("a document stored before the lead reads it at its defaults", async () => {
@@ -162,10 +228,7 @@ test("bad values are refused", async () => {
       { rules: { "ci-repair": "sometimes" } },
       "Lead rule (lead.rules.ci-repair) must be one of alone, asks-first, only-you",
     ],
-    [
-      { budgetUsdPerMonth: -1 },
-      "Lead budget (lead.budgetUsdPerMonth) must be from $0 to $100000",
-    ],
+    [{ budgetUsdPerMonth: -1 }, LEAD_BUDGET_ERROR],
     [
       { owner: "Mallory" },
       'Lead owner (lead.owner): Nobody on the team is called "Mallory"',
@@ -190,7 +253,7 @@ test("only the instance owner or the lead's owner gives the lead more room", asy
       { enabled: true },
       { stage: "act" },
       { rules: { "ban-user": "alone" } },
-      { budgetUsdPerMonth: 51 },
+      { dailyWakeLimit: 25 },
       { owner: "Grace" },
     ]) {
       const result = await write(lead, actor);
@@ -203,7 +266,7 @@ test("only the instance owner or the lead's owner gives the lead more room", asy
     ["lead.enabled"],
     ["lead.stage"],
     ["lead.rules.ban-user"],
-    ["lead.budgetUsdPerMonth"],
+    ["lead.dailyWakeLimit"],
     ["lead.owner"],
   ]);
   expect(refused).toHaveLength(15);
@@ -234,6 +297,11 @@ test("the lead's owner may give it more room; the instance owner always may", as
   if ("error" in handed) throw new Error(handed.error);
   // No longer the owner: Grace can tighten, not loosen.
   expect(await write({ budgetUsdPerMonth: 90 }, grace)).toEqual({
+    error: LOOSEN,
+    status: 403,
+  });
+  // Removing the cap is more room too.
+  expect(await write({ budgetUsdPerMonth: null }, grace)).toEqual({
     error: LOOSEN,
     status: 403,
   });

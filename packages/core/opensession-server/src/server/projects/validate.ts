@@ -18,12 +18,15 @@ import {
   checkBudgetUsd,
 } from "../../shared/incident-response";
 import {
-  DEFAULT_LEAD_BUDGET_USD,
   LEAD_CATEGORIES,
   LEAD_CATEGORY_LABELS,
   LEAD_LEVELS,
   LEAD_STAGES,
+  LEGACY_DEFAULT_LEAD_BUDGET_USD,
   MAX_LEAD_BUDGET_USD,
+  MAX_LEAD_DAILY_WAKES,
+  MAX_LEAD_WAKE_TOKENS,
+  MIN_LEAD_WAKE_TOKENS,
   PINNED_ONLY_YOU,
   type LeadCategory,
   type LeadLevel,
@@ -648,6 +651,47 @@ export function pinnedLeadError(category: LeadCategory): string {
   return `Only you decide ${LEAD_CATEGORY_LABELS[category].toLowerCase()}: a lead may prepare, never act (lead.rules.${category})`;
 }
 
+const LEAD_BUDGET_ERROR = `Lead dollar cap (lead.budgetUsdPerMonth) must be off or from $0.01 to $${MAX_LEAD_BUDGET_USD}`;
+const DAILY_WAKES_ERROR = `Lead wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to ${MAX_LEAD_DAILY_WAKES}`;
+const WAKE_TOKENS_ERROR = `Lead tokens a wake (lead.wakeTokenLimit) must be a whole number from ${MIN_LEAD_WAKE_TOKENS} to ${MAX_LEAD_WAKE_TOKENS}`;
+
+function validDailyWakes(v: unknown): v is number {
+  return Number.isInteger(v) && numberIn(v, 1, MAX_LEAD_DAILY_WAKES);
+}
+
+function validWakeTokens(v: unknown): v is number {
+  return (
+    Number.isInteger(v) &&
+    numberIn(v, MIN_LEAD_WAKE_TOKENS, MAX_LEAD_WAKE_TOKENS)
+  );
+}
+
+function validLeadBudget(v: unknown): v is number | null {
+  return v === null || (numberIn(v, 0, MAX_LEAD_BUDGET_USD) && v > 0);
+}
+
+/** Whether a stored block was written before the loop guards: it has
+ *  neither guard field. Its cap was the old required budget. */
+function preGuardLead(raw: Record<string, unknown>): boolean {
+  return !("dailyWakeLimit" in raw) && !("wakeTokenLimit" in raw);
+}
+
+/** The dollar cap a stored block holds. Before the loop guards every lead
+ *  had $50 by default, so a pre-guard $50 reads as off; a $50 written with
+ *  the guards is the owner's. Missing or invalid reads as off. */
+function storedLeadBudget(raw: Record<string, unknown>): number | null {
+  const v = raw.budgetUsdPerMonth;
+  if (typeof v !== "number" || !validLeadBudget(v)) return null;
+  return v === LEGACY_DEFAULT_LEAD_BUDGET_USD && preGuardLead(raw) ? null : v;
+}
+
+/** A pre-guard block with a $0 budget held its lead stopped; with no cap
+ *  it would run unbounded, so it reads as off until the owner turns it on
+ *  again. */
+function heldAtZero(raw: Record<string, unknown>): boolean {
+  return raw.budgetUsdPerMonth === 0 && preGuardLead(raw);
+}
+
 /** A stored lead block merged over the defaults: unknown values read as
  *  their default and pinned categories as only you, so a document from an
  *  older build, or one written by hand, never gives a lead more room. */
@@ -662,12 +706,16 @@ export function leadWithDefaults(raw: unknown): ProjectLeadSettings {
     ]),
   ) as Record<LeadCategory, LeadLevel>;
   return {
-    enabled: raw.enabled === true,
+    enabled: raw.enabled === true && !heldAtZero(raw),
     stage: isLeadStage(raw.stage) ? raw.stage : base.stage,
     rules,
-    budgetUsdPerMonth: numberIn(raw.budgetUsdPerMonth, 0, MAX_LEAD_BUDGET_USD)
-      ? raw.budgetUsdPerMonth
-      : DEFAULT_LEAD_BUDGET_USD,
+    budgetUsdPerMonth: storedLeadBudget(raw),
+    dailyWakeLimit: validDailyWakes(raw.dailyWakeLimit)
+      ? raw.dailyWakeLimit
+      : base.dailyWakeLimit,
+    wakeTokenLimit: validWakeTokens(raw.wakeTokenLimit)
+      ? raw.wakeTokenLimit
+      : base.wakeTokenLimit,
     ...(typeof raw.goalId === "string" && raw.goalId
       ? { goalId: raw.goalId }
       : {}),
@@ -712,11 +760,20 @@ export function applyLeadPatch(
     }
   }
   if ("budgetUsdPerMonth" in input) {
-    if (!numberIn(input.budgetUsdPerMonth, 0, MAX_LEAD_BUDGET_USD))
-      return {
-        error: `Lead budget (lead.budgetUsdPerMonth) must be from $0 to $${MAX_LEAD_BUDGET_USD}`,
-      };
+    // null is the only off: 0 is refused, so it never reads as "no cap".
+    if (!validLeadBudget(input.budgetUsdPerMonth))
+      return { error: LEAD_BUDGET_ERROR };
     next.budgetUsdPerMonth = input.budgetUsdPerMonth;
+  }
+  if ("dailyWakeLimit" in input) {
+    if (!validDailyWakes(input.dailyWakeLimit))
+      return { error: DAILY_WAKES_ERROR };
+    next.dailyWakeLimit = input.dailyWakeLimit;
+  }
+  if ("wakeTokenLimit" in input) {
+    if (!validWakeTokens(input.wakeTokenLimit))
+      return { error: WAKE_TOKENS_ERROR };
+    next.wakeTokenLimit = input.wakeTokenLimit;
   }
   if ("owner" in input) {
     if (input.owner === null || input.owner === "") delete next.owner;
@@ -734,8 +791,8 @@ export function applyLeadPatch(
 
 /**
  * Dotted paths of the lead changes that give it more room: turned on, a
- * later stage, a category moved towards alone, a higher budget, or a
- * different owner (who it answers to). Tightening is open to every writer.
+ * later stage, a category moved towards alone, a dollar cap raised or
+ * removed, more wakes a day or tokens a wake, or a different owner (who it answers to). Tightening is open to every writer.
  */
 export function loosenedLeadFields(
   before: ProjectLeadSettings,
@@ -747,8 +804,16 @@ export function loosenedLeadFields(
   for (const c of LEAD_CATEGORIES)
     if (!leadLevelWithin(after.rules[c], before.rules[c]))
       out.push(`lead.rules.${c}`);
-  if (after.budgetUsdPerMonth > before.budgetUsdPerMonth)
+  if (
+    before.budgetUsdPerMonth !== null &&
+    (after.budgetUsdPerMonth === null ||
+      after.budgetUsdPerMonth > before.budgetUsdPerMonth)
+  )
     out.push("lead.budgetUsdPerMonth");
+  if (after.dailyWakeLimit > before.dailyWakeLimit)
+    out.push("lead.dailyWakeLimit");
+  if (after.wakeTokenLimit > before.wakeTokenLimit)
+    out.push("lead.wakeTokenLimit");
   if ((before.owner ?? "") !== (after.owner ?? "")) out.push("lead.owner");
   return out.sort();
 }
@@ -763,7 +828,8 @@ export function leadInvariantProblem(lead: ProjectLeadSettings): string | null {
       return `Lead rule (lead.rules.${c}) must be one of ${LEAD_LEVELS.join(", ")}`;
   if (!isLeadStage(lead.stage))
     return `Lead stage (lead.stage) must be one of ${LEAD_STAGES.join(", ")}`;
-  if (!numberIn(lead.budgetUsdPerMonth, 0, MAX_LEAD_BUDGET_USD))
-    return `Lead budget (lead.budgetUsdPerMonth) must be from $0 to $${MAX_LEAD_BUDGET_USD}`;
+  if (!validLeadBudget(lead.budgetUsdPerMonth)) return LEAD_BUDGET_ERROR;
+  if (!validDailyWakes(lead.dailyWakeLimit)) return DAILY_WAKES_ERROR;
+  if (!validWakeTokens(lead.wakeTokenLimit)) return WAKE_TOKENS_ERROR;
   return null;
 }

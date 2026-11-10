@@ -247,7 +247,12 @@ export function Goals({ onOpenSession, selectedId, onSelect }: Props) {
                     <span
                       className="size-2 shrink-0 rounded-full"
                       style={{ background: STATUS_COLOR[g.status] }}
-                      title={g.pauseReason || g.doneReason || g.status}
+                      title={
+                        g.pauseReason ||
+                        g.doneReason ||
+                        g.waiting?.reason ||
+                        g.status
+                      }
                     />
                     <span
                       className={cn(
@@ -431,6 +436,11 @@ export function Goals({ onOpenSession, selectedId, onSelect }: Props) {
                 {sel.status === "paused" && sel.pauseReason && (
                   <div className="text-dim text-supporting leading-snug">
                     Paused: {sel.pauseReason}
+                  </div>
+                )}
+                {sel.status === "active" && sel.waiting && (
+                  <div className="text-dim text-supporting leading-snug">
+                    Waiting: {sel.waiting.reason}
                   </div>
                 )}
                 {(sel.status === "done" || sel.status === "failed") &&

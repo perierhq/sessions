@@ -1,7 +1,7 @@
 // The project lead's charter, as the `lead` block of a project's settings
 // document (adrs/supervisor-and-leads.md): whether a lead runs, how far it
 // has been rolled out, one autonomy level per action category, and its
-// monthly spend ceiling. Types, constant lists and the pure decision helper
+// loop guards (wakes a day, tokens a wake) with an optional dollar cap. Types, constant lists and the pure decision helper
 // only; the server validates writes (server/projects/store.ts).
 
 /** How far the lead has been rolled out, in order:
@@ -90,14 +90,30 @@ export const COORDINATE_CATEGORIES = [
   "ci-repair",
 ] as const satisfies readonly LeadCategory[];
 
-export const DEFAULT_LEAD_BUDGET_USD = 50;
+/** The monthly dollar cap every lead had before the loop guards. A stored
+ *  cap equal to it was never the owner's choice, so it reads as off. */
+export const LEGACY_DEFAULT_LEAD_BUDGET_USD = 50;
 export const MAX_LEAD_BUDGET_USD = 100_000;
+
+/** Wakes a lead may start in one UTC day before it pauses and asks. */
+export const DEFAULT_LEAD_DAILY_WAKES = 24;
+export const MAX_LEAD_DAILY_WAKES = 1_000;
+/** Tokens one wake may use before it is asked to wrap up (see
+ *  wakeTokens in goal-runner.ts for how they are counted). */
+export const DEFAULT_LEAD_WAKE_TOKENS = 1_000_000;
+export const MIN_LEAD_WAKE_TOKENS = 10_000;
+export const MAX_LEAD_WAKE_TOKENS = 50_000_000;
 
 export interface ProjectLeadSettings {
   enabled: boolean;
   stage: LeadStage;
   rules: Record<LeadCategory, LeadLevel>;
-  budgetUsdPerMonth: number;
+  /** Optional monthly dollar cap; null is no cap (the default). */
+  budgetUsdPerMonth: number | null;
+  /** Wakes a day before the lead pauses and asks the owner. */
+  dailyWakeLimit: number;
+  /** Tokens a wake may use before it wraps up and the lead pauses. */
+  wakeTokenLimit: number;
   /** The lead's goal (goals.ts); set by the server, never by a patch. */
   goalId?: string;
   /** The person the lead answers to. */
@@ -109,7 +125,10 @@ export interface ProjectLeadPatch {
   enabled?: boolean;
   stage?: LeadStage;
   rules?: Partial<Record<LeadCategory, LeadLevel>>;
-  budgetUsdPerMonth?: number;
+  /** null turns the cap off. */
+  budgetUsdPerMonth?: number | null;
+  dailyWakeLimit?: number;
+  wakeTokenLimit?: number;
   owner?: string | null;
 }
 
@@ -118,7 +137,9 @@ export function defaultLeadSettings(): ProjectLeadSettings {
     enabled: false,
     stage: "watch",
     rules: { ...DEFAULT_LEAD_RULES },
-    budgetUsdPerMonth: DEFAULT_LEAD_BUDGET_USD,
+    budgetUsdPerMonth: null,
+    dailyWakeLimit: DEFAULT_LEAD_DAILY_WAKES,
+    wakeTokenLimit: DEFAULT_LEAD_WAKE_TOKENS,
   };
 }
 
