@@ -56,14 +56,18 @@ final class BlobTextTalk {
     var replyEntry: TranscriptEntry? {
         guard let desk, phase == .waiting, !desk.isStreaming else { return nil }
         let entries = desk.entries
-        let floor = sentAfter.flatMap { id in entries.lastIndex { $0.id == id } }.map { $0 + 1 } ?? 0
+        let anchored = sentAfter.flatMap { id in entries.lastIndex { $0.id == id } }.map { $0 + 1 }
+        let floor = anchored ?? 0
         guard floor < entries.count else { return nil }
         let said = heard.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let mine = entries[floor...].lastIndex(where: { entry in
+        let mine = entries[floor...].lastIndex(where: { entry in
             entry.type == "user" && (said.isEmpty || (entry.content ?? "").contains(said))
-        }) else { return nil }
-        let after = entries.index(after: mine)
-        guard after < entries.count else { return nil }
+        })
+        // Answering an ask adds no message of yours: the reply is whatever
+        // the run writes after the answer went out.
+        guard let after = mine.map({ entries.index(after: $0) }) ?? (said.isEmpty ? anchored : nil),
+              after < entries.count
+        else { return nil }
         return entries[after...].last { $0.type == "assistant" && $0.isReasoning != true }
     }
 
@@ -91,6 +95,53 @@ final class BlobTextTalk {
 
     /// The supervisor's quick-reply relay, so `choices` chips in a reply send.
     var relay: QuickReplyRelay? { desk?.quickReplies }
+
+    /// What the supervisor's run is waiting on you for: a question it asked,
+    /// or a force merge to confirm. Nil when nothing is pending.
+    var ask: BlobAsk? {
+        guard let desk else { return nil }
+        if let question = desk.pendingQuestion, let ask = BlobAsk(question: question) { return ask }
+        return desk.actionCards.forceMerge.map(BlobAsk.forceMerge)
+    }
+
+    /// The ask that was last read aloud, so it is read once.
+    private var spokenAsk: String?
+
+    /// Reads an ask's question aloud when it comes up, once, unless you are
+    /// talking.
+    func askCameUp(_ ask: BlobAsk) {
+        guard ask.id != spokenAsk, phase != .listening else { return }
+        spokenAsk = ask.id
+        let say = BlobReply(ask.body).say
+        if !say.isEmpty { speaker.speak(say) }
+    }
+
+    /// Answers an ask the way the OS app does, then waits for the run's
+    /// reply like any message.
+    func answer(_ ask: BlobAsk, with action: BlobAsk.Option.Action) async throws {
+        guard let desk else { return }
+        switch (ask, action) {
+        case (.question(let question), .answer(let text)):
+            guard let first = question.questions.first else { return }
+            desk.answer(question: question, answers: [first.question: text])
+        case (.question(let question), .skip):
+            desk.answer(question: question, answers: nil)
+        case (.forceMerge(let pending), .confirmMerge):
+            try await desk.actionCards.confirmForceMerge(pending.request)
+        case (.forceMerge(let pending), .cancelMerge):
+            try await desk.actionCards.cancelForceMerge(pending.request)
+        default:
+            return
+        }
+        speaker.stop()
+        spokenAnswer = nil
+        // Already waiting on a message: its reply still comes after it.
+        guard phase != .waiting else { return }
+        listener.cancel()
+        heard = ""
+        sentAfter = desk.entries.last?.id
+        phase = .waiting
+    }
 
     /// True while the supervisor is still working on the answer.
     var thinking: Bool { phase == .waiting && (desk?.isRunning ?? true) && answer == nil }

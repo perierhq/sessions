@@ -544,6 +544,14 @@ describe("standing sessions", () => {
     expect(note).toContain("mark the old one superseded");
   });
 
+  test("the charter merges the normal way and force merges only on request", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain("check_pr_ready");
+    expect(note).toContain(
+      "Use force_merge_pull_request only when the owner explicitly asks to merge past failing, pending or missing checks.",
+    );
+  });
+
   test("the charter keeps decisions to the owner's own words", () => {
     const note = supervisor.supervisorNote("Pat");
     expect(note).toContain(
