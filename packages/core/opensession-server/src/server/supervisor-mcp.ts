@@ -8,9 +8,13 @@
  *
  * Every tool acts on the inbox of the session's owner (its creator), never on
  * anyone else's, and is mounted only for a turn that owner drives
- * (`supervisorInboxOwner`).
+ * (`supervisorInboxOwner`). `ask_pat` hands GitHub work to the instance
+ * persona through the GitHub agent's existing entry point
+ * (supervisor-ask-pat.ts) on the owner's behalf.
  */
 import { z } from "zod";
+import { personaName } from "./config";
+import { ASK_PAT_ACTIONS, askPat } from "./supervisor-ask-pat";
 import { createSdkMcpServer, tool } from "./inprocess-mcp";
 import { humanPrompter, sessionCreationOwner } from "./session-actors";
 import {
@@ -151,6 +155,31 @@ export function createSupervisorMcpServer(ctx: { user: string }) {
           return text(
             `${created ? "Posted" : "Updated"} (${delivery}): ${format(item)}`,
           );
+        },
+      ),
+      tool(
+        "ask_pat",
+        `Hand GitHub work on a pull request to ${personaName()}, the public worker, through the existing flows: review_pr runs the PR review, fix_ci runs the auto-fix loop starting with the failing checks, auto_fix runs the full auto-fix loop (os-auto-fix). ${personaName()} posts the results on the PR. Takes no text: nothing you write goes to GitHub. Tell the owner you asked ${personaName()}.`,
+        {
+          action: z.enum(ASK_PAT_ACTIONS),
+          repo: z
+            .string()
+            .min(1)
+            .max(200)
+            .describe("A registered repository: its id or GitHub owner/name."),
+          pr: z.number().int().positive().describe("The PR number."),
+        },
+        async (args) => {
+          const result = await askPat({
+            owner: user,
+            action: args.action,
+            repo: args.repo,
+            pr: args.pr,
+          });
+          return {
+            ...text(result.message),
+            ...(result.ok ? {} : { isError: true }),
+          };
         },
       ),
     ],

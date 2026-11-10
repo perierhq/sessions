@@ -27,6 +27,7 @@ import {
   answerSupervisorItem,
   listSupervisorItems,
   onSupervisorAnswer,
+  setSupervisorPrefs,
 } from "../supervisor-inbox";
 import {
   KILL_SWITCH_REASON,
@@ -333,6 +334,32 @@ describe("leadWakeCheck", () => {
     expect(await leadWakeCheck(stray)).toEqual({
       block: "Another goal leads this project",
     });
+  });
+
+  test("a wake writes the owner's report style into the charter", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    expect((await leadGoal()).mission).toContain(
+      "The owner's report style is BLUF",
+    );
+    await setSupervisorPrefs("Ada", { reportStyle: "sbar" });
+    const plan = await leadWakeCheck(await leadGoal());
+    if ("block" in plan) throw new Error(plan.block);
+    expect(plan.fields.mission).toContain("The owner's report style is SBAR");
+    // A failed read falls back to the default rather than blocking the wake.
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      reportStyle: async () => {
+        throw new Error("catalog down");
+      },
+    });
+    const fallback = await leadWakeCheck(await leadGoal());
+    if ("block" in fallback) throw new Error(fallback.block);
+    expect(fallback.fields.mission).toContain(
+      "The owner's report style is BLUF",
+    );
   });
 
   test("a wake runs on what the settings say now", async () => {

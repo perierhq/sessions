@@ -172,9 +172,33 @@ describe("standing sessions", () => {
   });
 
   test("the charter is plain and short", () => {
-    expect(supervisor.SUPERVISOR_NOTE).not.toContain("\u2014");
-    expect(supervisor.SUPERVISOR_NOTE).toContain("refunds");
-    expect(supervisor.SUPERVISOR_NOTE).toContain("create_session");
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).not.toContain("\u2014");
+    expect(note).toContain("refunds");
+    expect(note).toContain("create_session");
+  });
+
+  test("the charter says how Blob speaks", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain("## How Blob speaks");
+    expect(note).toContain("warm, but not pretending to be human");
+    expect(note).toContain('("I\'d raise it")');
+    expect(note).toContain('no filler ("Great question")');
+    expect(note).toContain('Never say "as an AI"');
+    expect(note).toContain("Never claim something you didn't do");
+    expect(note).toContain('say "I don\'t know" plainly');
+    expect(note).toContain("One or two sentences, then stop.");
+    expect(note).toContain("never cute. No em dashes.");
+  });
+
+  test("Blob names the persona when delegating and never posts publicly", () => {
+    const note = supervisor.supervisorNote("Robin");
+    expect(note).toContain('("I\'ve asked Robin to review it")');
+    expect(note).toContain("ask_pat hands Robin GitHub work");
+    expect(note).toContain(
+      "You never sign or post anything public yourself, and nothing public is ever signed Blob. Anything public goes out as Robin",
+    );
+    expect(note).not.toContain("Pat ");
   });
 });
 

@@ -18,6 +18,10 @@ import {
   type Goal,
 } from "../goals";
 import { supervisorInboxKey } from "../supervisor-inbox";
+import {
+  DEFAULT_REPORT_STYLE,
+  type ReportStyle,
+} from "../supervisor-report-style";
 import { leadCharter } from "./charter";
 import { LEAD_SOURCE_PREFIX, leadOwner, leadSource } from "./report";
 
@@ -50,6 +54,8 @@ export interface LeadGoalDeps {
   mutateGoal: (typeof import("../goals"))["mutateGoal"];
   appendLedger: (typeof import("../goals"))["appendLedger"];
   postSupervisorItem: (typeof import("../supervisor-inbox"))["postSupervisorItem"];
+  /** The owner's report style from their supervisor prefs. */
+  reportStyle(owner: string): Promise<ReportStyle>;
   listProjectDocuments(): Promise<ProjectSettingsDocument[]>;
   /** Run `fn` once after `ms`; never holds the process open. */
   later(fn: () => void, ms: number): void;
@@ -76,6 +82,8 @@ const liveDeps: LeadGoalDeps = {
     (await import("../goals")).appendLedger(...args),
   postSupervisorItem: async (...args) =>
     (await import("../supervisor-inbox")).postSupervisorItem(...args),
+  reportStyle: async (owner) =>
+    (await import("../supervisor-inbox")).supervisorReportStyle(owner),
   listProjectDocuments: async () =>
     (await import("../projects/store")).listProjectDocuments(),
   later: (fn, ms) => {
@@ -102,6 +110,7 @@ export function leadGoalFields(
   project: string,
   doc: ProjectSettingsDocument,
   d: Pick<LeadGoalDeps, "projectLabel" | "isRepo"> = deps(),
+  reportStyle: ReportStyle = DEFAULT_REPORT_STYLE,
 ): LeadGoalFields {
   return {
     name: `Lead: ${d.projectLabel(project) || project}`,
@@ -110,6 +119,7 @@ export function leadGoalFields(
       label: d.projectLabel(project),
       doc,
       owner: leadOwner(doc),
+      reportStyle,
     }),
     mode: "ask",
     repo: d.isRepo(project) ? project : undefined,
@@ -117,6 +127,21 @@ export function leadGoalFields(
     // No external MCP servers: the lead reads through opensession-lead.
     mcpServers: [],
   };
+}
+
+/** The fields with the owner's report style read from their prefs, so the
+ *  lead writes proposals in it; the default when there is no owner or the
+ *  read fails. */
+async function leadGoalFieldsNow(
+  project: string,
+  doc: ProjectSettingsDocument,
+  d: LeadGoalDeps,
+): Promise<LeadGoalFields> {
+  const owner = leadOwner(doc);
+  const style = owner
+    ? await d.reportStyle(owner).catch(() => DEFAULT_REPORT_STYLE)
+    : DEFAULT_REPORT_STYLE;
+  return leadGoalFields(project, doc, d, style);
 }
 
 function sameFields(goal: Goal, fields: LeadGoalFields) {
@@ -221,7 +246,10 @@ async function createLeadGoal(
   d: LeadGoalDeps,
 ): Promise<string> {
   const created = await d.createGoal(
-    { ...leadGoalFields(project, doc, d), createdBy: "Project lead" },
+    {
+      ...(await leadGoalFieldsNow(project, doc, d)),
+      createdBy: "Project lead",
+    },
     { leadProject: project, pauseReason: STARTING_REASON },
   );
   if ("error" in created) throw new Error(created.error);
@@ -266,7 +294,7 @@ async function ensureNow(project: string): Promise<EnsureResult> {
       action: "created",
       goalId: await createLeadGoal(project, doc, d),
     };
-  const fields = leadGoalFields(project, doc, d);
+  const fields = await leadGoalFieldsNow(project, doc, d);
   const now = d.now();
   const block = leadBlockReason(doc, existing, now);
   const resume = !block && leadOwnsPause(existing);
@@ -345,7 +373,7 @@ export async function leadWakeCheck(goal: Goal): Promise<LeadWakePlan> {
     return { block: reason };
   }
   return {
-    fields: leadGoalFields(project, doc, d),
+    fields: await leadGoalFieldsNow(project, doc, d),
     budgetUsd: doc.lead.budgetUsdPerMonth - goalMonthSpend(goal, now),
     web: doc.lead.stage !== "watch",
   };

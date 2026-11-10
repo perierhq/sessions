@@ -247,7 +247,7 @@ export const INTERNAL_MCP_CAPABILITIES = {
   "opensession-supervisor": {
     summary: "The supervisor's inbox: decisions leads raised for the owner.",
     guidance:
-      "Your inbox from leads: list_items; answer_item when the owner answers in chat; dismiss_item; post_item for a needs-you push or an fyi for the digest.",
+      "Your inbox from leads: list_items; answer_item when the owner answers in chat; dismiss_item; post_item: a needs-you push or a digest fyi. ask_pat hands off PR work.",
   },
   "opensession-lead": {
     summary:

@@ -8,7 +8,15 @@
  * way incident maintenance windows are (incidents/maintenance.ts): a window
  * is half-open [start, end) and one whose end is before its start crosses
  * midnight. A time zone that cannot be resolved falls back to UTC.
+ *
+ * The prefs also carry the owner's report style (supervisor-report-style.ts).
  */
+import {
+  DEFAULT_REPORT_STYLE,
+  isReportStyle,
+  REPORT_STYLES,
+  type ReportStyle,
+} from "./supervisor-report-style";
 
 export interface SupervisorPrefs {
   /** Start of quiet hours, `HH:MM` local. Equal to `quietEnd`: no quiet. */
@@ -19,6 +27,8 @@ export interface SupervisorPrefs {
   digestAt: string;
   /** IANA time zone. Empty: the person's profile time zone. */
   timezone: string;
+  /** The shape of the supervisor's replies and the leads' proposals. */
+  reportStyle: ReportStyle;
 }
 
 export const DEFAULT_SUPERVISOR_PREFS: SupervisorPrefs = {
@@ -26,6 +36,7 @@ export const DEFAULT_SUPERVISOR_PREFS: SupervisorPrefs = {
   quietEnd: "08:00",
   digestAt: "09:00",
   timezone: "",
+  reportStyle: DEFAULT_REPORT_STYLE,
 };
 
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -165,6 +176,9 @@ export function cleanPrefs(value: unknown): SupervisorPrefs {
       ? raw.digestAt
       : DEFAULT_SUPERVISOR_PREFS.digestAt,
     timezone: isTimeZone(raw.timezone) ? raw.timezone : "",
+    reportStyle: isReportStyle(raw.reportStyle)
+      ? raw.reportStyle
+      : DEFAULT_REPORT_STYLE,
   };
 }
 
@@ -185,6 +199,13 @@ export function validatePrefsPatch(
     if (raw.timezone !== "" && !isTimeZone(raw.timezone))
       return { error: "unknown time zone" };
     patch.timezone = raw.timezone as string;
+  }
+  if (raw.reportStyle !== undefined) {
+    if (!isReportStyle(raw.reportStyle))
+      return {
+        error: `reportStyle must be one of ${REPORT_STYLES.join(", ")}`,
+      };
+    patch.reportStyle = raw.reportStyle;
   }
   return patch;
 }

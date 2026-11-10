@@ -52,6 +52,18 @@ export function maybePersistBlobSurface(
   session.blobSurface = next;
 }
 
+/**
+ * Say and show: how a reply is split in Blob. The first paragraph is what
+ * Blob says aloud and shows as its Say line; everything after it is shown
+ * and never spoken.
+ */
+export const SAY_SHOW_LINES = [
+  "Write the reply in two parts.",
+  "Say: the first paragraph is what Blob says aloud and shows as its Say line. One or two spoken sentences that describe what is shown and give the bottom line; never read out numbers, lists or tables.",
+  "Show: everything after the first paragraph is shown and never spoken. Use views from the block catalog in docs/blocks.md (metrics, csv tables, charts, choices) plus short text; show rather than tell.",
+  "Keep it to what fits; offer the rest as choices instead of writing it out.",
+] as const;
+
 /** The context note for this turn, or nothing when Blob isn't the reader. */
 export function blobSurfaceContext(
   session: Pick<UnifiedSession, "supervisor" | "blobSurface">,
@@ -69,9 +81,8 @@ export function blobSurfaceContext(
         : "one wide screen";
   return wrapContext(
     [
-      `This reply is shown in the Blob app on ${room}, under a small character that may read the prose aloud (never the blocks).`,
-      "Lead with the answer in one short bold sentence, then show rather than tell: prefer metrics, csv tables, charts and choices blocks to paragraphs.",
-      "Keep it to what fits; offer the rest as choices instead of writing it out.",
+      `This reply is shown in the Blob app on ${room}, under a small character that speaks for you.`,
+      ...SAY_SHOW_LINES,
     ].join(" "),
     "blob-surface",
   );

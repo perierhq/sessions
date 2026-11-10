@@ -180,4 +180,19 @@ describe("prefs", () => {
     });
     expect(validatePrefsPatch({ timezone: "" })).toEqual({ timezone: "" });
   });
+
+  test("the report style defaults to BLUF and fails closed", () => {
+    expect(DEFAULT_SUPERVISOR_PREFS.reportStyle).toBe("bluf");
+    expect(cleanPrefs({ reportStyle: "sbar" }).reportStyle).toBe("sbar");
+    expect(cleanPrefs({ reportStyle: "plain" }).reportStyle).toBe("plain");
+    expect(cleanPrefs({ reportStyle: "memo" }).reportStyle).toBe("bluf");
+    expect(cleanPrefs({}).reportStyle).toBe("bluf");
+    expect(validatePrefsPatch({ reportStyle: "plain" })).toEqual({
+      reportStyle: "plain",
+    });
+    for (const reportStyle of ["SBAR", "memo", "", 1, null])
+      expect(validatePrefsPatch({ reportStyle })).toEqual({
+        error: "reportStyle must be one of bluf, sbar, plain",
+      });
+  });
 });

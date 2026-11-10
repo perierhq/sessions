@@ -38,6 +38,7 @@ import {
   quietHoursEnd,
   type SupervisorPrefs,
 } from "./supervisor-quiet-hours";
+import { reportStyleInstruction } from "./supervisor-report-style";
 import { CATALOG_DOCUMENT_MAX_VALUE_BYTES } from "./session-kernel/catalog-document-protocol";
 
 export const SUPERVISOR_ITEMS_NAMESPACE = "supervisor-items";
@@ -1105,6 +1106,29 @@ export async function supervisorInboxContext(
     context: wrapContext(sections.join("\n\n"), "supervisor-inbox"),
     answered: answered.map((item) => item.id),
   };
+}
+
+/**
+ * The owner's report style as one line of this turn's context, next to the
+ * briefing rather than in the system prompt, so changing it keeps the
+ * prompt cache (supervisor-report-style.ts).
+ */
+export async function supervisorStyleContext(
+  user: string | null | undefined,
+): Promise<string | undefined> {
+  if (!validUser(user)) return undefined;
+  const { prefs } = prefsAndZone(await readDocument(user), user);
+  return wrapContext(
+    reportStyleInstruction(prefs.reportStyle),
+    "supervisor-report-style",
+  );
+}
+
+/** The owner's report style, the default when unset. */
+export async function supervisorReportStyle(
+  user: string,
+): Promise<SupervisorPrefs["reportStyle"]> {
+  return (await getSupervisorPrefs(user)).reportStyle;
 }
 
 /** The turn that showed these answers completed: no later turn repeats them. */

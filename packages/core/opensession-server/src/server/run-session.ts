@@ -293,6 +293,7 @@ import { blobSurfaceContext } from "./blob-surface";
 import {
   markSupervisorAnswersBriefed,
   supervisorInboxContext,
+  supervisorStyleContext,
 } from "./supervisor-inbox";
 import { supervisorInboxOwner, supervisorMcpFor } from "./supervisor-mcp";
 import {
@@ -3317,13 +3318,17 @@ async function runSessionPromptInner(
     : supervisorInboxOwner(session, user);
   let briefedAnswers: string[] = [];
   if (inboxOwner) {
-    const inbox = await supervisorInboxContext(inboxOwner).catch(
-      () => undefined,
-    );
+    const [inbox, style] = await Promise.all([
+      supervisorInboxContext(inboxOwner).catch(() => undefined),
+      // The owner's report style (BLUF, SBAR or plain), one line, also
+      // per turn so a change keeps the prompt cache.
+      supervisorStyleContext(inboxOwner).catch(() => undefined),
+    ]);
     if (inbox) {
       prompt = `${inbox.context}\n\n${prompt}`;
       briefedAnswers = inbox.answered;
     }
+    if (style) prompt = `${style}\n\n${prompt}`;
   }
 
   // Shown in the Blob app: say where, so the reply fits (blob-surface.ts).
