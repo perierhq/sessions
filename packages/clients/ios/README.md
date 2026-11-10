@@ -738,8 +738,8 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   for screenshots and motion checks. `BLOB_DEMO_HISTORY=1` fills history
   with canned exchanges; `BLOB_DEMO_HISTORY=open` also opens it.
   `BLOB_DEMO_DECISIONS=1` shows two canned decisions.
-  `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1
-  BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking.
+  `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
+  `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking.
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 

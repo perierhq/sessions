@@ -10,7 +10,7 @@ struct BlobThinkingLayer: View {
     /// Where Blob sits while it thinks; the line goes just above it.
     let blobCenter: CGPoint
     let blobRadius: CGFloat
-    /// History is open or the live voice call is on.
+    /// History is open.
     let hidden: Bool
 
     @State private var turn = BlobThinkingTurn()
@@ -41,7 +41,7 @@ struct BlobThinkingLayer: View {
                     .accessibilityLabel(current.label)
                     .accessibilityHint("Shows what Blob has done so far")
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: current.label)
-                    .onChange(of: current.label, initial: true) { _, label in turn.announce(label) }
+                    .onChange(of: current.label, initial: true) { _, _ in turn.announce(current) }
                     .transition(.opacity)
                 }
             }
@@ -55,12 +55,17 @@ struct BlobThinkingLayer: View {
                 .frame(minWidth: 320, idealWidth: 360, minHeight: 240, idealHeight: 360)
                 #endif
         }
-        .onChange(of: turnKey, initial: true) { _, _ in
-            if talk.phase == .waiting { turn.begin(talk: talk) } else { turn.finish() }
+        // One new turn per message; the anchor settles after it without
+        // restarting the filler's wait.
+        .onChange(of: talk.sends, initial: true) { _, _ in
+            if talk.phase == .waiting { turn.begin(talk: talk) }
         }
-        .onChange(of: talk.answer != nil, initial: true) { _, started in if started { turn.answerStarted() } }
+        .onChange(of: talk.phase == .waiting) { _, waiting in if !waiting { turn.finish() } }
+        .onChange(of: anchorKey) { _, _ in turn.update(talk: talk) }
+        .onChange(of: talk.answer != nil, initial: true) { _, speaking in if speaking { turn.answerStreaming() } }
+        .onChange(of: talk.replyEntry?.id, initial: true) { _, _ in turn.checkReply(talk: talk) }
         .onChange(of: entryKey) { _, _ in turn.update(talk: talk) }
-        .onChange(of: talk.desk?.pendingQuestion != nil) { _, asking in if asking { turn.filler.stop() } }
+        .onChange(of: talk.desk?.pendingQuestion != nil, initial: true) { _, asking in if asking { turn.questionShown() } }
     }
 
     /// The live line, outside the demo: the supervisor is still working and
@@ -69,15 +74,17 @@ struct BlobThinkingLayer: View {
         talk.thinking && !turn.started && talk.desk?.pendingQuestion == nil
     }
 
-    /// Changes when a message goes out or the conversation ends.
-    private var turnKey: String {
-        "\(talk.phase == .waiting)|\(talk.sentAfter ?? "")|\(talk.heard)"
+    /// Where the turn's entries start: settles a beat after the message goes out.
+    private var anchorKey: String {
+        "\(talk.sentAfter ?? "")|\(talk.heard)"
     }
 
-    /// Changes when the turn's transcript does.
+    /// Changes when the turn's transcript does, including when a live tool
+    /// call gets its arguments. Empty while nothing is shown, so streamed
+    /// answer tokens don't rebuild it.
     private var entryKey: [String] {
-        guard talk.phase == .waiting else { return [] }
-        return talk.turnEntries.map { "\($0.type):\($0.toolUseId ?? $0.id)" }
+        guard !turn.started, talk.thinking else { return [] }
+        return talk.turnEntries.map { "\(BlobThinkingTurn.key($0)):\(BlobThinkingTurn.fingerprint($0.toolInput))" }
     }
 }
 
@@ -130,7 +137,8 @@ final class BlobThinkingTurn {
     @ObservationIgnored private var seen: [String: Date] = [:]
     @ObservationIgnored let filler = BlobFiller()
     @ObservationIgnored private var fillerTask: Task<Void, Never>?
-    @ObservationIgnored private var announced = Date.distantPast
+    @ObservationIgnored private var announcing: Task<Void, Never>?
+    @ObservationIgnored private var announced: String?
     @ObservationIgnored private var persona: String?
 
     #if DEBUG
@@ -159,6 +167,8 @@ final class BlobThinkingTurn {
         started = false
         events = []
         seen = [:]
+        announcing?.cancel()
+        announced = nil
         persona = InstanceIdentity.shared.personaName
         Task { await InstanceIdentity.shared.ensureLoaded(); persona = InstanceIdentity.shared.personaName }
         update(talk: talk)
@@ -167,7 +177,8 @@ final class BlobThinkingTurn {
         fillerTask = Task { [weak self, weak talk] in
             try? await Task.sleep(for: BlobFiller.delay)
             guard let self, let talk, !Task.isCancelled, !self.started,
-                  talk.phase == .waiting, talk.answer == nil, !talk.speaker.speaking
+                  talk.phase == .waiting, talk.answer == nil, !talk.speaker.speaking,
+                  talk.desk?.pendingQuestion == nil
             else { return }
             await self.filler.play(speaker: talk.speaker)
         }
@@ -175,14 +186,27 @@ final class BlobThinkingTurn {
 
     func finish() {
         if sentAt != nil, finishedAt == nil { finishedAt = Date() }
-        fillerTask?.cancel()
-        filler.stop()
+        quiet()
     }
 
+    /// The finished reply landed: the line stays hidden for the rest of the turn.
     func answerStarted() {
         started = true
+        quiet()
+    }
+
+    /// Text is streaming. It may be a preamble before a tool call, so the
+    /// line only hides while it shows (`BlobTextTalk.thinking`); the filler
+    /// stops for good.
+    func answerStreaming() { quiet() }
+
+    /// A question card came up: no filler over it.
+    func questionShown() { quiet() }
+
+    private func quiet() {
         fillerTask?.cancel()
         filler.stop()
+        announcing?.cancel()
     }
 
     /// Reads the turn's entries into events, each timed when first seen.
@@ -190,7 +214,7 @@ final class BlobThinkingTurn {
         guard sentAt != nil, finishedAt == nil else { return }
         let now = Date()
         events = talk.turnEntries.compactMap { entry in
-            let key = "\(entry.type):\(entry.toolUseId ?? entry.id)"
+            let key = Self.key(entry)
             let at = seen[key] ?? now
             seen[key] = at
             switch entry.type {
@@ -206,17 +230,46 @@ final class BlobThinkingTurn {
             default: return nil
             }
         }
-        if talk.answer != nil { answerStarted() }
+        checkReply(talk: talk)
     }
 
-    /// VoiceOver hears a new step politely, at most every 4 s.
-    func announce(_ label: String) {
-        let now = Date()
-        guard now.timeIntervalSince(announced) >= 4 else { return }
-        announced = now
-        var text = AttributedString(label)
-        text.accessibilitySpeechAnnouncementPriority = .low
-        AccessibilityNotification.Announcement(text).post()
+    /// Latches `started` once the final reply has landed: an answer with no
+    /// tool call after it. A preamble before a tool call doesn't count.
+    func checkReply(talk: BlobTextTalk) {
+        guard !started, sentAt != nil, let reply = talk.replyEntry else { return }
+        let entries = talk.turnEntries
+        if let at = entries.lastIndex(where: { $0.id == reply.id }),
+           entries[(at + 1)...].contains(where: { $0.type == "tool_use" }) { return }
+        answerStarted()
+    }
+
+    nonisolated static func key(_ entry: TranscriptEntry) -> String {
+        "\(entry.type):\(entry.toolUseId ?? entry.id)"
+    }
+
+    /// Cheap stand-in for a call's arguments: field counts, enough to see a
+    /// live call's input arrive without hashing it.
+    nonisolated static func fingerprint(_ input: JSONValue?) -> String {
+        guard case .object(let fields)? = input else { return input == nil ? "-" : "?" }
+        if case .object(let inner)? = fields["arguments"] { return "\(fields.count).\(inner.count)" }
+        return "\(fields.count)"
+    }
+
+    /// VoiceOver hears a step politely once it has stayed on the line for
+    /// 2 s, never the opening "Thinking", and never the same label twice
+    /// in a row.
+    func announce(_ step: BlobStep) {
+        let label = step.label
+        announcing?.cancel()
+        guard label != announced, !(step.id == 0 && label == BlobSteps.thinking) else { return }
+        announcing = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, !Task.isCancelled, !self.started, self.finishedAt == nil else { return }
+            self.announced = label
+            var text = AttributedString(label)
+            text.accessibilitySpeechAnnouncementPriority = .low
+            AccessibilityNotification.Announcement(text).post()
+        }
     }
 
     /// A call's scalar arguments as text, with a `tool_call` envelope's
@@ -255,8 +308,7 @@ extension BlobTextTalk {
             entry.type == "user" && (said.isEmpty || (entry.content ?? "").contains(said))
         }) else { return [] }
         let durable = Array(entries[entries.index(after: mine)...])
-        func key(_ entry: TranscriptEntry) -> String { "\(entry.type):\(entry.toolUseId ?? entry.id)" }
-        let landed = Set(durable.map(key))
-        return durable + desk.liveEntries.filter { !landed.contains(key($0)) }
+        let landed = Set(durable.map(BlobThinkingTurn.key))
+        return durable + desk.liveEntries.filter { !landed.contains(BlobThinkingTurn.key($0)) }
     }
 }

@@ -7,6 +7,18 @@ import Foundation
 ///
 /// Labels never carry thinking text or tool arguments, apart from a PR
 /// number or a project name.
+///
+/// No test target compiles `Blob/` (OS1Tests hosts the Mac app), so check
+/// changes with a scratch `swiftc` run against the examples below
+/// (`label(tool:args:title:)`, then `steps`):
+///
+///     "mcp__desk__read_ledger", [:]                         → "Reading my notes"
+///     "tool_call", ["name": "github_get_pull_request", "pull_number": "212"] → "Reading PR #212"
+///     "list_incidents", ["projectName": "acme"]             → "Checking acme incidents"
+///     "list_incidents", ["projectId": "p_123"]              → "Checking incidents"
+///     "pull_logs", [:], title nil                           → "Working"
+///     "ask_pat", [:], persona "Ada"                         → "Asking Ada"
+///     tool at +0.5 s, result at +3 s, sent at 0             → "Reading my notes" 0–3 s, then "Thinking"
 struct BlobStepEvent: Equatable, Sendable {
     enum Kind: Equatable, Sendable {
         /// A tool call. `args` holds the call's scalar arguments (a
@@ -126,11 +138,11 @@ enum BlobSteps {
         if named("create_session", "spawn_task") { return "Asking a worker" }
         if named("send_to_session") { return "Updating a worker" }
         if lower.contains("incident") {
-            let project = value(args, "project", "projectId", "project_id", "projectName")
+            let project = value(args, "project", "projectName")
             return project.map { "Checking \($0) incidents" } ?? "Checking incidents"
         }
         // GitHub pull request tools, from any server.
-        if !words.isDisjoint(with: ["pr", "prs", "pull", "pulls"]) || lower.contains("pull_request") {
+        if !words.isDisjoint(with: ["pr", "prs"]) || lower.contains("pull_request") {
             let number = value(args, "pr", "prNumber", "pr_number", "pull_number", "pullNumber", "number")
                 .flatMap { Int($0.trimmingCharacters(in: CharacterSet(charactersIn: "#"))) }
             return number.map { "Reading PR #\($0)" } ?? "Reading a PR"

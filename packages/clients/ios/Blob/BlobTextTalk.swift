@@ -27,6 +27,9 @@ final class BlobTextTalk {
     /// what comes after it. An id, not a count, because history paging
     /// prepends older entries.
     private(set) var sentAfter: String?
+    /// Goes up once per message sent, so a view can start a new turn exactly
+    /// once however `phase`, `heard` and `sentAfter` settle around it.
+    private(set) var sends = 0
     private var connecting: Task<SessionViewModel, Error>?
 
     var active: Bool { phase != .idle }
@@ -38,7 +41,8 @@ final class BlobTextTalk {
     private var spokenAnswer: String?
 
     /// Blob's answer so far: streaming text while the supervisor writes, then the
-    /// finished reply.
+    /// finished reply. Streamed text can still be a preamble: when a tool call
+    /// follows, it moves into `desk.liveEntries` and this goes back to nil.
     var answer: String? {
         guard let desk, phase == .waiting else { return nil }
         if desk.isStreaming, !desk.liveText.isEmpty { return desk.liveText }
@@ -167,6 +171,7 @@ final class BlobTextTalk {
     private func deliver(_ text: String) async {
         heard = text
         guard !text.isEmpty else { reset(); return }
+        sends += 1
         do {
             let model = try await supervisorModel()
             sentAfter = model.entries.last?.id
@@ -183,6 +188,7 @@ final class BlobTextTalk {
         heard = text
         phase = .waiting
         sentAfter = desk.entries.last?.id
+        sends += 1
         desk.sendQuickReply(text)
     }
 

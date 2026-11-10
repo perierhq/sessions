@@ -6,7 +6,8 @@ import Foundation
 ///
 /// The server voice's fillers are fetched once and kept on the device, in
 /// `Caches/BlobFiller/<voiceId>/`, keyed by voice and model from
-/// `GET /api/blob/speech/status`. Playing one needs no network, so it is
+/// `GET /api/blob/speech/status` and by the phrases themselves. Only one
+/// voice's clips are kept. Playing one needs no network, so it is
 /// instant. Until the cache is filled (first use, or after the voice or
 /// model changes) Blob says it with an Apple voice and fills the cache in
 /// the background. Separate from `BlobSpeaker` so a filler never touches
@@ -58,9 +59,12 @@ final class BlobFiller {
         var model: String
     }
 
+    /// Changes when `phrases` do, so edited phrases are fetched again.
+    nonisolated static let phraseSet = stableHash(phrases.joined(separator: "\n"))
+
     private static func key(_ status: OS1API.BlobSpeechStatus?) -> Key? {
         guard let status, status.configured, let voice = status.voiceId, !voice.isEmpty else { return nil }
-        return Key(voiceId: safe(voice), model: safe(status.model ?? "default"))
+        return Key(voiceId: safe(voice), model: safe(status.model ?? "default") + "-" + phraseSet)
     }
 
     /// Fetches the three fillers once for this voice and model, replacing
@@ -82,10 +86,13 @@ final class BlobFiller {
         }
     }
 
-    private nonisolated static func folder(_ key: Key) -> URL? {
+    private nonisolated static var root: URL? {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appending(path: "BlobFiller", directoryHint: .isDirectory)
-            .appending(path: key.voiceId, directoryHint: .isDirectory)
+    }
+
+    private nonisolated static func folder(_ key: Key) -> URL? {
+        root?.appending(path: key.voiceId, directoryHint: .isDirectory)
     }
 
     private nonisolated static func file(_ key: Key, _ index: Int) -> URL? {
@@ -105,20 +112,33 @@ final class BlobFiller {
     }
 
     private nonisolated static func store(_ clips: [Data], _ key: Key) {
-        guard let folder = folder(key) else { return }
+        guard let root, let folder = folder(key) else { return }
         let manager = FileManager.default
-        // One model per voice: clear clips for another model first.
-        try? manager.removeItem(at: folder)
+        // One voice, model and phrase set at a time: clear every other first.
+        try? manager.removeItem(at: root)
         try? manager.createDirectory(at: folder, withIntermediateDirectories: true)
         for (index, data) in clips.enumerated() {
             if let url = file(key, index) { try? data.write(to: url, options: .atomic) }
         }
     }
 
-    /// A path component that can't climb out of the cache folder.
+    /// A short path component that can't climb out of the cache folder.
+    /// Anything changed or cut gets a hash of the original, so two ids
+    /// never share a folder.
     private static func safe(_ raw: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
         let cleaned = String(String.UnicodeScalarView(raw.unicodeScalars.map { allowed.contains($0) ? $0 : "_" }))
-        return cleaned.isEmpty || cleaned.hasPrefix(".") ? "_" + cleaned : cleaned
+        guard cleaned.isEmpty || cleaned != raw || cleaned.count > 40 else { return cleaned }
+        return String(cleaned.prefix(24)) + "_" + stableHash(raw)
+    }
+
+    /// FNV-1a, 64 bit, as hex: stable across launches, unlike `hashValue`.
+    private nonisolated static func stableHash(_ text: String) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return String(hash, radix: 16)
     }
 }
