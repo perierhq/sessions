@@ -22,10 +22,10 @@ struct BlobThinkingLayer: View {
 
     @State private var turn = BlobThinkingTurn()
     @State private var showSteps = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1, paused: !(turn.demo || showing))) { timeline in
+        TimelineView(.animation(minimumInterval: 1, paused: scenePhase != .active || !(turn.demo || showing))) { timeline in
             let steps = turn.steps(at: timeline.date)
             let current = BlobSteps.current(steps, at: timeline.date)
             let visible = !hidden && (turn.demo || showing)
@@ -89,11 +89,12 @@ struct BlobThinkingLayer: View {
 }
 
 /// The thought itself, placed every frame from where Blob is: two small
-/// circles off the top of its head, then the bubble, on whichever side has
-/// room (the side its eyes glance to, unless that edge is too close). It
-/// emerges from Blob, tail first; a new step's bubble forms as the old one
-/// drifts up and fades; it bobs a few points while it waits. Under Reduce
-/// Motion it stays still and only fades.
+/// circles off the top of its head, then the bubble, toward the side with
+/// more room (trailing unless that edge is too close). It emerges from
+/// Blob, tail first, and bobs a few points while it waits. It is one
+/// bubble for the whole turn: when the step changes, the old words fade
+/// (drifting up a little) before the new ones fade in, and the bubble
+/// resizes between them. Under Reduce Motion it stays still and only fades.
 private struct BlobThought: View {
     /// The step on it; nil for the dots.
     let key: String?
@@ -106,9 +107,11 @@ private struct BlobThought: View {
     /// 0 hidden, then each circle of the tail, then the bubble.
     @State private var stage = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: scenePhase != .active)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             let shape = Self.shape(center: physics.position, radius: physics.radius, bounds: bounds, fold: fold)
             let drift = reduceMotion ? .zero : CGSize(
@@ -118,15 +121,19 @@ private struct BlobThought: View {
             ZStack(alignment: .topLeading) {
                 tailDot(shape.near, size: 6, drift: drift, scale: 0.3, shown: stage >= 1)
                 tailDot(shape.far, size: 10, drift: drift, scale: 0.6, shown: stage >= 2)
-                ThoughtPlacement(anchor: shape.anchor, trailing: shape.trailing, area: shape.area) {
+                ThoughtPlacement(
+                    anchor: shape.anchor,
+                    trailing: shape.trailing,
+                    area: shape.area,
+                    blob: shape.blob,
+                    widest: typeSize.isAccessibilitySize ? 360 : 280
+                ) {
                     if stage >= 3 {
                         bubble(t: t)
-                            .id(key ?? "")
-                            .transition(stepTransition(trailing: shape.trailing))
+                            .transition(emergence(trailing: shape.trailing))
                     }
                 }
                 .offset(drift)
-                .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.45), value: key)
             }
         }
         .onAppear(perform: emerge)
@@ -153,25 +160,33 @@ private struct BlobThought: View {
             .accessibilityHidden(true)
     }
 
+    /// One bubble for the turn. Only its words carry the step's identity,
+    /// so the button VoiceOver focuses stays put while the steps change.
     private func bubble(t: Double) -> some View {
         Button(action: tap) {
-            Group {
-                if let line {
-                    Text(line)
-                        .font(.footnote)
-                        .foregroundStyle(OS1VisualStyle.textDim)
-                        .monospacedDigit()
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    dots(t: t)
+            StepWords {
+                Group {
+                    if let line {
+                        Text(line)
+                            .font(.footnote)
+                            .foregroundStyle(OS1VisualStyle.textDim)
+                            .monospacedDigit()
+                            .lineLimit(typeSize.isAccessibilitySize ? 3 : 2)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        dots(t: t)
+                    }
                 }
+                .id(key ?? "")
+                .transition(stepTransition)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(OS1VisualStyle.hover, in: .rect(cornerRadius: 17, style: .continuous))
+            .clipShape(.rect(cornerRadius: 17, style: .continuous))
             .contentShape(.rect(cornerRadius: 17, style: .continuous))
+            .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.3), value: key)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(key ?? BlobSteps.thinking)
@@ -192,14 +207,22 @@ private struct BlobThought: View {
         .frame(height: 16)
     }
 
-    /// A new step forms from the tail end; the old one drifts up and fades.
-    private func stepTransition(trailing: Bool) -> AnyTransition {
+    /// The bubble forms from the tail end, and fades when the thought goes.
+    private func emergence(trailing: Bool) -> AnyTransition {
         guard !reduceMotion else { return .opacity }
         return .asymmetric(
             insertion: .scale(scale: 0.92, anchor: trailing ? .bottomLeading : .bottomTrailing).combined(with: .opacity),
-            // Gone before the new one has fully formed, so the two never
-            // read as one muddle.
-            removal: .offset(y: -14).combined(with: .opacity).animation(.easeOut(duration: 0.25))
+            removal: .opacity
+        )
+    }
+
+    /// A step's words: the old ones are gone before the new ones start to
+    /// show, so the two are never on screen together. The old words drift
+    /// up a little as they go, except under Reduce Motion.
+    private var stepTransition: some Transition {
+        AsymmetricTransition(
+            insertion: StepFade(drift: 0).animation(.easeOut(duration: 0.18).delay(0.12)),
+            removal: StepFade(drift: reduceMotion ? 0 : 4).animation(.easeIn(duration: 0.12))
         )
     }
 
@@ -212,6 +235,8 @@ private struct BlobThought: View {
         var trailing: Bool
         /// Where the bubble may go.
         var area: CGRect
+        /// Blob's body, which the bubble must not cover.
+        var blob: CGRect
     }
 
     /// Where the tail and the bubble go for Blob at `center`. The tail
@@ -233,28 +258,81 @@ private struct BlobThought: View {
         let near = CGPoint(x: center.x + sign * (radius + 8) * 0.64, y: center.y - (radius + 8) * 0.77)
         let far = CGPoint(x: center.x + sign * (radius + 22) * 0.6, y: center.y - (radius + 22) * 0.8)
         let anchor = CGPoint(x: far.x - sign * 10, y: far.y - 9)
-        return Geometry(near: near, far: far, anchor: anchor, trailing: trailing, area: area)
+        let blob = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+        return Geometry(near: near, far: far, anchor: anchor, trailing: trailing, area: area, blob: blob)
+    }
+}
+
+/// A step's words fading in or out. Words on their way out stop counting
+/// toward the bubble's size (`StepWords`), so it resizes to the new step
+/// at once instead of jumping when the old words are removed.
+private struct StepFade: Transition {
+    var drift: CGFloat
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        content
+            .opacity(phase.isIdentity ? 1 : 0)
+            .offset(y: phase == .didDisappear ? -drift : 0)
+            .layoutValue(key: Leaving.self, value: phase == .didDisappear)
+    }
+}
+
+private struct Leaving: LayoutValueKey {
+    static let defaultValue = false
+}
+
+/// Stacks a step's words at the top leading corner, sized to the words
+/// that are staying.
+private struct StepWords: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let staying = subviews.filter { !$0[Leaving.self] }
+        return (staying.isEmpty ? Array(subviews) : staying)
+            .map { $0.sizeThatFits(proposal) }
+            .reduce(.zero) { CGSize(width: max($0.width, $1.width), height: max($0.height, $1.height)) }
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews {
+            subview.place(at: bounds.origin, anchor: .topLeading, proposal: proposal)
+        }
     }
 }
 
 /// Places the thought's bubble with its bottom corner at `anchor`, growing
 /// away from Blob, then slides it back inside `area` if it would leave it.
+/// Without room above Blob (Blob near the top), the bubble goes beside
+/// Blob instead, or below it, so it never covers the tail or Blob's head.
 private struct ThoughtPlacement: Layout {
     var anchor: CGPoint
     var trailing: Bool
     var area: CGRect
+    var blob: CGRect
+    /// The widest the bubble grows.
+    var widest: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         proposal.replacingUnspecifiedDimensions()
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let maxWidth = max(60, min(area.width, 280))
+        let maxWidth = max(60, min(area.width, widest))
         for subview in subviews {
-            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+            var size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
             var x = trailing ? anchor.x : anchor.x - size.width
+            var y = anchor.y - size.height
+            if y < area.minY {
+                // Beside Blob, clear of its body, if that side has room.
+                let room = trailing ? area.maxX - blob.maxX - 8 : blob.minX - 8 - area.minX
+                if room >= min(size.width, 120) {
+                    size = subview.sizeThatFits(ProposedViewSize(width: min(maxWidth, room), height: nil))
+                    x = trailing ? blob.maxX + 8 : blob.minX - 8 - size.width
+                    y = area.minY
+                } else {
+                    y = min(blob.maxY + 8, area.maxY - size.height)
+                }
+            }
             x = min(max(x, area.minX), max(area.minX, area.maxX - size.width))
-            let y = max(anchor.y - size.height, area.minY)
+            y = max(y, area.minY)
             subview.place(
                 at: CGPoint(x: bounds.minX + x, y: bounds.minY + y),
                 anchor: .topLeading,

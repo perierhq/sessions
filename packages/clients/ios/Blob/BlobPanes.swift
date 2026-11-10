@@ -36,26 +36,29 @@ struct BlobPanes: Equatable {
         }
         #endif
         guard size.width >= 820 else { return nil }
-        #if DEBUG
-        // `BLOB_DEMO_FOLD=1`: the middle band acts as a physical fold, to
-        // check the open Duo's layout on an iPad or a Mac window.
-        let physical = ProcessInfo.processInfo.environment["BLOB_DEMO_FOLD"] != nil
-        #else
-        let physical = false
-        #endif
         return BlobPanes(
             fold: CGRect(x: size.width / 2 - 20, y: 0, width: 40, height: size.height),
             width: size.width,
-            physical: physical
+            physical: demoFold
         )
     }
+
+    #if DEBUG
+    /// `BLOB_DEMO_FOLD=1`: the middle band acts as a physical fold, to
+    /// check the open Duo's layout on an iPad or a Mac window.
+    private static let demoFold = ProcessInfo.processInfo.environment["BLOB_DEMO_FOLD"] != nil
+    #else
+    private static let demoFold = false
+    #endif
 }
 
 /// Where the page's columns go, in the home's full-bleed space. One column
 /// is centered (`centered`) until a reply has something for a second pane;
 /// then the conversation moves to `leading` and its visuals take
-/// `trailing`. Each exchange keeps the arrangement it was shown in, in
-/// history too, so nothing the agent showed is re-flowed later.
+/// `trailing`. An exchange shown that way is marked (`BlobExchange.split`),
+/// and history lays it out the same way again, so nothing the agent showed
+/// is re-flowed later; one shown in one column stays centered. A surface
+/// too narrow for two panes draws every exchange inline.
 ///
 /// Centered is the middle of the surface, except beside a physical fold:
 /// there it is the middle of the leading pane, so no line of text and not
@@ -105,14 +108,28 @@ extension View {
 }
 
 /// One exchange shown across two panes: its conversation in the leading
-/// column and its visual blocks in the trailing one, both from the top.
+/// column and its visual blocks in the trailing one, both from the top,
+/// then anything else that was beside it (a waiting decision).
 /// The current reply's visuals use `BlobSidePane` instead, with a scroll
 /// of their own; history and the current exchange while history is open
 /// use this, so they scroll with the page.
-struct BlobSplitRow<Conversation: View>: View {
+struct BlobSplitRow<Conversation: View, Beside: View>: View {
     let columns: BlobColumns
     let visuals: [String]
-    @ViewBuilder let conversation: () -> Conversation
+    let conversation: () -> Conversation
+    let beside: () -> Beside
+
+    init(
+        columns: BlobColumns,
+        visuals: [String],
+        @ViewBuilder conversation: @escaping () -> Conversation,
+        @ViewBuilder beside: @escaping () -> Beside = { EmptyView() }
+    ) {
+        self.columns = columns
+        self.visuals = visuals
+        self.conversation = conversation
+        self.beside = beside
+    }
 
     var body: some View {
         if let leading = columns.leading, let trailing = columns.trailing {
@@ -123,6 +140,7 @@ struct BlobSplitRow<Conversation: View>: View {
                         MarkdownBody(block)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    beside()
                 }
                 .blobColumn(trailing)
             }

@@ -10,8 +10,13 @@ struct BlobExchange: Identifiable, Equatable {
     /// while there is no answer yet.
     var reply: String?
     var date: Date?
+    /// It was shown across two panes, the conversation leading and what
+    /// the reply showed (or a decision) trailing, so history lays it out
+    /// that way again.
+    var split = false
 
     /// Groups a supervisor transcript into exchanges, oldest first.
+    /// `shownBeside`: messages whose exchange was shown across two panes.
     ///
     /// A turn starts at a message from you; consecutive user rows (the voice
     /// call splits speech into rows) join into one. The reply is the turn's
@@ -19,7 +24,7 @@ struct BlobExchange: Identifiable, Equatable {
     /// the spoken rows of a voice reply. Reasoning, tools and operational
     /// notices (worker reports and the like) are left out, and so are the
     /// turns notices start, since Blob only shows what was said to you.
-    static func exchanges(in entries: [TranscriptEntry]) -> [BlobExchange] {
+    static func exchanges(in entries: [TranscriptEntry], shownBeside: Set<String> = []) -> [BlobExchange] {
         var out: [BlobExchange] = []
         var current: BlobExchange?
         var run: [String] = []
@@ -50,6 +55,7 @@ struct BlobExchange: Identifiable, Equatable {
                     flush()
                     current = BlobExchange(id: entry.id, said: text, date: entry.timestampDate)
                 }
+                if shownBeside.contains(entry.id) { current?.split = true }
             } else if entry.isAssistant {
                 guard current != nil, entry.isReasoning != true, entry.notice == nil, !text.isEmpty else { continue }
                 if afterTool { run = []; afterTool = false }
@@ -67,10 +73,11 @@ struct BlobExchange: Identifiable, Equatable {
 /// day header, what you said, then Blob's reply. The header and the exchange
 /// are one row, so each scroll target has one id and one height.
 ///
-/// It is laid out the way it was shown: on a wide surface a reply with
-/// visual blocks is split across the two panes, conversation leading and
-/// visuals trailing, and one without is centered (`BlobColumns`). On one
-/// column everything is inline, as it was there.
+/// It is laid out the way it was shown (`BlobExchange.split`): an exchange
+/// shown across two panes is split again, conversation leading and its
+/// visual blocks trailing, and one shown in one column is centered with
+/// everything inline (`BlobColumns`). On a surface too narrow for two
+/// panes everything is inline.
 struct BlobHistoryRow: View {
     let exchange: BlobExchange
     /// "Today", "Yesterday" or the date, on the first exchange of each day.
@@ -106,8 +113,8 @@ struct BlobHistoryRow: View {
     @ViewBuilder
     private var row: some View {
         let reply = exchange.reply.map(Self.withoutChoices)
-        let split = columns.leading != nil ? reply.map(BlobReplySplit.init) : nil
-        if let split, !split.visuals.isEmpty {
+        let split = exchange.split && columns.leading != nil ? reply.map(BlobReplySplit.init) : nil
+        if let split {
             BlobSplitRow(columns: columns, visuals: split.visuals) {
                 conversation(split.conversation)
             }
@@ -199,7 +206,8 @@ extension BlobExchange {
                 Median reply: 4 min (−2 min)
                 ```
                 """,
-                date: yesterday.addingTimeInterval(600)
+                date: yesterday.addingTimeInterval(600),
+                split: true
             ),
             BlobExchange(
                 id: "demo-3",
@@ -213,7 +221,8 @@ extension BlobExchange {
                 Answer the refund question,10:05
                 ```
                 """,
-                date: now.addingTimeInterval(-3 * 3600)
+                date: now.addingTimeInterval(-3 * 3600),
+                split: true
             ),
             BlobExchange(
                 id: "demo-4",

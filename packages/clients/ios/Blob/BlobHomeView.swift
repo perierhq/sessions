@@ -52,14 +52,17 @@ struct BlobHomeView: View {
             GeometryReader { geo in
             let panes = BlobPanes.layout(in: geo)
             let columns = BlobColumns(width: geo.size.width, insets: insets, panes: panes)
-            let side = panes != nil && sideBeside && !historyRevealed
+            // The settled reply has a second pane: beside it while history
+            // is closed, in the page's two columns while it is open.
+            let split = panes != nil && sideBeside
+            let side = split && !historyRevealed
             let talkCenter = CGPoint(x: columns.centered.midX, y: geo.size.height * 0.4)
             ZStack(alignment: .bottom) {
                 // One page across the surface. Its column is centered until
                 // the reply has something for a second pane; then the
                 // conversation moves to the leading pane and the reply's
                 // visuals come in on the trailing one, nothing on the fold.
-                page(insets: insets, panes: panes, columns: columns, side: side)
+                page(insets: insets, columns: columns, split: split)
 
                 ZStack {
                     if let panes, side {
@@ -128,6 +131,10 @@ struct BlobHomeView: View {
             .onLongPressGesture { showSettings = true }
             .onAppear { BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
             .onChange(of: panes) { _, panes in BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
+            // History lays this exchange out the way it is shown now.
+            .onChange(of: split ? text.currentExchangeId : nil, initial: true) { _, id in
+                if let id { text.markShownBeside(id) }
+            }
             }
             .ignoresSafeArea()
         }
@@ -576,22 +583,28 @@ struct BlobHomeView: View {
                 trailing: insets.trailing + 24
             )
         ) {
-            // Only beside a reply: a decision that is itself the current item
-            // stays with the conversation.
-            if let waiting = decisionBeside {
-                BlobDecisionView(
-                    item: waiting,
-                    position: decisions.position,
-                    count: decisions.count,
-                    sending: decisions.sending == waiting.id,
-                    answer: { option in Task { await decisions.answer(waiting, with: option) } },
-                    notNow: { decisions.skip(waiting) },
-                    dismiss: { Task { await decisions.dismiss(waiting) } }
-                )
-                .id(waiting.id)
-            }
+            decisionBesideView
         }
         .id(turnKey)
+    }
+
+    /// The decision waiting beside the settled reply, in the second pane.
+    /// Only beside a reply: a decision that is itself the current item
+    /// stays with the conversation.
+    @ViewBuilder
+    private var decisionBesideView: some View {
+        if let waiting = decisionBeside {
+            BlobDecisionView(
+                item: waiting,
+                position: decisions.position,
+                count: decisions.count,
+                sending: decisions.sending == waiting.id,
+                answer: { option in Task { await decisions.answer(waiting, with: option) } },
+                notNow: { decisions.skip(waiting) },
+                dismiss: { Task { await decisions.dismiss(waiting) } }
+            )
+            .id(waiting.id)
+        }
     }
 
     /// Where the current exchange's top sits when the page goes to it: just
@@ -610,13 +623,15 @@ struct BlobHomeView: View {
     /// The whole home is one page: earlier exchanges (once revealed), then
     /// the current one, which starts at the top and scrolls in full, its
     /// actions inline after it. Nothing scrolls inside it.
-    /// `side`: the current reply's visuals are in the trailing pane, so the
-    /// conversation takes the leading one. With history open they scroll
-    /// with the page instead, in the same two columns (`BlobSplitRow`).
-    private func page(insets: EdgeInsets, panes: BlobPanes?, columns: BlobColumns, side: Bool) -> some View {
+    /// `split`: the current reply has a second pane (its visuals, or a
+    /// decision waiting beside it). With history closed that is the
+    /// trailing pane (`sidePane`) and the conversation takes the leading
+    /// one; with history open both scroll with the page instead, in the
+    /// same two columns (`BlobSplitRow`).
+    private func page(insets: EdgeInsets, columns: BlobColumns, split: Bool) -> some View {
         let margins = Self.pageMargins(insets: insets, typing: typing)
-        let inline = panes != nil && historyRevealed && !currentVisuals.isEmpty
-        let split = side || inline
+        let side = split && !historyRevealed
+        let inline = split && historyRevealed
         return ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
@@ -631,7 +646,11 @@ struct BlobHomeView: View {
                         if hasContent {
                             Group {
                                 if inline {
-                                    BlobSplitRow(columns: columns, visuals: currentVisuals) { current(split: true) }
+                                    BlobSplitRow(columns: columns, visuals: currentVisuals) {
+                                        current(split: true)
+                                    } beside: {
+                                        if currentVisuals.isEmpty { decisionBesideView }
+                                    }
                                 } else {
                                     current(split: split)
                                         .blobColumn(side ? columns.leading ?? columns.centered : columns.centered)
