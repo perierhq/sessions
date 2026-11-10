@@ -53,6 +53,7 @@ export type ContextSource =
   | "local-folders-note"
   | "desk-state"
   | "blob-surface"
+  | "supervisor-inbox"
   | "session"
   | "unknown";
 
@@ -74,6 +75,7 @@ const SOURCES = new Set<string>([
   "local-folders-note",
   "desk-state",
   "blob-surface",
+  "supervisor-inbox",
   "session",
   "unknown",
 ]);

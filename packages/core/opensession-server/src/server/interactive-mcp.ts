@@ -16,6 +16,7 @@
 import type { AutomationDescendantPolicy } from "./types";
 import { lazyServerRecord } from "./inprocess-mcp";
 import { deskNavigationMcp } from "./desk-navigation-mcp";
+import { supervisorMcpFor } from "./supervisor-mcp";
 import { createSessionsMcpServer } from "../agents/slack/sessions-tools";
 import {
   interactivePrompter,
@@ -732,6 +733,8 @@ registerInteractiveMcpBuilder(
     if (goalId)
       (servers as Record<string, unknown>)["opensession-goal-self"] =
         createGoalSelfMcpServer(goalId);
+    // Only a supervisor session carries its inbox tools (supervisor-mcp.ts).
+    Object.assign(servers, supervisorMcpFor(session, user));
     return servers;
   },
 );

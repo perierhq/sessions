@@ -244,6 +244,11 @@ export const INTERNAL_MCP_CAPABILITIES = {
     guidance:
       "Manage this running goal's cadence, status, and durable fact ledger.",
   },
+  "opensession-supervisor": {
+    summary: "The supervisor's inbox: decisions leads raised for the owner.",
+    guidance:
+      "Your inbox from leads: list_items; answer_item when the owner answers in chat; dismiss_item; post_item for a needs-you push or an fyi for the digest.",
+  },
   "opensession-incident-access": {
     summary:
       "Read-only host commands, egress requests and borrowed credentials for one incident agent.",

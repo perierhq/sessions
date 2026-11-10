@@ -381,3 +381,63 @@ describe("support delivery", () => {
     );
   });
 });
+
+describe("supervisor delivery", () => {
+  // The real path: the supervisor inbox posts through deliverNotification,
+  // which builds the push with pushFor. Only the push service is faked.
+  async function post(
+    patch: Partial<
+      Parameters<(typeof import("./supervisor-inbox"))["postSupervisorItem"]>[0]
+    > = {},
+  ) {
+    const inbox = await import("./supervisor-inbox");
+    const restore = inbox.__setSupervisorInboxDepsForTest({
+      now: () => Date.parse("2026-07-01T12:00:00Z"),
+      supervisorSessionId: async () => "os-sup",
+      timeZone: () => "UTC",
+    });
+    try {
+      return await inbox.postSupervisorItem({
+        user: "Ada",
+        source: "lead:acme",
+        kind: "needs-you",
+        title: "Refund jane@example.test for order 1234?",
+        body: "Jane wrote: please refund",
+        options: ["Refund jane@example.test", "Decline"],
+        project: "acme",
+        ...patch,
+      });
+    } finally {
+      restore();
+    }
+  }
+
+  test("a decision pushes fixed wording, never the item's text", async () => {
+    const { item, delivery } = await post();
+    expect(delivery).toBe("pushed");
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.payload).toMatchObject({
+      title: "Needs you",
+      body: "acme: a decision is waiting",
+      tag: `os-notification-supervisor:${item.id}`,
+    });
+    expect(JSON.stringify(pushes[0])).not.toContain("example.test");
+    expect(pushes[0]!.options?.urgency).toBeUndefined();
+    // The inbox row keeps the title and options for the signed-in page.
+    const [row] = (await getNotificationInbox("Ada")).threads;
+    expect(row).toMatchObject({
+      subject: { title: item.title, context: "acme" },
+      body: "1. Refund jane@example.test  2. Decline",
+    });
+  });
+
+  test("something down reaches the push service as high priority", async () => {
+    await post({ urgency: "down", project: undefined });
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.payload).toMatchObject({
+      title: "Something is down",
+      body: "It needs you now",
+    });
+    expect(pushes[0]!.options).toMatchObject({ urgency: "high" });
+  });
+});

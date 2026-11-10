@@ -46,6 +46,7 @@ import {
   sandboxesEnabled,
 } from "./sandbox/config";
 import { createGoalSelfMcpServer } from "../agents/slack/goal-tools";
+import { supervisorMcpFor } from "./supervisor-mcp";
 
 /** One resolved setting plus where it came from. */
 export interface ConfigRow<T = unknown> {
@@ -305,6 +306,7 @@ export async function inProcessServerNames(
   if (inputs.inProcessMcpBranch === "interactive+goal-self" && session.goalId) {
     servers["opensession-goal-self"] = createGoalSelfMcpServer(session.goalId);
   }
+  Object.assign(servers, supervisorMcpFor(session, inputs.user));
   return Object.keys(servers);
 }
 

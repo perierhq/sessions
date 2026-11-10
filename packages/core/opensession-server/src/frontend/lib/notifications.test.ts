@@ -224,6 +224,24 @@ describe("incident notifications on this device", () => {
     });
   });
 
+  test("a supervisor banner shows the reason and project, never agent text", () => {
+    const row = thread("si-1", {
+      kind: "supervisor_needs_you",
+      subject: {
+        type: "supervisor",
+        id: "si-1",
+        title: "Refund jane@example.test?",
+        context: "acme",
+      },
+      reason: "Needs you",
+      body: "1. Refund jane@example.test  2. Decline",
+    });
+    expect(store.notificationBannerText(row)).toEqual({
+      title: "Needs you",
+      body: "acme",
+    });
+  });
+
   test("a replace frame updates a banner on screen, silently, and never raises a new one", () => {
     focused = false;
     store.receiveNotification(

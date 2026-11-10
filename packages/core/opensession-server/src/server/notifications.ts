@@ -111,8 +111,9 @@ async function topicFor(threadId: string): Promise<string> {
 
 /**
  * The push for a row: the one place a push is built from a thread. Rows
- * other than incidents and support keep their plain payload and default
- * options. An incident or support push says the event's fixed `push.body`
+ * other than incidents, support and the supervisor keep their plain payload
+ * and default options. An incident, support or supervisor push says the
+ * event's fixed `push.body`
  * when it has one, never the row's own text, and every push is cleaned of
  * control and bidi characters.
  */
@@ -123,8 +124,12 @@ export async function pushFor(
 ): Promise<{ payload: PushPayload; options?: PushSendOptions }> {
   const fixed = hasFixedPush(thread.subject.type);
   const hints = fixed ? event.push : undefined;
+  // A supervisor row's own body is agent text: without fixed wording the
+  // push says nothing below its title rather than that.
+  const fixedBody =
+    hints?.body ?? (thread.subject.type === "supervisor" ? "" : undefined);
   const { title, body } = bannerText(
-    hints?.body !== undefined ? { ...thread, body: hints.body } : thread,
+    fixedBody !== undefined ? { ...thread, body: fixedBody } : thread,
   );
   const payload: PushPayload = {
     title: pushSafeText(title),

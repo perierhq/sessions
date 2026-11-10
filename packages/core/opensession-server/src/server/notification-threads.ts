@@ -43,6 +43,15 @@ export type SupportNotificationKind =
 export const ACCESS_NOTIFICATION_KINDS = ["access_failing"] as const;
 export type AccessNotificationKind = (typeof ACCESS_NOTIFICATION_KINDS)[number];
 
+/** The supervisor's own pushes (supervisor-inbox.ts): a decision a lead
+ *  raised for the owner, and the quiet daily digest of what ran alone. */
+export const SUPERVISOR_NOTIFICATION_KINDS = [
+  "supervisor_needs_you",
+  "supervisor_digest",
+] as const;
+export type SupervisorNotificationKind =
+  (typeof SUPERVISOR_NOTIFICATION_KINDS)[number];
+
 /**
  * People notify people: review requests and results, mentions, workspace
  * invites, and your own Desk reminders. Agent activity (questions, failed or
@@ -62,6 +71,7 @@ export const NOTIFICATION_KINDS = [
   ...INCIDENT_NOTIFICATION_KINDS,
   ...SUPPORT_NOTIFICATION_KINDS,
   ...ACCESS_NOTIFICATION_KINDS,
+  ...SUPERVISOR_NOTIFICATION_KINDS,
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
@@ -74,6 +84,7 @@ export const ALERT_GROUPS = {
   reminders: ["reminder"],
   incidents: [...INCIDENT_NOTIFICATION_KINDS, ...ACCESS_NOTIFICATION_KINDS],
   support: SUPPORT_NOTIFICATION_KINDS,
+  supervisor: SUPERVISOR_NOTIFICATION_KINDS,
 } as const satisfies Record<string, readonly NotificationKind[]>;
 export type AlertGroup = keyof typeof ALERT_GROUPS;
 export type AlertPrefs = Record<AlertGroup, boolean>;
@@ -86,6 +97,7 @@ export const DEFAULT_ALERT_PREFS: AlertPrefs = {
   reminders: true,
   incidents: true,
   support: true,
+  supervisor: true,
 };
 
 export type NotificationSubjectType =
@@ -95,7 +107,8 @@ export type NotificationSubjectType =
   | "reminder"
   | "incident"
   | "support"
-  | "repo";
+  | "repo"
+  | "supervisor";
 
 const SUBJECT_TYPES: ReadonlySet<string> = new Set<NotificationSubjectType>([
   "session",
@@ -105,6 +118,7 @@ const SUBJECT_TYPES: ReadonlySet<string> = new Set<NotificationSubjectType>([
   "incident",
   "support",
   "repo",
+  "supervisor",
 ]);
 
 export interface NotificationSubject {
@@ -485,20 +499,25 @@ export function wireThread(thread: StoredThread): NotificationThread {
 }
 
 /** Subjects whose push says only fixed wording (the event's `push`
- *  hints) and leads the body with the project. */
+ *  hints) and the project, never the row's own text. */
 export function hasFixedPush(type: NotificationSubjectType): boolean {
-  return type === "incident" || type === "support";
+  return type === "incident" || type === "support" || type === "supervisor";
 }
 
 /**
  * What a banner says. Incidents lead the body with the project
  * ("acme · Deploying the fix now"); support rows too, under their fixed
  * title ("A support reply is ready"), never the rule that is the row's
- * reason; every other row keeps "<subject>: <body>".
+ * reason. A supervisor row says its fixed reason ("Needs you") over a body
+ * that already names the project (supervisor-inbox.ts `supervisorPushCopy`):
+ * its subject is an agent's title, which may quote customer mail. Every
+ * other row keeps "<subject>: <body>".
  */
 export function bannerText(
   thread: Pick<NotificationThread, "subject" | "reason" | "body">,
 ): { title: string; body: string } {
+  if (thread.subject.type === "supervisor")
+    return { title: thread.reason, body: thread.body };
   const title =
     thread.subject.type === "support"
       ? thread.subject.title

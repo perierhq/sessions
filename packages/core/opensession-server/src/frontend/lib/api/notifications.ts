@@ -23,6 +23,8 @@ export const NOTIFICATION_KINDS = [
   "support_veto",
   "support_failed",
   "access_failing",
+  "supervisor_needs_you",
+  "supervisor_digest",
 ] as const;
 
 export const notificationThreadSchema = z.object({
@@ -36,6 +38,7 @@ export const notificationThreadSchema = z.object({
       "incident",
       "support",
       "repo",
+      "supervisor",
     ]),
     id: z.string(),
     title: z.string(),
@@ -60,6 +63,7 @@ export const alertsSchema = z.object({
   reminders: z.boolean(),
   incidents: z.boolean().default(true),
   support: z.boolean().default(true),
+  supervisor: z.boolean().default(true),
 });
 
 const inboxSchema = z.object({
@@ -79,6 +83,7 @@ export const DEFAULT_NOTIFICATION_ALERTS: NotificationAlerts = {
   reminders: true,
   incidents: true,
   support: true,
+  supervisor: true,
 };
 
 export async function fetchNotifications(user: string): Promise<{

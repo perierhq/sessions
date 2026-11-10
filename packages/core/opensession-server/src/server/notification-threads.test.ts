@@ -4,6 +4,7 @@ import {
   applyNotificationEvent,
   bannerText,
   cleanDocument,
+  hasFixedPush,
   INCIDENT_NOTIFICATION_KINDS,
   kindAlertGroup,
   EVENT_DEDUPE_MS,
@@ -392,6 +393,22 @@ describe("incident notifications", () => {
         body: "look",
       }),
     ).toEqual({ title: "Ada mentioned you", body: "Fix login: look" });
+  });
+
+  test("a supervisor banner is its fixed reason and body, never the subject", () => {
+    expect(hasFixedPush("supervisor")).toBe(true);
+    expect(
+      bannerText({
+        subject: {
+          type: "supervisor",
+          id: "si-1",
+          title: "Refund jane@example.test?",
+          context: "acme",
+        },
+        reason: "Needs you",
+        body: "acme: a decision is waiting",
+      }),
+    ).toEqual({ title: "Needs you", body: "acme: a decision is waiting" });
   });
 });
 
