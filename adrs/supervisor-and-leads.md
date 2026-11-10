@@ -139,14 +139,38 @@ Each step runs at least a week on betterbahn before the next.
 - An autonomous send path for Plain. betterbahn's support channel decides
   whether it's needed.
 
+## betterbahn today
+
+Read from the live instance on 2026-11-10:
+
+- **Support** is the email inbox, at `draft` autonomy with a 10-minute veto
+  and the default "never without a person" topics (refund, legal, security,
+  data export and deletion, account deletion). Every message so far was spam,
+  so the reply path hasn't met a real customer yet. Its knowledge jobs
+  (mailbox, known problems) have run.
+- **Incidents** are at `deploy-after-veto` with a 10-minute veto. Five signals:
+  the status page, Deutsche Bahn (an outside provider), the site being up, and
+  two certificates. 16 of the last 20 incidents closed without action, mostly
+  status-page and provider flaps.
+- **No production Runners, actions or releases** are set up, so the fix loop
+  ends at a merged PR. It can't roll back or deploy.
+- **No goals** exist yet.
+
+What that means for the rollout:
+
+- Step 1 has a real first job: tell flaps from outages, and propose signal rule
+  changes rather than paging.
+- Testing support needs test emails sent to the inbox, since real traffic is
+  rare.
+- Raising the inbox to `routine` stays the owner's call (`inboxes.ts` only lets
+  the owner raise it), after step 1 shows the drafts are right.
+
 ## Before building
 
 - **Sync I/O in goals:** `goals.ts` reads its files with synchronous `fs`, and
   the goal ticker runs in-process. That breaks the server rule against
   synchronous I/O on the gateway, and leads would lean on it harder. Move goals
-  onto the catalog (as automations are) first, or as part of step 1.
-- **Owner confirmation needed:** which support channel betterbahn uses (email
-  inbox or Plain), and its current incident and inbox autonomy settings.
+  onto the catalog (as automations are) first.
 - **The supervisor's voice:** voice secret minting is wired to the Desk
   (`mintVoiceSecret`). Generalize it to "the user's standing session" rather
   than copy it.
