@@ -15,8 +15,6 @@ struct BlobDecisionView: View {
     let position: Int
     let count: Int
     let sending: Bool
-    /// Room the question and its body may take before they scroll.
-    let maxHeight: CGFloat
     let answer: (String) -> Void
     let notNow: () -> Void
     let dismiss: () -> Void
@@ -33,33 +31,28 @@ struct BlobDecisionView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title)
-                        .font(.system(size: titleSize, weight: .semibold))
-                        .lineSpacing(titleSize * 3 / 14)
-                        .foregroundStyle(OS1VisualStyle.text)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityAddTraits(.isHeader)
-                    TimelineView(.periodic(from: .now, by: 60)) { _ in
-                        if let meta {
-                            Text(meta)
-                                .font(.caption2)
-                                .foregroundStyle(OS1VisualStyle.textDim)
-                                .accessibilityLabel(metaSpoken ?? meta)
-                        }
-                    }
-                    let reply = BlobReply(item.body)
-                    if !reply.isEmpty {
-                        BlobReplyView(reply: reply)
-                            .padding(.top, 10)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title)
+                    .font(.system(size: titleSize, weight: .semibold))
+                    .lineSpacing(titleSize * 3 / 14)
+                    .foregroundStyle(OS1VisualStyle.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+                TimelineView(.periodic(from: .now, by: 60)) { _ in
+                    if let meta {
+                        Text(meta)
+                            .font(.caption2)
+                            .foregroundStyle(OS1VisualStyle.textDim)
+                            .accessibilityLabel(metaSpoken ?? meta)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                let reply = BlobReply(item.body)
+                if !reply.isEmpty {
+                    BlobReplyView(reply: reply)
+                        .padding(.top, 10)
+                }
             }
-            .frame(maxHeight: maxHeight)
-            .fixedSize(horizontal: false, vertical: true)
-            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(spacing: 8) {
                 ForEach(Array(item.options.enumerated()), id: \.offset) { index, option in

@@ -234,6 +234,21 @@ final class BlobTextTalk {
         return BlobExchange.exchanges(in: desk?.entries ?? [])
     }
 
+    /// The exchanges above the current one on Blob's page: everything before
+    /// the message on screen, which is drawn below them as the current
+    /// exchange. All of history when no message is on its way.
+    var earlier: [BlobExchange] {
+        #if DEBUG
+        if let demo = BlobExchange.demo { return demo }
+        #endif
+        let entries = desk?.entries ?? []
+        let cut: Int? = answeringAsk
+            ? sentAfter.flatMap { id in entries.lastIndex { $0.id == id } }.map { $0 + 1 }
+            : acceptedIndex(in: entries)
+        guard let cut else { return BlobExchange.exchanges(in: entries) }
+        return BlobExchange.exchanges(in: Array(entries[..<cut]))
+    }
+
     var canLoadEarlier: Bool { desk?.canLoadEarlier ?? false }
     var loadingEarlier: Bool { desk?.loadingEarlier ?? false }
     func loadEarlier() { desk?.loadEarlier() }
