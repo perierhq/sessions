@@ -1659,8 +1659,10 @@ export function demoAutomations(now: number) {
   ];
 }
 
+export const DEMO_GOAL_ID = "goal-demo-flake-burndown";
+
 export function demoGoal(now: number, goalsDir: string) {
-  const id = "goal-demo-flake-burndown";
+  const id = DEMO_GOAL_ID;
   return {
     goal: {
       id,

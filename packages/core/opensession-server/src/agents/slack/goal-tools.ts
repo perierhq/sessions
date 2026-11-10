@@ -24,7 +24,7 @@ import {
   resumeGoal,
   appendLedger,
   readLedger,
-  saveGoal,
+  mutateGoal,
 } from "../../server/goals";
 import { parseWhen } from "./parse-when";
 
@@ -249,13 +249,13 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
         "Wake a goal immediately, without waiting for its schedule (sets its next wake to now; the ticker picks it up within a minute).",
         { id: z.string() },
         async (args: { id: string }) => {
-          const g = await getGoal(args.id);
-          if (!g) return text(`No goal with id \`${args.id}\`.`);
-          await saveGoal({
-            ...g,
+          const nextWakeAt = new Date().toISOString();
+          const g = await mutateGoal(args.id, (current) => ({
+            ...current,
             status: "active",
-            nextWakeAt: new Date().toISOString(),
-          });
+            nextWakeAt,
+          }));
+          if (!g) return text(`No goal with id \`${args.id}\`.`);
           return text(`*${g.name}* will wake within a minute.`);
         },
       ),
@@ -298,15 +298,21 @@ export function createGoalSelfMcpServer(goalId: string) {
           .describe("Natural-language next wake, e.g. 'in 7 days'."),
       },
       async (args: { when: string }) => {
-        const g = await load();
-        if (!g) return text("Goal record missing.");
+        // Parse first: it is a model call, too slow to sit inside the
+        // read-modify-write.
         const iso = await parseWhen(args.when);
         if (!iso) return text(`Couldn't read "${args.when}" as a future time.`);
-        const floor = Date.now() + g.minWakeMinutes * 60_000;
-        const at = Math.max(Date.parse(iso), floor);
-        const nextWakeAt = new Date(at).toISOString();
-        await saveGoal({ ...g, nextWakeAt, status: "active" });
-        return text(`Next wake set to ${nextWakeAt}.`);
+        const requested = Date.parse(iso);
+        const now = Date.now();
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
+          nextWakeAt: new Date(
+            Math.max(requested, now + current.minWakeMinutes * 60_000),
+          ).toISOString(),
+          status: "active",
+        }));
+        if (!g) return text("Goal record missing.");
+        return text(`Next wake set to ${g.nextWakeAt}.`);
       },
     ),
     tool(
@@ -314,13 +320,13 @@ export function createGoalSelfMcpServer(goalId: string) {
       "Pause this mission because you're blocked on a human decision or sign-off. Say clearly in `reason` what you need and from whom. (First pull them in with opensession-humans ask_human if you haven't.) The ticker won't wake you again until a human resumes the goal.",
       { reason: z.string().describe("What/who you're blocked on.") },
       async (args: { reason: string }) => {
-        const g = await load();
-        if (!g) return text("Goal record missing.");
-        await saveGoal({
-          ...g,
+        const pauseReason = args.reason?.trim() || "Awaiting human input";
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
           status: "paused",
-          pauseReason: args.reason?.trim() || "Awaiting human input",
-        });
+          pauseReason,
+        }));
+        if (!g) return text("Goal record missing.");
         return text(
           "Marked paused. I'll stay put until a human resumes this goal.",
         );
@@ -335,13 +341,13 @@ export function createGoalSelfMcpServer(goalId: string) {
           .describe("How the mission was completed / final outcome."),
       },
       async (args: { reason: string }) => {
-        const g = await load();
-        if (!g) return text("Goal record missing.");
-        await saveGoal({
-          ...g,
+        const doneReason = args.reason?.trim() || "Completed";
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
           status: "done",
-          doneReason: args.reason?.trim() || "Completed",
-        });
+          doneReason,
+        }));
+        if (!g) return text("Goal record missing.");
         return text("Marked done. The wake cycle is stopped.");
       },
     ),
@@ -350,13 +356,13 @@ export function createGoalSelfMcpServer(goalId: string) {
       "Give up on this mission because it can't be completed. Stops the wake cycle. Explain why in `reason`.",
       { reason: z.string().describe("Why the mission can't be completed.") },
       async (args: { reason: string }) => {
-        const g = await load();
-        if (!g) return text("Goal record missing.");
-        await saveGoal({
-          ...g,
+        const doneReason = args.reason?.trim() || "Failed";
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
           status: "failed",
-          doneReason: args.reason?.trim() || "Failed",
-        });
+          doneReason,
+        }));
+        if (!g) return text("Goal record missing.");
         return text("Marked failed. The wake cycle is stopped.");
       },
     ),
@@ -365,9 +371,12 @@ export function createGoalSelfMcpServer(goalId: string) {
       "Set a short human-readable phase label for where the mission is (e.g. 'week 2: shipping roundup'). Shown in list_goals.",
       { phase: z.string() },
       async (args: { phase: string }) => {
-        const g = await load();
+        const phase = args.phase?.trim() || undefined;
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
+          phase,
+        }));
         if (!g) return text("Goal record missing.");
-        await saveGoal({ ...g, phase: args.phase?.trim() || undefined });
         return text("Phase updated.");
       },
     ),

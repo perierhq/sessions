@@ -22,6 +22,7 @@ import {
   deleteGoal,
   getGoal,
   listGoals,
+  mutateGoal,
   readLedger,
   resumeGoal,
   saveGoal,
@@ -174,6 +175,57 @@ describe("goals store", () => {
       nextWakeAt: "2031-05-01T09:00:00.000Z",
     });
     expect((await getGoal(goal.id))?.pauseReason).toBeUndefined();
+  });
+
+  test("patches only the operator fields, whatever the caller sends", async () => {
+    const goal = await created();
+    // An API body is untrusted: `stateFile` is the path the ledger tools
+    // read and write, and `id` would fork the record.
+    const body = JSON.parse(
+      JSON.stringify({
+        name: "Renamed",
+        id: "goal-other",
+        stateFile: "/etc/passwd",
+        wakeCount: 99,
+        engineSessionId: "hijacked",
+        createdBy: "Mallory",
+      }),
+    );
+    const updated = await updateGoal(goal.id, body);
+    expect(updated).toMatchObject({
+      id: goal.id,
+      name: "Renamed",
+      stateFile: goal.stateFile,
+      wakeCount: 0,
+      createdBy: "Ada",
+    });
+    expect(updated).not.toHaveProperty("engineSessionId");
+    expect(await getGoal(goal.id)).toEqual(updated as Goal);
+    expect(await getGoal("goal-other")).toBeNull();
+  });
+
+  test("mutates the current record and creates nothing for an unknown id", async () => {
+    const goal = await created();
+    await updateGoal(goal.id, { status: "paused", pauseReason: "Hold" });
+    const next = await mutateGoal(goal.id, (current) => ({
+      ...current,
+      wakeCount: current.wakeCount + 1,
+    }));
+    expect(next).toMatchObject({
+      status: "paused",
+      pauseReason: "Hold",
+      wakeCount: 1,
+    });
+    expect(await mutateGoal("goal-missing", (current) => current)).toBeNull();
+    expect(await mutateGoal("..", (current) => current)).toBeNull();
+    // No tombstone either: the key was never written.
+    expect(
+      await sessionCatalogDocument({
+        op: "get",
+        namespace: "goals",
+        key: "goal-missing",
+      }),
+    ).toBeNull();
   });
 
   test("saves runner fields as given", async () => {

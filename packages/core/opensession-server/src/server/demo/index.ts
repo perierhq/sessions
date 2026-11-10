@@ -28,7 +28,9 @@ import { touchNativeSession } from "../session-cache";
 import {
   DEMO_ASK_ENGINE_SESSION_ID,
   DEMO_ASK_SESSION_ID,
+  DEMO_GOAL_ID,
   demoAskQuestions,
+  demoAutomations,
 } from "./fixtures";
 
 /** Answering retires the card; re-offer after this so the demo's "waiting on
@@ -103,6 +105,14 @@ export async function seedDemoDataset(): Promise<void> {
       result.created
         ? `[demo] dataset generated into ${result.sessionsDir} (${result.sessionIds.length} sessions)`
         : `[demo] dataset already present in ${result.sessionsDir} (marker found)`,
+    );
+    // Boot imported the goals and automations namespaces before the
+    // generator wrote their files; seed the demo records now.
+    const { seedLegacyCatalogDocuments } = await import("../catalog-documents");
+    await seedLegacyCatalogDocuments("goals", [DEMO_GOAL_ID]);
+    await seedLegacyCatalogDocuments(
+      "automations",
+      demoAutomations(0).map((automation) => automation.id),
     );
     const { seedSessionCatalogsFromFiles } =
       await import("../session-source-scan");

@@ -89,7 +89,7 @@ export interface Goal {
 // ── Store ────────────────────────────────────────────────────
 
 export async function listGoals(): Promise<Goal[]> {
-  // SAFETY: only saveGoal writes this namespace, and the boot import seeds it
+  // SAFETY: only saveGoal and mutateGoal write this namespace, and the boot import seeds it
   // from the same records the file store held.
   const out = (await goalDocuments().list()).map((row) => row.value as Goal);
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -104,8 +104,37 @@ export async function getGoal(id: string): Promise<Goal | null> {
   return (await goalDocuments().get(id)) as Goal | null;
 }
 
+/** Whole-record write, for a new goal. Anything that starts from a stored
+ *  copy goes through {@link mutateGoal}, so an overlapping writer is kept. */
 export async function saveGoal(g: Goal): Promise<void> {
   await goalDocuments().set(g.id, g);
+}
+
+class GoalMissing extends Error {}
+
+/**
+ * Compare-and-set read-modify-write of one goal. `mutate` sees the freshest
+ * committed record and runs again on a conflict, so the runner's bookkeeping,
+ * the agent's own cadence tools and a pause from the UI never overwrite each
+ * other from a stale read. Keep `mutate` free of side effects: it may run more
+ * than once. Resolves null for an unknown id; nothing is created.
+ */
+export async function mutateGoal(
+  id: string,
+  mutate: (goal: Goal) => Goal,
+): Promise<Goal | null> {
+  if (!isValidCatalogKey(id)) return null;
+  try {
+    return await goalDocuments().update<Goal>(id, (value) => {
+      // Abort without writing: returning null would store a tombstone.
+      if (value === null) throw new GoalMissing();
+      // SAFETY: as in listGoals, every document here is a saved Goal.
+      return mutate(value as Goal);
+    });
+  } catch (error) {
+    if (error instanceof GoalMissing) return null;
+    throw error;
+  }
 }
 
 export async function deleteGoal(id: string): Promise<boolean> {
@@ -214,40 +243,56 @@ export async function createGoal(input: {
   return g;
 }
 
-/** Fields an operator (via opensession-goals) may patch. Runtime/scheduling fields
- *  (engineSessionId, wakeCount, lastRun*, worktreePath) are owned by the runner. */
+/** Fields an operator (via opensession-goals or the goals API) may patch.
+ *  Runtime/scheduling fields (engineSessionId, wakeCount, lastRun*,
+ *  worktreePath) are owned by the runner, and `id` and `stateFile` are fixed
+ *  at creation: the ledger tools read and write `stateFile` by path. */
+const PATCHABLE_GOAL_FIELDS = [
+  "name",
+  "mission",
+  "status",
+  "mode",
+  "repo",
+  "nextWakeAt",
+  "minWakeMinutes",
+  "maxWakes",
+  "model",
+  "fallbackModel",
+  "mcpServers",
+  "phase",
+  "pauseReason",
+  "doneReason",
+] as const satisfies readonly (keyof Goal)[];
+
+export type GoalPatch = Partial<
+  Pick<Goal, (typeof PATCHABLE_GOAL_FIELDS)[number]>
+>;
+
+/** Only the patchable fields, whatever the caller sent: an API body is
+ *  untrusted, so the whitelist holds at runtime, not just in the type. */
+function patchableFields(patch: unknown): GoalPatch {
+  const out: Record<string, unknown> = {};
+  if (!patch || typeof patch !== "object") return out;
+  for (const key of PATCHABLE_GOAL_FIELDS)
+    if (Object.hasOwn(patch, key))
+      out[key] = (patch as Record<string, unknown>)[key];
+  return out;
+}
+
 export async function updateGoal(
   id: string,
-  patch: Partial<
-    Pick<
-      Goal,
-      | "name"
-      | "mission"
-      | "status"
-      | "mode"
-      | "repo"
-      | "nextWakeAt"
-      | "minWakeMinutes"
-      | "maxWakes"
-      | "model"
-      | "fallbackModel"
-      | "mcpServers"
-      | "phase"
-      | "pauseReason"
-      | "doneReason"
-    >
-  >,
+  patch: GoalPatch,
 ): Promise<Goal | { error: string }> {
-  const g = await getGoal(id);
-  if (!g) return { error: "Goal not found" };
-  const next: Goal = { ...g, ...patch };
-  if ("mcpServers" in patch)
-    next.mcpServers = sanitizeMcpList(patch.mcpServers);
-  if (typeof next.minWakeMinutes === "number") {
-    next.minWakeMinutes = Math.max(MIN_WAKE_FLOOR, next.minWakeMinutes);
-  }
-  await saveGoal(next);
-  return next;
+  const fields = patchableFields(patch);
+  if ("mcpServers" in fields)
+    fields.mcpServers = sanitizeMcpList(fields.mcpServers);
+  const next = await mutateGoal(id, (g) => {
+    const merged: Goal = { ...g, ...fields };
+    if (typeof merged.minWakeMinutes === "number")
+      merged.minWakeMinutes = Math.max(MIN_WAKE_FLOOR, merged.minWakeMinutes);
+    return merged;
+  });
+  return next ?? { error: "Goal not found" };
 }
 
 /** Resume a paused/done goal: mark active and (re)schedule a wake. */
@@ -255,20 +300,17 @@ export async function resumeGoal(
   id: string,
   firstWakeAt?: string,
 ): Promise<Goal | { error: string }> {
-  const g = await getGoal(id);
-  if (!g) return { error: "Goal not found" };
   let nextWakeAt = new Date().toISOString();
   if (firstWakeAt?.trim()) {
     const t = Date.parse(firstWakeAt.trim());
     if (Number.isNaN(t)) return { error: `Invalid time: "${firstWakeAt}"` };
     nextWakeAt = new Date(t).toISOString();
   }
-  const next: Goal = {
+  const next = await mutateGoal(id, (g) => ({
     ...g,
     status: "active",
     pauseReason: undefined,
     nextWakeAt,
-  };
-  await saveGoal(next);
-  return next;
+  }));
+  return next ?? { error: "Goal not found" };
 }

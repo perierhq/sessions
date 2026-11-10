@@ -287,24 +287,50 @@ export async function importApplicationCatalog(): Promise<void> {
       if (!isMissing(error)) throw error;
       files = [];
     }
-    // One maximum-size document still fits the RPC body after JSON escaping.
-    for (const file of files) {
-      const key = file.slice(0, -5);
-      validateKey(key);
-      const path = join(directory, file);
-      if ((await stat(path)).size > CATALOG_DOCUMENT_MAX_VALUE_BYTES)
-        throw new Error(
-          `Legacy catalog document exceeds the import bound: ${namespace}/${key}`,
-        );
-      const value = await readFile(path, "utf8");
-      JSON.parse(value);
-      await sessionCatalogDocument({
-        op: "seed",
-        namespace,
-        rows: [{ key, value }],
-      });
-    }
+    for (const file of files)
+      await seedLegacyFile(namespace, directory, file.slice(0, -5));
     await sessionCatalogDocument({ op: "mark_import_complete", namespace });
+  }
+}
+
+/** Seed one legacy `<key>.json` file. One maximum-size document still fits
+ * the RPC body after JSON escaping. */
+async function seedLegacyFile(
+  namespace: string,
+  directory: string,
+  key: string,
+): Promise<void> {
+  validateKey(key);
+  const path = join(directory, `${key}.json`);
+  if ((await stat(path)).size > CATALOG_DOCUMENT_MAX_VALUE_BYTES)
+    throw new Error(
+      `Legacy catalog document exceeds the import bound: ${namespace}/${key}`,
+    );
+  const value = await readFile(path, "utf8");
+  JSON.parse(value);
+  await sessionCatalogDocument({
+    op: "seed",
+    namespace,
+    rows: [{ key, value }],
+  });
+}
+
+/** Seed named legacy files into a namespace whose boot import already ran,
+ * for a writer that produces them after boot (the demo generator). Like the
+ * import, a seed never overwrites a committed document or a deletion
+ * tombstone, so this is safe to repeat. Missing files are skipped. */
+export async function seedLegacyCatalogDocuments(
+  namespace: ApplicationCatalogNamespace,
+  keys: readonly string[],
+): Promise<void> {
+  validateNamespace(namespace);
+  const directory = await legacyCatalogDirectory(namespace);
+  for (const key of keys) {
+    try {
+      await seedLegacyFile(namespace, directory, key);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
   }
 }
 
