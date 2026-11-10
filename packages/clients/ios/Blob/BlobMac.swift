@@ -115,7 +115,7 @@ final class BlobMacAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// Space and Esc on the home, which have no menu command: Space talks while
-/// nothing is being typed, Esc stops Blob reading or closes history. Returns
+/// nothing is being typed, Esc stops Blob reading or hides history. Returns
 /// the event when the home leaves it alone.
 struct BlobMacKeys: ViewModifier {
     let space: () -> Bool

@@ -63,90 +63,35 @@ struct BlobExchange: Identifiable, Equatable {
     }
 }
 
-/// Earlier exchanges with Blob, newest at the bottom. Opened with a swipe up
-/// on the home; pulling down past the oldest one, or tapping Blob, goes back.
-struct BlobHistoryView: View {
-    let exchanges: [BlobExchange]
-    let canLoadEarlier: Bool
-    let loadingEarlier: Bool
-    let loadEarlier: () -> Void
-    let dismiss: () -> Void
-    /// Room kept clear on each side: the safe area, plus Blob's slot.
-    let margins: EdgeInsets
-
-    @State private var dismissed = false
-    /// The exchange at the bottom of the screen. Older pages arrive above
-    /// it, and the scroll view keeps it where it was.
-    @State private var position: String?
+/// One earlier exchange on Blob's page, above the current one: an optional
+/// day header, what you said, then Blob's reply. The header and the exchange
+/// are one row, so each scroll target has one id and one height.
+struct BlobHistoryRow: View {
+    let exchange: BlobExchange
+    /// "Today", "Yesterday" or the date, on the first exchange of each day.
+    let day: String?
+    let first: Bool
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if loadingEarlier {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .padding(.bottom, 24)
-                }
-                ForEach(Array(exchanges.enumerated()), id: \.element.id) { index, exchange in
-                    // The day header and the exchange are one row, so each
-                    // scroll target has one id and one height.
-                    VStack(alignment: .leading, spacing: 0) {
-                        let day = Self.day(exchange.date)
-                        if let day, index == 0 || Self.day(exchanges[index - 1].date) != day {
-                            Text(day)
-                                .font(.caption2)
-                                .foregroundStyle(OS1VisualStyle.textDim)
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, index == 0 ? 0 : 12)
-                                .padding(.bottom, 20)
-                                .accessibilityAddTraits(.isHeader)
-                        }
-                        row(exchange)
-                    }
-                    .padding(.bottom, 32)
-                    .onAppear {
-                        if index == 0, canLoadEarlier, !loadingEarlier { loadEarlier() }
-                    }
-                }
-            }
-            .scrollTargetLayout()
-            .padding(.leading, margins.leading)
-            .padding(.trailing, margins.trailing)
-            .padding(.top, margins.top)
-            .padding(.bottom, margins.bottom)
-        }
-        .scrollPosition(id: $position, anchor: .bottom)
-        .defaultScrollAnchor(.bottom)
-        // Older pages arrive at the top; keep what you're reading in place.
-        .defaultScrollAnchor(.bottom, for: .sizeChanges)
-        .scrollBounceBehavior(.always)
-        .scrollIndicators(.hidden)
-        // Older exchanges fade out at the top edge instead of being cut off.
-        .mask {
-            VStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                    .frame(height: margins.top)
-                Rectangle()
-            }
-            .ignoresSafeArea()
-        }
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-            // Pulled well past the oldest exchange: back to the home.
-            geometry.contentOffset.y + geometry.contentInsets.top < -72
-        } action: { _, pulled in
-            if pulled, !dismissed {
-                dismissed = true
-                dismiss()
-            }
-        }
-        .overlay {
-            if exchanges.isEmpty, !loadingEarlier {
-                Text("Nothing yet")
+        VStack(alignment: .leading, spacing: 0) {
+            if let day {
+                Text(day)
                     .font(.caption2)
                     .foregroundStyle(OS1VisualStyle.textDim)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, first ? 0 : 12)
+                    .padding(.bottom, 20)
+                    .accessibilityAddTraits(.isHeader)
             }
+            row(exchange)
         }
-        .accessibilityAction(.escape, dismiss)
+        .padding(.bottom, 32)
+    }
+
+    /// The day header for `exchanges[index]`: only where the day changes.
+    static func header(_ exchanges: [BlobExchange], at index: Int) -> String? {
+        guard let day = day(exchanges[index].date) else { return nil }
+        return index == 0 || Self.day(exchanges[index - 1].date) != day ? day : nil
     }
 
     private func row(_ exchange: BlobExchange) -> some View {
@@ -206,7 +151,7 @@ struct BlobHistoryView: View {
 #if DEBUG
 extension BlobExchange {
     /// Canned history for screenshots without a server: `BLOB_DEMO_HISTORY=1`
-    /// fills it, `BLOB_DEMO_HISTORY=open` also opens it at launch.
+    /// fills it; `open` and `top` reveal it at launch (`demoReveal`).
     static let demo: [BlobExchange]? = {
         guard ProcessInfo.processInfo.environment["BLOB_DEMO_HISTORY"] != nil else { return nil }
         let now = Date.now
@@ -255,6 +200,11 @@ extension BlobExchange {
         ]
     }()
 
-    static var demoOpen: Bool { ProcessInfo.processInfo.environment["BLOB_DEMO_HISTORY"] == "open" }
+    /// `open` reveals history at launch; `top` also scrolls to its oldest
+    /// exchange, as after scrolling up into it.
+    static var demoReveal: String? {
+        let value = ProcessInfo.processInfo.environment["BLOB_DEMO_HISTORY"]
+        return value == "open" || value == "top" ? value : nil
+    }
 }
 #endif

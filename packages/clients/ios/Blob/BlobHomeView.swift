@@ -18,18 +18,21 @@ struct BlobHomeView: View {
     @State private var physics = BlobPhysics()
     /// What the supervisor is waiting on you for, shown while Blob is idle.
     @State private var decisions = BlobDecisions()
-    /// Room a reply may take: the screen below Blob, minus what you said.
-    @State private var replyHeight: CGFloat = 420
     @State private var showSettings = false
     /// Writing instead of speaking.
     @State private var typing = false
     @State private var draft = ""
-    /// Earlier exchanges, opened with a swipe up.
-    @State private var historyOpen = false
-    /// Whether a long reply is scrolled to its end, so a swipe up there opens
-    /// history instead of fighting the reply's own scrolling.
-    @State private var replyAtEnd = true
-    @State private var dragStartedAtEnd: Bool?
+    /// Earlier exchanges sit above the current one on the page, but only
+    /// after you pull past its top (or drag on the empty home) and let go.
+    @State private var historyRevealed = false
+    /// The page's scroll, for the pull that reveals history and for Latest.
+    @State private var metrics = PageMetrics()
+    @State private var scrollPhase: ScrollPhase = .idle
+    /// Pulled far enough that letting go reveals history.
+    @State private var armed = false
+    /// Where the current exchange starts, in the page's content.
+    @State private var nowY: CGFloat = 0
+    @State private var latestTaps = 0
     @FocusState private var fieldFocused: Bool
     @AppStorage("blob.hasTalked") private var hasTalked = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -42,20 +45,25 @@ struct BlobHomeView: View {
         GeometryReader { outer in
             let insets = outer.safeAreaInsets
             GeometryReader { geo in
+            let panes = BlobPanes.layout(in: geo)
             ZStack(alignment: .bottom) {
-                if historyOpen {
-                    BlobHistoryView(
-                        exchanges: text.history,
-                        canLoadEarlier: text.canLoadEarlier,
-                        loadingEarlier: text.loadingEarlier,
-                        loadEarlier: { text.loadEarlier() },
-                        dismiss: closeHistory,
-                        margins: Self.historyMargins(insets: insets)
-                    )
-                    .transition(reduceMotion ? .opacity : .offset(y: 48).combined(with: .opacity))
+                if let panes {
+                    // The conversation on the leading side of the fold, the
+                    // reply's visuals on the trailing side, nothing on it.
+                    HStack(spacing: 0) {
+                        page(insets: insets, panes: panes)
+                            .frame(width: panes.fold.minX)
+                        Color.clear
+                            .frame(width: panes.fold.width)
+                            .accessibilityHidden(true)
+                        sidePane(insets: insets)
+                            .frame(maxWidth: .infinity)
+                    }
+                } else {
+                    page(insets: insets, panes: nil)
                 }
 
-                // Drawn over history, so Blob stays visible in its slot, but
+                // Drawn over the page, so Blob stays visible in its slot, but
                 // never in the way of a scroll: taps are handled below.
                 TimelineView(.animation(paused: scenePhase != .active)) { timeline in
                     let targets = targets(in: geo.size, insets: insets, at: timeline.date)
@@ -67,12 +75,12 @@ struct BlobHomeView: View {
                 .allowsHitTesting(false)
                 .accessibilityElement()
                 .accessibilityLabel("Blob")
-                .accessibilityValue(historyOpen ? "History" : talking ? statusLabel : needsYou ? "Needs you" : "Asleep")
-                .accessibilityHint(historyOpen ? "Closes history" : talking ? "Ends the conversation" : "Starts a conversation")
+                .accessibilityValue(historyRevealed ? "History" : talking ? statusLabel : needsYou ? "Needs you" : "Asleep")
+                .accessibilityHint(historyRevealed ? "Goes back to the latest" : talking ? "Ends the conversation" : "Starts a conversation")
                 .accessibilityAddTraits(.isButton)
-                .accessibilityAction { historyOpen ? closeHistory() : toggleTalk() }
-                .accessibilityAction(named: historyOpen ? "Close history" : "Show history") {
-                    historyOpen ? closeHistory() : openHistory()
+                .accessibilityAction { blobTapped() }
+                .accessibilityAction(named: historyRevealed ? "Back to latest" : "Show history") {
+                    historyRevealed ? collapseHistory() : revealHistory()
                 }
 
                 // What the supervisor is doing, just above Blob while it thinks.
@@ -80,35 +88,30 @@ struct BlobHomeView: View {
                     talk: text,
                     blobCenter: CGPoint(x: insets.leading + (geo.size.width - insets.leading - insets.trailing) / 2, y: geo.size.height * 0.4),
                     blobRadius: 66,
-                    hidden: historyOpen
+                    hidden: historyRevealed
                 )
 
-                if !historyOpen {
+                if !hasContent && !historyRevealed {
                     captions(insets: insets)
                         .transition(.opacity)
                 }
+
+                if showsLatest {
+                    latestButton(insets: insets, panes: panes)
+                }
             }
             .contentShape(Rectangle())
-            .simultaneousGesture(historySwipe)
             .onTapGesture(coordinateSpace: .local) { location in
-                if historyOpen {
-                    if hit(location) { closeHistory() }
-                } else if hit(location) {
-                    toggleTalk()
+                if hit(location) {
+                    blobTapped()
                 } else if typing && draft.isEmpty {
                     typing = false
                     fieldFocused = false
                 }
             }
             .onLongPressGesture { showSettings = true }
-            .onAppear {
-                replyHeight = max(240, geo.size.height - insets.top - insets.bottom - 220)
-                BlobSurfaceReport.update(size: geo.size)
-            }
-            .onChange(of: geo.size) { _, size in
-                replyHeight = max(240, size.height - insets.top - insets.bottom - 220)
-                BlobSurfaceReport.update(size: size)
-            }
+            .onAppear { BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
+            .onChange(of: panes) { _, panes in BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
             }
             .ignoresSafeArea()
         }
@@ -163,7 +166,7 @@ struct BlobHomeView: View {
         // the current decision; `blob://` alone just opens Blob.
         .onOpenURL { url in
             guard let id = BlobLink.itemId(url) else { return }
-            if historyOpen { closeHistory() }
+            if historyRevealed { collapseHistory() }
             if typing && draft.isEmpty { typing = false; fieldFocused = false }
             if text.phase != .listening { text.reset() }
             Task { await decisions.focus(id: id) }
@@ -176,7 +179,7 @@ struct BlobHomeView: View {
                 draft = "what shipped this week?"
                 typing = true
             }
-            if BlobExchange.demoOpen { historyOpen = true }
+            if BlobExchange.demoReveal != nil { revealHistory() }
         }
         #endif
         #if os(macOS)
@@ -189,7 +192,7 @@ struct BlobHomeView: View {
             BlobMacState.shared.request = nil
             switch request {
             case .write: startWriting()
-            case .history: historyOpen ? closeHistory() : openHistory()
+            case .history: historyRevealed ? collapseHistory() : revealHistory()
             case .settings: showSettings = true
             }
         }
@@ -213,19 +216,18 @@ struct BlobHomeView: View {
         return needsYou ? "Needs you" : "Asleep"
     }
 
-    /// Space talks, or stops talking. Not while history is open.
+    /// Space talks, or stops talking.
     private func spaceKey() -> Bool {
-        guard !historyOpen else { return false }
         toggleTalk()
         return true
     }
 
-    /// Esc stops Blob reading, then closes history, then the write bar.
+    /// Esc stops Blob reading, then hides history, then closes the write bar.
     private func escapeKey() -> Bool {
         if text.reading {
             text.hush()
-        } else if historyOpen {
-            closeHistory()
+        } else if historyRevealed {
+            collapseHistory()
         } else if typing && draft.isEmpty {
             typing = false
             fieldFocused = false
@@ -243,7 +245,6 @@ struct BlobHomeView: View {
     #endif
 
     private func startWriting() {
-        if historyOpen { closeHistory() }
         typing = true
         fieldFocused = true
     }
@@ -255,16 +256,16 @@ struct BlobHomeView: View {
     private var talking: Bool { engine.active || text.active }
     private var textConversation: Bool { text.active || !usesVoice }
 
-    /// Nothing else going on: no conversation, no typing, no history, no
-    /// reply on screen. Only then does a decision come up.
+    /// Nothing else going on: no conversation, no typing, no reply on
+    /// screen. Only then does a decision come up.
     private var idle: Bool {
-        !talking && !typing && !historyOpen && !replyOnScreen && ask == nil && !Self.demoRunning
+        !talking && !typing && !replyOnScreen && ask == nil && !Self.demoRunning
     }
 
     /// What the supervisor's run is waiting on you for, shown where replies
     /// render. It comes before decisions and replies: until it is answered
     /// the run does nothing else.
-    private var ask: BlobAsk? { historyOpen ? nil : text.ask }
+    private var ask: BlobAsk? { text.ask }
 
     /// Blob is awake because something needs you.
     private var needsYou: Bool { showingDecision || ask != nil }
@@ -323,26 +324,25 @@ struct BlobHomeView: View {
         #if DEBUG
         if let demo = BlobDemo.at(date) { talking = demo.talking; mode = demo.mode; level = demo.level }
         #endif
-        // A reply on screen gets the room: Blob moves up and keeps talking from there.
-        let showingReply = text.answer != nil || ask != nil || Self.demoReply != nil
-        let top = CGPoint(x: center.x, y: max(insets.top, 20) + 56)
-        // History gets the screen; Blob waits in its slot, small.
-        if historyOpen { talking = false }
-        // Something needs you: Blob wakes and moves up, as for a reply.
+        // Content on the page gets the screen: Blob stays small in its slot
+        // and keeps talking from there. So does history.
+        let docked = hasContent || historyRevealed
+        if historyRevealed { talking = false }
+        // Something needs you: Blob wakes in its slot.
         if !talking && needsYou {
             let reading = text.speaker.speaking
             return BlobTargets(
                 mode: decisionSaid != nil || reading ? .speak : .you,
-                position: top,
-                size: 72,
+                position: slot,
+                size: 48,
                 look: nil,
                 level: reading ? text.speaker.level(at: date) : 0
             )
         }
         return BlobTargets(
             mode: mode,
-            position: talking ? (showingReply ? top : center) : slot,
-            size: talking ? (showingReply ? 72 : 132) : 48,
+            position: talking && !docked ? center : slot,
+            size: talking && !docked ? 132 : 48,
             look: nil,
             level: level
         )
@@ -364,10 +364,17 @@ struct BlobHomeView: View {
         return hypot(location.x - p.x, location.y - p.y) <= max(physics.radius + 12, 30)
     }
 
-    /// A canned reply with blocks, for screenshots: `BLOB_DEMO_REPLY=1`.
+    /// A canned reply with blocks, for screenshots: `BLOB_DEMO_REPLY=1`,
+    /// `long` for one taller than the screen, or `plain` for one with no
+    /// visual blocks. `BLOB_DEMO_SCROLL=end` starts
+    /// the page scrolled to its end.
     private static var demoReply: String? {
         #if DEBUG
-        guard ProcessInfo.processInfo.environment["BLOB_DEMO_REPLY"] != nil else { return nil }
+        guard let value = ProcessInfo.processInfo.environment["BLOB_DEMO_REPLY"] else { return nil }
+        if value == "long" { return demoLongReply }
+        if value == "plain" {
+            return "On it. I'll start the wallet pass review now and tell you when it's done.\n\n```choices\nThanks\nSkip the tests\n```"
+        }
         return """
         **Mostly refunds, after the payout delay.** 21 of 23 answered; two need you.
 
@@ -395,6 +402,46 @@ struct BlobHomeView: View {
         #endif
     }
 
+    #if DEBUG
+    private static let demoLongReply = """
+    **The payout fix is live, and two refund tickets need your call.** Everything else from overnight is handled.
+
+    ### Overnight
+    - The payout delay fix merged at 02:10 and deployed at 02:22.
+    - 14 delayed payouts went out; the oldest was three days late.
+    - No new payout errors since the deploy.
+
+    ```metrics
+    Payouts sent: 14
+    Errors since deploy: 0
+    Tickets: 23 (+9)
+    ```
+
+    ### Support
+    Most tickets were about refunds after the delay. I answered 21 of 23 with the refund note and a link to the payout status page.
+
+    ```csv
+    Topic,Tickets
+    Refunds,9
+    Wallet pass,6
+    Sign-in,5
+    Other,3
+    ```
+
+    ### Needs you
+    1. A customer wants a refund on a payout that already arrived.
+    2. A partner wants the delay explained in writing before Friday.
+
+    I drafted replies for both. They're waiting in Plain.
+
+    ```choices
+    Send both drafts
+    Show me the drafts
+    Wait until tomorrow
+    ```
+    """
+    #endif
+
     private static var demoRunning: Bool {
         #if DEBUG
         BlobDemo.current != nil
@@ -403,51 +450,285 @@ struct BlobHomeView: View {
         #endif
     }
 
-    /// Swipe up to look back. Over a long reply it counts only once the reply
-    /// is scrolled to its end, so reading it never opens history by accident.
-    private var historySwipe: some Gesture {
-        DragGesture(minimumDistance: 24)
-            .onChanged { _ in
-                if dragStartedAtEnd == nil { dragStartedAtEnd = !replyOnScreen || replyAtEnd }
-            }
-            .onEnded { value in
-                defer { dragStartedAtEnd = nil }
-                let dy = value.translation.height
-                guard !historyOpen, dragStartedAtEnd ?? true,
-                      dy < -60, abs(value.translation.width) < -dy else { return }
-                openHistory()
-            }
-    }
-
     private var replyOnScreen: Bool { text.replyEntry != nil || text.answer != nil || Self.demoReply != nil }
 
-    private static func atEnd(_ geometry: ScrollGeometry) -> Bool {
-        geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 2
-    }
+    /// Something to read on the page: a reply, a question from the run, or a
+    /// decision. It starts at the top, Blob docks in its slot, and its
+    /// actions follow it inline.
+    private var hasContent: Bool { replyOnScreen || ask != nil || showingDecision }
 
-    private func openHistory() {
+    /// Changes when a new item takes the page: a message sent, a question
+    /// asked, the next decision. History folds away and the page goes to
+    /// the new item's top.
+    private var turnKey: String { "\(text.sends)|\(ask?.id ?? "")|\(decision?.id ?? "")" }
+
+    /// How far past an edge a pull must go before letting go reveals history.
+    private static let pullToReveal: CGFloat = 64
+
+    private func revealHistory() {
+        guard !historyRevealed else { return }
         if typing && draft.isEmpty { typing = false }
         fieldFocused = false
-        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35)) { historyOpen = true }
+        historyRevealed = true
     }
 
-    private func closeHistory() {
-        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.3)) { historyOpen = false }
+    private func collapseHistory() {
+        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.3)) { historyRevealed = false }
     }
 
-    /// History keeps clear of the safe area and of Blob: beside it when Blob
-    /// sits in the Duo's system strip, above it in a phone's corner.
-    private static func historyMargins(insets: EdgeInsets) -> EdgeInsets {
-        let inStrip = insets.trailing >= 60 || insets.leading >= 60
-        return EdgeInsets(
+    /// Tapping Blob goes back to the quiet home from history (and lets the
+    /// reply on screen go); otherwise it talks.
+    private func blobTapped() {
+        if historyRevealed {
+            collapseHistory()
+            if text.phase == .waiting { text.reset() }
+        } else {
+            toggleTalk()
+        }
+    }
+
+    /// The page keeps clear of the safe area and of Blob: beside it when Blob
+    /// sits in the Duo's system strip, above it in a phone's corner. The
+    /// bottom clears the keyboard button and the write bar, so the end of a
+    /// reply and its actions are never covered.
+    /// Beside a fold the leading pane ends at the fold's region, which
+    /// already carries its margins.
+    private static func pageMargins(insets: EdgeInsets, typing: Bool, split: Bool) -> EdgeInsets {
+        EdgeInsets(
             top: max(insets.top, 20) + 16,
             leading: insets.leading + 24,
-            bottom: inStrip ? max(insets.bottom, 20) + 16 : insets.bottom + 88,
-            trailing: insets.trailing + 24
+            bottom: max(insets.bottom, 20) + (typing ? 84 : 68),
+            trailing: split ? 0 : insets.trailing + 24
         )
     }
 
+    /// The settled reply on the page, if there is one: the demo's or the
+    /// run's. Nil while it streams and while a question is up.
+    private var settledReply: String? {
+        guard ask == nil, let content = Self.demoReply ?? text.replyEntry?.content, !content.isEmpty else { return nil }
+        return content
+    }
+
+    /// The trailing pane: the current reply's visual blocks; without any,
+    /// the decision waiting on you, or nothing.
+    private func sidePane(insets: EdgeInsets) -> some View {
+        let visuals = settledReply.map { BlobReplySplit($0).visuals } ?? []
+        return BlobSidePane(
+            visuals: visuals,
+            margins: EdgeInsets(
+                top: max(insets.top, 20) + 16,
+                leading: 0,
+                bottom: max(insets.bottom, 20) + 68,
+                trailing: insets.trailing + 24
+            )
+        ) {
+            // Only beside a reply: a decision that is itself the current item
+            // stays with the conversation.
+            if settledReply != nil, let waiting = decisions.current, decisions.said == nil {
+                BlobDecisionView(
+                    item: waiting,
+                    position: decisions.position,
+                    count: decisions.count,
+                    sending: decisions.sending == waiting.id,
+                    answer: { option in Task { await decisions.answer(waiting, with: option) } },
+                    notNow: { decisions.skip(waiting) },
+                    dismiss: { Task { await decisions.dismiss(waiting) } }
+                )
+                .id(waiting.id)
+            }
+        }
+        .id(turnKey)
+    }
+
+    /// Where the current exchange's top sits when the page goes to it: just
+    /// under the top margin.
+    private func nowAnchor(_ margins: EdgeInsets) -> UnitPoint {
+        UnitPoint(x: 0.5, y: metrics.container > 0 ? margins.top / metrics.container : 0)
+    }
+
+    /// Scrolled up into history, far enough that the latest is off screen.
+    private var showsLatest: Bool {
+        guard historyRevealed, metrics.container > 0 else { return false }
+        if hasContent { return nowY - metrics.offset > metrics.container * 0.85 }
+        return metrics.content - metrics.offset > metrics.container + 160
+    }
+
+    /// The whole home is one page: earlier exchanges (once revealed), then
+    /// the current one, which starts at the top and scrolls in full, its
+    /// actions inline after it. Nothing scrolls inside it.
+    private func page(insets: EdgeInsets, panes: BlobPanes?) -> some View {
+        let margins = Self.pageMargins(insets: insets, typing: typing, split: panes != nil)
+        return ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    // Not lazy: the page goes to the current exchange's start
+                    // by id and tracks where it is, wherever it scrolled.
+                    VStack(alignment: .leading, spacing: 0) {
+                        if historyRevealed { historyRows }
+                        Color.clear
+                            .frame(height: 0)
+                            .id(PageMark.now)
+                            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(PageMark.space)).minY } action: { nowY = $0 }
+                        if hasContent {
+                            current(split: panes != nil)
+                                .padding(.top, historyRevealed ? 8 : 0)
+                                .id(PageMark.current)
+                        }
+                    }
+                    // On the open Duo or an iPad, one readable column.
+                    .frame(maxWidth: 600, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .padding(margins)
+                    Color.clear.frame(height: 0).id(PageMark.end)
+                }
+                .coordinateSpace(.named(PageMark.space))
+            }
+            .defaultScrollAnchor(.top, for: .initialOffset)
+            // Older pages arrive above what you're reading; keep it in place.
+            // Without history the current reply grows downward from its top.
+            .defaultScrollAnchor(historyRevealed ? .bottom : .top, for: .sizeChanges)
+            .scrollBounceBehavior(.always)
+            .scrollIndicators(.hidden)
+            // Content fades out at the edges instead of being cut off, and
+            // before it passes under the keyboard button and Blob.
+            .mask {
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                        .frame(height: margins.top)
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 24)
+                    Color.clear
+                        .frame(height: max(0, margins.bottom - 24))
+                }
+                .ignoresSafeArea()
+            }
+            .onScrollPhaseChange { _, phase in
+                scrollPhase = phase
+                if phase != .interacting, armed {
+                    armed = false
+                    revealHistory()
+                }
+            }
+            .onScrollGeometryChange(for: PageMetrics.self) { geometry in
+                PageMetrics(
+                    offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                    container: geometry.containerSize.height,
+                    content: geometry.contentSize.height
+                )
+            } action: { _, next in
+                metrics = next
+                // Near the oldest exchange: the page before it loads above,
+                // and the bottom anchor keeps what you're reading in place.
+                if historyRevealed, next.offset < next.container, text.canLoadEarlier, !text.loadingEarlier {
+                    text.loadEarlier()
+                }
+                // Only a pull you are still holding arms it, never a flick's
+                // momentum bouncing off the top.
+                guard !historyRevealed, scrollPhase == .interacting else { return }
+                let fits = next.content <= next.container
+                let pulled = -next.offset > Self.pullToReveal || (!hasContent && fits && next.offset > Self.pullToReveal)
+                if pulled != armed { armed = pulled }
+            }
+            .sensoryFeedback(.impact(weight: .light), trigger: armed) { _, now in now }
+            .overlay(alignment: .top) { pullHint(insets: insets) }
+            .onChange(of: historyRevealed) { _, revealed in
+                Task { @MainActor in
+                    withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35)) {
+                        if !revealed {
+                            proxy.scrollTo(PageMark.now, anchor: nowAnchor(margins))
+                        } else if hasContent {
+                            // The latest earlier exchange comes into view above
+                            // the current one, which slides down to make room.
+                            proxy.scrollTo(PageMark.now, anchor: UnitPoint(x: 0.5, y: 0.55))
+                        } else {
+                            proxy.scrollTo(PageMark.end, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+            .onChange(of: latestTaps) { _, _ in
+                withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35)) {
+                    if hasContent {
+                        proxy.scrollTo(PageMark.now, anchor: nowAnchor(margins))
+                    } else {
+                        proxy.scrollTo(PageMark.end, anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: turnKey) { _, _ in
+                if historyRevealed {
+                    collapseHistory()
+                } else {
+                    proxy.scrollTo(PageMark.now, anchor: nowAnchor(margins))
+                }
+            }
+            #if DEBUG
+            .task {
+                let env = ProcessInfo.processInfo.environment
+                try? await Task.sleep(for: .seconds(3))
+                if env["BLOB_DEMO_SCROLL"] == "end" { proxy.scrollTo(PageMark.end, anchor: .bottom) }
+                if BlobExchange.demoReveal == "top", let first = text.earlier.first {
+                    proxy.scrollTo(first.id, anchor: nowAnchor(margins))
+                }
+            }
+            #endif
+        }
+    }
+
+    /// Earlier exchanges, oldest first, without their quick replies.
+    @ViewBuilder
+    private var historyRows: some View {
+        let exchanges = text.earlier
+        if text.loadingEarlier {
+            ProgressView()
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 24)
+        } else if exchanges.isEmpty {
+            Text("Nothing yet")
+                .font(.caption2)
+                .foregroundStyle(OS1VisualStyle.textDim)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 32)
+        }
+        ForEach(Array(exchanges.enumerated()), id: \.element.id) { index, exchange in
+            BlobHistoryRow(exchange: exchange, day: BlobHistoryRow.header(exchanges, at: index), first: index == 0)
+                .id(exchange.id)
+        }
+    }
+
+    /// Over the gap a pull opens above the page: says that letting go shows
+    /// what came before.
+    @ViewBuilder
+    private func pullHint(insets: EdgeInsets) -> some View {
+        let pull = max(0, -metrics.offset)
+        if !historyRevealed, pull > 12, scrollPhase == .interacting {
+            Text(armed ? "Release for earlier" : "Earlier")
+                .font(.caption2)
+                .foregroundStyle(OS1VisualStyle.textDim)
+                .opacity(min(1, pull / Self.pullToReveal))
+                .offset(y: max(insets.top, 12) + pull / 2 - 6)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// Back to the current exchange, or the newest one on the quiet home.
+    private func latestButton(insets: EdgeInsets, panes: BlobPanes?) -> some View {
+        Button { latestTaps += 1 } label: {
+            Label("Latest", systemImage: "arrow.down")
+                .font(.footnote.weight(.medium))
+        }
+        .buttonStyle(.glass)
+        .frame(maxWidth: .infinity)
+        .padding(.leading, insets.leading)
+        .padding(.trailing, panes?.trailingWidth ?? insets.trailing)
+        .padding(.bottom, insets.bottom + (typing ? 72 : 8))
+        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.95)))
+    }
+
     private func toggleTalk() {
+        if historyRevealed { collapseHistory() }
         if typing { typing = false; fieldFocused = false }
         // Blob may be reading a decision; talking cuts it off.
         if !text.active { text.speaker.stop() }
@@ -465,14 +746,13 @@ struct BlobHomeView: View {
     }
 
     /// The last line said, under Blob while you talk. Nothing at all when quiet,
-    /// apart from a one-time hint and any reason a call failed.
+    /// apart from a one-time hint and any reason a call failed. What is read
+    /// (replies, questions, decisions) goes on the page instead.
     @ViewBuilder
     private func captions(insets: EdgeInsets) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if text.active || Self.demoReply != nil {
+            if text.active {
                 textCaptions
-            } else if let ask {
-                askView(ask)
             } else if engine.active, let caption = engine.caption, !caption.text.isEmpty {
                 Text(caption.text)
                     .font(caption.role == .assistant ? .title3 : .callout)
@@ -493,26 +773,6 @@ struct BlobHomeView: View {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textDim)
-            } else if let said = decisionSaid {
-                Text(said)
-                    .font(.body)
-                    .foregroundStyle(OS1VisualStyle.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .transition(.opacity)
-            } else if let decision {
-                BlobDecisionView(
-                    item: decision,
-                    position: decisions.position,
-                    count: decisions.count,
-                    sending: decisions.sending == decision.id,
-                    // What the options and "Not now" take; the question gets the rest.
-                    maxHeight: max(160, replyHeight - CGFloat(decision.options.count) * 56 - 44),
-                    answer: { option in Task { await decisions.answer(decision, with: option) } },
-                    notNow: { decisions.skip(decision) },
-                    dismiss: { Task { await decisions.dismiss(decision) } }
-                )
-                .id(decision.id)
-                .transition(reduceMotion ? .opacity : .offset(y: 16).combined(with: .opacity))
             } else if !hasTalked && !talking && !typing && !Self.demoRunning {
                 Text(Self.talkHint)
                     .font(.footnote)
@@ -524,18 +784,15 @@ struct BlobHomeView: View {
         .padding(.trailing, insets.trailing + 24)
         .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : talking ? 28 : 60))
         .animation(.easeOut(duration: 0.24), value: engine.caption?.text)
-        .allowsHitTesting(text.answer != nil || decision != nil || ask != nil)
+        .allowsHitTesting(false)
     }
 
     /// Writing instead of speaking: a small keyboard button while Blob is
     /// quiet, a one-line field while you type. Return sends.
-    /// Nothing while history is open, so no bar comes and goes over it; a
-    /// draft waits for when it closes.
+    /// The page keeps room for it at the bottom, so it covers nothing.
     @ViewBuilder
     private var writeBar: some View {
-        if historyOpen {
-            EmptyView()
-        } else if typing {
+        if typing {
             HStack(spacing: 8) {
                 TextField(ask?.takesText == true ? "Answer Blob" : "Write to Blob", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -596,8 +853,6 @@ struct BlobHomeView: View {
     private func askView(_ ask: BlobAsk) -> some View {
         BlobAskView(
             ask: ask,
-            // What the options and the quiet buttons take; the question gets the rest.
-            maxHeight: max(160, replyHeight - CGFloat(ask.options.count) * 56 - 44),
             answer: { action in try await text.answer(ask, with: action) },
             write: startWriting
         )
@@ -605,7 +860,8 @@ struct BlobHomeView: View {
         .transition(reduceMotion ? .opacity : .offset(y: 16).combined(with: .opacity))
     }
 
-    /// Text mode: what you said, then Blob's answer. A long answer scrolls.
+    /// Text mode before there is anything to read: what you are saying, or
+    /// that Blob is working on it.
     @ViewBuilder
     private var textCaptions: some View {
         if !text.heard.isEmpty {
@@ -627,40 +883,95 @@ struct BlobHomeView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         if let notice = text.notice {
-            // An answered ask that didn't go through, like a refused merge.
-            Text(notice)
-                .font(.footnote)
-                .foregroundStyle(OS1VisualStyle.textDim)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+            noticeLine(notice)
         }
-        if let ask {
-            // The run stopped to ask you something; its reply comes after.
-            askView(ask)
-        } else if text.thinking {
+        if text.thinking {
             Text("Working on it\u{2026}")
                 .font(.footnote)
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .transition(.opacity)
-        } else if let content = Self.demoReply ?? text.replyEntry?.content, !content.isEmpty {
-            // The finished reply: what Blob says, then what it shows, drawn
-            // with the block catalog as in the OS app.
-            ScrollView {
-                BlobReplyView(reply: BlobReply(content), entryId: text.replyEntry?.id, relay: text.relay)
-            }
-            .frame(maxHeight: replyHeight)
-            .scrollBounceBehavior(.basedOnSize)
-            .onScrollGeometryChange(for: Bool.self, of: Self.atEnd) { _, atEnd in replyAtEnd = atEnd }
-        } else if let answer = text.answer {
-            // Still being written: plain text until the reply settles.
-            ScrollView {
-                BlobReplyView(reply: BlobReply(answer), streaming: true)
-            }
-            .frame(maxHeight: replyHeight)
-            .scrollBounceBehavior(.basedOnSize)
         }
     }
+
+    /// An answered ask that didn't go through, like a refused merge.
+    private func noticeLine(_ notice: String) -> some View {
+        Text(notice)
+            .font(.footnote)
+            .foregroundStyle(OS1VisualStyle.textDim)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The current exchange on the page: what you said, then the question,
+    /// reply or decision. A reply opens with its Say line, then what it
+    /// shows, then its quick replies; a question or decision ends with its
+    /// options. All of it scrolls with the page.
+    /// With two panes (`split`), the reply's visual blocks are drawn in the
+    /// trailing pane instead, and only the conversation stays here.
+    @ViewBuilder
+    private func current(split: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if text.active, !text.heard.isEmpty {
+                Text(text.heard)
+                    .font(.footnote)
+                    .foregroundStyle(OS1VisualStyle.textDim)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityLabel("You: \(text.heard)")
+            }
+            if text.active, let notice = text.notice {
+                noticeLine(notice)
+            }
+            if let ask {
+                // The run stopped to ask you something; its reply comes after.
+                askView(ask)
+            } else if let content = settledReply {
+                // The finished reply, drawn with the block catalog as in the OS app.
+                BlobReplyView(
+                    reply: BlobReply(split ? BlobReplySplit(content).conversation : content),
+                    entryId: text.replyEntry?.id,
+                    relay: text.relay
+                )
+            } else if let answer = text.answer {
+                // Still being written: plain text until the reply settles.
+                BlobReplyView(reply: BlobReply(answer), streaming: true)
+            } else if let said = decisionSaid {
+                BlobSayLine(text: said)
+                    .transition(.opacity)
+            } else if let decision {
+                BlobDecisionView(
+                    item: decision,
+                    position: decisions.position,
+                    count: decisions.count,
+                    sending: decisions.sending == decision.id,
+                    answer: { option in Task { await decisions.answer(decision, with: option) } },
+                    notNow: { decisions.skip(decision) },
+                    dismiss: { Task { await decisions.dismiss(decision) } }
+                )
+                .id(decision.id)
+                .transition(reduceMotion ? .opacity : .offset(y: 16).combined(with: .opacity))
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Ids and the coordinate space on Blob's page.
+private enum PageMark {
+    static let space = "blob.page"
+    /// Where the current exchange starts: the end of history.
+    static let now = "blob.page.now"
+    static let current = "blob.page.current"
+    static let end = "blob.page.end"
+}
+
+/// The page's scroll, as `onScrollGeometryChange` reports it: the offset
+/// from the resting top, the visible height and the content's height.
+private struct PageMetrics: Equatable {
+    var offset: CGFloat = 0
+    var container: CGFloat = 0
+    var content: CGFloat = 0
 }
 
 #if DEBUG

@@ -7,10 +7,11 @@ import CoreGraphics
 enum BlobSurfaceReport {
     private(set) static var current: [String: Any]? = ["app": "blob", "panes": 1, "width": "compact"]
 
-    /// One pane on a phone or a closed Duo, two on the open Duo's inner
-    /// display, which is regular width in either orientation.
-    static func update(size: CGSize) {
+    /// `panes` is what the home draws (`BlobPanes`): one on a phone, a closed
+    /// Duo or the open Duo upright, two beside a vertical fold. Width is
+    /// regular from 600 pt, as on the open Duo in either orientation.
+    static func update(size: CGSize, panes: Int) {
         let wide = size.width >= 600
-        current = ["app": "blob", "panes": wide ? 2 : 1, "width": wide ? "regular" : "compact"]
+        current = ["app": "blob", "panes": panes, "width": wide ? "regular" : "compact"]
     }
 }

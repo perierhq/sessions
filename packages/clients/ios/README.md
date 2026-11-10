@@ -712,12 +712,26 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   at once (two ahead) and plays them back to back; a failed request falls
   back to an Apple voice for that sentence. Its doc comment lists the cases
   to check with a scratch `swiftc` run.
-- Swipe up on the home for history (`Blob/BlobHistoryView.swift`): earlier
-  exchanges from the supervisor transcript, newest at the bottom, replies
-  split into the Say line and the rest drawn with the block catalog. Past
-  quick replies (`choices`) are left out, and no bar shows over history.
-  Pull down past the oldest, or tap Blob, to go back. Blob connects to the supervisor on launch so it is there before
-  the first message.
+- One page (`Blob/BlobHomeView.swift`): what Blob shows you (a reply, a
+  question from the run, a decision) starts at the top of the screen while
+  Blob waits small in its slot, and the whole of it scrolls as one page,
+  its options and quick replies inline after it. Nothing scrolls inside it.
+  History (`Blob/BlobHistoryView.swift`) is above it but stays out of sight
+  until you pull past the top and let go (on the empty home, a drag either
+  way). Then earlier exchanges load in above, newest nearest, replies split
+  into the Say line and the rest; past quick replies (`choices`) are left
+  out. Older pages load as you reach the oldest one and keep your place.
+  Scrolled up far enough, a Latest button goes back; tapping Blob goes back
+  to the quiet home. Blob connects to the supervisor on launch so it is
+  there before the first message.
+- Two panes (`Blob/BlobPanes.swift`): beside a vertical fold (the open
+  Duo's inner display on its side, from its division region) or on a
+  surface 820 pt wide, the conversation stays in the leading pane and the
+  current reply's visual blocks (metrics, tables, charts, slides, images,
+  the rest of the block catalog) go to the trailing pane, top-aligned with
+  their own scroll. Without any, it shows a decision waiting on you, or
+  nothing. Nothing is drawn on the fold. The open Duo upright and the
+  closed Duo keep one column.
 - Decisions (`Blob/BlobDecisions.swift`, `Blob/BlobDecisionView.swift`): the
   supervisor's open `needs-you` items (`GET /api/supervisor/items`), read on
   launch, when the app comes back and every minute while it is in front.
@@ -754,7 +768,11 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
 - Debug builds launched with `BLOB_DEMO=1` play a scripted conversation with
   no server or microphone, and `BLOB_DEMO_AT=<seconds>` freezes one moment,
   for screenshots and motion checks. `BLOB_DEMO_HISTORY=1` fills history
-  with canned exchanges; `BLOB_DEMO_HISTORY=open` also opens it.
+  with canned exchanges; `BLOB_DEMO_HISTORY=open` also reveals it and
+  `top` scrolls to its oldest exchange. `BLOB_DEMO_REPLY=1` shows a reply
+  with blocks, `long` one taller than the screen, `plain` one without
+  visual blocks; `BLOB_DEMO_SCROLL=end`
+  starts the page at its end.
   `BLOB_DEMO_DECISIONS=1` shows two canned decisions.
   `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
   `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking.
@@ -770,7 +788,7 @@ opens the window. `Blob/BlobMac.swift` holds the Mac scenes, the menu bar
 face and the keys; iOS-only code elsewhere in `Blob/` sits behind
 `#if os(iOS)`. Return sends what you wrote, Cmd+L writes, Cmd+Y shows
 history, Space talks while you aren't typing, Esc stops Blob reading or
-closes history. Settings are Cmd+, or a long click on Blob.
+hides history. Settings are Cmd+, or a long click on Blob.
 
 Build and run with Development signing (a free personal team works for a
 local run):

@@ -103,8 +103,6 @@ enum BlobAsk: Equatable, Identifiable {
 /// the run go on on its own judgment.
 struct BlobAskView: View {
     let ask: BlobAsk
-    /// Room the question and its body may take before they scroll.
-    let maxHeight: CGFloat
     let answer: (BlobAsk.Option.Action) async throws -> Void
     let write: () -> Void
 
@@ -115,37 +113,32 @@ struct BlobAskView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(ask.title)
-                        .font(.system(size: titleSize, weight: .semibold))
-                        .lineSpacing(titleSize * 3 / 14)
-                        .foregroundStyle(OS1VisualStyle.text)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityAddTraits(.isHeader)
-                    let reply = ask.reply
-                    if !reply.isEmpty {
-                        BlobReplyView(reply: reply)
-                            .padding(.top, 10)
-                    }
-                    let facts = ask.facts
-                    if !facts.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(Array(facts.enumerated()), id: \.offset) { _, line in
-                                Text(verbatim: line)
-                                    .font(.callout)
-                                    .foregroundStyle(OS1VisualStyle.textDim)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .padding(.top, 8)
-                    }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(ask.title)
+                    .font(.system(size: titleSize, weight: .semibold))
+                    .lineSpacing(titleSize * 3 / 14)
+                    .foregroundStyle(OS1VisualStyle.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+                let reply = ask.reply
+                if !reply.isEmpty {
+                    BlobReplyView(reply: reply)
+                        .padding(.top, 10)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                let facts = ask.facts
+                if !facts.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(facts.enumerated()), id: \.offset) { _, line in
+                            Text(verbatim: line)
+                                .font(.callout)
+                                .foregroundStyle(OS1VisualStyle.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 8)
+                }
             }
-            .frame(maxHeight: maxHeight)
-            .fixedSize(horizontal: false, vertical: true)
-            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(spacing: 8) {
                 ForEach(Array(ask.options.enumerated()), id: \.offset) { index, option in

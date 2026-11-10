@@ -32,10 +32,12 @@ struct BlobRoot: View {
     @State private var authGate = AuthGate.shared
     @State private var connecting = !ServerConfig.shared.isConfigured && !Self.demoHome
 
-    /// Demo decisions need no server, so they go straight to the home.
+    /// Demo decisions, history and replies need no server, so they go
+    /// straight to the home.
     private static var demoHome: Bool {
         #if DEBUG
-        BlobDecisions.demoEnabled
+        let env = ProcessInfo.processInfo.environment
+        return BlobDecisions.demoEnabled || env["BLOB_DEMO_HISTORY"] != nil || env["BLOB_DEMO_REPLY"] != nil
         #else
         false
         #endif
