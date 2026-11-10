@@ -1,13 +1,15 @@
 /**
- * Where a Desk reply will be shown when it comes from the Blob app, so the
- * Desk can write a view that fits (adrs/blob-views.md).
+ * Where a supervisor reply will be shown when it comes from the Blob app, so
+ * the supervisor can write a view that fits (adrs/blob-views.md). Blob talks
+ * to the supervisor (supervisor.ts, adrs/supervisor-and-leads.md), not the
+ * Desk, so only supervisor sessions listen.
  *
  * Blob sends `surface: { app: "blob", panes, width }` with each prompt. It is
  * persisted on the session file like the composer's effort and speed
  * (maybePersistEffort/Speed), so a queued or resumed turn still sees it, and
- * cleared by a prompt that carries none, so the same Desk opened in the OS
- * app or on the web goes back to ordinary replies. A Desk turn then gets it as
- * wrapped per-turn context, the way it already gets `deskStateContext`.
+ * cleared by a prompt that carries none, so the same supervisor opened on the
+ * web goes back to ordinary replies. A supervisor turn then gets it as wrapped
+ * per-turn context, the way it already gets `deskStateContext`.
  */
 import { wrapContext } from "./prompt-context";
 import { touchNativeSession } from "./session-cache";
@@ -37,13 +39,13 @@ export function parseBlobSurface(
 
 /**
  * Record or clear the session's Blob surface from a prompt's `surface` field.
- * Only the Desk listens, so other sessions are left alone.
+ * Only the supervisor listens, so other sessions are left alone.
  */
 export function maybePersistBlobSurface(
   session: UnifiedSession | undefined,
   raw: unknown,
 ): void {
-  if (!session?.desk || session.source !== "opensession") return;
+  if (!session?.supervisor || session.source !== "opensession") return;
   const next = parseBlobSurface(raw);
   if (!next && !session.blobSurface) return;
   touchNativeSession(session.id, { blobSurface: next });
@@ -52,11 +54,11 @@ export function maybePersistBlobSurface(
 
 /** The context note for this turn, or nothing when Blob isn't the reader. */
 export function blobSurfaceContext(
-  session: Pick<UnifiedSession, "desk" | "blobSurface">,
+  session: Pick<UnifiedSession, "supervisor" | "blobSurface">,
   now: Date = new Date(),
 ): string | undefined {
   const s = session.blobSurface;
-  if (!session.desk || !s) return undefined;
+  if (!session.supervisor || !s) return undefined;
   const at = Date.parse(s.at);
   if (!Number.isFinite(at) || now.getTime() - at > FRESH_MS) return undefined;
   const room =

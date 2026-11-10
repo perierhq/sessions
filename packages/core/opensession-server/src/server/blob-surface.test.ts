@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { blobSurfaceContext, parseBlobSurface } from "./blob-surface";
+import {
+  blobSurfaceContext,
+  maybePersistBlobSurface,
+  parseBlobSurface,
+} from "./blob-surface";
+import type { UnifiedSession } from "./types";
 
 const now = new Date("2026-11-10T09:00:00.000Z");
 
@@ -25,10 +30,10 @@ describe("Blob surface", () => {
     expect(parseBlobSurface(undefined, now)).toBeUndefined();
   });
 
-  test("tells a Desk turn where the reply is shown", () => {
+  test("tells a supervisor turn where the reply is shown", () => {
     const one = blobSurfaceContext(
       {
-        desk: true,
+        supervisor: true,
         blobSurface: { panes: 1, width: "compact", at: now.toISOString() },
       },
       now,
@@ -37,7 +42,7 @@ describe("Blob surface", () => {
     expect(one).toContain("one narrow phone screen");
     const two = blobSurfaceContext(
       {
-        desk: true,
+        supervisor: true,
         blobSurface: { panes: 2, width: "regular", at: now.toISOString() },
       },
       now,
@@ -45,19 +50,51 @@ describe("Blob surface", () => {
     expect(two).toContain("two panes");
   });
 
-  test("says nothing outside the Desk, without a surface, or once it is stale", () => {
+  test("says nothing outside the supervisor, without a surface, or once it is stale", () => {
     const fresh = {
       panes: 1 as const,
       width: "compact" as const,
       at: now.toISOString(),
     };
     expect(
-      blobSurfaceContext({ desk: false, blobSurface: fresh }, now),
+      blobSurfaceContext({ supervisor: false, blobSurface: fresh }, now),
     ).toBeUndefined();
-    expect(blobSurfaceContext({ desk: true }, now)).toBeUndefined();
+    expect(blobSurfaceContext({ supervisor: true }, now)).toBeUndefined();
+    // Blob no longer talks to the Desk.
+    expect(
+      blobSurfaceContext(
+        { desk: true, blobSurface: fresh } as Pick<
+          UnifiedSession,
+          "supervisor" | "blobSurface"
+        >,
+        now,
+      ),
+    ).toBeUndefined();
     const later = new Date(now.getTime() + 31 * 60 * 1000);
     expect(
-      blobSurfaceContext({ desk: true, blobSurface: fresh }, later),
+      blobSurfaceContext({ supervisor: true, blobSurface: fresh }, later),
     ).toBeUndefined();
+  });
+
+  test("records the surface only on a supervisor session", () => {
+    const surface = { app: "blob", panes: 1, width: "compact" };
+    const desk = {
+      id: "os-desk",
+      source: "opensession",
+      desk: true,
+    } as UnifiedSession;
+    maybePersistBlobSurface(desk, surface);
+    expect(desk.blobSurface).toBeUndefined();
+
+    const supervisor = {
+      id: "os-supervisor",
+      source: "opensession",
+      supervisor: true,
+    } as UnifiedSession;
+    maybePersistBlobSurface(supervisor, surface);
+    expect(supervisor.blobSurface).toMatchObject({
+      panes: 1,
+      width: "compact",
+    });
   });
 });

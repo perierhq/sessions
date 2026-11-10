@@ -444,7 +444,7 @@ export function sessionIsRecentTeamActivity(
   session: UnifiedSession,
   nowMs: number,
 ): boolean {
-  if (session.desk) return false;
+  if (session.desk || session.supervisor) return false;
   if (session.isRunning) return true;
   const ran = !!(
     session.claudeSessionId ||
@@ -526,7 +526,7 @@ export function scopeSessionsForSidebar<T extends SidebarScopeSession>(
         automationRuns.push(session);
       continue;
     }
-    if (session.desk && !selected) continue;
+    if ((session.desk || session.supervisor) && !selected) continue;
     if (
       session.spawnedBy &&
       !selected &&

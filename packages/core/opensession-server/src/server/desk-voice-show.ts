@@ -233,9 +233,10 @@ export async function resolveShowTarget(
   const tab = isShowTab(args.tab) ? { tab: args.tab } : {};
 
   if (session) {
-    // The Desk itself is hidden from every list; a call never lands on it.
+    // The Desk and the supervisor are hidden from every list; a call never
+    // lands on either.
     const byId = deps.control.getSession(session);
-    if (byId && !byId.desk)
+    if (byId && !byId.desk && !byId.supervisor)
       return {
         target: {
           kind: "session",
@@ -246,7 +247,7 @@ export async function resolveShowTarget(
       };
     const visible = deps.control
       .listSessions()
-      .filter((s) => !s.desk && s.state !== "archived")
+      .filter((s) => !s.desk && !s.supervisor && s.state !== "archived")
       .map((s) => ({
         id: s.id,
         title: s.title || "",

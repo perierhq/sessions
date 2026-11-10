@@ -38,6 +38,7 @@ const sessions: Summary[] = [
   summary("s-captions", "Voice captions for the Desk"),
   summary("s-lint", "Vendor lint rules"),
   summary("s-desk", "Desk", { desk: true }),
+  summary("s-supervisor", "Supervisor", { supervisor: true }),
   summary("s-archived", "Archived captions work", { state: "archived" }),
   // A primary session and the two derivatives the app opens from its PR: the
   // headless review (same workspace, automation-owned) and the auto-fix worker
@@ -130,6 +131,9 @@ describe("show_in_app target resolution", () => {
     expect(await resolveShowTarget({ session: "s-desk" }, deps)).toMatchObject({
       error: expect.stringContaining("No session"),
     });
+    expect(
+      await resolveShowTarget({ session: "s-supervisor" }, deps),
+    ).toMatchObject({ error: expect.stringContaining("No session") });
     // "captions" would be ambiguous if the archived session counted.
     expect(await resolveShowTarget({ session: "captions" }, deps)).toEqual({
       target: {

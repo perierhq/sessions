@@ -35,6 +35,7 @@ export function unreadChatsInOrder(
           session.id !== selectedId &&
           !session.archived &&
           !session.desk &&
+          !session.supervisor &&
           !session.parentSessionId &&
           isMine(session) &&
           isUnread(session, reads),

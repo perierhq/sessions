@@ -945,8 +945,9 @@ export async function handleWorkspaceRoutes(
     // The Desk is the exception to the healing: it is deliberately
     // workspace-less for life (session-workspace.ts), so a sibling spun off
     // from it gets its own workspace and the Desk stays out of the sidebar.
+    // The supervisor is workspace-less the same way.
     let workspaceId = src.workspaceId || null;
-    if (!workspaceId && !src.desk) {
+    if (!workspaceId && !src.desk && !src.supervisor) {
       const owned = await workspaceOwningWorktree(src.worktreeDir);
       if (owned) {
         workspaceId = owned.id;

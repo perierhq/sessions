@@ -91,6 +91,41 @@ describe("parseSidebarSessionScope", () => {
 });
 
 describe("scopeSessionsForSidebar", () => {
+  test("hides the Desk and the supervisor unless one is selected", () => {
+    const rows = [
+      session("work", { workspaceId: "ws-mine" }),
+      session("desk", { desk: true, worktreeDir: "", branch: "" }),
+      session("supervisor", {
+        supervisor: true,
+        worktreeDir: "",
+        branch: "",
+      }),
+    ];
+    const ctx = context({
+      workspaces: new Map([
+        ["ws-mine", { createdBy: "Ada", repo: "opensession" }],
+      ]),
+    });
+    expect(
+      scopeSessionsForSidebar(rows, scope(), ctx).map((row) => row.id),
+    ).toEqual(["work"]);
+    expect(
+      scopeSessionsForSidebar(
+        rows,
+        scope({ selectedSessionId: "supervisor" }),
+        ctx,
+      ).map((row) => row.id),
+    ).toContain("supervisor");
+    const now = Date.parse("2026-08-18T12:00:00.000Z");
+    for (const flag of [{ desk: true }, { supervisor: true }])
+      expect(
+        sessionIsRecentTeamActivity(
+          session("standing", { ...flag, isRunning: true }),
+          now,
+        ),
+      ).toBe(false);
+  });
+
   test("keeps a person's workspace whole and drops unrelated work", () => {
     const rows = [
       session("mine", { workspaceId: "ws-mine", startedBy: "Ada" }),

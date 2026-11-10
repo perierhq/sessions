@@ -178,7 +178,11 @@ export interface UnifiedSession {
   spawnedBy?: string;
   /** The user's standing Desk (concierge) session — hidden from lists. */
   desk?: boolean;
-  /** Where the Blob app last asked to show this Desk's replies (blob-surface.ts). */
+  /** The user's standing supervisor session (supervisor.ts), the one the
+   *  Blob app talks to. Hidden from lists like the Desk. */
+  supervisor?: boolean;
+  /** Where the Blob app last asked to show this supervisor's replies
+   *  (blob-surface.ts). */
   blobSurface?: BlobSurface;
   /** How many spawn_task hops away from a human-created session this is
    *  (opensession-sessions spawn_task loop guard: refused at depth ≥ 2). Absent =
@@ -692,6 +696,9 @@ export interface NativeSessionFile {
   /** The user's standing Desk (concierge) session — fixed title, suppressed
    *  from the session lists, opened via the Desk overlay. */
   desk?: boolean;
+  /** The user's standing supervisor session (supervisor.ts): fixed title,
+   *  suppressed from the session lists, opened from the Blob app. */
+  supervisor?: boolean;
   /** Blob app surface from its last prompt (blob-surface.ts); unset otherwise. */
   blobSurface?: BlobSurface;
   /** spawn_task hop count from a human-created session (loop guard; see
@@ -843,7 +850,7 @@ export interface FileWatcherState {
   viewers: Set<any>;
 }
 
-/** Where the Blob app shows a Desk reply (blob-surface.ts, adrs/blob-views.md). */
+/** Where the Blob app shows a supervisor reply (blob-surface.ts, adrs/blob-views.md). */
 export interface BlobSurface {
   /** 1 on a phone or a closed foldable, 2 on an open foldable. */
   panes: 1 | 2;

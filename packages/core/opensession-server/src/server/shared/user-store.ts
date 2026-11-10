@@ -71,6 +71,9 @@ export const NAME_KEYED_STORES = [
   "reads",
   "settlements",
   "snoozes",
+  // The user's supervisor session map (supervisor.ts), so a rename keeps
+  // talking to the same supervisor instead of minting a new one.
+  "supervisors",
   "tab-colors",
   "ui-prefs",
 ] as const;

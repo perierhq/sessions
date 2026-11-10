@@ -36,7 +36,7 @@ export interface WorktreeRow extends PrStatusInput {
 }
 
 function worktreesForSession(session: UnifiedSession): WorktreeRow[] {
-  if (session.desk) return [];
+  if (session.desk || session.supervisor) return [];
 
   return sessionPrRefs(session)
     .filter((pr): pr is typeof pr & { url: string } => !!pr.url)

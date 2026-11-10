@@ -663,6 +663,7 @@ export function sessionListRow(
   if (!row.attachedRepos?.length) delete row.attachedRepos;
   if (!row.linkedPrs?.length) delete row.linkedPrs;
   if (!row.desk) delete row.desk;
+  if (!row.supervisor) delete row.supervisor;
   if (!row.repoLess) delete row.repoLess;
   if (!row.titleOverridden) delete row.titleOverridden;
   if (!row.workspacePreparing) delete row.workspacePreparing;
@@ -799,8 +800,10 @@ export function archivedIndexRow(
           ],
         }
       : {}),
-    // Desk sessions are hidden from every list; clients filter on it.
+    // Desk and supervisor sessions are hidden from every list; clients
+    // filter on them.
     ...(s.desk ? { desk: true } : {}),
+    ...(s.supervisor ? { supervisor: true } : {}),
   };
 }
 

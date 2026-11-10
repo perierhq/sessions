@@ -67,7 +67,7 @@ export function buildWorkspaceRows({
       continue;
     }
     if (session.automation && !isClaimed(session)) continue;
-    if (session.desk) continue;
+    if (session.desk || session.supervisor) continue;
     if (
       !spawnedSessionBelongsInSidebar(
         session,

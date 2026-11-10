@@ -853,11 +853,14 @@ registerSessionControl({
     // asked for this one, recorded even when the create was standalone and
     // carries no parent link. It is what lets the sidebar keep an agent's own
     // helper sessions — a scratch session spun up mid-run — out of the human's
-    // rows. The Desk is deliberately exempt: it delegates on the user's behalf,
-    // so the work it spawns is the user's own and stays visible.
+    // rows. The Desk and the supervisor are deliberately exempt: they delegate
+    // on the user's behalf, so the work they spawn is the user's own and stays
+    // visible.
     const spawnerSession = spawnedByInput ? findSession(spawnedByInput) : null;
     const spawnedBy =
-      spawnerSession && !spawnerSession.desk ? spawnerSession.id : undefined;
+      spawnerSession && !spawnerSession.desk && !spawnerSession.supervisor
+        ? spawnerSession.id
+        : undefined;
     // Explicit workspace join (the native apps' "new session in this workspace" —
     // this path's equivalent of the web tab strip's "+"). An unknown id is a
     // hard error: falling back to a standalone create would silently mint the
@@ -1183,8 +1186,9 @@ registerSessionControl({
     // independent thing. So a desk parent contributes NOTHING to the workspace
     // resolution below — no inherited id, no name seed, no back-fill. Without
     // this the workers landed in (or minted) a workspace named "Desk", which
-    // is exactly how the Desk surfaced in the sidebar's Workspaces list.
-    const deskParent = !!parentSession?.desk;
+    // is exactly how the Desk surfaced in the sidebar's Workspaces list. The
+    // supervisor (supervisor.ts) is workspace-less for the same reason.
+    const deskParent = !!(parentSession?.desk || parentSession?.supervisor);
     // A joined workspace is the session's workspace, which also skips the mint /
     // adopt block below — and with it the auto-naming: a session that merely
     // joins an existing workspace must never rename it. A fork lands next to
