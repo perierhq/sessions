@@ -31,6 +31,10 @@ import {
   setPersonalOutputStyle,
 } from "./personal-output-style";
 import { getPersonalPrompt, setPersonalPrompt } from "./personal-prompts";
+import {
+  appendSupervisorLedger,
+  readSupervisorLedgerTail,
+} from "./supervisor-ledger";
 
 // The catalog mirrors every document to the legacy directory and imports
 // legacy files from it, so the state root has to be a scratch dir for the
@@ -312,6 +316,29 @@ describe("renameUserState", () => {
     await setPins("kent", ["os-1"]);
     await renameUserState("kent", "Kent");
     expect(await getPins("Kent")).toEqual(["os-1"]);
+  });
+
+  // The supervisor's ledger is a file keyed like the supervisors map, so it
+  // travels with it; one the new name already has is never overwritten.
+  test("carries the supervisor ledger without overwriting", async () => {
+    await appendSupervisorLedger("Kent", "Prefers SBAR.");
+    expect(await renameUserState("Kent", "Kentaro")).toContain(
+      "supervisor-ledger",
+    );
+    expect((await readSupervisorLedgerTail("Kentaro")).text).toContain(
+      "Prefers SBAR.",
+    );
+    expect((await readSupervisorLedgerTail("Kent")).text).toContain(
+      "Prefers SBAR.",
+    );
+    await appendSupervisorLedger("Grace", "Grace's own fact.");
+    await appendSupervisorLedger("Ada", "Ada's fact.");
+    expect(await renameUserState("Ada", "Grace")).not.toContain(
+      "supervisor-ledger",
+    );
+    const grace = (await readSupervisorLedgerTail("Grace")).text;
+    expect(grace).toContain("Grace's own fact.");
+    expect(grace).not.toContain("Ada's fact.");
   });
 
   test("renaming to the same name does nothing", async () => {

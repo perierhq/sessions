@@ -58,6 +58,7 @@ const spec: Required<RunHostSpec> = {
   speed: "fast",
   pstackMode: true,
   projectSkillsOnly: true,
+  supervisor: true,
   accountId: "account-acme",
   accountStrict: true,
   usageCredits: true,
@@ -106,6 +107,7 @@ const PASSED_AS_IS = [
   "speed",
   "pstackMode",
   "projectSkillsOnly",
+  "supervisor",
   "accountId",
   "accountStrict",
   "usageCredits",
@@ -205,17 +207,17 @@ describe("launchers that write a run host spec", () => {
   const source = (path: string) =>
     Bun.file(new URL(path, import.meta.url)).text();
 
-  test("the local launcher carries pstack mode and the skills scope", async () => {
+  test("the local launcher carries pstack mode, the skills scope and the supervisor flag", async () => {
     const client = await source("../server/host-client.ts");
     expect(client).toMatch(
-      /const spec: RunHostSpec = \{[\s\S]*?pstackMode: opts\.pstackMode,\s*projectSkillsOnly: opts\.projectSkillsOnly,/,
+      /const spec: RunHostSpec = \{[\s\S]*?pstackMode: opts\.pstackMode,\s*projectSkillsOnly: opts\.projectSkillsOnly,\s*supervisor: opts\.supervisor,/,
     );
   });
 
-  test("the Runner launcher carries pstack mode and the skills scope", async () => {
+  test("the Runner launcher carries pstack mode, the skills scope and the supervisor flag", async () => {
     const runner = await source("../server/runner-session.ts");
     expect(runner).toMatch(
-      /const spec: RunHostSpec = priorSpec \?\? \{[\s\S]*?pstackMode: session\.pstackMode,[\s\S]*?projectSkillsOnly: isSupportSession\(session\) \|\| undefined,[\s\S]*?\n {2}\};/,
+      /const spec: RunHostSpec = priorSpec \?\? \{[\s\S]*?pstackMode: session\.pstackMode,[\s\S]*?projectSkillsOnly: isSupportSession\(session\) \|\| undefined,[\s\S]*?supervisor: session\.supervisor \|\| undefined,[\s\S]*?\n {2}\};/,
     );
   });
 });

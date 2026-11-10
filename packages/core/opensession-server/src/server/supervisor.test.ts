@@ -11,6 +11,7 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -156,6 +157,363 @@ describe("ensureSupervisorSession", () => {
   });
 });
 
+describe("rotationDue", () => {
+  const now = Date.parse("2026-07-20T12:00:00Z");
+  const record = (
+    patch: Partial<import("./supervisor").SupervisorRecord> = {},
+  ) => ({
+    sessionId: "os-a",
+    createdAt: "2026-07-01T12:00:00Z",
+    previous: [],
+    compactions: 0,
+    ...patch,
+  });
+  const idle = {
+    createdAt: "2026-07-01T12:00:00Z",
+    lastActivity: "2026-07-20T11:00:00Z",
+    busy: false,
+  };
+
+  test("an old, idle session is due", () => {
+    expect(supervisor.rotationDue(record(), idle, now)).toBe(true);
+  });
+
+  test("never while a run is in progress", () => {
+    expect(
+      supervisor.rotationDue(
+        record({ compactions: 9 }),
+        { ...idle, busy: true },
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  test("never within 30 minutes of the last activity", () => {
+    const recent = { ...idle, lastActivity: "2026-07-20T11:31:00Z" };
+    expect(
+      supervisor.rotationDue(record({ compactions: 9 }), recent, now),
+    ).toBe(false);
+    expect(
+      supervisor.rotationDue(record(), { ...idle, lastActivity: "" }, now),
+    ).toBe(false);
+  });
+
+  test("a young session is due only after three compactions", () => {
+    const young = record({ createdAt: "2026-07-18T12:00:00Z" });
+    expect(supervisor.rotationDue(young, idle, now)).toBe(false);
+    expect(
+      supervisor.rotationDue({ ...young, compactions: 2 }, idle, now),
+    ).toBe(false);
+    expect(
+      supervisor.rotationDue({ ...young, compactions: 3 }, idle, now),
+    ).toBe(true);
+  });
+
+  test("exactly seven days is not yet old; the session's own date backs a record without one", () => {
+    const week = record({ createdAt: "2026-07-13T12:00:00Z" });
+    expect(supervisor.rotationDue(week, idle, now)).toBe(false);
+    expect(supervisor.rotationDue(record({ createdAt: "" }), idle, now)).toBe(
+      true,
+    );
+  });
+});
+
+describe("rotation", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  let clock = Date.parse("2026-07-01T12:00:00Z");
+  let busy = false;
+  let restoreDeps: () => void = () => {};
+  beforeEach(() => {
+    clock = Date.parse("2026-07-01T12:00:00Z");
+    busy = false;
+    restoreDeps = supervisor.__setSupervisorDepsForTest({
+      now: () => clock,
+      busy: () => busy,
+    });
+  });
+  afterEach(() => restoreDeps());
+
+  const record = async (user = "Ada") =>
+    (await catalog
+      .catalogDocuments(supervisor.SUPERVISORS_NAMESPACE)
+      .get(
+        supervisor.supervisorKey(user),
+      )) as import("./supervisor").SupervisorRecord;
+
+  test("an idle week-old session moves to a new one and keeps the old in previous", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    expect(first.previousSessionIds).toEqual([]);
+    clock += 8 * DAY;
+    const second = await supervisor.ensureSupervisorSession("Ada");
+    expect(second.sessionId).not.toBe(first.sessionId);
+    expect(second.previousSessionIds).toEqual([first.sessionId]);
+    // The old session keeps its history as a hidden supervisor, not
+    // archived, but is marked retired: no new turns, no inbox.
+    const old = await sessionDoc(first.sessionId);
+    expect(old?.supervisor).toBe(true);
+    expect(old?.archived).toBeUndefined();
+    expect(old?.supervisorRetiredAt).toBe(new Date(clock).toISOString());
+    expect(
+      (await sessionDoc(second.sessionId))?.supervisorRetiredAt,
+    ).toBeUndefined();
+    expect((await sessionDoc(second.sessionId))?.supervisor).toBe(true);
+    expect(await record()).toMatchObject({
+      sessionId: second.sessionId,
+      previous: [first.sessionId],
+      compactions: 0,
+      createdAt: new Date(clock).toISOString(),
+    });
+    // Idempotent again until the next week.
+    expect(await supervisor.ensureSupervisorSession("Ada")).toEqual(second);
+  });
+
+  test("a busy or recently active session is kept", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    clock += 8 * DAY;
+    busy = true;
+    expect((await supervisor.ensureSupervisorSession("Ada")).sessionId).toBe(
+      first.sessionId,
+    );
+    busy = false;
+    const { updateSessionFile } = await import("./session-cache");
+    await updateSessionFile(first.sessionId, (data) => ({
+      ...data,
+      lastActivity: new Date(clock - 10 * 60_000).toISOString(),
+    }));
+    expect((await supervisor.ensureSupervisorSession("Ada")).sessionId).toBe(
+      first.sessionId,
+    );
+  });
+
+  test("three compactions rotate a young idle session", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    const session = { id: first.sessionId, supervisor: true, createdBy: "Ada" };
+    expect(await supervisor.recordSupervisorCompaction(session)).toBe(1);
+    expect(await supervisor.recordSupervisorCompaction(session)).toBe(2);
+    clock += 60 * 60_000;
+    expect((await supervisor.ensureSupervisorSession("Ada")).sessionId).toBe(
+      first.sessionId,
+    );
+    expect(await supervisor.recordSupervisorCompaction(session)).toBe(3);
+    const second = await supervisor.ensureSupervisorSession("Ada");
+    expect(second.sessionId).not.toBe(first.sessionId);
+    expect((await record()).compactions).toBe(0);
+    // A compaction of the retired session no longer counts.
+    expect(await supervisor.recordSupervisorCompaction(session)).toBeNull();
+    expect((await record()).compactions).toBe(0);
+  });
+
+  test("compactions of any other session are not counted", async () => {
+    await supervisor.ensureSupervisorSession("Ada");
+    expect(
+      await supervisor.recordSupervisorCompaction({
+        id: "os-other",
+        createdBy: "Ada",
+      }),
+    ).toBeNull();
+    expect(
+      await supervisor.recordSupervisorCompaction({
+        id: "os-other",
+        supervisor: true,
+        createdBy: "Grace",
+      }),
+    ).toBeNull();
+    expect(
+      await catalog
+        .catalogDocuments(supervisor.SUPERVISORS_NAMESPACE)
+        .get(supervisor.supervisorKey("Grace")),
+    ).toBeNull();
+  });
+
+  test("previous is bounded, newest first", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    const older = Array.from({ length: 60 }, (_, i) => `os-old-${i}`);
+    await catalog
+      .catalogDocuments(supervisor.SUPERVISORS_NAMESPACE)
+      .set(supervisor.supervisorKey("Ada"), {
+        ...(await record()),
+        previous: older,
+      });
+    expect(
+      (await supervisor.ensureSupervisorSession("Ada")).previousSessionIds,
+    ).toHaveLength(supervisor.MAX_PREVIOUS);
+    clock += 8 * DAY;
+    const second = await supervisor.ensureSupervisorSession("Ada");
+    expect(second.previousSessionIds).toHaveLength(supervisor.MAX_PREVIOUS);
+    expect(second.previousSessionIds[0]).toBe(first.sessionId);
+    expect(second.previousSessionIds[1]).toBe("os-old-0");
+  });
+
+  test("a mapping whose session is gone is replaced, keeping its history", async () => {
+    await catalog
+      .catalogDocuments(supervisor.SUPERVISORS_NAMESPACE)
+      .set(supervisor.supervisorKey("Ada"), {
+        sessionId: "os-missing",
+        createdAt: "",
+        previous: ["os-older"],
+      });
+    const ensured = await supervisor.ensureSupervisorSession("Ada");
+    expect(ensured.sessionId).not.toBe("os-missing");
+    expect(ensured.previousSessionIds).toEqual(["os-older"]);
+  });
+
+  test("concurrent ensures and sweeps during a due rotation mint one session", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    clock += 8 * DAY;
+    const results = await Promise.all([
+      supervisor.ensureSupervisorSession("Ada"),
+      supervisor.rotateSupervisorIfDue("Ada"),
+      supervisor.ensureSupervisorSession("Ada"),
+      supervisor.rotateSupervisorIfDue("Ada"),
+    ]);
+    const ids = new Set(results.map((r) => r?.sessionId));
+    expect(ids.size).toBe(1);
+    expect(ids.has(first.sessionId)).toBe(false);
+    const { sessionMetadata } = await import("./session-kernel");
+    const sessions = await sessionMetadata({
+      op: "catalog_page",
+      afterSessionId: "",
+      limit: 50,
+    });
+    expect(sessions).toHaveLength(2);
+    expect((await record()).previous).toEqual([first.sessionId]);
+  });
+
+  test("an ensure racing a sweep check never returns a session that is gone", async () => {
+    await catalog
+      .catalogDocuments(supervisor.SUPERVISORS_NAMESPACE)
+      .set(supervisor.supervisorKey("Ada"), {
+        sessionId: "os-missing",
+        createdAt: "",
+        previous: [],
+      });
+    const [rotated, ensured] = await Promise.all([
+      supervisor.rotateSupervisorIfDue("Ada"),
+      supervisor.ensureSupervisorSession("Ada"),
+    ]);
+    expect(rotated).toBeNull();
+    expect(ensured.sessionId).not.toBe("os-missing");
+    expect((await sessionDoc(ensured.sessionId))?.supervisor).toBe(true);
+    expect(await supervisor.rotateSupervisorIfDue("Ada")).toEqual(ensured);
+  });
+
+  test("a session retired by a rotation that failed to claim is rotated on the next ensure", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    const { updateSessionFile } = await import("./session-cache");
+    await updateSessionFile(first.sessionId, (data) => ({
+      ...data,
+      supervisorRetiredAt: new Date(clock).toISOString(),
+    }));
+    const next = await supervisor.ensureSupervisorSession("Ada");
+    expect(next.sessionId).not.toBe(first.sessionId);
+    expect(next.previousSessionIds).toEqual([first.sessionId]);
+  });
+
+  test("the seed is due on a new session until a turn delivers it", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    expect(await supervisor.supervisorSeedDue("Ada", first.sessionId)).toEqual({
+      rotated: false,
+    });
+    // Nothing recorded yet (a failed turn records nothing): still due.
+    expect(await supervisor.supervisorSeedDue("Ada", first.sessionId)).toEqual({
+      rotated: false,
+    });
+    expect(await supervisor.markSupervisorSeeded("Ada", first.sessionId)).toBe(
+      true,
+    );
+    expect(
+      await supervisor.supervisorSeedDue("Ada", first.sessionId),
+    ).toBeNull();
+    clock += 8 * DAY;
+    const second = await supervisor.ensureSupervisorSession("Ada");
+    expect(await supervisor.supervisorSeedDue("Ada", second.sessionId)).toEqual(
+      { rotated: true },
+    );
+    // The retired session is never seeded or marked again.
+    expect(
+      await supervisor.supervisorSeedDue("Ada", first.sessionId),
+    ).toBeNull();
+    expect(await supervisor.markSupervisorSeeded("Ada", first.sessionId)).toBe(
+      false,
+    );
+    expect((await record()).seededSessionId).toBeUndefined();
+  });
+
+  test("a prompt to a retired session points at the current one", () => {
+    expect(supervisor.retiredSupervisorMessage("os-new")).toContain(
+      "/session/os-new",
+    );
+    expect(supervisor.retiredSupervisorMessage(null)).toContain(
+      "Open the supervisor again",
+    );
+  });
+
+  test("an ensure racing a sweep check for a new person still creates one", async () => {
+    const [rotated, ensured] = await Promise.all([
+      supervisor.rotateSupervisorIfDue("Ada"),
+      supervisor.ensureSupervisorSession("Ada"),
+    ]);
+    expect(rotated).toBeNull();
+    expect(ensured.sessionId).toBeTruthy();
+  });
+
+  test("the sweep check creates nothing for a person without a supervisor", async () => {
+    expect(await supervisor.rotateSupervisorIfDue("Ada")).toBeNull();
+    expect(
+      await catalog.catalogDocuments(supervisor.SUPERVISORS_NAMESPACE).list(),
+    ).toHaveLength(0);
+  });
+
+  test("a rotation another gateway claimed first keeps theirs and archives ours", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    clock += 8 * DAY;
+    const real = catalog.catalogDocuments(supervisor.SUPERVISORS_NAMESPACE);
+    const make = catalog.catalogDocuments;
+    let raced = false;
+    const spy = spyOn(catalog, "catalogDocuments").mockImplementation(
+      (namespace: string) => {
+        const documents = make(namespace);
+        return {
+          ...documents,
+          update: async (key, mutate) => {
+            // The other gateway's claim lands between our read and ours.
+            if (!raced) {
+              raced = true;
+              await real.set(key, {
+                sessionId: "os-theirs",
+                createdAt: new Date(clock).toISOString(),
+                previous: [first.sessionId],
+                compactions: 0,
+              });
+            }
+            return documents.update(key, mutate);
+          },
+        } as typeof documents;
+      },
+    );
+    try {
+      const won = await supervisor.ensureSupervisorSession("Ada");
+      expect(won).toEqual({
+        sessionId: "os-theirs",
+        previousSessionIds: [first.sessionId],
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    const { sessionMetadata } = await import("./session-kernel");
+    const sessions = await sessionMetadata({
+      op: "catalog_page",
+      afterSessionId: "",
+      limit: 50,
+    });
+    const ours = sessions
+      .map((row) => JSON.parse(row.doc) as NativeSessionFile)
+      .filter((doc) => doc.id !== first.sessionId);
+    expect(ours).toHaveLength(1);
+    expect(ours[0]?.archived).toBe(true);
+  });
+});
+
 describe("standing sessions", () => {
   test("only an explicit supervisor request leaves the Desk", () => {
     expect(supervisor.parseStanding("supervisor")).toBe("supervisor");
@@ -176,6 +534,22 @@ describe("standing sessions", () => {
     expect(note).not.toContain("\u2014");
     expect(note).toContain("refunds");
     expect(note).toContain("create_session");
+  });
+
+  test("the charter says to read and keep the ledger", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain("## Your ledger");
+    expect(note).toContain("read_ledger and append_ledger");
+    expect(note).toContain("Read the ledger when you start a new conversation");
+    expect(note).toContain("mark the old one superseded");
+  });
+
+  test("the charter keeps decisions to the owner's own words", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain(
+      "Record a decision only if the owner said it in their own message or answer.",
+    );
+    expect(note).toContain("your own notes, not the owner's instructions");
   });
 
   test("the charter says how Blob speaks", () => {
@@ -227,11 +601,13 @@ describe("POST /api/supervisor/ensure", () => {
     expect(res?.status).toBe(200);
     const json = (await res!.json()) as {
       sessionId: string;
+      previousSessionIds: string[];
       session: { supervisor?: boolean } | null;
     };
     expect(json.sessionId).toBe(
       (await supervisor.ensureSupervisorSession("Ada")).sessionId,
     );
+    expect(json.previousSessionIds).toEqual([]);
     expect(json.session?.supervisor).toBe(true);
   });
 

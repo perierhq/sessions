@@ -148,6 +148,9 @@ export interface RunAgentOpts {
   /** Only the checkout's own skills, never the instance's skills directory
    *  (support sessions: skill-paths.ts skillSearchPaths). */
   projectSkillsOnly?: boolean;
+  /** The supervisor's standing session (supervisor.ts): pi keeps more
+   *  recent context when it compacts (pi-session-setup.ts). */
+  supervisor?: boolean;
   /**
    * External MCP servers this run may mount. REQUIRED and with no implicit
    * default: pass an allowlist, `[]` for none, or `"all"` to mount every
@@ -1617,6 +1620,7 @@ function journaledRunOptions(run: ActiveRunRecord) {
     speed: run.speed,
     pstackMode: run.pstackMode,
     projectSkillsOnly: run.projectSkillsOnly,
+    supervisor: run.supervisor,
     mcpServers: run.mcpServers ?? "all",
     mcpGrantUser: run.mcpGrantUser,
     author: run.author,

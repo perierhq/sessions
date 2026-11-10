@@ -297,6 +297,18 @@ import {
 } from "./supervisor-inbox";
 import { supervisorInboxOwner, supervisorMcpFor } from "./supervisor-mcp";
 import {
+  refreshSupervisorMemoryAfterCompaction,
+  refreshSupervisorMemoryDaily,
+  supervisorSeedContext,
+} from "./supervisor-memory";
+import {
+  currentSupervisorSessionId,
+  markSupervisorSeeded,
+  recordSupervisorCompaction,
+  retiredSupervisorMessage,
+  supervisorSeedDue,
+} from "./supervisor";
+import {
   automationSessionMcp,
   interactiveMcpServers,
   plainDiscussionSessionMcp,
@@ -2402,6 +2414,7 @@ export async function maybeLaunchSandboxedRun(
       pstackMode: session.pstackMode,
       // Customer mail: the project's own skills, no instance-wide ones.
       projectSkillsOnly: isSupportSession(session) || undefined,
+      supervisor: session.supervisor || undefined,
       // A disposable automation resume carries the automation's hard pin for
       // its own turns; a person's takeover turn carries none (runAccountSpec).
       ...runAccountSpec(session, opts, owningAutomation),
@@ -2947,6 +2960,20 @@ async function runSessionPromptInner(
     });
     throw new RunSetupRefusedError(repoBlocker);
   }
+  // A retired supervisor session (supervisor.ts rotation) takes no new
+  // turns: a push or an old tab may still point at it. Point at the
+  // current one instead.
+  if (session.supervisor && session.supervisorRetiredAt) {
+    const owner = session.createdBy?.trim();
+    const current = owner
+      ? await currentSupervisorSessionId(owner).catch(() => null)
+      : null;
+    const message = retiredSupervisorMessage(
+      current && current !== session.id ? current : null,
+    );
+    broadcastToSession(sessionId, { type: "notice", sessionId, message });
+    throw new RunSetupRefusedError(message);
+  }
   if (autoRetry) {
     broadcastToSession(sessionId, {
       type: "model_changed",
@@ -3317,6 +3344,7 @@ async function runSessionPromptInner(
     ? undefined
     : supervisorInboxOwner(session, user);
   let briefedAnswers: string[] = [];
+  let seedDue = false;
   if (inboxOwner) {
     const [inbox, style] = await Promise.all([
       supervisorInboxContext(inboxOwner).catch(() => undefined),
@@ -3329,6 +3357,24 @@ async function runSessionPromptInner(
       briefedAnswers = inbox.answered;
     }
     if (style) prompt = `${style}\n\n${prompt}`;
+    // A new supervisor session (a rotation or a new person) starts from
+    // the ledger and the last week's digests (supervisor-memory.ts). Every
+    // turn carries it until one completes without error; that turn records
+    // it on the supervisor's record (below).
+    const due = await supervisorSeedDue(inboxOwner, session.id).catch(
+      () => null,
+    );
+    if (due) {
+      seedDue = true;
+      const seed = await supervisorSeedContext(inboxOwner, due).catch(
+        () => undefined,
+      );
+      if (seed) prompt = `${seed}\n\n${prompt}`;
+    }
+    // The first turn of a new local day rebuilds the memory note below.
+    await refreshSupervisorMemoryDaily(session.id, inboxOwner).catch(
+      () => false,
+    );
   }
 
   // Shown in the Blob app: say where, so the reply fits (blob-surface.ts).
@@ -3753,6 +3799,7 @@ async function runSessionPromptInner(
           speed: session.speed,
           pstackMode: session.pstackMode,
           projectSkillsOnly: supportSession || undefined,
+          supervisor: session.supervisor || undefined,
           // Session pin, except for a person's turn in an automation-owned
           // session: they pay personal-first with the pool as backup.
           ...runAccountSpec(session, runInputs),
@@ -3812,6 +3859,7 @@ async function runSessionPromptInner(
       speed: session.speed,
       pstackMode: session.pstackMode,
       projectSkillsOnly: isSupportSession(session) || undefined,
+      supervisor: session.supervisor || undefined,
       // Pinned subscription for this session (claude-runner prefers it, pool
       // fallback on exhaustion). Ignored by Codex models. A person's turn in
       // an automation-owned session carries no pin, so their own subscription
@@ -3951,6 +3999,21 @@ async function runSessionPromptInner(
         // while a tool runs.
         const frame = streamPhaseFrame(sessionId, event);
         if (frame) broadcastToSession(sessionId, frame);
+        // A supervisor session compacting: count it for rotation and
+        // rebuild its memory note on the next turn (supervisor-memory.ts).
+        if (
+          session.supervisor &&
+          event.phase === "wait" &&
+          event.reason === "compaction"
+        ) {
+          refreshSupervisorMemoryAfterCompaction(session.id);
+          void recordSupervisorCompaction(session).catch((error) =>
+            console.warn(
+              "[supervisor] could not count a compaction:",
+              error instanceof Error ? error.message : error,
+            ),
+          );
+        }
         break;
       }
       case "tool_call_start": {
@@ -4216,6 +4279,15 @@ async function runSessionPromptInner(
           "[supervisor-inbox] could not mark answers briefed:",
           error instanceof Error ? error.message : error,
         ),
+    );
+  // Likewise the seed: once a turn that carried it completed, later turns of
+  // this session leave it out. A failed turn carries it again.
+  if (inboxOwner && seedDue && !endedWithError && !runFailure)
+    await markSupervisorSeeded(inboxOwner, session.id).catch((error) =>
+      console.warn(
+        "[supervisor] could not mark the seed delivered:",
+        error instanceof Error ? error.message : error,
+      ),
     );
 
   // Persist activity on our own session store. Slack/linear stores stay the

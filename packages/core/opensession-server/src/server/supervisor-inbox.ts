@@ -21,7 +21,8 @@
  * Quiet hours (supervisor-quiet-hours.ts) apply to every supervisor push: a
  * needs-you item raised in them is held until they end, unless its urgency
  * is `down` (something fully down), which always goes through. A sweep once a
- * minute flushes held items, retries failed pushes and sends due digests.
+ * minute flushes held items, retries failed pushes and sends due digests,
+ * and rotates a supervisor session that is due (supervisor.ts).
  * Nothing runs at import: `startSupervisorInbox` starts the sweep, once.
  */
 import { randomUUID } from "node:crypto";
@@ -35,6 +36,7 @@ import {
   cleanPrefs,
   digestDayDue,
   inQuietHours,
+  localClock,
   quietHoursEnd,
   type SupervisorPrefs,
 } from "./supervisor-quiet-hours";
@@ -153,6 +155,9 @@ export interface SupervisorInboxDeps {
   markDone(user: string, threadIds: string[]): Promise<void>;
   /** The person's supervisor session id, created on first use. */
   supervisorSessionId(user: string): Promise<string>;
+  /** Rotate the person's supervisor session when it is due (supervisor.ts
+   *  rotationDue). Creates nothing for a person without one. */
+  rotateSupervisor(user: string): Promise<unknown>;
   /** The person's profile time zone (identity.team[].timezone, else the
    *  instance default, else UTC). */
   timeZone(user: string): string;
@@ -173,6 +178,8 @@ const defaultDeps: SupervisorInboxDeps = {
   supervisorSessionId: async (user) =>
     (await (await import("./supervisor")).ensureSupervisorSession(user))
       .sessionId,
+  rotateSupervisor: async (user) =>
+    (await import("./supervisor")).rotateSupervisorIfDue(user),
   timeZone: (user) => timezoneForUser(user) || "UTC",
 };
 
@@ -1018,6 +1025,17 @@ export function sweepSupervisorInbox(): Promise<{
           error instanceof Error ? error.message : error,
         );
       }
+      // The same pass rotates an idle, old supervisor session, so a
+      // person who never reopens Blob still starts the next conversation
+      // fresh. No timer of its own.
+      try {
+        await deps.rotateSupervisor(user);
+      } catch (error) {
+        console.warn(
+          "[supervisor-inbox] supervisor rotation check failed:",
+          error instanceof Error ? error.message : error,
+        );
+      }
     }
     return totals;
   })().finally(() => {
@@ -1176,4 +1194,53 @@ export async function markSupervisorAnswersBriefed(
         : item,
     ),
   }));
+}
+
+// ── Seed history ────────────────────────────────────────────────────────────
+
+export interface DigestDay {
+  /** The owner's local day (`YYYY-MM-DD`) the digest went out. */
+  day: string;
+  /** Titles of the fyi items in it, newest first, bounded. */
+  titles: string[];
+  /** Items left out of `titles`. */
+  more: number;
+}
+
+/**
+ * The owner's last `days` daily digests as short summaries, newest first:
+ * the fyi items each digest carried, grouped by the local day it went out.
+ * A new supervisor session's seed context carries these (supervisor-memory.ts).
+ * Digested fyi items are kept for a week, so up to seven days are there.
+ */
+export async function supervisorRecentDigests(
+  user: string | null | undefined,
+  days = 7,
+  perDay = 5,
+): Promise<DigestDay[]> {
+  if (!validUser(user)) return [];
+  const doc = await readDocument(user);
+  const { timeZone } = prefsAndZone(doc, user);
+  const byDay = new Map<string, SupervisorItem[]>();
+  for (const item of doc.items) {
+    if (item.kind !== "fyi" || item.digestedAt === undefined) continue;
+    const { day } = localClock(item.digestedAt, timeZone);
+    const list = byDay.get(day) ?? [];
+    list.push(item);
+    byDay.set(day, list);
+  }
+  return [...byDay.entries()]
+    .sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0))
+    .slice(0, Math.max(0, days))
+    .map(([day, items]) => {
+      const titles = items
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((item) => pushSafeText(item.title))
+        .filter(Boolean);
+      return {
+        day,
+        titles: titles.slice(0, perDay),
+        more: Math.max(0, titles.length - perDay),
+      };
+    });
 }

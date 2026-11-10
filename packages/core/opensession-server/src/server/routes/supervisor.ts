@@ -5,7 +5,7 @@
  * like `/api/desk/ensure` (routes/todos.ts): the signed-in person, else the
  * claimed name.
  *
- *   POST /api/supervisor/ensure                 { user }
+ *   POST /api/supervisor/ensure                 { user } → { sessionId, previousSessionIds, session }
  *   GET  /api/supervisor/items?user=&state=&kind=&since=&limit=
  *   POST /api/supervisor/items/:id/answer       { user, answer }
  *   POST /api/supervisor/items/:id/dismiss      { user }
@@ -69,9 +69,13 @@ export async function handleSupervisorRoutes(
     const body = await req.json().catch(() => null);
     const user = requestUser(ctx, body?.user);
     if (!user) return missingUser();
-    const { sessionId } = await ensureSupervisorSession(user);
+    const { sessionId, previousSessionIds } =
+      await ensureSupervisorSession(user);
     return Response.json({
       sessionId,
+      // Earlier supervisor sessions, newest first: the history before each
+      // rotation (supervisor.ts), for paging back.
+      previousSessionIds,
       session: (await findSessionAsync(sessionId)) ?? null,
     });
   }

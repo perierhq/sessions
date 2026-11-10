@@ -186,6 +186,8 @@ export async function maybeLaunchRunnerRun(
     pstackMode: session.pstackMode,
     // Customer mail: the project's own skills, no instance-wide ones.
     projectSkillsOnly: isSupportSession(session) || undefined,
+    // The supervisor: pi keeps more recent context when it compacts.
+    supervisor: session.supervisor || undefined,
     // A person's turn in an automation-owned session carries no pin, so the
     // Runner tries their own subscription before the automation's account.
     ...runAccountSpec(session, runInputs),

@@ -181,6 +181,9 @@ export interface UnifiedSession {
   /** The user's standing supervisor session (supervisor.ts), the one the
    *  Blob app talks to. Hidden from lists like the Desk. */
   supervisor?: boolean;
+  /** When a rotation retired this supervisor session (supervisor.ts). It
+   *  keeps its history but takes no new turns and no inbox. */
+  supervisorRetiredAt?: string;
   /** Where the Blob app last asked to show this supervisor's replies
    *  (blob-surface.ts). */
   blobSurface?: BlobSurface;
@@ -699,6 +702,8 @@ export interface NativeSessionFile {
   /** The user's standing supervisor session (supervisor.ts): fixed title,
    *  suppressed from the session lists, opened from the Blob app. */
   supervisor?: boolean;
+  /** A rotation retired this supervisor session (supervisor.ts). */
+  supervisorRetiredAt?: string;
   /** Blob app surface from its last prompt (blob-surface.ts); unset otherwise. */
   blobSurface?: BlobSurface;
   /** spawn_task hop count from a human-created session (loop guard; see

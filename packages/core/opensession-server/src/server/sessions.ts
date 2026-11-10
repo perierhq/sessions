@@ -1118,6 +1118,7 @@ export function nativeSessionRow(data: NativeSessionFile): UnifiedSession {
     spawnedBy: data.spawnedBy,
     desk: data.desk,
     supervisor: data.supervisor,
+    supervisorRetiredAt: data.supervisorRetiredAt,
     blobSurface: data.blobSurface,
     spawnDepth: data.spawnDepth,
     attachedRepos: data.attachedRepos,

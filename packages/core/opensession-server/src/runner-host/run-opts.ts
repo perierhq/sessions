@@ -58,6 +58,7 @@ export function runAgentOptsFromSpec(
     speed: spec.speed,
     pstackMode: spec.pstackMode,
     projectSkillsOnly: spec.projectSkillsOnly,
+    supervisor: spec.supervisor,
     accountId: spec.accountId,
     accountStrict: spec.accountStrict,
     usageCredits: spec.usageCredits,

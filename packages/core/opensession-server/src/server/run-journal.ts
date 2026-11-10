@@ -128,6 +128,7 @@ export interface ActiveRunRecord {
   speed?: SessionSpeed; // unset falls back to fastMode; "ultrafast" needs GPT-6 Astra and a Pro $500 login
   pstackMode?: boolean; // pstack skill family visible to the model, preserved across resume
   projectSkillsOnly?: boolean; // only the checkout's skills (support sessions), preserved across resume
+  supervisor?: boolean; // the supervisor's standing session (pi compaction settings), preserved across resume
   accountId?: string; // pinned provider account, preserved across resume
   accountStrict?: boolean; // hard pin: never rotate into the pool (automation cost cap)
   usageCredits?: boolean; // may run on accounts spending usage-credits past their limits
