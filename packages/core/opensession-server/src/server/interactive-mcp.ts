@@ -734,7 +734,7 @@ registerInteractiveMcpBuilder(
       (servers as Record<string, unknown>)["opensession-goal-self"] =
         createGoalSelfMcpServer(goalId);
     // Only a supervisor session carries its inbox tools (supervisor-mcp.ts).
-    Object.assign(servers, supervisorMcpFor(session));
+    Object.assign(servers, supervisorMcpFor(session, user));
     return servers;
   },
 );

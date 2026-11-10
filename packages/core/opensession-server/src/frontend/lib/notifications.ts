@@ -186,11 +186,15 @@ export interface NotificationRowText {
  * What a banner says, the client twin of the server's `bannerText`.
  * Incidents lead the body with the project ("acme · Deploying the fix now");
  * support rows too, under their fixed title ("A support reply is ready");
- * every other row keeps "<subject>: <body>".
+ * a supervisor row says its reason ("Needs you") and the project only, as
+ * its push does: its subject and body are agent text. Every other row keeps
+ * "<subject>: <body>".
  */
 export function notificationBannerText(
   thread: NotificationThread,
 ): NotificationBannerText {
+  if (thread.subject.type === "supervisor")
+    return { title: thread.reason, body: thread.subject.context ?? "" };
   const support = thread.subject.type === "support";
   const title = support
     ? thread.subject.title

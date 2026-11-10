@@ -290,8 +290,11 @@ import {
 } from "./session-repos";
 import { deskStateContext } from "./desk-state";
 import { blobSurfaceContext } from "./blob-surface";
-import { supervisorInboxContext } from "./supervisor-inbox";
-import { supervisorMcpFor } from "./supervisor-mcp";
+import {
+  markSupervisorAnswersBriefed,
+  supervisorInboxContext,
+} from "./supervisor-inbox";
+import { supervisorInboxOwner, supervisorMcpFor } from "./supervisor-mcp";
 import {
   automationSessionMcp,
   interactiveMcpServers,
@@ -1997,7 +2000,7 @@ export function sandboxRunSecuritySpec(
                   ),
                 ),
                 ...(session.goalId ? ["opensession-goal-self"] : []),
-                ...Object.keys(supervisorMcpFor(session)),
+                ...Object.keys(supervisorMcpFor(session, opts.user)),
               ],
     reposNote: undefined,
     deniedTools: opts.deniedTools,
@@ -3304,14 +3307,23 @@ async function runSessionPromptInner(
   }
 
   // The supervisor's inbox: decisions waiting on the owner, fyi items for
-  // the next digest, and answers the owner gave since the last turn. Like
-  // the live state above it rides in this turn's message; an answer is
-  // marked briefed once shown, so each reaches one turn (supervisor-inbox.ts).
-  if (session.supervisor && !isAutomationSession) {
-    const inbox = await supervisorInboxContext(session.createdBy).catch(
+  // the next digest, and answers the owner gave since the last completed
+  // turn. Like the live state above it rides in this turn's message, and
+  // only on a turn the owner drives (supervisorInboxOwner). Answers shown
+  // are marked briefed once the turn completes (below), so a failed turn
+  // shows them again (supervisor-inbox.ts).
+  const inboxOwner = isAutomationSession
+    ? undefined
+    : supervisorInboxOwner(session, user);
+  let briefedAnswers: string[] = [];
+  if (inboxOwner) {
+    const inbox = await supervisorInboxContext(inboxOwner).catch(
       () => undefined,
     );
-    if (inbox) prompt = `${inbox}\n\n${prompt}`;
+    if (inbox) {
+      prompt = `${inbox.context}\n\n${prompt}`;
+      briefedAnswers = inbox.answered;
+    }
   }
 
   // Shown in the Blob app: say where, so the reply fits (blob-surface.ts).
@@ -3667,13 +3679,14 @@ async function runSessionPromptInner(
                   "opensession-goal-self": createGoalSelfMcpServer(
                     session.goalId,
                   ),
+                  ...supervisorMcpFor(session, user),
                 }
-              : // A supervisor session also gets its inbox tools
-                // (supervisor-mcp.ts); every other session gets nothing.
+              : // A supervisor session's owner also gets its inbox tools
+                // (supervisor-mcp.ts); every other turn gets nothing.
                 // Assigned, not spread, so the lazy set stays lazy.
                 Object.assign(
                   interactiveMcpServers(user, sessionId, durablePromptEntryId),
-                  supervisorMcpFor(session),
+                  supervisorMcpFor(session, user),
                 );
   const hostedRun =
     !fixedSubscriptionRefusal &&
@@ -4188,6 +4201,17 @@ async function runSessionPromptInner(
     duration_ms: Date.now() - turnMetricStartedAt,
     outcome: endedWithError || runFailure ? "failed" : "ok",
   });
+
+  // The turn that showed the supervisor these answers completed: no later
+  // turn repeats them. A failed turn leaves them for the next one.
+  if (inboxOwner && briefedAnswers.length && !endedWithError && !runFailure)
+    await markSupervisorAnswersBriefed(inboxOwner, briefedAnswers).catch(
+      (error) =>
+        console.warn(
+          "[supervisor-inbox] could not mark answers briefed:",
+          error instanceof Error ? error.message : error,
+        ),
+    );
 
   // Persist activity on our own session store. Slack/linear stores stay the
   // owning agent's property, with one surgical exception: engine-id/model

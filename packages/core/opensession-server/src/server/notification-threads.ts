@@ -499,20 +499,25 @@ export function wireThread(thread: StoredThread): NotificationThread {
 }
 
 /** Subjects whose push says only fixed wording (the event's `push`
- *  hints) and leads the body with the project. */
+ *  hints) and the project, never the row's own text. */
 export function hasFixedPush(type: NotificationSubjectType): boolean {
-  return type === "incident" || type === "support";
+  return type === "incident" || type === "support" || type === "supervisor";
 }
 
 /**
  * What a banner says. Incidents lead the body with the project
  * ("acme · Deploying the fix now"); support rows too, under their fixed
  * title ("A support reply is ready"), never the rule that is the row's
- * reason; every other row keeps "<subject>: <body>".
+ * reason. A supervisor row says its fixed reason ("Needs you") over a body
+ * that already names the project (supervisor-inbox.ts `supervisorPushCopy`):
+ * its subject is an agent's title, which may quote customer mail. Every
+ * other row keeps "<subject>: <body>".
  */
 export function bannerText(
   thread: Pick<NotificationThread, "subject" | "reason" | "body">,
 ): { title: string; body: string } {
+  if (thread.subject.type === "supervisor")
+    return { title: thread.reason, body: thread.body };
   const title =
     thread.subject.type === "support"
       ? thread.subject.title

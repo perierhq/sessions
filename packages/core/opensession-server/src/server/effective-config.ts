@@ -306,7 +306,7 @@ export async function inProcessServerNames(
   if (inputs.inProcessMcpBranch === "interactive+goal-self" && session.goalId) {
     servers["opensession-goal-self"] = createGoalSelfMcpServer(session.goalId);
   }
-  Object.assign(servers, supervisorMcpFor(session));
+  Object.assign(servers, supervisorMcpFor(session, inputs.user));
   return Object.keys(servers);
 }
 

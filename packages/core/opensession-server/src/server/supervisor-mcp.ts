@@ -7,16 +7,19 @@
  * matters, and raise a decision of its own to the owner.
  *
  * Every tool acts on the inbox of the session's owner (its creator), never on
- * anyone else's.
+ * anyone else's, and is mounted only for a turn that owner drives
+ * (`supervisorInboxOwner`).
  */
 import { z } from "zod";
 import { createSdkMcpServer, tool } from "./inprocess-mcp";
+import { humanPrompter, sessionCreationOwner } from "./session-actors";
 import {
   answerSupervisorItem,
   dismissSupervisorItem,
   listSupervisorItems,
   MAX_LIST,
   postSupervisorItem,
+  supervisorInboxKey,
   type CloseResult,
   type SupervisorItem,
 } from "./supervisor-inbox";
@@ -45,7 +48,10 @@ function format(item: SupervisorItem): string {
     lines.push(
       `  Options: ${item.options.map((o, i) => `${i + 1}. ${o}`).join("  ")}`,
     );
-  if (item.answer) lines.push(`  Answer: ${item.answer}`);
+  if (item.answer)
+    lines.push(
+      `  Answer: ${item.answer}${item.answeredBy === "supervisor" ? " (recorded by you)" : ""}`,
+    );
   return lines.join("\n");
 }
 
@@ -94,7 +100,12 @@ export function createSupervisorMcpServer(ctx: { user: string }) {
         async (args) =>
           text(
             closed(
-              await answerSupervisorItem(user, args.id, args.answer),
+              await answerSupervisorItem(
+                user,
+                args.id,
+                args.answer,
+                "supervisor",
+              ),
               "Answered",
             ),
           ),
@@ -146,14 +157,39 @@ export function createSupervisorMcpServer(ctx: { user: string }) {
   });
 }
 
-/** The server for a supervisor session; nothing for any other session. */
+type SupervisorSessionShape = {
+  supervisor?: boolean;
+  createdBy?: string | null;
+  startedBy?: string | null;
+  lastPromptedBy?: string | null;
+};
+
+/**
+ * The owner whose inbox a supervisor session's turn may touch: its creator,
+ * and only while the person driving the turn is that creator (the same
+ * person `sessionNotePerson` resolves for the Desk briefing). A teammate
+ * typing into someone's supervisor session gets neither the inbox tools nor
+ * the briefing. Undefined for any other session.
+ */
+export function supervisorInboxOwner(
+  session: SupervisorSessionShape | null | undefined,
+  turnUser: string | null | undefined,
+): string | undefined {
+  const owner = session?.createdBy?.trim();
+  if (!session?.supervisor || !owner) return undefined;
+  const person = humanPrompter(sessionCreationOwner(turnUser ?? "", session));
+  if (!person || supervisorInboxKey(person) !== supervisorInboxKey(owner))
+    return undefined;
+  return owner;
+}
+
+/** The server for a supervisor session's turn by its owner; nothing for any
+ *  other session or person. */
 export function supervisorMcpFor(
-  session:
-    | { supervisor?: boolean; createdBy?: string | null }
-    | null
-    | undefined,
+  session: SupervisorSessionShape | null | undefined,
+  turnUser: string | null | undefined,
 ): Record<string, ReturnType<typeof createSupervisorMcpServer>> {
-  const user = session?.createdBy?.trim();
-  if (!session?.supervisor || !user) return {};
+  const user = supervisorInboxOwner(session, turnUser);
+  if (!user) return {};
   return { [SUPERVISOR_MCP_SERVER]: createSupervisorMcpServer({ user }) };
 }

@@ -88,12 +88,19 @@ export async function handleSupervisorRoutes(
     const body = await req.json().catch(() => null);
     const user = requestUser(ctx, body?.user);
     if (!user) return missingUser();
-    const id = decodeURIComponent(action[1]!);
+    let id: string;
+    try {
+      id = decodeURIComponent(action[1]!);
+    } catch {
+      return Response.json({ error: "not found" }, { status: 404 });
+    }
     if (action[2] === "answer") {
       const answer = typeof body?.answer === "string" ? body.answer : "";
       if (!answer.trim())
         return Response.json({ error: "missing answer" }, { status: 400 });
-      return closeResponse(await answerSupervisorItem(user, id, answer));
+      return closeResponse(
+        await answerSupervisorItem(user, id, answer, "owner"),
+      );
     }
     return closeResponse(await dismissSupervisorItem(user, id));
   }

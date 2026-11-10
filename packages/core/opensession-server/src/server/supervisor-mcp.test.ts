@@ -33,9 +33,9 @@ function withSession(session: Partial<UnifiedSession>): void {
   );
 }
 
-async function list(sessionId: string) {
+async function list(sessionId: string, user = "Ada") {
   const token = `supervisor-mcp-${crypto.randomUUID()}`;
-  registerRunToken(token, { sessionId, user: "Ada" });
+  registerRunToken(token, { sessionId, user });
   try {
     return await dispatchRunRpc("/mcp/list", {
       token,
@@ -62,6 +62,14 @@ describe("opensession-supervisor wiring", () => {
       "list_items",
       "post_item",
     ]);
+  });
+
+  test("a teammate's run in the owner's supervisor session does not", async () => {
+    withSession({ supervisor: true, lastPromptedBy: "Grace" });
+    expect(await list("os-supervisor", "Grace")).toMatchObject({
+      kind: "immediate",
+      status: 404,
+    });
   });
 
   test("any other session's run does not", async () => {
