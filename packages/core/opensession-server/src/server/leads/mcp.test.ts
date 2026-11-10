@@ -146,14 +146,15 @@ describe("opensession-lead", () => {
       kind: "needs-you",
       source: "lead:acme",
       project: PROJECT,
-      // The server writes the title; the lead's own title heads the body,
-      // under the rule that applied.
+      // The server writes the title. The body leads with what Blob says
+      // (the lead's first paragraph), then the rule that applied, the
+      // lead's title and the rest.
       title: "Acme: Signal rule changes",
       options: ["Raise to 8 failures in a row", "Leave it"],
       dedupeKey: "lead:acme:signal-rule-change:sig-status consecutive.failures",
     });
     expect(item!.body).toBe(
-      "Rule: Asks first: Signal rule changes, from the project settings.\n\nStatus page flaps\n\n16 incidents closed by themselves within 6 minutes.",
+      "16 incidents closed by themselves within 6 minutes.\n\nRule: Asks first: Signal rule changes, from the project settings.\n\nStatus page flaps",
     );
     expect(pushes).toEqual(["Ada"]);
     expect(audits[0]).toMatchObject({
@@ -180,8 +181,45 @@ describe("opensession-lead", () => {
     const items = await listSupervisorItems("Ada");
     expect(items).toHaveLength(1);
     expect(items[0]!.title).toBe("Acme: Signal rule changes");
-    expect(items[0]!.body).toContain("\n\nStatus page still flaps\n\n");
+    expect(items[0]!.body).toEndWith("\n\nStatus page still flaps");
     expect(pushes).toEqual(["Ada"]);
+  });
+
+  test("the body's first paragraph is what Blob says; the rest is shown", async () => {
+    const { call } = await client();
+    await call("propose", {
+      ...flapProposal,
+      body: "The status signal keeps flapping; I'd raise its threshold.\n\n| Opened | Closed alone |\n| --- | --- |\n| 16 | 16 |\n\nAll within 6 minutes.",
+    });
+    const [item] = await listSupervisorItems("Ada");
+    expect(item!.body.split("\n\n")).toEqual([
+      "The status signal keeps flapping; I'd raise its threshold.",
+      "Rule: Asks first: Signal rule changes, from the project settings.",
+      "Status page flaps",
+      "| Opened | Closed alone |\n| --- | --- |\n| 16 | 16 |",
+      "All within 6 minutes.",
+    ]);
+  });
+
+  test("propose and post_digest_note tell the lead how Blob presents the body", async () => {
+    const { c } = await client();
+    const { tools } = await c.listTools();
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    const param = (tool: string, name: string) =>
+      (
+        byName.get(tool)?.inputSchema.properties?.[name] as
+          | { description?: string }
+          | undefined
+      )?.description;
+    expect(byName.get("propose")?.description).toContain(
+      "the first paragraph is spoken, the rest is shown, in the owner's report style",
+    );
+    expect(param("propose", "body")).toContain(
+      "First paragraph: what Blob says aloud when it presents the decision",
+    );
+    expect(param("post_digest_note", "text")).toContain(
+      "First paragraph: what Blob says aloud",
+    );
   });
 
   test("the lead's owner gets it, and the default options put approve first", async () => {

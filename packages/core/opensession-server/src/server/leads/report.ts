@@ -4,7 +4,9 @@
 // recommended; a digest note is one fyi item per day. Repeats about the
 // same subject update one item instead of adding another. Every proposal
 // is audited with the rule that decided it. The server writes each item's
-// title and its first line; what the lead wrote follows, below them.
+// title and the rule line. The body leads with the lead's first paragraph,
+// what Blob says when it presents the decision (say and show,
+// blob-surface.ts); the rule, the lead's title and the rest follow.
 import {
   LEAD_CATEGORY_LABELS,
   type LeadCategory,
@@ -62,16 +64,21 @@ export function proposalTitle(label: string, category: LeadCategory): string {
   return `${label}: ${LEAD_CATEGORY_LABELS[category]}`;
 }
 
-/** The body: the rule the server applied first, then the lead's title and
- *  text. */
+/** The body: the lead's first paragraph (what Blob says), then the rule
+ *  the server applied, the lead's title and the rest of its text (what Blob
+ *  shows). */
 export function proposalBody(
   proposal: Pick<LeadProposal, "title" | "body" | "decision">,
 ): string {
+  const [say = "", ...shown] = proposal.body.trim().split(/\n\s*\n/);
   return [
+    say.trim(),
     `Rule: ${proposal.decision.rule}.`,
     proposal.title,
-    proposal.body,
-  ].join("\n\n");
+    shown.join("\n\n").trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /** Every lead item's source: `lead:<project>`. */

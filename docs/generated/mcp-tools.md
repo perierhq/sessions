@@ -79,11 +79,11 @@ touches an in-process tool:
 | [`opensession-self`](#opensession-self) | 2 | automation | Only with the human-set `selfImprove` flag on that automation. |
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
-| [`opensession-supervisor`](#opensession-supervisor) | 4 | interactive | Only on a supervisor session (session.supervisor). |
+| [`opensession-supervisor`](#opensession-supervisor) | 5 | interactive | Only on a supervisor session (session.supervisor). |
 | [`opensession-lead`](#opensession-lead) | 4 | goal wake | Only on a project lead's goal (goal.leadProject). |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-42 servers, 204 tools.
+42 servers, 205 tools.
 
 ## opensession-sessions
 
@@ -1604,7 +1604,7 @@ The supervisor's inbox: decisions leads raised for the owner.
 - **Wired in** `packages/core/opensession-server/src/server/interactive-mcp.ts`, `packages/core/opensession-server/src/server/run-session.ts`
 - **Runs** interactive
 - **Condition** Only on a supervisor session (session.supervisor).
-- **Note** Acts on the inbox of the session's owner only (supervisor-inbox.ts).
+- **Note** Acts on the inbox of the session's owner only (supervisor-inbox.ts). ask_pat starts the GitHub agent's existing PR flows (agents/github/trigger.ts) as the owner, on registered repos only, with no free text.
 
 ### `list_items`
 
@@ -1629,6 +1629,12 @@ Dismiss an inbox item that no longer needs the owner.
 `mcp__opensession-supervisor__post_item` · input: `kind` ("needs-you" | "fyi", required), `title` (string, required), `body` (string), `options` (string[]), `project` (string), `dedupe_key` (string), `urgency` ("normal" | "down")
 
 Raise something to the owner. kind needs-you pushes their phone (held during their quiet hours unless urgency is down); fyi waits for the daily digest. Use needs-you only for a decision only they can make: two short lines and the options, recommended option first. The same dedupe_key updates an open item instead of adding another.
+
+### `ask_pat`
+
+`mcp__opensession-supervisor__ask_pat` · input: `action` ("review_pr" | "fix_ci" | "auto_fix", required), `repo` (string, required), `pr` (integer, required)
+
+Hand GitHub work on a pull request to Assistant, the public worker, through the existing flows: review_pr runs the PR review, fix_ci runs the auto-fix loop starting with the failing checks, auto_fix runs the full auto-fix loop (os-auto-fix). Assistant posts the results on the PR. Takes no text: nothing you write goes to GitHub. Tell the owner you asked Assistant.
 
 ## opensession-lead
 
@@ -1656,7 +1662,7 @@ Tell flaps from outages for example's signals: per signal, incidents opened, clo
 
 `mcp__opensession-lead__propose` · input: `category` ("fix-verified" | "ci-repair" | "support-routine-reply" | "signal-rule-change" | "dependency-major" | "ban-user" | "rotate-key" | "public-release" | "refund" | "pricing" | "dispute" | "tax-legal" | "contract" | "production-data-write", required), `title` (string, required), `body` (string, required), `options` (string[]), `subject` (string), `kind` ("proposal" | "needs-you")
 
-Propose an action for example to its owner. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner.
+Propose an action for example to its owner. Write the body as Blob presents it: the first paragraph is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner.
 
 ### `post_digest_note`
 

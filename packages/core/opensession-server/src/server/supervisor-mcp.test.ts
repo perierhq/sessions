@@ -58,6 +58,7 @@ describe("opensession-supervisor wiring", () => {
       .sort();
     expect(names).toEqual([
       "answer_item",
+      "ask_pat",
       "dismiss_item",
       "list_items",
       "post_item",

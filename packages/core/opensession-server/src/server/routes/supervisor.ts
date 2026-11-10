@@ -10,7 +10,7 @@
  *   POST /api/supervisor/items/:id/answer       { user, answer }
  *   POST /api/supervisor/items/:id/dismiss      { user }
  *   GET  /api/supervisor/prefs?user=
- *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone? }
+ *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle? }
  */
 
 import type { RouteContext } from "./context";

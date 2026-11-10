@@ -687,7 +687,7 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     ],
     runClasses: ["interactive"],
     condition: "Only on a supervisor session (session.supervisor).",
-    note: "Acts on the inbox of the session's owner only (supervisor-inbox.ts).",
+    note: "Acts on the inbox of the session's owner only (supervisor-inbox.ts). ask_pat starts the GitHub agent's existing PR flows (agents/github/trigger.ts) as the owner, on registered repos only, with no free text.",
     build: () => createSupervisorMcpServer({ user: USER }),
   },
   {

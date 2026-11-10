@@ -50,6 +50,25 @@ describe("Blob surface", () => {
     expect(two).toContain("two panes");
   });
 
+  test("splits the reply into what Blob says and what it shows", () => {
+    const text = blobSurfaceContext(
+      {
+        supervisor: true,
+        blobSurface: { panes: 1, width: "compact", at: now.toISOString() },
+      },
+      now,
+    );
+    expect(text).toContain(
+      "the first paragraph is what Blob says aloud and shows as its Say line",
+    );
+    expect(text).toContain("never read out numbers, lists or tables");
+    expect(text).toContain(
+      "everything after the first paragraph is shown and never spoken",
+    );
+    expect(text).toContain("docs/blocks.md");
+    expect(text).not.toContain("may read the prose aloud");
+  });
+
   test("says nothing outside the supervisor, without a surface, or once it is stale", () => {
     const fresh = {
       panes: 1 as const,

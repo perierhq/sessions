@@ -48,7 +48,7 @@ import {
 } from "./memory-repo/session";
 import { sessionLink } from "./run-instructions";
 import { DESK_NOTE } from "./desk";
-import { SUPERVISOR_NOTE } from "./supervisor";
+import { supervisorNote } from "./supervisor";
 import { personalOutputStyleNoteFor } from "./personal-output-style";
 import { personalPromptNoteFor } from "./personal-prompts";
 import { humanPrompter, sessionCreationOwner } from "./session-actors";
@@ -423,7 +423,7 @@ export async function buildSessionNote(
       session.desk ? DESK_NOTE : "",
       // The standing supervisor gets its chief-of-staff charter the same way
       // (supervisor.ts); the live briefing rides in the turn as for the Desk.
-      session.supervisor ? SUPERVISOR_NOTE : "",
+      session.supervisor ? supervisorNote() : "",
       buildReposNote(session),
       // GPU jobs the repository declares, for a session without a GPU.
       await (await import("./gpu-jobs")).gpuJobsNote(session).catch(() => ""),

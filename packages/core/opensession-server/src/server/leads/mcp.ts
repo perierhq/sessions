@@ -84,7 +84,7 @@ export function createLeadMcpServer(project: string) {
     ),
     tool(
       "propose",
-      `Propose an action for ${project} to its owner. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner.`,
+      `Propose an action for ${project} to its owner. Write the body as Blob presents it: the first paragraph is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner.`,
       {
         category: z
           .enum(LEAD_CATEGORIES)
@@ -100,7 +100,9 @@ export function createLeadMcpServer(project: string) {
           .string()
           .min(1)
           .max(4000)
-          .describe("What you found, what you propose and why, with numbers."),
+          .describe(
+            "Two parts. First paragraph: what Blob says aloud when it presents the decision, one or two spoken sentences with the bottom line or the ask, no numbers, lists or tables. After it, shown only: what you found, what you propose and why, with numbers, in the owner's report style (your charter).",
+          ),
         options: z
           .array(z.string().min(1).max(120))
           .max(5)
@@ -168,7 +170,15 @@ export function createLeadMcpServer(project: string) {
     tool(
       "post_digest_note",
       `Write today's note on ${project} for the owner's daily digest: what you saw, what you proposed, what is waiting. A later note today replaces this one, so include everything. Nobody is pushed for it.`,
-      { text: z.string().min(1).max(4000).describe("Markdown, short.") },
+      {
+        text: z
+          .string()
+          .min(1)
+          .max(4000)
+          .describe(
+            "Markdown, short. First paragraph: what Blob says aloud, one or two spoken sentences, no numbers, lists or tables. After it, shown only: the detail.",
+          ),
+      },
       async (args: { text: string }) => {
         const sources = leadSources();
         const doc = await sources.projectDocument(project);
