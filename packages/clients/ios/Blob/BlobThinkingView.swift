@@ -1,15 +1,22 @@
 import SwiftUI
 
-/// One short line above Blob while the supervisor works on your message:
-/// "Reading my notes", "Reading PR #212 · 12s". Tap it for this turn's steps
-/// with their times. It fades out when the answer starts or a question card
-/// comes up. Labels come from `BlobSteps`; this file reads the transcript
-/// and draws them, and plays the voice filler (`BlobFiller`).
+/// While the supervisor works on your message, Blob thinks it: a soft
+/// thought beside its head, joined to it by two small circles, saying what
+/// it is doing ("Reading my notes", "Reading PR #212 · 12s"), or three
+/// quiet dots before there is a step. Tap it for this turn's steps with
+/// their times. It goes when the answer starts or a question card comes
+/// up. Labels come from `BlobSteps`; this file reads the transcript, draws
+/// the thought (`BlobThought`) and plays the voice filler (`BlobFiller`).
 struct BlobThinkingLayer: View {
     let talk: BlobTextTalk
-    /// Where Blob sits while it thinks; the line goes just above it.
-    let blobCenter: CGPoint
-    let blobRadius: CGFloat
+    /// Blob's body, read every frame so the thought follows it as it moves
+    /// and shrinks.
+    let physics: BlobPhysics
+    /// Where the thought may go, in the same space as Blob: inside the safe
+    /// area and above the controls at the bottom.
+    let bounds: CGRect
+    /// A physical fold (the open Duo's): the thought stays on Blob's side.
+    let fold: CGRect?
     /// History is open.
     let hidden: Bool
 
@@ -21,33 +28,26 @@ struct BlobThinkingLayer: View {
         TimelineView(.animation(minimumInterval: 1, paused: !(turn.demo || showing))) { timeline in
             let steps = turn.steps(at: timeline.date)
             let current = BlobSteps.current(steps, at: timeline.date)
-            let visible = !hidden && current != nil && (turn.demo || showing)
-            Group {
-                if visible, let current {
-                    Button { showSteps = true } label: {
-                        Text(BlobSteps.line(current, at: timeline.date))
-                            .id(current.label)
-                            .transition(.opacity)
-                            .font(.footnote)
-                            .foregroundStyle(OS1VisualStyle.textDim)
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Capsule().fill(OS1VisualStyle.hover))
-                            .contentShape(Capsule())
+            let visible = !hidden && (turn.demo || showing)
+            ZStack {
+                if visible {
+                    // The opening "Thinking" is the dots: a thought that says
+                    // it is thinking says nothing.
+                    let step = current.flatMap { $0.label == BlobSteps.thinking ? nil : $0 }
+                    BlobThought(
+                        key: step?.label,
+                        line: step.map { BlobSteps.line($0, at: timeline.date) },
+                        physics: physics,
+                        bounds: bounds,
+                        fold: fold
+                    ) { showSteps = true }
+                    .onChange(of: current?.label, initial: true) { _, _ in
+                        if let current { turn.announce(current) }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(current.label)
-                    .accessibilityHint("Shows what Blob has done so far")
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: current.label)
-                    .onChange(of: current.label, initial: true) { _, _ in turn.announce(current) }
-                    .transition(.opacity)
+                    .transition(.opacity.animation(.easeOut(duration: 0.2)))
                 }
             }
-            .frame(maxWidth: 320)
-            .position(x: blobCenter.x, y: blobCenter.y - blobRadius - 28)
-            .animation(.easeOut(duration: 0.2), value: visible)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .sheet(isPresented: $showSteps) {
             BlobStepsSheet(turn: turn)
@@ -68,8 +68,8 @@ struct BlobThinkingLayer: View {
         .onChange(of: talk.desk?.pendingQuestion != nil, initial: true) { _, asking in if asking { turn.questionShown() } }
     }
 
-    /// The live line, outside the demo: the supervisor is still working and
-    /// nothing of the answer or a question card is on screen yet.
+    /// The live thought, outside the demo: the supervisor is still working
+    /// and nothing of the answer or a question card is on screen yet.
     private var showing: Bool {
         talk.thinking && !turn.started && talk.desk?.pendingQuestion == nil
     }
@@ -85,6 +85,182 @@ struct BlobThinkingLayer: View {
     private var entryKey: [String] {
         guard !turn.started, talk.thinking else { return [] }
         return talk.turnEntries.map { "\(BlobThinkingTurn.key($0)):\(BlobThinkingTurn.fingerprint($0.toolInput))" }
+    }
+}
+
+/// The thought itself, placed every frame from where Blob is: two small
+/// circles off the top of its head, then the bubble, on whichever side has
+/// room (the side its eyes glance to, unless that edge is too close). It
+/// emerges from Blob, tail first; a new step's bubble forms as the old one
+/// drifts up and fades; it bobs a few points while it waits. Under Reduce
+/// Motion it stays still and only fades.
+private struct BlobThought: View {
+    /// The step on it; nil for the dots.
+    let key: String?
+    let line: String?
+    let physics: BlobPhysics
+    let bounds: CGRect
+    let fold: CGRect?
+    let tap: () -> Void
+
+    /// 0 hidden, then each circle of the tail, then the bubble.
+    @State private var stage = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            let shape = Self.shape(center: physics.position, radius: physics.radius, bounds: bounds, fold: fold)
+            let drift = reduceMotion ? .zero : CGSize(
+                width: 1.5 * sin(t * 2 * .pi / 5.3),
+                height: 2.5 * sin(t * 2 * .pi / 3.7)
+            )
+            ZStack(alignment: .topLeading) {
+                tailDot(shape.near, size: 6, drift: drift, scale: 0.3, shown: stage >= 1)
+                tailDot(shape.far, size: 10, drift: drift, scale: 0.6, shown: stage >= 2)
+                ThoughtPlacement(anchor: shape.anchor, trailing: shape.trailing, area: shape.area) {
+                    if stage >= 3 {
+                        bubble(t: t)
+                            .id(key ?? "")
+                            .transition(stepTransition(trailing: shape.trailing))
+                    }
+                }
+                .offset(drift)
+                .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.45), value: key)
+            }
+        }
+        .onAppear(perform: emerge)
+    }
+
+    /// The tail end grows first, then the bubble, each from Blob outward.
+    private func emerge() {
+        guard !reduceMotion else {
+            withAnimation(.easeOut(duration: 0.2)) { stage = 3 }
+            return
+        }
+        for next in 1...3 {
+            withAnimation(.spring(duration: 0.35, bounce: 0.15).delay(Double(next - 1) * 0.08)) { stage = next }
+        }
+    }
+
+    private func tailDot(_ point: CGPoint, size: CGFloat, drift: CGSize, scale: CGFloat, shown: Bool) -> some View {
+        Circle()
+            .fill(OS1VisualStyle.hover)
+            .frame(width: size, height: size)
+            .scaleEffect(shown || reduceMotion ? 1 : 0.4)
+            .opacity(shown ? 1 : 0)
+            .position(x: point.x + drift.width * scale, y: point.y + drift.height * scale)
+            .accessibilityHidden(true)
+    }
+
+    private func bubble(t: Double) -> some View {
+        Button(action: tap) {
+            Group {
+                if let line {
+                    Text(line)
+                        .font(.footnote)
+                        .foregroundStyle(OS1VisualStyle.textDim)
+                        .monospacedDigit()
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    dots(t: t)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(OS1VisualStyle.hover, in: .rect(cornerRadius: 17, style: .continuous))
+            .contentShape(.rect(cornerRadius: 17, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(key ?? BlobSteps.thinking)
+        .accessibilityHint("Shows what Blob has done so far")
+    }
+
+    /// Three dots that brighten in turn; still under Reduce Motion.
+    private func dots(t: Double) -> some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                let wave = reduceMotion ? 0.5 : max(0, sin(t * 2 * .pi / 1.4 - Double(index) * 0.7))
+                Circle()
+                    .fill(OS1VisualStyle.textDim)
+                    .frame(width: 5, height: 5)
+                    .opacity(0.35 + 0.55 * wave)
+            }
+        }
+        .frame(height: 16)
+    }
+
+    /// A new step forms from the tail end; the old one drifts up and fades.
+    private func stepTransition(trailing: Bool) -> AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .scale(scale: 0.92, anchor: trailing ? .bottomLeading : .bottomTrailing).combined(with: .opacity),
+            // Gone before the new one has fully formed, so the two never
+            // read as one muddle.
+            removal: .offset(y: -14).combined(with: .opacity).animation(.easeOut(duration: 0.25))
+        )
+    }
+
+    struct Geometry {
+        var near: CGPoint
+        var far: CGPoint
+        /// The bubble's bottom corner nearest Blob.
+        var anchor: CGPoint
+        /// The bubble goes to Blob's trailing side.
+        var trailing: Bool
+        /// Where the bubble may go.
+        var area: CGRect
+    }
+
+    /// Where the tail and the bubble go for Blob at `center`. The tail
+    /// leaves the head at about 50° up, toward the side with room; the
+    /// bubble's area stops at a physical fold on Blob's side of it.
+    static func shape(center: CGPoint, radius: CGFloat, bounds: CGRect, fold: CGRect?) -> Geometry {
+        var area = bounds
+        if let fold {
+            if center.x < fold.midX {
+                area.size.width = max(0, min(area.maxX, fold.minX) - area.minX)
+            } else {
+                let minX = max(area.minX, fold.maxX)
+                area.size.width = max(0, area.maxX - minX)
+                area.origin.x = minX
+            }
+        }
+        let trailing = area.maxX - (center.x + radius * 0.6) >= 140 || area.maxX - center.x >= center.x - area.minX
+        let sign: CGFloat = trailing ? 1 : -1
+        let near = CGPoint(x: center.x + sign * (radius + 8) * 0.64, y: center.y - (radius + 8) * 0.77)
+        let far = CGPoint(x: center.x + sign * (radius + 22) * 0.6, y: center.y - (radius + 22) * 0.8)
+        let anchor = CGPoint(x: far.x - sign * 10, y: far.y - 9)
+        return Geometry(near: near, far: far, anchor: anchor, trailing: trailing, area: area)
+    }
+}
+
+/// Places the thought's bubble with its bottom corner at `anchor`, growing
+/// away from Blob, then slides it back inside `area` if it would leave it.
+private struct ThoughtPlacement: Layout {
+    var anchor: CGPoint
+    var trailing: Bool
+    var area: CGRect
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let maxWidth = max(60, min(area.width, 280))
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+            var x = trailing ? anchor.x : anchor.x - size.width
+            x = min(max(x, area.minX), max(area.minX, area.maxX - size.width))
+            let y = max(anchor.y - size.height, area.minY)
+            subview.place(
+                at: CGPoint(x: bounds.minX + x, y: bounds.minY + y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: size.width, height: size.height)
+            )
+        }
     }
 }
 

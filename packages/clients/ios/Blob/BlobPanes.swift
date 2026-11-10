@@ -1,16 +1,22 @@
 import SwiftUI
 
 /// Two panes on a wide surface, side by side across a vertical fold: the
-/// open Duo's inner display in landscape, or a wide iPad or Mac window. The
-/// conversation takes the leading pane and the current reply's visual blocks
-/// the trailing one; nothing is drawn in `fold`.
+/// open Duo's inner display in landscape, or a wide iPad or Mac window.
+/// They are only used while there is something for the second one (see
+/// `BlobColumns`): then the conversation takes the leading pane and the
+/// current reply's visual blocks the trailing one, and nothing is drawn in
+/// `fold`.
 struct BlobPanes: Equatable {
     /// The division region, margins included, in the home's full-bleed space.
     var fold: CGRect
     var width: CGFloat
+    /// The device's own fold (the open Duo), not just the gap this app keeps
+    /// between two panes on a wide flat surface. Nothing that has to stay
+    /// whole (text, Blob's face, a control) may cross it.
+    var physical: Bool
 
-    /// Width left over after the leading pane.
-    var trailingWidth: CGFloat { width - fold.minX }
+    /// The trailing pane's width: what is left after the fold.
+    var trailingWidth: CGFloat { width - fold.maxX }
 
     /// The panes for a full-bleed proxy, or nil for one column. The Duo
     /// reports its fold as a division region (iOS 27.1); a fold across the
@@ -24,13 +30,105 @@ struct BlobPanes: Equatable {
         if #available(iOS 27.1, *) {
             let folds = proxy.reservedRegions(kind: .division, options: .includeInactive).map(\.frame)
             if let vertical = folds.first(where: { $0.height > $0.width }) {
-                return BlobPanes(fold: vertical, width: size.width)
+                return BlobPanes(fold: vertical, width: size.width, physical: true)
             }
             if !folds.isEmpty { return nil }
         }
         #endif
         guard size.width >= 820 else { return nil }
-        return BlobPanes(fold: CGRect(x: size.width / 2 - 20, y: 0, width: 40, height: size.height), width: size.width)
+        #if DEBUG
+        // `BLOB_DEMO_FOLD=1`: the middle band acts as a physical fold, to
+        // check the open Duo's layout on an iPad or a Mac window.
+        let physical = ProcessInfo.processInfo.environment["BLOB_DEMO_FOLD"] != nil
+        #else
+        let physical = false
+        #endif
+        return BlobPanes(
+            fold: CGRect(x: size.width / 2 - 20, y: 0, width: 40, height: size.height),
+            width: size.width,
+            physical: physical
+        )
+    }
+}
+
+/// Where the page's columns go, in the home's full-bleed space. One column
+/// is centered (`centered`) until a reply has something for a second pane;
+/// then the conversation moves to `leading` and its visuals take
+/// `trailing`. Each exchange keeps the arrangement it was shown in, in
+/// history too, so nothing the agent showed is re-flowed later.
+///
+/// Centered is the middle of the surface, except beside a physical fold:
+/// there it is the middle of the leading pane, so no line of text and not
+/// Blob's face ever sits across the fold, flat or half open, and splitting
+/// only adds the trailing pane without moving what you are reading.
+struct BlobColumns: Equatable {
+    struct Span: Equatable {
+        var x: CGFloat
+        var width: CGFloat
+        var midX: CGFloat { x + width / 2 }
+    }
+
+    var centered: Span
+    /// Nil on a surface with one column.
+    var leading: Span?
+    var trailing: Span?
+
+    /// The widest a line of reading text runs.
+    static let readable: CGFloat = 600
+
+    init(width: CGFloat, insets: EdgeInsets, panes: BlobPanes?) {
+        let lo = insets.leading + 24
+        let hi = width - insets.trailing - 24
+        func reading(_ from: CGFloat, _ to: CGFloat) -> Span {
+            let room = max(0, to - from)
+            let column = min(Self.readable, room)
+            return Span(x: from + (room - column) / 2, width: column)
+        }
+        guard let panes else {
+            centered = reading(lo, hi)
+            return
+        }
+        let leading = reading(lo, panes.fold.minX)
+        self.leading = leading
+        trailing = Span(x: panes.fold.maxX, width: max(0, min(560, hi - panes.fold.maxX)))
+        centered = panes.physical ? leading : reading(lo, hi)
+    }
+}
+
+extension View {
+    /// Puts the view in one of the page's columns, full-bleed space.
+    func blobColumn(_ span: BlobColumns.Span) -> some View {
+        frame(width: span.width, alignment: .leading)
+            .padding(.leading, span.x)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// One exchange shown across two panes: its conversation in the leading
+/// column and its visual blocks in the trailing one, both from the top.
+/// The current reply's visuals use `BlobSidePane` instead, with a scroll
+/// of their own; history and the current exchange while history is open
+/// use this, so they scroll with the page.
+struct BlobSplitRow<Conversation: View>: View {
+    let columns: BlobColumns
+    let visuals: [String]
+    @ViewBuilder let conversation: () -> Conversation
+
+    var body: some View {
+        if let leading = columns.leading, let trailing = columns.trailing {
+            ZStack(alignment: .topLeading) {
+                conversation().blobColumn(leading)
+                VStack(alignment: .leading, spacing: 20) {
+                    ForEach(Array(visuals.enumerated()), id: \.offset) { _, block in
+                        MarkdownBody(block)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .blobColumn(trailing)
+            }
+        } else {
+            conversation().blobColumn(columns.centered)
+        }
     }
 }
 
