@@ -497,4 +497,9 @@ test("listIndexRows filters by inbox, status and customer (any case)", async () 
   ).toEqual([b.id]);
   expect(await listIndexRows({ inboxId: "inb_other" })).toEqual([]);
   expect((await listIndexRows({ inboxId: INBOX })).length).toBe(2);
+  expect((await listIndexRows({ inboxIds: [INBOX, "inb_other"] })).length).toBe(
+    2,
+  );
+  expect(await listIndexRows({ inboxIds: ["inb_other"] })).toEqual([]);
+  expect(await listIndexRows({ inboxIds: [] })).toEqual([]);
 });

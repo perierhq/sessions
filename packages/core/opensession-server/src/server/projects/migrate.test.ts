@@ -44,6 +44,8 @@ beforeEach(() => {
     connectionExists: () => true,
     credential: () => null,
     isOwner: () => false,
+    // Ada (login ada) is the instance owner.
+    leadAuthority: (login) => login === "ada",
     ownerRoster: () => "none",
     hostProblem: () => null,
   });

@@ -133,6 +133,28 @@ export function instanceOwnerMember(): TeamMember | null {
   );
 }
 
+/** Whether the signed-in GitHub `login` is `name`'s on the roster: one
+ *  directory member goes by `name` and has that login. Never true without
+ *  a roster, since a name alone proves nothing. */
+export function isLoginOf(
+  login: string | null | undefined,
+  name: string,
+): boolean {
+  const signedIn = login?.trim().toLowerCase();
+  if (!signedIn) return false;
+  const member = memberFor(name, roster());
+  return member?.github?.trim().toLowerCase() === signedIn;
+}
+
+/** Whether the signed-in GitHub `login` is the instance owner's. */
+export function isInstanceOwnerLogin(
+  login: string | null | undefined,
+): boolean {
+  const signedIn = login?.trim().toLowerCase();
+  const owner = instanceOwnerMember()?.github?.trim().toLowerCase();
+  return !!signedIn && !!owner && signedIn === owner;
+}
+
 /** Who owns `signal` now: its owner, else a person who created it, else
  *  the instance owner; "" when there is nobody. */
 export function signalOwner(

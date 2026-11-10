@@ -162,6 +162,28 @@ describe("posting", () => {
     expect(second.item.id).not.toBe(first.item.id);
   });
 
+  test("once: a dedupe key already used, open or closed, raises nothing", async () => {
+    const first = await needsYou({ dedupeKey: "budget-2026-11", once: true });
+    expect(first.created).toBe(true);
+    const repeat = await needsYou({
+      dedupeKey: "budget-2026-11",
+      once: true,
+      title: "Asked again",
+    });
+    expect(repeat).toMatchObject({ created: false, delivery: "none" });
+    expect(repeat.item.id).toBe(first.item.id);
+    expect(repeat.item.title).toBe(first.item.title);
+    await inbox.answerSupervisorItem("Ada", first.item.id, "1", "owner");
+    const afterAnswer = await needsYou({
+      dedupeKey: "budget-2026-11",
+      once: true,
+    });
+    expect(afterAnswer).toMatchObject({ created: false, delivery: "none" });
+    expect(afterAnswer.item.state).toBe("answered");
+    expect(await inbox.listSupervisorItems("Ada")).toHaveLength(1);
+    expect(sent.filter((s) => s.event.delivery === "alert")).toHaveLength(1);
+  });
+
   test("a failed push is retried by the sweep, once", async () => {
     failNotify = true;
     const { item, delivery } = await needsYou();

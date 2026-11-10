@@ -285,7 +285,12 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
 
 // ── opensession-goal-self (the running goal's own controls) ──────
 
-export function createGoalSelfMcpServer(goalId: string) {
+/** `lead`: a project lead's goal, whose status its project settings own
+ *  (server/leads/goal.ts): it gets no tools to pause or finish itself. */
+export function createGoalSelfMcpServer(
+  goalId: string,
+  options: { lead?: boolean } = {},
+) {
   const load = () => getGoal(goalId);
 
   const tools = [
@@ -309,12 +314,26 @@ export function createGoalSelfMcpServer(goalId: string) {
           nextWakeAt: new Date(
             Math.max(requested, now + current.minWakeMinutes * 60_000),
           ).toISOString(),
-          status: "active",
+          // A lead's pause is its settings' (turned off mid-run): keep it.
+          status: options.lead ? current.status : "active",
         }));
         if (!g) return text("Goal record missing.");
         return text(`Next wake set to ${g.nextWakeAt}.`);
       },
     ),
+    ...(options.lead ? [] : statusTools(goalId)),
+  ];
+
+  return createSdkMcpServer({
+    name: "opensession-goal-self",
+    version: "1.0.0",
+    tools: [...tools, ...ledgerTools(goalId, load)],
+  });
+}
+
+/** mark_paused, mark_done, mark_failed: the goal ends or holds its own run. */
+function statusTools(goalId: string) {
+  return [
     tool(
       "mark_paused",
       "Pause this mission because you're blocked on a human decision or sign-off. Say clearly in `reason` what you need and from whom. (First pull them in with opensession-humans ask_human if you haven't.) The ticker won't wake you again until a human resumes the goal.",
@@ -366,6 +385,12 @@ export function createGoalSelfMcpServer(goalId: string) {
         return text("Marked failed. The wake cycle is stopped.");
       },
     ),
+  ];
+}
+
+/** update_phase and append_ledger. */
+function ledgerTools(goalId: string, load: () => ReturnType<typeof getGoal>) {
+  return [
     tool(
       "update_phase",
       "Set a short human-readable phase label for where the mission is (e.g. 'week 2: shipping roundup'). Shown in list_goals.",
@@ -393,10 +418,4 @@ export function createGoalSelfMcpServer(goalId: string) {
       },
     ),
   ];
-
-  return createSdkMcpServer({
-    name: "opensession-goal-self",
-    version: "1.0.0",
-    tools,
-  });
 }

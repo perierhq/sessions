@@ -228,6 +228,38 @@ describe("goals store", () => {
     ).toBeNull();
   });
 
+  test("a project lead's goal keeps what its settings decide", async () => {
+    const lead = await createGoal(
+      { name: "Lead: Acme", mission: "Lead acme.", createdBy: "Project lead" },
+      { leadProject: "acme", pauseReason: "Starting" },
+    );
+    if ("error" in lead) throw new Error(lead.error);
+    expect(lead).toMatchObject({
+      status: "paused",
+      pauseReason: "Starting",
+      leadProject: "acme",
+    });
+    expect(
+      await updateGoal(lead.id, { mission: "Anything.", mcpServers: [] }),
+    ).toEqual({
+      error:
+        "This goal is a project lead's: its mission, mcpServers come from the project's lead settings",
+    });
+    expect((await getGoal(lead.id))?.mission).toBe("Lead acme.");
+    // Other fields, and the values it already has, are fine.
+    const renamed = await updateGoal(lead.id, {
+      name: "Lead: Acme web",
+      mission: "Lead acme.",
+      status: "active",
+    });
+    expect(renamed).toMatchObject({ name: "Lead: Acme web", status: "active" });
+    // An ordinary goal takes them all.
+    const plain = await created();
+    expect(await updateGoal(plain.id, { mission: "New." })).toMatchObject({
+      mission: "New.",
+    });
+  });
+
   test("saves runner fields as given", async () => {
     const goal = await created();
     await saveGoal({ ...goal, wakeCount: 3, lastRunStatus: "ok" });

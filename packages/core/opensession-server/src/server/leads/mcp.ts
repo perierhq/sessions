@@ -3,7 +3,8 @@
 // overview and the flap triage), `propose`, which checks the project's lead
 // rules before raising a proposal in the owner's supervisor inbox, and
 // `post_digest_note`, the day's note for the owner's digest. None of them
-// changes the project.
+// changes the project, and the two that report refuse while the lead is
+// off or the project's kill switch is on.
 import { z } from "zod";
 import {
   LEAD_CATEGORIES,
@@ -17,6 +18,7 @@ import {
   LEAD_PROPOSAL_KINDS,
   type LeadDelivery,
   deliverLeadProposal,
+  leadReportRefusal,
   postLeadDigestNote,
 } from "./report";
 
@@ -87,7 +89,13 @@ export function createLeadMcpServer(project: string) {
         category: z
           .enum(LEAD_CATEGORIES)
           .describe("What kind of action this is."),
-        title: z.string().min(1).max(200).describe("One line."),
+        title: z
+          .string()
+          .min(1)
+          .max(200)
+          .describe(
+            "One line. It heads your text; the owner's item is titled with the project and the category.",
+          ),
         body: z
           .string()
           .min(1)
@@ -123,7 +131,10 @@ export function createLeadMcpServer(project: string) {
         subject?: string;
         kind?: (typeof LEAD_PROPOSAL_KINDS)[number];
       }) => {
-        const doc = await leadSources().projectDocument(project);
+        const sources = leadSources();
+        const doc = await sources.projectDocument(project);
+        const refusal = leadReportRefusal(doc);
+        if (refusal) return text(refusal, true);
         const decision = leadDecision(
           { ...doc.lead, agentsPaused: doc.incidents.agentsPaused },
           args.category,
@@ -134,15 +145,20 @@ export function createLeadMcpServer(project: string) {
             `Only the owner decides ${LEAD_CATEGORY_LABELS[args.category].toLowerCase()} (${decision.rule}). Prepare it and ask the owner: call propose again with kind needs-you and what you prepared.`,
             true,
           );
-        const delivered = await deliverLeadProposal(project, doc, {
-          kind,
-          category: args.category,
-          title: args.title.trim(),
-          body: args.body.trim(),
-          options: (args.options ?? []).map((o) => o.trim()).filter(Boolean),
-          ...(args.subject?.trim() ? { subject: args.subject.trim() } : {}),
-          decision,
-        });
+        const delivered = await deliverLeadProposal(
+          project,
+          doc,
+          {
+            kind,
+            category: args.category,
+            title: args.title.trim(),
+            body: args.body.trim(),
+            options: (args.options ?? []).map((o) => o.trim()).filter(Boolean),
+            ...(args.subject?.trim() ? { subject: args.subject.trim() } : {}),
+            decision,
+          },
+          sources.projectLabel(project),
+        );
         if (!delivered.queued) return text(delivered.reason, true);
         return text(
           `${delivered.created ? "Queued" : "Updated"} for the owner as ${kind === "needs-you" ? "needs you" : "a proposal"} (${delivered.itemId}). Rule: ${decision.rule}.`,
@@ -161,6 +177,7 @@ export function createLeadMcpServer(project: string) {
           doc,
           args.text.trim(),
           sources.now(),
+          sources.projectLabel(project),
         );
         if (!delivered.queued) return text(delivered.reason, true);
         return text(`Saved for today's digest (${delivered.itemId}).`);

@@ -180,30 +180,66 @@ test("bad values are refused", async () => {
     expect(await write(lead)).toEqual({ error, status: 400 });
 });
 
-test("only a signed-in person gives the lead more room", async () => {
-  for (const lead of [
-    { enabled: true },
-    { stage: "act" },
-    { rules: { "ban-user": "alone" } },
-    { budgetUsdPerMonth: 51 },
-    { owner: "Grace" },
-  ]) {
-    const result = await write(lead, agent);
-    expect(result).toEqual({
-      error: "Only a signed-in person can give the project lead more room",
-      status: 403,
-    });
-  }
+const LOOSEN =
+  "Only the instance owner or the lead's owner can give the project lead more room";
+const grace: ProjectActor = { name: "Grace", verified: true, login: "grace" };
+
+test("only the instance owner or the lead's owner gives the lead more room", async () => {
+  for (const actor of [agent, grace, { ...grace, login: undefined }])
+    for (const lead of [
+      { enabled: true },
+      { stage: "act" },
+      { rules: { "ban-user": "alone" } },
+      { budgetUsdPerMonth: 51 },
+      { owner: "Grace" },
+    ]) {
+      const result = await write(lead, actor);
+      expect(result).toEqual({ error: LOOSEN, status: 403 });
+    }
   const refused = kit.audits.filter(
     (a) => a.kind === "project_settings_refused",
   );
-  expect(refused.map((a) => a.fields)).toEqual([
+  expect(refused.slice(0, 5).map((a) => a.fields)).toEqual([
     ["lead.enabled"],
     ["lead.stage"],
     ["lead.rules.ban-user"],
     ["lead.budgetUsdPerMonth"],
     ["lead.owner"],
   ]);
+  expect(refused).toHaveLength(15);
+});
+
+test("the lead's owner may give it more room; the instance owner always may", async () => {
+  // Ada is the instance owner (the first directory member).
+  const owned = await write({ owner: "Grace" });
+  if ("error" in owned) throw new Error(owned.error);
+  const raised = await write(
+    { enabled: true, stage: "coordinate", budgetUsdPerMonth: 80 },
+    grace,
+  );
+  if ("error" in raised) throw new Error(raised.error);
+  expect(raised.lead).toMatchObject({
+    enabled: true,
+    stage: "coordinate",
+    budgetUsdPerMonth: 80,
+    owner: "Grace",
+  });
+  // Handing the lead to someone else is more room too: Grace may, a
+  // claimed name may not.
+  expect(await write({ owner: "Ada" }, { ...agent, name: "Grace" })).toEqual({
+    error: LOOSEN,
+    status: 403,
+  });
+  const handed = await write({ owner: "Ada" }, grace);
+  if ("error" in handed) throw new Error(handed.error);
+  // No longer the owner: Grace can tighten, not loosen.
+  expect(await write({ budgetUsdPerMonth: 90 }, grace)).toEqual({
+    error: LOOSEN,
+    status: 403,
+  });
+  const lower = await write({ budgetUsdPerMonth: 40 }, grace);
+  if ("error" in lower) throw new Error(lower.error);
+  expect(lower.lead.budgetUsdPerMonth).toBe(40);
 });
 
 test("anyone may tighten the lead", async () => {

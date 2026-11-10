@@ -113,14 +113,6 @@ describe("leadDecision", () => {
     );
   });
 
-  test("the stage argument overrides the stored stage", () => {
-    const s = settings({ stage: "watch" });
-    expect(leadDecision(s, "ci-repair", "act").effective).toBe("act");
-    expect(
-      leadDecision({ ...s, stage: "act" }, "ci-repair", "watch").effective,
-    ).toBe("ask");
-  });
-
   test("a category lowered to alone acts; one raised to only you prepares", () => {
     const s = settings({
       stage: "act",

@@ -31,6 +31,7 @@ beforeEach(() => {
   pushes = [];
   audits.length = 0;
   doc = defaultProjectDocument(PROJECT, "");
+  doc = { ...doc, lead: { ...doc.lead, enabled: true } };
   __setOwnerRosterForTest(
     [
       { name: "Ada Lovelace", github: "ada" },
@@ -50,6 +51,7 @@ beforeEach(() => {
     openSupportRows: async () => [],
     openPrs: async () => null,
     getGoal: async () => null,
+    projectLabel: () => "Acme",
   });
   restoreInbox = __setSupervisorInboxDepsForTest({
     now: () => clock,
@@ -140,12 +142,14 @@ describe("opensession-lead", () => {
       kind: "needs-you",
       source: "lead:acme",
       project: PROJECT,
-      title: "Status page flaps",
+      // The server writes the title; the lead's own title heads the body,
+      // under the rule that applied.
+      title: "Acme: Signal rule changes",
       options: ["Raise to 8 failures in a row", "Leave it"],
       dedupeKey: "lead:acme:signal-rule-change:sig-status consecutive.failures",
     });
     expect(item!.body).toBe(
-      "16 incidents closed by themselves within 6 minutes.\n\nRule: Asks first: Signal rule changes, from the project settings.",
+      "Rule: Asks first: Signal rule changes, from the project settings.\n\nStatus page flaps\n\n16 incidents closed by themselves within 6 minutes.",
     );
     expect(pushes).toEqual(["Ada"]);
     expect(audits[0]).toMatchObject({
@@ -156,6 +160,8 @@ describe("opensession-lead", () => {
       created: true,
     });
     expect(JSON.stringify(audits)).not.toContain("16 incidents");
+    expect(JSON.stringify(audits)).not.toContain("Status page flaps");
+    expect(audits[0]!.titleDigest).toEqual(expect.any(String));
   });
 
   test("a repeat about the same subject updates the item, no second push", async () => {
@@ -169,7 +175,8 @@ describe("opensession-lead", () => {
     expect(again.text).toStartWith("Updated for the owner as a proposal");
     const items = await listSupervisorItems("Ada");
     expect(items).toHaveLength(1);
-    expect(items[0]!.title).toBe("Status page still flaps");
+    expect(items[0]!.title).toBe("Acme: Signal rule changes");
+    expect(items[0]!.body).toContain("\n\nStatus page still flaps\n\n");
     expect(pushes).toEqual(["Ada"]);
   });
 
@@ -196,8 +203,33 @@ describe("opensession-lead", () => {
     expect(audits[0]).toMatchObject({ delivered: false });
   });
 
+  test("a lead that is off, or a project with agents paused, reports nothing", async () => {
+    for (const [next, reason] of [
+      [
+        { ...doc, lead: { ...doc.lead, enabled: false } },
+        "The lead is off in the project settings",
+      ],
+      [
+        { ...doc, incidents: { ...doc.incidents, agentsPaused: true } },
+        "Agents are paused for this project: the lead reports nothing until they run again",
+      ],
+    ] as const) {
+      doc = next;
+      const { call } = await client();
+      expect(await call("propose", flapProposal)).toEqual({
+        text: reason,
+        isError: true,
+      });
+      expect(await call("post_digest_note", { text: "Quiet." })).toEqual({
+        text: reason,
+        isError: true,
+      });
+    }
+    expect(await listSupervisorItems("Ada")).toEqual([]);
+    expect(pushes).toEqual([]);
+  });
+
   test("watch turns an alone category into a proposal", async () => {
-    doc = { ...doc, lead: { ...doc.lead, enabled: true } };
     const { call } = await client();
     const result = await call("propose", {
       category: "ci-repair",
@@ -262,7 +294,7 @@ describe("opensession-lead", () => {
     expect(notes[0]).toMatchObject({
       body: "Two flaps, one proposal.",
       dedupeKey: "lead:acme:digest:2026-11-10",
-      title: "acme: what the lead saw today",
+      title: "Acme: what the lead saw today",
     });
     expect(pushes).toEqual([]);
     clock += 86_400_000;

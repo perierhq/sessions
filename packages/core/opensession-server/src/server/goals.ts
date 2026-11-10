@@ -92,6 +92,13 @@ export interface Goal {
   createdAt: string;
 }
 
+/** Why the runner paused a project lead's goal without running it: no lead
+ *  on this server to ask, or asking it failed. The lead lifts both once it
+ *  can answer again (server/leads/goal.ts). */
+export const LEAD_UNAVAILABLE_REASON =
+  "The project lead isn't running on this server";
+export const WAKE_CHECK_FAILED_REASON = "Its wake check failed";
+
 // ── Store ────────────────────────────────────────────────────
 
 export async function listGoals(): Promise<Goal[]> {
@@ -216,8 +223,10 @@ export async function createGoal(
     firstWakeAt?: string;
     createdBy: string;
   },
-  /** Server-owned fields, never taken from an API body. */
-  owned: { leadProject?: string } = {},
+  /** Server-owned fields, never taken from an API body. `pauseReason`
+   *  creates the goal paused, so it can't wake before its owner has
+   *  recorded it (a project lead stores the id in its settings first). */
+  owned: { leadProject?: string; pauseReason?: string } = {},
 ): Promise<Goal | { error: string }> {
   if (!input.name?.trim()) return { error: "Name is required" };
   if (!input.mission?.trim()) return { error: "Mission is required" };
@@ -243,7 +252,8 @@ export async function createGoal(
     id,
     name: input.name.trim(),
     mission: input.mission.trim(),
-    status: "active",
+    status: owned.pauseReason ? "paused" : "active",
+    ...(owned.pauseReason ? { pauseReason: owned.pauseReason } : {}),
     mode: input.mode === "code" ? "code" : "ask",
     repo: input.repo?.trim() || undefined,
     nextWakeAt,
@@ -313,6 +323,33 @@ function patchableFields(patch: unknown): GoalPatch {
   return out;
 }
 
+/** Fields a project lead's settings decide (server/leads/goal.ts): a patch
+ *  may not change them on a lead's goal, and each wake rebuilds them. */
+export const LEAD_OWNED_GOAL_FIELDS = [
+  "mission",
+  "mode",
+  "repo",
+  "minWakeMinutes",
+  "mcpServers",
+] as const satisfies readonly (keyof Goal)[];
+
+class LeadOwnedField extends Error {
+  constructor(readonly fields: string[]) {
+    super(fields.join(", "));
+  }
+}
+
+/** The lead-owned fields `fields` would change on `goal`. Sending a
+ *  value it already has (a form that posts every field) changes nothing. */
+function leadOwnedChanges(goal: Goal, fields: GoalPatch): string[] {
+  if (!goal.leadProject) return [];
+  return LEAD_OWNED_GOAL_FIELDS.filter(
+    (key) =>
+      key in fields &&
+      JSON.stringify(fields[key] ?? null) !== JSON.stringify(goal[key] ?? null),
+  );
+}
+
 export async function updateGoal(
   id: string,
   patch: GoalPatch,
@@ -320,13 +357,22 @@ export async function updateGoal(
   const fields = patchableFields(patch);
   if ("mcpServers" in fields)
     fields.mcpServers = sanitizeMcpList(fields.mcpServers);
-  const next = await mutateGoal(id, (g) => {
-    const merged: Goal = { ...g, ...fields };
-    if (typeof merged.minWakeMinutes === "number")
-      merged.minWakeMinutes = Math.max(MIN_WAKE_FLOOR, merged.minWakeMinutes);
-    return merged;
-  });
-  return next ?? { error: "Goal not found" };
+  try {
+    const next = await mutateGoal(id, (g) => {
+      const locked = leadOwnedChanges(g, fields);
+      if (locked.length) throw new LeadOwnedField(locked);
+      const merged: Goal = { ...g, ...fields };
+      if (typeof merged.minWakeMinutes === "number")
+        merged.minWakeMinutes = Math.max(MIN_WAKE_FLOOR, merged.minWakeMinutes);
+      return merged;
+    });
+    return next ?? { error: "Goal not found" };
+  } catch (error) {
+    if (!(error instanceof LeadOwnedField)) throw error;
+    return {
+      error: `This goal is a project lead's: its ${error.fields.join(", ")} come from the project's lead settings`,
+    };
+  }
 }
 
 /** Resume a paused/done goal: mark active and (re)schedule a wake. */

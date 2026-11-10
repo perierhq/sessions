@@ -189,18 +189,17 @@ export interface LeadDecisionSettings {
 const FROM_SETTINGS = "from the project settings";
 
 /**
- * What the lead may do with an action of `category` at `stage` (the stored
- * stage unless given). Only you prepares and asks first asks, whatever the
- * stage. Alone acts only at the act stage; at coordinate only spawning
- * workers and leaving pull requests acts; at watch everything is a
- * proposal. The kill switch and a lead that is off make every alone action
+ * What the lead may do with an action of `category` at its stage. Only
+ * you prepares and asks first asks, whatever the stage. Alone acts only
+ * at the act stage; at coordinate only spawning workers and leaving pull
+ * requests acts; at watch everything is a proposal. The kill switch and a lead that is off make every alone action
  * a proposal. Every decision names its rule.
  */
 export function leadDecision(
   settings: LeadDecisionSettings,
   category: LeadCategory,
-  stage: LeadStage = settings.stage,
 ): LeadDecision {
+  const stage = settings.stage;
   const label = LEAD_CATEGORY_LABELS[category];
   const level = leadLevel(settings.rules, category);
   if (level === "only-you")

@@ -1,8 +1,10 @@
 // Flap or outage: how a project's signals behaved over a window, from the
-// incidents they opened, and a concrete rule change for each signal that
-// only flaps. Pure and deterministic: the caller passes the signals, the
-// incidents and the time. An incident counts for the signal that opened it
-// (its primary signal); signals attached later don't share it.
+// incidents they opened, and a concrete change for each signal that only
+// flaps or only ever recovers by itself. Pure and deterministic: the caller
+// passes the signals, the incidents and the time. An incident counts for
+// the signal that opened it (its primary signal); signals attached later
+// don't share it. A signal with an incident still open is undecided
+// (mixed), and a disabled one gets no proposal.
 import {
   type Incident,
   type Signal,
@@ -27,11 +29,24 @@ const MAX_CONSECUTIVE_PROPOSAL = 10;
 const MAX_CONSECUTIVE = 50;
 const MAX_RATE_AT_LEAST = 10_000;
 
-export type FlapClass = "flapping" | "real-outages" | "quiet" | "mixed";
+/**
+ * - `flapping`: most incidents closed by themselves quickly
+ * - `slow-recoveries`: every closed incident recovered by itself, some
+ *   only after longer than the flap window; nobody acted
+ * - `real-outages`: every incident needed an agent or a person
+ * - `mixed`: anything else, or an incident is still open
+ * - `quiet`: no incidents
+ */
+export type FlapClass =
+  | "flapping"
+  | "slow-recoveries"
+  | "real-outages"
+  | "quiet"
+  | "mixed";
 
 export interface RuleProposal {
   /** The fields to change on the signal, as the signal API takes them. */
-  change: Partial<Pick<Signal, "rule" | "provider">>;
+  change: Partial<Pick<Signal, "rule" | "provider" | "dependsOn">>;
   reason: string;
 }
 
@@ -53,6 +68,8 @@ export interface SignalFlapReport {
   maxOpenMs: number | null;
   /** Incidents that closed by themselves within `minutes` of opening. */
   selfClosed: { minutes: number; count: number; share: number };
+  /** Incidents that closed by themselves after longer than that. */
+  slowRecoveries: number;
   classification: FlapClass;
   proposal?: RuleProposal;
 }
@@ -253,27 +270,63 @@ function ruleProposal(
   }
 }
 
+interface ProposalContext {
+  windowMs: number;
+  selfCloseMinutes: number;
+  own?: string;
+  /** Every signal, other projects' too: a provider elsewhere may already
+   *  watch the same outside host. */
+  allSignals: readonly Signal[];
+}
+
+/** For an http signal that polls outside the project's own domain: depend
+ *  on a provider signal of another project that already watches that
+ *  domain, else become a provider itself. Either way its outages become
+ *  findings on the project's own incidents instead of incidents of their
+ *  own. */
+function providerProposal(
+  signal: Signal,
+  stats: string,
+  ctx: ProposalContext,
+): RuleProposal | undefined {
+  const host = signalHost(signal);
+  if (
+    signal.provider ||
+    !host ||
+    !ctx.own ||
+    domainOf(host) === ctx.own ||
+    signal.source.kind !== "http"
+  )
+    return undefined;
+  const outside = `It polls ${host}, outside ${ctx.own} where the project's other signals point`;
+  const speaker = ctx.allSignals.find((p) => {
+    if (p.id === signal.id || !p.provider || !p.enabled) return false;
+    if (p.project === signal.project) return false;
+    const h = signalHost(p);
+    return !!h && domainOf(h) === domainOf(host);
+  });
+  if (speaker && !signal.dependsOn?.includes(speaker.id))
+    return {
+      change: { dependsOn: [...(signal.dependsOn ?? []), speaker.id] },
+      reason: `${stats}. ${outside}, and provider signal ${speaker.name} (\`${speaker.id}\`, project ${speaker.project}) already watches ${domainOf(host)}: depend on it, so its outages become findings on the project's own incidents instead of incidents of their own.`,
+    };
+  return {
+    change: { provider: true },
+    reason: `${stats}. ${outside}: mark it a provider, so its outages become findings on the project's own incidents instead of incidents of their own.`,
+  };
+}
+
 function proposalFor(
   signal: Signal,
   flaps: Incident[],
   opened: number,
-  input: { windowMs: number; selfCloseMinutes: number; own?: string },
+  ctx: ProposalContext,
 ): RuleProposal | undefined {
   const durations = flaps.map((i) => openMs(i) ?? 0);
   const longestOpen = Math.max(...durations);
-  const stats = `Opened ${opened} times in ${days(input.windowMs)}; ${flaps.length} closed by themselves within ${input.selfCloseMinutes} min (median ${minutes(median(durations) ?? 0)}, longest ${minutes(longestOpen)})`;
-  const host = signalHost(signal);
-  if (
-    !signal.provider &&
-    host &&
-    input.own &&
-    domainOf(host) !== input.own &&
-    signal.source.kind === "http"
-  )
-    return {
-      change: { provider: true },
-      reason: `${stats}. It polls ${host}, outside ${input.own} where the project's other signals point: mark it a provider, so its outages become findings on the project's own incidents instead of incidents of their own.`,
-    };
+  const stats = `Opened ${opened} times in ${days(ctx.windowMs)}; ${flaps.length} closed by themselves within ${ctx.selfCloseMinutes} min (median ${minutes(median(durations) ?? 0)}, longest ${minutes(longestOpen)})`;
+  const provider = providerProposal(signal, stats, ctx);
+  if (provider) return provider;
   const interval = stripIntervalMs(signal);
   const longestFlap = Math.max(
     ...durations.map((ms) => badRunMs(signal, ms, interval)),
@@ -281,11 +334,35 @@ function proposalFor(
   return ruleProposal(signal, longestFlap, stats);
 }
 
-function classify(opened: number, selfClosed: number): FlapClass {
+/** A signal whose incidents only ever recovered by themselves, some slowly:
+ *  a longer rule would only delay real outages, so the one change worth
+ *  proposing is about where it points. */
+function slowProposal(
+  signal: Signal,
+  slow: Incident[],
+  opened: number,
+  ctx: ProposalContext,
+): RuleProposal | undefined {
+  const durations = slow.map((i) => openMs(i) ?? 0);
+  const stats = `Opened ${opened} times in ${days(ctx.windowMs)}; every one recovered by itself, ${slow.length} after more than ${ctx.selfCloseMinutes} min (longest ${minutes(Math.max(...durations))}), and nobody acted on any`;
+  return providerProposal(signal, stats, ctx);
+}
+
+function classify(counts: {
+  opened: number;
+  stillOpen: number;
+  flaps: number;
+  slow: number;
+  acted: number;
+}): FlapClass {
+  const { opened, stillOpen, flaps, slow, acted } = counts;
   if (opened === 0) return "quiet";
-  if (opened >= MIN_FLAP_INCIDENTS && selfClosed / opened >= FLAPPING_SHARE)
+  // An open incident may still turn out either way.
+  if (stillOpen > 0) return "mixed";
+  if (opened >= MIN_FLAP_INCIDENTS && flaps / opened >= FLAPPING_SHARE)
     return "flapping";
-  if (selfClosed === 0) return "real-outages";
+  if (acted === opened) return "real-outages";
+  if (acted === 0 && slow > 0) return "slow-recoveries";
   return "mixed";
 }
 
@@ -317,13 +394,22 @@ export function triageFlaps(input: FlapInput): FlapReport {
     const durations = incidents
       .map(openMs)
       .filter((ms): ms is number => ms !== null);
-    const flaps = incidents.filter(
-      (i) =>
-        closedByItself(i) &&
-        (openMs(i) ?? Infinity) <= selfCloseMinutes * MINUTE_MS,
-    );
+    const quick = (i: Incident) =>
+      (openMs(i) ?? Infinity) <= selfCloseMinutes * MINUTE_MS;
+    const flaps = incidents.filter((i) => closedByItself(i) && quick(i));
+    const slow = incidents.filter((i) => closedByItself(i) && !quick(i));
     const opened = incidents.length;
-    const classification = classify(opened, flaps.length);
+    const stillOpen = incidents.filter(isOpenIncident).length;
+    const acted = incidents.filter(
+      (i) => i.state === "resolved" && !closedByItself(i),
+    ).length;
+    const classification = classify({
+      opened,
+      stillOpen,
+      flaps: flaps.length,
+      slow: slow.length,
+      acted,
+    });
     const report: SignalFlapReport = {
       signalId: signal.id,
       name: signal.name,
@@ -335,10 +421,8 @@ export function triageFlaps(input: FlapInput): FlapReport {
         (i) => i.state === "closed-without-action",
       ).length,
       resolved: incidents.filter((i) => i.state === "resolved").length,
-      resolvedWithAction: incidents.filter(
-        (i) => i.state === "resolved" && !closedByItself(i),
-      ).length,
-      stillOpen: incidents.filter(isOpenIncident).length,
+      resolvedWithAction: acted,
+      stillOpen,
       quietFlaps: incidents.reduce((n, i) => n + (i.quiet?.flaps ?? 0), 0),
       medianOpenMs: median(durations),
       maxOpenMs: durations.length ? Math.max(...durations) : null,
@@ -347,23 +431,27 @@ export function triageFlaps(input: FlapInput): FlapReport {
         count: flaps.length,
         share: opened ? Math.round((flaps.length / opened) * 100) / 100 : 0,
       },
+      slowRecoveries: slow.length,
       classification,
     };
-    if (classification === "flapping") {
-      const proposal = proposalFor(signal, flaps, opened, {
-        windowMs,
-        selfCloseMinutes,
-        own,
-      });
-      if (proposal) report.proposal = proposal;
-    }
+    // A disabled signal opens nothing: changing it would change nothing.
+    if (!signal.enabled) return report;
+    const ctx = { windowMs, selfCloseMinutes, own, allSignals: input.signals };
+    const proposal =
+      classification === "flapping"
+        ? proposalFor(signal, flaps, opened, ctx)
+        : classification === "slow-recoveries"
+          ? slowProposal(signal, slow, opened, ctx)
+          : undefined;
+    if (proposal) report.proposal = proposal;
     return report;
   });
   const order: Record<FlapClass, number> = {
     flapping: 0,
-    mixed: 1,
-    "real-outages": 2,
-    quiet: 3,
+    "slow-recoveries": 1,
+    mixed: 2,
+    "real-outages": 3,
+    quiet: 4,
   };
   reports.sort(
     (a, b) =>
@@ -374,6 +462,7 @@ export function triageFlaps(input: FlapInput): FlapReport {
   );
   const counts: Record<FlapClass, number> = {
     flapping: 0,
+    "slow-recoveries": 0,
     "real-outages": 0,
     quiet: 0,
     mixed: 0,
@@ -393,6 +482,7 @@ export function triageFlaps(input: FlapInput): FlapReport {
 
 const CLASS_LABELS: Record<FlapClass, string> = {
   flapping: "flapping",
+  "slow-recoveries": "slow recoveries",
   "real-outages": "real outages",
   quiet: "quiet",
   mixed: "mixed",
@@ -401,7 +491,7 @@ const CLASS_LABELS: Record<FlapClass, string> = {
 /** One line per signal, then each proposal: for the lead and the digest. */
 export function flapReportMarkdown(report: FlapReport): string {
   const lines = [
-    `Signals over the last ${days(report.windowMs)}: ${report.counts.flapping} flapping, ${report.counts["real-outages"]} with real outages, ${report.counts.mixed} mixed, ${report.counts.quiet} quiet.`,
+    `Signals over the last ${days(report.windowMs)}: ${report.counts.flapping} flapping, ${report.counts["slow-recoveries"]} recovering slowly by themselves, ${report.counts["real-outages"]} with real outages, ${report.counts.mixed} mixed, ${report.counts.quiet} quiet.`,
   ];
   for (const s of report.signals) {
     const bits = [
@@ -409,10 +499,13 @@ export function flapReportMarkdown(report: FlapReport): string {
       `${s.selfClosed.count} closed by themselves within ${s.selfClosed.minutes} min`,
       `${s.resolvedWithAction} fixed`,
     ];
+    if (s.slowRecoveries)
+      bits.push(`${s.slowRecoveries} recovered by themselves after longer`);
     if (s.stillOpen) bits.push(`${s.stillOpen} still open`);
     if (s.medianOpenMs !== null)
       bits.push(`median open ${minutes(s.medianOpenMs)}`);
     if (s.provider) bits.push("provider");
+    if (!s.enabled) bits.push("disabled");
     lines.push(
       `- ${s.name} (\`${s.signalId}\`): ${CLASS_LABELS[s.classification]}; ${bits.join(", ")}`,
     );

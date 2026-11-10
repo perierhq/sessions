@@ -3,8 +3,13 @@
 // proposal is a needs-you item with numbered options, the first one
 // recommended; a digest note is one fyi item per day. Repeats about the
 // same subject update one item instead of adding another. Every proposal
-// is audited with the rule that decided it.
-import type { LeadCategory, LeadDecision } from "../../shared/project-lead";
+// is audited with the rule that decided it. The server writes each item's
+// title and its first line; what the lead wrote follows, below them.
+import {
+  LEAD_CATEGORY_LABELS,
+  type LeadCategory,
+  type LeadDecision,
+} from "../../shared/project-lead";
 import type { ProjectSettingsDocument } from "../../shared/project-settings";
 import { auditDurable, digest } from "../audit";
 import { instanceOwner, personOwner } from "../incidents/owner";
@@ -36,6 +41,38 @@ export interface LeadProposal {
 export type LeadDelivery =
   | { queued: true; itemId: string; created: boolean; delivery: PostDelivery }
   | { queued: false; reason: string };
+
+const NOBODY =
+  "Nobody to report to: set the lead's owner in the project settings";
+
+/** Why the lead may not report now, or null: it is off, or the project's
+ *  kill switch is on. */
+export function leadReportRefusal(
+  doc: Pick<ProjectSettingsDocument, "lead" | "incidents">,
+): string | null {
+  if (!doc.lead.enabled) return "The lead is off in the project settings";
+  if (doc.incidents.agentsPaused)
+    return "Agents are paused for this project: the lead reports nothing until they run again";
+  return null;
+}
+
+/** The title every proposal goes out under: the project and the kind of
+ *  action, never the lead's own words. */
+export function proposalTitle(label: string, category: LeadCategory): string {
+  return `${label}: ${LEAD_CATEGORY_LABELS[category]}`;
+}
+
+/** The body: the rule the server applied first, then the lead's title and
+ *  text. */
+export function proposalBody(
+  proposal: Pick<LeadProposal, "title" | "body" | "decision">,
+): string {
+  return [
+    `Rule: ${proposal.decision.rule}.`,
+    proposal.title,
+    proposal.body,
+  ].join("\n\n");
+}
 
 /** Every lead item's source: `lead:<project>`. */
 export const LEAD_SOURCE_PREFIX = "lead:";
@@ -86,12 +123,14 @@ export function proposalDedupeKey(
   return `${leadSource(project)}:${proposal.category}:${subjectKey(proposal.subject || proposal.title)}`;
 }
 
-/** Hand a proposal to the owner's supervisor inbox. Its body may quote
- *  customers, so the audit keeps a digest of it, never the text. */
+/** Hand a proposal to the owner's supervisor inbox, unless the lead is
+ *  off or paused. Its title and body may quote customers, so the audit
+ *  keeps digests of them, never the text. */
 export async function deliverLeadProposal(
   project: string,
-  doc: Pick<ProjectSettingsDocument, "lead">,
+  doc: Pick<ProjectSettingsDocument, "lead" | "incidents">,
   proposal: LeadProposal,
+  label: string = project,
 ): Promise<LeadDelivery> {
   const owner = leadOwner(doc);
   const dedupeKey = proposalDedupeKey(project, proposal);
@@ -103,18 +142,15 @@ export async function deliverLeadProposal(
     level: proposal.decision.level,
     effective: proposal.decision.effective,
     rule: proposal.decision.rule,
-    title: proposal.title.slice(0, 200),
+    titleDigest: digest(proposal.title),
     bodyDigest: digest(proposal.body),
     options: proposal.options.length,
     dedupeKey,
   };
-  if (!owner) {
+  const refusal = leadReportRefusal(doc);
+  if (refusal || !owner) {
     await leadAudit({ ...base, delivered: false });
-    return {
-      queued: false,
-      reason:
-        "Nobody to report to: set the lead's owner in the project settings",
-    };
+    return { queued: false, reason: refusal ?? NOBODY };
   }
   const options = proposal.options.length
     ? proposal.options
@@ -124,8 +160,8 @@ export async function deliverLeadProposal(
     source: leadSource(project),
     project,
     kind: "needs-you",
-    title: proposal.title,
-    body: `${proposal.body}\n\nRule: ${proposal.decision.rule}.`,
+    title: proposalTitle(label, proposal.category),
+    body: proposalBody(proposal),
     options,
     dedupeKey,
   });
@@ -149,17 +185,15 @@ export async function deliverLeadProposal(
  *  digest went out starts a new item, so nothing is lost. */
 export async function postLeadDigestNote(
   project: string,
-  doc: Pick<ProjectSettingsDocument, "lead">,
+  doc: Pick<ProjectSettingsDocument, "lead" | "incidents">,
   text: string,
   now: number,
+  label: string = project,
 ): Promise<LeadDelivery> {
+  const refusal = leadReportRefusal(doc);
+  if (refusal) return { queued: false, reason: refusal };
   const owner = leadOwner(doc);
-  if (!owner)
-    return {
-      queued: false,
-      reason:
-        "Nobody to report to: set the lead's owner in the project settings",
-    };
+  if (!owner) return { queued: false, reason: NOBODY };
   const day = new Date(now).toISOString().slice(0, 10);
   const base = `${leadSource(project)}:digest:${day}`;
   const open = await listSupervisorItems(owner, {
@@ -178,7 +212,7 @@ export async function postLeadDigestNote(
     source: leadSource(project),
     project,
     kind: "fyi",
-    title: `${project}: what the lead saw today`,
+    title: `${label}: what the lead saw today`,
     body: text,
     dedupeKey,
   });

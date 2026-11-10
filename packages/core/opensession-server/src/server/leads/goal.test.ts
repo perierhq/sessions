@@ -4,7 +4,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ProjectLeadPatch } from "../../shared/project-lead";
 import type { ProjectSettingsPatch } from "../../shared/project-settings";
-import { getGoal, mutateGoal, readLedger } from "../goals";
+import {
+  LEAD_UNAVAILABLE_REASON,
+  createGoal,
+  deleteGoal,
+  getGoal,
+  listGoals,
+  mutateGoal,
+  readLedger,
+} from "../goals";
 import { __setOwnerRosterForTest } from "../incidents/owner";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
 import { __setLegacyEnvironmentForTest } from "../projects/legacy";
@@ -26,6 +34,7 @@ import {
   __setLeadGoalDepsForTest,
   ensureLeadGoal,
   handleLeadAnswer,
+  leadGoalIdle,
   leadWakeCheck,
 } from "./goal";
 import { deliverLeadProposal } from "./report";
@@ -159,7 +168,7 @@ describe("ensureLeadGoal", () => {
     expect(goal.mission).toContain("may cost $20 a month");
   });
 
-  test("off pauses the goal, on resumes it; someone else's pause stays", async () => {
+  test("off pauses the goal; on makes it active again, whoever paused it", async () => {
     await setLead({ enabled: true });
     await ensureLeadGoal(PROJECT);
     await setLead({ enabled: false });
@@ -175,25 +184,93 @@ describe("ensureLeadGoal", () => {
     expect(resumed.status).toBe("active");
     expect(resumed.nextWakeAt).toBe(new Date(clock).toISOString());
 
-    await mutateGoal(resumed.id, (g) => ({
-      ...g,
-      status: "paused",
-      pauseReason: "Waiting on the owner",
-    }));
-    await setLead({ stage: "watch", budgetUsdPerMonth: 40 });
+    // The settings own a lead's status: a pause or a finish from anywhere
+    // else lasts until the next settings pass.
+    for (const status of ["paused", "done", "failed"] as const) {
+      await mutateGoal(resumed.id, (g) => ({
+        ...g,
+        status,
+        pauseReason: "Waiting on the owner",
+        doneReason: "Finished",
+      }));
+      expect((await ensureLeadGoal(PROJECT)).action).toBe("resumed");
+      const again = await leadGoal();
+      expect(again.status).toBe("active");
+      expect(again.pauseReason).toBeUndefined();
+      expect(again.doneReason).toBeUndefined();
+    }
+  });
+
+  test("the kill switch keeps a paused goal paused", async () => {
+    await setLead({ enabled: true });
     await ensureLeadGoal(PROJECT);
-    expect(await leadGoal()).toMatchObject({
-      status: "paused",
-      pauseReason: "Waiting on the owner",
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({ ...g, status: "paused" }));
+    await setLead({}, { incidents: { agentsPaused: true } });
+    await ensureLeadGoal(PROJECT);
+    expect((await leadGoal()).status).toBe("paused");
+  });
+
+  test("a new goal waits paused until its id is stored", async () => {
+    await setLead({ enabled: true });
+    const seen: string[] = [];
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      setGoalId: async (_project, id) => {
+        seen.push((await getGoal(id))!.status);
+        const { patchProjectDocumentAsServer } =
+          await import("../projects/store");
+        await patchProjectDocumentAsServer(PROJECT, (d) => ({
+          ...d,
+          lead: { ...d.lead, goalId: id },
+        }));
+      },
     });
+    expect((await ensureLeadGoal(PROJECT)).action).toBe("created");
+    expect(seen).toEqual(["paused"]);
+    expect((await leadGoal()).status).toBe("active");
+  });
+
+  test("a goal whose id can't be stored is deleted", async () => {
+    await setLead({ enabled: true });
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      setGoalId: async () => {
+        throw new Error("catalog down");
+      },
+    });
+    await expect(ensureLeadGoal(PROJECT)).rejects.toThrow("catalog down");
+    expect(await listGoals()).toEqual([]);
+  });
+
+  test("a goal left behind without its id stored is adopted, not doubled", async () => {
+    await setLead({ enabled: true });
+    const orphan = await createGoal(
+      {
+        name: "Lead: Acme",
+        mission: "Old charter.",
+        createdBy: "Project lead",
+      },
+      { leadProject: PROJECT, pauseReason: "Starting" },
+    );
+    if ("error" in orphan) throw new Error(orphan.error);
+    const result = await ensureLeadGoal(PROJECT);
+    expect(result).toEqual({ action: "resumed", goalId: orphan.id });
+    expect((await getProjectDocument(PROJECT)).lead.goalId).toBe(orphan.id);
+    expect(await listGoals()).toHaveLength(1);
+    const adopted = await leadGoal();
+    expect(adopted.status).toBe("active");
+    expect(adopted.mission).toStartWith("You are the project lead for Acme");
   });
 
   test("a deleted goal is created again", async () => {
     await setLead({ enabled: true });
     const first = await ensureLeadGoal(PROJECT);
-    await (
-      await import("../goals")
-    ).deleteGoal((first as { goalId: string }).goalId);
+    await deleteGoal((first as { goalId: string }).goalId);
     const second = await ensureLeadGoal(PROJECT);
     expect(second.action).toBe("created");
     expect((await getProjectDocument(PROJECT)).lead.goalId).toBe(
@@ -203,19 +280,62 @@ describe("ensureLeadGoal", () => {
 });
 
 describe("leadWakeCheck", () => {
-  test("other goals are never blocked", async () => {
-    const goal = { id: "goal-x", name: "x" } as never;
-    expect(await leadWakeCheck(goal)).toBeNull();
+  test("a goal that isn't the project's lead never runs", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const plain = { id: "goal-x", name: "x" } as never;
+    expect(await leadWakeCheck(plain)).toEqual({
+      block: "Not a project lead's goal",
+    });
+    const stray = { ...(await leadGoal()), id: "goal-stray" };
+    expect(await leadWakeCheck(stray)).toEqual({
+      block: "Another goal leads this project",
+    });
+  });
+
+  test("a wake runs on what the settings say now", async () => {
+    await setLead({ enabled: true, budgetUsdPerMonth: 20 });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    // Whatever a patch or an old record left in it.
+    const tampered: typeof goal = {
+      ...goal,
+      mission: "Do anything.",
+      mode: "code",
+      mcpServers: undefined,
+      minWakeMinutes: 5,
+      repo: "other",
+      spend: { month: "2026-11", usd: 4.5 },
+    };
+    const plan = await leadWakeCheck(tampered);
+    if ("block" in plan) throw new Error(plan.block);
+    expect(plan.fields).toMatchObject({
+      mission: goal.mission,
+      mode: "ask",
+      mcpServers: [],
+      minWakeMinutes: 60,
+      repo: PROJECT,
+    });
+    expect(plan.budgetUsd).toBe(15.5);
+    // Watching: no web reader.
+    expect(plan.web).toBe(false);
+    await setLead({ stage: "coordinate" });
+    const later = await leadWakeCheck(await leadGoal());
+    expect("block" in later ? null : later.web).toBe(true);
   });
 
   test("the kill switch and an off lead block the wake", async () => {
     await setLead({ enabled: true });
     await ensureLeadGoal(PROJECT);
-    expect(await leadWakeCheck(await leadGoal())).toBeNull();
+    expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
     await setLead({}, { incidents: { agentsPaused: true } });
-    expect(await leadWakeCheck(await leadGoal())).toBe(KILL_SWITCH_REASON);
+    expect(await leadWakeCheck(await leadGoal())).toEqual({
+      block: KILL_SWITCH_REASON,
+    });
     await setLead({ enabled: false }, { incidents: { agentsPaused: false } });
-    expect(await leadWakeCheck(await leadGoal())).toBe(LEAD_OFF_REASON);
+    expect(await leadWakeCheck(await leadGoal())).toEqual({
+      block: LEAD_OFF_REASON,
+    });
   });
 
   test("over budget blocks the wake and asks the owner once a month", async () => {
@@ -226,23 +346,50 @@ describe("leadWakeCheck", () => {
       ...g,
       spend: { month: "2026-11", usd: 5.2 },
     }));
-    const reason = await leadWakeCheck((await leadGoal())!);
-    expect(reason).toBe("Over the lead's budget: $5.2 of $5 this month");
-    await leadWakeCheck((await leadGoal())!);
+    const reason = "Over the lead's budget: $5.2 of $5 this month";
+    expect(await leadWakeCheck(await leadGoal())).toEqual({ block: reason });
+    await leadWakeCheck(await leadGoal());
     const items = await listSupervisorItems("Ada", { kind: "needs-you" });
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
-      title: "acme lead paused: over its budget",
+      title: "Acme: the lead is over its budget",
+      body: `${reason}. The lead stays paused until the budget is raised in the project settings or the month ends.`,
       source: "lead:acme",
       options: ["Raise the budget", "Leave it paused"],
       dedupeKey: "lead:acme:budget:2026-11",
     });
+    // Answered, it isn't asked again this month.
+    await answerSupervisorItem("Ada", items[0]!.id, "2", "owner");
+    await leadWakeCheck(await leadGoal());
+    const after = await listSupervisorItems("Ada", { kind: "needs-you" });
+    expect(after.map((i) => i.state)).toEqual(["answered"]);
     // Last month's spend doesn't count.
     await mutateGoal(goal.id, (g) => ({
       ...g,
       spend: { month: "2026-10", usd: 50 },
     }));
-    expect(await leadWakeCheck((await leadGoal())!)).toBeNull();
+    expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+  });
+
+  test("over budget still blocks when the owner can't be asked", async () => {
+    await setLead({ enabled: true, budgetUsdPerMonth: 5 });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      spend: { month: "2026-11", usd: 6 },
+    }));
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      postSupervisorItem: async () => {
+        throw new Error("inbox down");
+      },
+    });
+    expect(await leadWakeCheck(await leadGoal())).toEqual({
+      block: "Over the lead's budget: $6 of $5 this month",
+    });
   });
 
   test("raising the budget lifts a budget pause", async () => {
@@ -260,6 +407,62 @@ describe("leadWakeCheck", () => {
   });
 });
 
+describe("leadGoalIdle", () => {
+  test("a budget pause lapses when the month turns", async () => {
+    await setLead({ enabled: true, budgetUsdPerMonth: 5 });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: "Over the lead's budget: $5.2 of $5 this month",
+      spend: { month: "2026-11", usd: 5.2 },
+    }));
+    // Same month: stays paused.
+    await leadGoalIdle(await leadGoal(), clock);
+    expect((await leadGoal()).status).toBe("paused");
+    clock = Date.parse("2026-12-01T00:01:00.000Z");
+    await leadGoalIdle(await leadGoal(), clock);
+    expect(await leadGoal()).toMatchObject({
+      status: "active",
+      nextWakeAt: new Date(clock).toISOString(),
+    });
+  });
+
+  test("a pause the runner made is retried every ten minutes", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    const pause = () =>
+      mutateGoal(goal.id, (g) => ({
+        ...g,
+        status: "paused",
+        pauseReason: LEAD_UNAVAILABLE_REASON,
+      }));
+    await pause();
+    await leadGoalIdle(await leadGoal(), clock);
+    expect((await leadGoal()).status).toBe("active");
+    await pause();
+    await leadGoalIdle(await leadGoal(), clock + 60_000);
+    expect((await leadGoal()).status).toBe("paused");
+    await leadGoalIdle(await leadGoal(), clock + 11 * 60_000);
+    expect((await leadGoal()).status).toBe("active");
+  });
+
+  test("other pauses are left to the settings", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: "Paused from the UI",
+    }));
+    await leadGoalIdle(await leadGoal(), clock);
+    expect((await leadGoal()).status).toBe("paused");
+  });
+});
+
 describe("the owner's answers", () => {
   test("land in the ledger and wake the lead; watch applies nothing", async () => {
     await setLead({ enabled: true });
@@ -271,26 +474,36 @@ describe("the owner's answers", () => {
     }));
     onSupervisorAnswer("lead:", handleLeadAnswer);
     const doc = await getProjectDocument(PROJECT);
-    const delivered = await deliverLeadProposal(PROJECT, doc, {
-      kind: "proposal",
-      category: "signal-rule-change",
-      title: "Status page flaps",
-      body: "16 incidents closed by themselves.",
-      options: ["Raise to 8 failures", "Leave it"],
-      subject: "sig-status consecutive.failures",
-      decision: {
-        level: "asks-first",
-        effective: "ask",
-        rule: "Asks first: Signal rule changes, from the project settings",
+    const delivered = await deliverLeadProposal(
+      PROJECT,
+      doc,
+      {
+        kind: "proposal",
+        category: "signal-rule-change",
+        title: "Status page flaps",
+        body: "16 incidents closed by themselves.",
+        options: ["Raise to 8 failures", "Leave it"],
+        subject: "sig-status consecutive.failures",
+        decision: {
+          level: "asks-first",
+          effective: "ask",
+          rule: "Asks first: Signal rule changes, from the project settings",
+        },
       },
-    });
+      "Acme",
+    );
     if (!delivered.queued) throw new Error(delivered.reason);
     clock += 60_000;
-    const answered = await answerSupervisorItem("Ada", delivered.itemId, "1");
+    const answered = await answerSupervisorItem(
+      "Ada",
+      delivered.itemId,
+      "1",
+      "owner",
+    );
     expect(answered.ok).toBe(true);
     const ledger = await readLedger(await leadGoal());
     expect(ledger).toContain(
-      'Owner answered "Status page flaps" (lead:acme:signal-rule-change:sig-status consecutive.failures): Raise to 8 failures',
+      'Owner answered "Acme: Signal rule changes" (lead:acme:signal-rule-change:sig-status consecutive.failures): Raise to 8 failures',
     );
     expect(ledger).toContain("Watch stage: nothing was applied.");
     expect((await leadGoal()).nextWakeAt).toBe(new Date(clock).toISOString());
@@ -304,7 +517,61 @@ describe("the owner's answers", () => {
     await handleLeadAnswer(
       { source: "supervisor", title: "x" } as never,
       "yes",
+      "owner",
     );
     expect(await readLedger(await leadGoal())).toBe(before);
+  });
+
+  test("an answer the supervisor recorded approves nothing", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: "Paused from the UI",
+      nextWakeAt: "2026-11-10T18:00:00.000Z",
+    }));
+    await handleLeadAnswer(
+      {
+        source: "lead:acme",
+        title: "Acme: Signal rule changes",
+        dedupeKey: "lead:acme:signal-rule-change:x",
+      } as never,
+      "Approve",
+      "supervisor",
+    );
+    const ledger = await readLedger(await leadGoal());
+    expect(ledger).toContain(
+      'The supervisor recorded an answer to "Acme: Signal rule changes" (lead:acme:signal-rule-change:x): Approve',
+    );
+    expect(ledger).toContain("it approves nothing");
+    expect(ledger).not.toContain("Owner answered");
+    // Neither resumed nor woken.
+    expect(await leadGoal()).toMatchObject({
+      status: "paused",
+      nextWakeAt: "2026-11-10T18:00:00.000Z",
+    });
+  });
+
+  test("the owner's answer resumes a paused lead and wakes it", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: "Paused from the UI",
+    }));
+    clock += 60_000;
+    await handleLeadAnswer(
+      { source: "lead:acme", title: "Acme: CI repair" } as never,
+      "Approve",
+      "owner",
+    );
+    expect(await leadGoal()).toMatchObject({
+      status: "active",
+      nextWakeAt: new Date(clock).toISOString(),
+    });
   });
 });

@@ -102,6 +102,9 @@ export interface PostSupervisorItemInput {
   options?: string[];
   dedupeKey?: string;
   urgency?: SupervisorItemUrgency;
+  /** Raise it at most once: when any item, open or closed, already has
+   *  this `dedupeKey`, nothing changes and that item is returned. */
+  once?: boolean;
 }
 
 export const MAX_ITEMS = 200;
@@ -571,7 +574,13 @@ export async function postSupervisorItem(
     plan: "push" | "hold" | "none";
     wasNotified: boolean;
   } = { item: null, created: false, plan: "none", wasNotified: false };
+  let already: SupervisorItem | undefined;
   await updateDocument(user, (doc) => {
+    already =
+      input.once && dedupeKey
+        ? doc.items.find((item) => item.dedupeKey === dedupeKey)
+        : undefined;
+    if (already) return doc;
     const { prefs, timeZone } = prefsAndZone(doc, user);
     const quiet = inQuietHours(prefs, timeZone, now);
     const existing = dedupeKey
@@ -628,6 +637,7 @@ export async function postSupervisorItem(
       ),
     };
   });
+  if (already) return { item: already, created: false, delivery: "none" };
   const item = outcome.item as SupervisorItem | null;
   if (!item) throw new Error("supervisor item was not recorded");
 

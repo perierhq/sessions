@@ -396,17 +396,22 @@ export function __indexBookkeepingForTest(): {
 export async function listIndexRows(
   filter: {
     inboxId?: string;
+    /** Rows of any of these inboxes; an empty list matches none. */
+    inboxIds?: readonly string[];
     status?: ConversationStatus[];
     customerEmail?: string;
   } = {},
 ): Promise<SupportIndexRow[]> {
   const email = filter.customerEmail?.trim().toLowerCase();
+  if (filter.inboxIds?.length === 0) return [];
+  const inboxes = filter.inboxIds ? new Set(filter.inboxIds) : undefined;
   const out: SupportIndexRow[] = [];
   for (const { value } of await indexRows().list()) {
     const row = value as SupportIndexRow;
     if (!row || typeof row.id !== "string") continue;
     if (filter.inboxId !== undefined && row.inboxId !== filter.inboxId)
       continue;
+    if (inboxes && !inboxes.has(row.inboxId)) continue;
     if (filter.status && !filter.status.includes(row.status)) continue;
     if (email !== undefined && row.customer.address.toLowerCase() !== email)
       continue;

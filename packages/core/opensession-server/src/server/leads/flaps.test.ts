@@ -80,6 +80,7 @@ describe("triageFlaps on a status page and a provider that flap", () => {
     const r = report();
     expect(r.counts).toEqual({
       flapping: 2,
+      "slow-recoveries": 0,
       "real-outages": 1,
       quiet: 2,
       mixed: 0,
@@ -102,7 +103,7 @@ describe("triageFlaps on a status page and a provider that flap", () => {
   test("markdown names each signal and the proposals", () => {
     const md = flapReportMarkdown(report());
     expect(md.split("\n")[0]).toBe(
-      "Signals over the last 14 days: 2 flapping, 1 with real outages, 0 mixed, 2 quiet.",
+      "Signals over the last 14 days: 2 flapping, 0 recovering slowly by themselves, 1 with real outages, 0 mixed, 2 quiet.",
     );
     expect(md).toContain(
       "- Status page (`sig-status`): flapping; 16 opened, 16 closed by themselves within 30 min, 0 fixed, median open 4 min",
@@ -173,10 +174,16 @@ describe("triageFlaps edges", () => {
       incidents,
       now: NOW,
     });
+    // Nobody acted on any: they recovered slowly, which is no outage of
+    // the project's own. A status page on its own domain gets no proposal:
+    // a longer rule would only delay real outages.
     expect(r.signals[0]).toMatchObject({
-      classification: "real-outages",
+      classification: "slow-recoveries",
       selfClosed: { count: 0 },
+      slowRecoveries: 3,
+      resolvedWithAction: 0,
     });
+    expect(r.signals[0]!.proposal).toBeUndefined();
     // A wider cutoff counts them.
     const wide = triageFlaps({
       project: PROJECT,
@@ -204,10 +211,126 @@ describe("triageFlaps edges", () => {
       now: NOW,
     });
     expect(r.signals[0]).toMatchObject({
-      classification: "real-outages",
+      classification: "mixed",
       stillOpen: 1,
       medianOpenMs: null,
     });
+  });
+
+  test("an incident still open keeps flaps from being called flapping", () => {
+    const incidents = [
+      ...[1, 2, 3, 4].map((d) =>
+        incident({
+          signalId: status.id,
+          openedAt: NOW - d * DAY,
+          openMinutes: 3,
+          state: "closed-without-action",
+        }),
+      ),
+      incident({
+        signalId: status.id,
+        openedAt: NOW - 600_000,
+        openMinutes: null,
+        state: "investigating",
+      }),
+    ];
+    const r = triageFlaps({
+      project: PROJECT,
+      signals: [status],
+      incidents,
+      now: NOW,
+    });
+    expect(r.signals[0]).toMatchObject({
+      classification: "mixed",
+      stillOpen: 1,
+      selfClosed: { count: 4 },
+    });
+    expect(r.signals[0]!.proposal).toBeUndefined();
+  });
+
+  test("real outages need someone to have acted", () => {
+    const incidents = [1, 2].map((d) =>
+      incident({
+        signalId: status.id,
+        openedAt: NOW - d * DAY,
+        openMinutes: 50,
+        state: "resolved",
+        fixedBy: "provider-recovered",
+      }),
+    );
+    const r = triageFlaps({
+      project: PROJECT,
+      signals: [status],
+      incidents,
+      now: NOW,
+    });
+    expect(r.signals[0]).toMatchObject({
+      classification: "slow-recoveries",
+      resolvedWithAction: 0,
+    });
+  });
+
+  test("an outside host that recovers slowly by itself should be a provider", () => {
+    const rail = SIGNALS[1]!;
+    const incidents = [1, 2].map((d) =>
+      incident({
+        signalId: rail.id,
+        openedAt: NOW - d * DAY,
+        openMinutes: 75,
+        state: "closed-without-action",
+      }),
+    );
+    const r = triageFlaps({
+      project: PROJECT,
+      signals: SIGNALS,
+      incidents,
+      now: NOW,
+    });
+    const report = r.signals.find((s) => s.signalId === rail.id)!;
+    expect(report.classification).toBe("slow-recoveries");
+    expect(report.proposal?.change).toEqual({ provider: true });
+    expect(report.proposal?.reason).toStartWith(
+      "Opened 2 times in 14 days; every one recovered by itself, 2 after more than 30 min (longest 75 min), and nobody acted on any. It polls api.railco.example",
+    );
+    expect(flapReportMarkdown(r)).toContain(
+      "- Rail API (`sig-rail`): slow recoveries; 2 opened, 0 closed by themselves within 30 min, 0 fixed, 2 recovered by themselves after longer",
+    );
+
+    // Another project's provider already watches that domain: depend on it.
+    const watcher: Signal = {
+      ...rail,
+      id: "sig-railco-shared",
+      name: "Railco",
+      project: "shared",
+      provider: true,
+      source: { kind: "http", url: "https://status.railco.example/" },
+    };
+    const shared = triageFlaps({
+      project: PROJECT,
+      signals: [...SIGNALS, watcher],
+      incidents,
+      now: NOW,
+    }).signals.find((s) => s.signalId === rail.id)!;
+    expect(shared.proposal?.change).toEqual({
+      dependsOn: ["sig-railco-shared"],
+    });
+    expect(shared.proposal?.reason).toContain(
+      "provider signal Railco (`sig-railco-shared`, project shared) already watches railco.example",
+    );
+  });
+
+  test("a disabled signal gets no proposal", () => {
+    const off = { ...SIGNALS[0]!, enabled: false };
+    const r = triageFlaps({
+      project: PROJECT,
+      signals: [off, ...SIGNALS.slice(1)],
+      incidents: fixtureIncidents(),
+      now: NOW,
+    });
+    const status = r.signals.find((s) => s.signalId === "sig-status")!;
+    expect(status.classification).toBe("flapping");
+    expect(status.proposal).toBeUndefined();
+    expect(flapReportMarkdown(r)).toContain("median open 4 min, disabled");
   });
 
   test("long flaps on a consecutive rule become a rate rule", () => {
