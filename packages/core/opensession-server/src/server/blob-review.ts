@@ -9,7 +9,8 @@
  * - their supervisor sessions (supervisor.ts), the current one and the
  *   retired ones still inside the window, at most MAX_REVIEW_SESSIONS, each
  *   one known session read through its own transcript;
- * - their supervisor inbox (supervisor-inbox.ts), one document;
+ * - their supervisor inbox (supervisor-inbox.ts), one document, at most
+ *   MAX_LIST items changed in the window;
  * - the tail of their supervisor ledger (supervisor-ledger.ts), one file.
  *
  * Nothing lists sessions or the catalog. The answer holds counts, timings,
@@ -57,8 +58,23 @@ export interface ReviewInput {
   metrics: BlobTurnMetric[];
   sessions: ReviewSession[];
   items: SupervisorItem[];
+  /** The inbox list hit its cap: older items in the window were left out. */
+  inboxTruncated?: boolean;
+  /** More supervisor sessions fell in the window than one review reads. */
+  sessionsTruncated?: boolean;
   /** The ledger's tail; only its entry headings are read. */
   ledger: string;
+}
+
+/** The window a review covers: whole days back from `now`, 1 to
+ *  MAX_REVIEW_DAYS. Reading and aggregating both use it, so a record is in
+ *  the review exactly when it was fetched for it. */
+export function reviewWindow(
+  now: number,
+  days: number,
+): { days: number; since: number } {
+  const span = Math.max(1, Math.min(MAX_REVIEW_DAYS, Math.floor(days)));
+  return { days: span, since: now - span * DAY_MS };
 }
 
 /** One owner message in a supervisor transcript and what followed it, up
@@ -391,7 +407,7 @@ function transcriptStats(turns: TranscriptTurn[], timeZone: string) {
   };
 }
 
-function inboxStats(items: SupervisorItem[]) {
+function inboxStats(items: SupervisorItem[], truncated: boolean) {
   const answered = items.filter((item) => item.state === "answered");
   const closed = items.filter((item) => item.state !== "open");
   const withOptions = answered.filter((item) => item.options?.length);
@@ -406,6 +422,7 @@ function inboxStats(items: SupervisorItem[]) {
     ).length;
   return {
     items: items.length,
+    truncated,
     byKind: tally(items.map((item) => item.kind)),
     byState: tally(items.map((item) => item.state)),
     bySource: tally(
@@ -461,8 +478,7 @@ export function ledgerEntriesSince(ledger: string, since: number): number {
 
 /** The whole review from already-read records. Pure: tested directly. */
 export function aggregateBlobReview(input: ReviewInput) {
-  const days = Math.max(1, Math.min(MAX_REVIEW_DAYS, Math.floor(input.days)));
-  const since = input.now - days * DAY_MS;
+  const { days, since } = reviewWindow(input.now, input.days);
   const metrics = input.metrics.filter(
     (turn) => turn.startedAt >= since && turn.startedAt <= input.now,
   );
@@ -470,7 +486,9 @@ export function aggregateBlobReview(input: ReviewInput) {
     .flatMap(transcriptTurns)
     .filter((turn) => Number.isFinite(turn.at) && turn.at >= since)
     .sort((a, b) => a.at - b.at);
-  const items = input.items.filter((item) => item.createdAt >= since);
+  // `updatedAt`, the field the inbox list filters on (listSupervisorItems
+  // `since`): an item asked earlier and answered in the window counts.
+  const items = input.items.filter((item) => item.updatedAt >= since);
   const byReply = new Map(
     turns
       .filter((turn) => turn.replyEntryId)
@@ -498,11 +516,13 @@ export function aggregateBlobReview(input: ReviewInput) {
     sources: {
       appTurns: metrics.length,
       supervisorSessions: input.sessions.map((session) => session.sessionId),
+      sessionsTruncated: input.sessionsTruncated ?? false,
       inboxItems: items.length,
+      inboxTruncated: input.inboxTruncated ?? false,
     },
     app: appStats(metrics),
     transcript: transcriptStats(turns, input.timeZone),
-    inbox: inboxStats(items),
+    inbox: inboxStats(items, input.inboxTruncated ?? false),
     ledger: { entries: ledgerEntriesSince(input.ledger, since) },
     samples: {
       slowest: slowest.map((turn) =>
@@ -543,11 +563,19 @@ export interface BlobReviewSources {
   /** The person's supervisor session ids, current first, then retired
    *  ones newest first. */
   supervisorSessionIds(user: string): Promise<string[]>;
-  /** One known session's last activity (ms epoch), or null when it is
-   *  gone. */
-  sessionLastActivity(sessionId: string): Promise<number | null>;
-  transcript(sessionId: string): Promise<TranscriptEntry[]>;
-  inbox(user: string, since: number): Promise<SupervisorItem[]>;
+  /** One known session, read once: its last activity (ms epoch, null when
+   *  unknown) and its transcript, fetched only when asked for. Null when
+   *  the session is gone. */
+  session(sessionId: string): Promise<{
+    lastActivity: number | null;
+    transcript(): Promise<TranscriptEntry[]>;
+  } | null>;
+  /** Items changed since `since`, newest first; `truncated` when the list
+   *  hit its cap. */
+  inbox(
+    user: string,
+    since: number,
+  ): Promise<{ items: SupervisorItem[]; truncated: boolean }>;
   ledger(user: string): Promise<string>;
   timeZone(user: string): Promise<string>;
 }
@@ -558,23 +586,25 @@ const defaultSources: BlobReviewSources = {
     (await import("./blob-metrics")).readBlobMetrics(user, days, now),
   supervisorSessionIds: async (user) =>
     (await import("./supervisor")).supervisorSessionIds(user),
-  sessionLastActivity: async (sessionId) => {
+  session: async (sessionId) => {
     const session = await (
       await import("./session-cache")
-    ).readNativeSessionAsync(sessionId);
+    ).readNativeSessionNonBlocking(sessionId);
     if (!session) return null;
     const at = Date.parse(session.lastActivity);
-    return Number.isFinite(at) ? at : null;
-  },
-  transcript: async (sessionId) => {
-    const { readNativeSessionAsync } = await import("./session-cache");
-    const session = await readNativeSessionAsync(sessionId);
-    if (!session) return [];
-    return (await import("./sessions")).mergedSessionTranscriptAsync(session);
+    return {
+      lastActivity: Number.isFinite(at) ? at : null,
+      transcript: async () =>
+        (await import("./sessions")).mergedSessionTranscriptAsync(session),
+    };
   },
   inbox: async (user, since) => {
     const inbox = await import("./supervisor-inbox");
-    return inbox.listSupervisorItems(user, { since, limit: inbox.MAX_LIST });
+    const items = await inbox.listSupervisorItems(user, {
+      since,
+      limit: inbox.MAX_LIST,
+    });
+    return { items, truncated: items.length >= inbox.MAX_LIST };
   },
   ledger: async (user) => {
     const ledger = await import("./supervisor-ledger");
@@ -594,22 +624,22 @@ export async function buildBlobReview(
 ): Promise<BlobReview> {
   const sources = { ...defaultSources, ...overrides };
   const now = sources.now();
-  const span = Math.max(1, Math.min(MAX_REVIEW_DAYS, Math.floor(days)));
-  const since = now - span * DAY_MS;
+  const { days: span, since } = reviewWindow(now, days);
   const sessions: ReviewSession[] = [];
-  const ids = (await sources.supervisorSessionIds(user)).slice(
-    0,
-    MAX_REVIEW_SESSIONS,
-  );
-  for (const sessionId of ids) {
-    const lastActivity = await sources.sessionLastActivity(sessionId);
-    if (lastActivity === null) continue;
+  let sessionsTruncated = false;
+  for (const sessionId of new Set(await sources.supervisorSessionIds(user))) {
+    const session = await sources.session(sessionId);
+    if (!session) continue;
     // Retired sessions are newest first: once one ended before the window,
     // every older one did too.
-    if (lastActivity < since) break;
-    sessions.push({ sessionId, entries: await sources.transcript(sessionId) });
+    if (session.lastActivity !== null && session.lastActivity < since) break;
+    if (sessions.length >= MAX_REVIEW_SESSIONS) {
+      sessionsTruncated = true;
+      break;
+    }
+    sessions.push({ sessionId, entries: await session.transcript() });
   }
-  const [metrics, items, ledger, timeZone] = await Promise.all([
+  const [metrics, inbox, ledger, timeZone] = await Promise.all([
     sources.metrics(user, span, now),
     sources.inbox(user, since),
     sources.ledger(user),
@@ -621,7 +651,9 @@ export async function buildBlobReview(
     timeZone,
     metrics,
     sessions,
-    items,
+    sessionsTruncated,
+    items: inbox.items,
+    inboxTruncated: inbox.truncated,
     ledger,
   });
 }

@@ -13,6 +13,7 @@ import {
   distribution,
   ledgerEntriesSince,
   localHour,
+  MAX_REVIEW_SESSIONS,
   transcriptTurns,
   type BlobReviewSources,
 } from "./blob-review";
@@ -146,7 +147,12 @@ describe("aggregateBlobReview", () => {
       }),
       item({ id: "b", state: "dismissed", kind: "fyi" }),
       item({ id: "c", state: "open" }),
-      item({ id: "old", state: "answered", createdAt: NOW - 40 * DAY }),
+      item({
+        id: "old",
+        state: "answered",
+        createdAt: NOW - 40 * DAY,
+        updatedAt: NOW - 40 * DAY,
+      }),
     ],
     ledger: [
       "# Ledger",
@@ -255,6 +261,7 @@ describe("helpers", () => {
 describe("buildBlobReview", () => {
   test("reads the owner's sessions newest first and stops at the window", async () => {
     const read: string[] = [];
+    const opened: string[] = [];
     const activity: Record<string, number | null> = {
       current: NOW - 1000,
       gone: null,
@@ -269,18 +276,50 @@ describe("buildBlobReview", () => {
         expect(user).toBe("Ada");
         return ["current", "gone", "lastWeek", "monthAgo", "older"];
       },
-      sessionLastActivity: async (id) => activity[id] ?? null,
-      transcript: async (id) => {
-        read.push(id);
-        return id === "current" ? transcript : [];
+      session: async (id) => {
+        opened.push(id);
+        const lastActivity = activity[id];
+        if (lastActivity == null) return null;
+        return {
+          lastActivity,
+          transcript: async () => {
+            read.push(id);
+            return id === "current" ? transcript : [];
+          },
+        };
       },
-      inbox: async () => [],
+      inbox: async () => ({ items: [], truncated: false }),
       ledger: async () => "",
       timeZone: async () => "UTC",
     };
     const review = await buildBlobReview("Ada", 14, sources);
     expect(read).toEqual(["current", "lastWeek"]);
+    expect(opened).toEqual(["current", "gone", "lastWeek", "monthAgo"]);
     expect(review.sources.supervisorSessions).toEqual(["current", "lastWeek"]);
+    expect(review.sources.sessionsTruncated).toBe(false);
     expect(review.transcript.ownerMessages).toBe(3);
+  });
+
+  test("reports a capped session list and a capped inbox", async () => {
+    const ids = Array.from(
+      { length: MAX_REVIEW_SESSIONS + 2 },
+      (_, i) => `s${i}`,
+    );
+    const review = await buildBlobReview("Ada", 14, {
+      now: () => NOW,
+      metrics: async () => [],
+      supervisorSessionIds: async () => ids,
+      session: async () => ({
+        lastActivity: NOW - 1000,
+        transcript: async () => [],
+      }),
+      inbox: async () => ({ items: [item({ id: "a" })], truncated: true }),
+      ledger: async () => "",
+      timeZone: async () => "UTC",
+    });
+    expect(review.sources.supervisorSessions).toHaveLength(MAX_REVIEW_SESSIONS);
+    expect(review.sources.sessionsTruncated).toBe(true);
+    expect(review.sources.inboxTruncated).toBe(true);
+    expect(review.inbox.truncated).toBe(true);
   });
 });

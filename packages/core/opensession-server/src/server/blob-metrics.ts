@@ -28,6 +28,9 @@ export const MAX_BATCH = 100;
 export const MAX_BODY_BYTES = 256 * 1024;
 /** Batches one person may post per minute. */
 export const METRICS_PER_MINUTE = 30;
+/** Most distinct UTC days one batch may touch; turns of older days in the
+ *  batch are rejected. Bounds the day documents one request writes. */
+export const MAX_DAYS_PER_BATCH = 7;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Longest duration kept, in ms: anything above is a stuck clock. */
@@ -200,7 +203,8 @@ export type BatchResult =
   | { ok: false; error: string };
 
 /** A request body: `{ turns: [...] }` with at most MAX_BATCH turns. Turns
- *  that fail cleaning are counted as rejected; the rest are kept. */
+ *  that fail cleaning, or fall on a day older than the batch's newest
+ *  MAX_DAYS_PER_BATCH days, are counted as rejected; the rest are kept. */
 export function parseMetricsBatch(body: unknown, now: number): BatchResult {
   const turns =
     body && typeof body === "object" ? Reflect.get(body, "turns") : undefined;
@@ -213,35 +217,63 @@ export function parseMetricsBatch(body: unknown, now: number): BatchResult {
     const turn = cleanTurnMetric(raw, now);
     if (turn) clean.push(turn);
   }
-  return { ok: true, turns: clean, rejected: turns.length - clean.length };
+  const kept = new Set(
+    [...new Set(clean.map((turn) => utcDay(turn.startedAt)))]
+      .sort()
+      .slice(-MAX_DAYS_PER_BATCH),
+  );
+  const inDays = clean.filter((turn) => kept.has(utcDay(turn.startedAt)));
+  return { ok: true, turns: inDays, rejected: turns.length - inDays.length };
 }
 
 // ── Rate limit ──────────────────────────────────────────────────────────────
 
 const WINDOW_MS = 60_000;
 const MAX_TRACKED_USERS = 1_000;
-const rateTable = new Map<string, { count: number; resetAt: number }>();
+
+/** Reviews one person may read per minute: each one reads several
+ *  transcripts. */
+export const REVIEWS_PER_MINUTE = 6;
+
+/** A fixed-window per-person counter that allows `limit` calls a minute. */
+function rateLimiter(limit: number) {
+  const table = new Map<string, { count: number; resetAt: number }>();
+  return {
+    limited(user: string, now: number): boolean {
+      const rec = table.get(user);
+      if (!rec || rec.resetAt <= now) {
+        if (table.size >= MAX_TRACKED_USERS) {
+          for (const [key, value] of table)
+            if (value.resetAt <= now) table.delete(key);
+          if (table.size >= MAX_TRACKED_USERS) table.clear();
+        }
+        table.set(user, { count: 1, resetAt: now + WINDOW_MS });
+        return false;
+      }
+      rec.count++;
+      return rec.count > limit;
+    },
+    clear: () => table.clear(),
+  };
+}
+
+const metricsLimit = rateLimiter(METRICS_PER_MINUTE);
+const reviewLimit = rateLimiter(REVIEWS_PER_MINUTE);
 
 export function blobMetricsRateLimited(
   user: string,
   now = Date.now(),
 ): boolean {
-  const rec = rateTable.get(user);
-  if (!rec || rec.resetAt <= now) {
-    if (rateTable.size >= MAX_TRACKED_USERS) {
-      for (const [key, value] of rateTable)
-        if (value.resetAt <= now) rateTable.delete(key);
-      if (rateTable.size >= MAX_TRACKED_USERS) rateTable.clear();
-    }
-    rateTable.set(user, { count: 1, resetAt: now + WINDOW_MS });
-    return false;
-  }
-  rec.count++;
-  return rec.count > METRICS_PER_MINUTE;
+  return metricsLimit.limited(user, now);
+}
+
+export function blobReviewRateLimited(user: string, now = Date.now()): boolean {
+  return reviewLimit.limited(user, now);
 }
 
 export function resetBlobMetricsRateLimit(): void {
-  rateTable.clear();
+  metricsLimit.clear();
+  reviewLimit.clear();
 }
 
 // ── Storage ─────────────────────────────────────────────────────────────────
@@ -321,6 +353,36 @@ export function oldestKeptDay(now: number): string {
 }
 
 /**
+ * Delete a person's day documents older than RETENTION_DAYS. A day leaves
+ * the index only after its document is deleted, so a failed delete is
+ * retried on the next append or read instead of leaking a document nothing
+ * names.
+ */
+async function pruneExpiredDays(person: string, now: number): Promise<void> {
+  const oldest = oldestKeptDay(now);
+  const index = cleanIndex(await documents().get(indexKey(person)), person);
+  const expired = index.days.filter((day) => day < oldest);
+  if (!expired.length) return;
+  const deleted = new Set<string>();
+  for (const day of expired) {
+    try {
+      await documents().delete(dayKey(person, day));
+      deleted.add(day);
+    } catch (error) {
+      console.warn(
+        `[blob-metrics] could not delete ${day} for ${person}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+  if (!deleted.size) return;
+  await documents().update(indexKey(person), (current) => {
+    const days = cleanIndex(current, person).days;
+    return { user: person, days: days.filter((day) => !deleted.has(day)) };
+  });
+}
+
+/**
  * Store a person's cleaned turns, grouped by UTC day, then drop their days
  * older than RETENTION_DAYS. Returns how many turns were stored.
  */
@@ -349,19 +411,19 @@ export async function appendBlobMetrics(
     }));
     stored += incoming.length;
   }
-  let expired: string[] = [];
-  await documents().update(indexKey(person), (current) => {
-    const index = cleanIndex(current, person);
-    const days = [...new Set([...index.days, ...byDay.keys()])].sort();
-    expired = days.filter((day) => day < oldest);
-    return { user: person, days: days.filter((day) => day >= oldest) };
-  });
-  for (const day of expired) await documents().delete(dayKey(person, day));
+  if (byDay.size)
+    await documents().update(indexKey(person), (current) => {
+      const index = cleanIndex(current, person);
+      const days = [...new Set([...index.days, ...byDay.keys()])].sort();
+      return { user: person, days };
+    });
+  await pruneExpiredDays(person, now);
   return stored;
 }
 
 /** A person's turns that started in the last `days` days, oldest first.
- *  Reads one document per day of the window, by key. */
+ *  Reads one document per day of the window, by key, after dropping the
+ *  person's expired days, so retention holds without new appends. */
 export async function readBlobMetrics(
   user: string,
   days: number,
@@ -369,6 +431,7 @@ export async function readBlobMetrics(
 ): Promise<BlobTurnMetric[]> {
   const person = user.trim();
   if (!person) return [];
+  await pruneExpiredDays(person, now);
   const span = Math.max(1, Math.min(RETENTION_DAYS, Math.floor(days)));
   const since = now - span * DAY_MS;
   const keys: string[] = [];

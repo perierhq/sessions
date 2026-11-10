@@ -18,6 +18,7 @@ import {
   MAX_BODY_BYTES,
   appendBlobMetrics,
   blobMetricsRateLimited,
+  blobReviewRateLimited,
   parseMetricsBatch,
 } from "../blob-metrics";
 import {
@@ -123,6 +124,11 @@ export async function handleBlobMetricsRoutes(
       if (!user)
         return Response.json({ error: "missing user" }, { status: 400 });
     }
+    if (blobReviewRateLimited(user, deps.now()))
+      return Response.json(
+        { error: "Too many reviews, try again in a minute" },
+        { status: 429, headers: { "Retry-After": "60" } },
+      );
     const review = await buildBlobReview(
       user,
       reviewDays(url.searchParams.get("days")),

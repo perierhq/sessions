@@ -14,7 +14,9 @@ import Foundation
 /// A turn opens when a message goes out (`began`) and closes when the next
 /// one starts, when Blob is reset or put away, or when sending fails. It
 /// stays open after the answer settles so an interruption of its speech is
-/// still counted. `BlobTextTalk` reports each stage; nothing here watches
+/// still counted; a snapshot is queued at settle so the turn reaches the
+/// server even if the app is killed before it closes, and the closed turn
+/// replaces it there (same `turnId`). `BlobTextTalk` reports each stage; nothing here watches
 /// the session itself.
 @MainActor
 final class BlobMetrics {
@@ -27,7 +29,7 @@ final class BlobMetrics {
     enum Outcome: String { case answered, failed, abandoned }
 
     /// The wire shape; see `BlobTurnMetric` in blob-metrics.ts.
-    struct Turn: Codable, Sendable {
+    struct Turn: Codable, Equatable, Sendable {
         var turnId: String
         var startedAt: Int64
         var input: String
@@ -141,6 +143,7 @@ final class BlobMetrics {
         let kinds = Self.blockKinds(answer)
         current?.blocks = kinds.isEmpty ? nil : kinds
         current?.thinkingSteps = turnEntries.filter { $0.type == "tool_use" || $0.isReasoning == true }.count
+        if let current { queue(current) }
         flush()
     }
 
@@ -186,7 +189,12 @@ final class BlobMetrics {
         if turn.sendToAcceptedMs == nil, let sentAt, let acceptedAt { turn.sendToAcceptedMs = Self.ms(acceptedAt - sentAt) }
         // A re-ask is measured from when the answer before it settled.
         last = (settledAt ?? Date(timeIntervalSince1970: TimeInterval(turn.startedAt) / 1000), turn.inputChars ?? 0)
-        var queue = pending
+        queue(turn)
+    }
+
+    /// Buffers `turn`, replacing an earlier snapshot of the same turn.
+    private func queue(_ turn: Turn) {
+        var queue = pending.filter { $0.turnId != turn.turnId }
         queue.append(turn)
         pending = queue
     }
@@ -223,28 +231,35 @@ final class BlobMetrics {
 
     // MARK: Sending
 
-    /// Posts buffered turns, oldest first. A failed post keeps them for the
-    /// next try.
+    /// Posts buffered turns, oldest first, a batch at a time until none
+    /// are left. A failed post keeps them for the next try. Nothing is sent
+    /// until the app knows whose turns they are.
     func flush() {
         guard !flushing, ServerConfig.shared.isConfigured, let base = ServerConfig.shared.baseURL else { return }
-        let batch = Array(pending.prefix(Self.batchSize))
-        guard !batch.isEmpty else { return }
+        let user = ServerConfig.shared.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !user.isEmpty, !pending.isEmpty else { return }
         flushing = true
         Task {
             defer { flushing = false }
-            var request = ServerConfig.shared.authorizedRequest(base.appending(path: "api/blob/metrics"))
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            struct Body: Encodable { let user: String; let turns: [Turn] }
-            request.httpBody = try? JSONEncoder().encode(Body(user: ServerConfig.shared.userName, turns: batch))
-            guard let (_, response) = try? await URLSession.shared.data(for: request),
-                  let status = (response as? HTTPURLResponse)?.statusCode
-            else { return }
-            // 400 means the server will never take this batch: drop it
-            // rather than retry it forever.
-            guard status == 200 || status == 400 else { return }
-            let sent = Set(batch.map(\.turnId))
-            pending = pending.filter { !sent.contains($0.turnId) }
+            while true {
+                let batch = Array(pending.prefix(Self.batchSize))
+                guard !batch.isEmpty else { return }
+                var request = ServerConfig.shared.authorizedRequest(base.appending(path: "api/blob/metrics"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                struct Body: Encodable { let user: String; let turns: [Turn] }
+                request.httpBody = try? JSONEncoder().encode(Body(user: user, turns: batch))
+                guard let (_, response) = try? await URLSession.shared.data(for: request),
+                      let status = (response as? HTTPURLResponse)?.statusCode
+                else { return }
+                // 400 means the server will never take this batch: drop it
+                // rather than retry it forever.
+                guard status == 200 || status == 400 else { return }
+                // Only what was sent: a newer snapshot of the same turn,
+                // queued while this post was out, stays for the next batch.
+                pending = pending.filter { !batch.contains($0) }
+                guard status == 200 else { return }
+            }
         }
     }
 

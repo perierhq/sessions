@@ -32,6 +32,8 @@ let metrics: Metrics;
 let routes: Routes;
 
 beforeAll(async () => {
+  // The review reads transcripts through modules that read the config.
+  await (await import("./config")).getConfigAsync();
   metrics = await import("./blob-metrics");
   routes = await import("./routes/blob-metrics");
 });
@@ -201,6 +203,18 @@ describe("parseMetricsBatch", () => {
     expect(result.ok && result.turns.length).toBe(2);
     expect(result.ok && result.rejected).toBe(1);
   });
+
+  test("keeps only the batch's newest MAX_DAYS_PER_BATCH days", () => {
+    const turns = Array.from(
+      { length: metrics.MAX_DAYS_PER_BATCH + 2 },
+      (_, back) => turn({ turnId: `d${back}`, startedAt: NOW - back * DAY }),
+    );
+    const result = metrics.parseMetricsBatch({ turns }, NOW);
+    expect(result.ok && result.turns.map((t) => t.turnId)).toEqual(
+      turns.slice(0, metrics.MAX_DAYS_PER_BATCH).map((t) => t.turnId),
+    );
+    expect(result.ok && result.rejected).toBe(2);
+  });
 });
 
 describe("storage", () => {
@@ -282,6 +296,28 @@ describe("storage", () => {
     expect(await metrics.blobMetricsDays("Ada")).toEqual([
       metrics.utcDay(later),
     ]);
+    const oldKey = `${metrics.blobMetricsPersonKey("Ada")}.${metrics.utcDay(start)}`;
+    const { catalogDocuments } = await import("./catalog-documents");
+    expect(
+      await catalogDocuments(metrics.BLOB_METRICS_NAMESPACE).get(oldKey),
+    ).toBeNull();
+  });
+
+  test("days past retention are deleted on read too", async () => {
+    const start = NOW - 80 * DAY;
+    await metrics.appendBlobMetrics(
+      "Ada",
+      [
+        metrics.cleanTurnMetric(
+          turn({ turnId: "old", startedAt: start }),
+          start,
+        )!,
+      ],
+      start,
+    );
+    const later = NOW + 15 * DAY;
+    expect(await metrics.readBlobMetrics("Ada", 14, later)).toEqual([]);
+    expect(await metrics.blobMetricsDays("Ada")).toEqual([]);
     const oldKey = `${metrics.blobMetricsPersonKey("Ada")}.${metrics.utcDay(start)}`;
     const { catalogDocuments } = await import("./catalog-documents");
     expect(
@@ -396,5 +432,14 @@ describe("GET /api/blob/review", () => {
       ctx("/api/blob/review?user=Ada&days=400", "GET"),
     );
     expect((await res!.json()).window.days).toBe(90);
+  });
+
+  test("limits reviews per person per minute", async () => {
+    for (let i = 0; i < metrics.REVIEWS_PER_MINUTE; i++)
+      metrics.blobReviewRateLimited("Ada", NOW);
+    const res = await routes.handleBlobMetricsRoutes(
+      ctx("/api/blob/review?user=Ada", "GET"),
+    );
+    expect(res!.status).toBe(429);
   });
 });

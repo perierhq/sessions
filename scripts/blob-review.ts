@@ -3,15 +3,19 @@
  * Fetch the Blob review (GET /api/blob/review) from a running server and
  * print it as JSON. Used by the blob-review skill.
  *
- *   bun scripts/blob-review.ts [--days 14] [--user Name] [--entries]
+ *   bun scripts/blob-review.ts [--days 14] [--user Name] [--entries] [--out PATH]
  *
  * OPENSESSION_URL is the server (default http://127.0.0.1:3850); OS1_TOKEN
  * is the owner's bearer token. `--user` names the person when the server
  * runs without sign-in. `--entries` also fetches the owner message and the
  * reply of every sampled turn (GET /api/sessions/:id/entry/:entryId), cut
  * to 600 characters, under `entries`, so the agent can read what went wrong
- * without paging the whole transcript. The output stays on this machine.
+ * without paging the whole transcript. `--out` writes the JSON to PATH,
+ * readable by this user only, instead of printing it; with `--entries` it
+ * holds owner messages, so the caller deletes it when done. The output
+ * stays on this machine.
  */
+import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 
 const ENTRY_CHARS = 600;
@@ -21,13 +25,14 @@ const { values } = parseArgs({
     days: { type: "string", default: "14" },
     user: { type: "string" },
     entries: { type: "boolean", default: false },
+    out: { type: "string" },
     help: { type: "boolean", short: "h", default: false },
   },
 });
 
 if (values.help) {
   console.log(
-    "bun scripts/blob-review.ts [--days 14] [--user Name] [--entries]\n" +
+    "bun scripts/blob-review.ts [--days 14] [--user Name] [--entries] [--out PATH]\n" +
       "Env: OPENSESSION_URL (default http://127.0.0.1:3850), OS1_TOKEN",
   );
   process.exit(0);
@@ -82,7 +87,17 @@ if (values.entries) {
         `(unavailable: ${error instanceof Error ? error.message : error})`;
     }
   }
-  console.log(JSON.stringify({ ...review, entries }, null, 2));
+  await emit({ ...review, entries });
 } else {
-  console.log(JSON.stringify(review, null, 2));
+  await emit(review);
+}
+
+async function emit(value: unknown): Promise<void> {
+  const json = `${JSON.stringify(value, null, 2)}\n`;
+  if (!values.out) {
+    process.stdout.write(json);
+    return;
+  }
+  await writeFile(values.out, json, { mode: 0o600 });
+  console.error(`Wrote ${values.out}`);
 }

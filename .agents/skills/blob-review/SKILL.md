@@ -13,12 +13,13 @@ Turn the owner's own Blob usage into a short, ranked list of improvements, each 
 From the repository root, with the owner's server and bearer token in the environment (`OPENSESSION_URL`, `OS1_TOKEN`):
 
 ```bash
-bun scripts/blob-review.ts --days 14 --entries > /tmp/blob-review.json
+REVIEW="$(mktemp -t blob-review.XXXXXX)"
+bun scripts/blob-review.ts --days 14 --entries --out "$REVIEW"
 ```
 
-Use the window the owner asked for (`--days`, 1 to 90). On a server without sign-in, add `--user <name>`. The endpoint, `GET /api/blob/review`, answers only the instance owner.
+The file holds the start of the owner's sampled messages, so it is written readable by you only and deleted in the last step. Use the window the owner asked for (`--days`, 1 to 90). On a server without sign-in, add `--user <name>`. The endpoint, `GET /api/blob/review`, answers only the instance owner.
 
-Done when the file parses and `window`, `app`, `transcript`, `inbox` and `samples` are present. Note `sources`: `app.turns` is 0 until the Blob app has sent metrics, and then the transcript, inbox and ledger sections carry the review alone. Say so in the report.
+Done when the file parses and `window`, `app`, `transcript`, `inbox` and `samples` are present. Note `sources`: `app.turns` is 0 until the Blob app has sent metrics, and then the transcript, inbox and ledger sections carry the review alone. Say so in the report. Also check the two caps: `sources.sessionsTruncated` (more supervisor sessions fell in the window than one review reads, so the oldest are missing) and `sources.inboxTruncated` / `inbox.truncated` (the inbox list hit its cap, so older items are missing). When either is true, say which section is partial and suggest a shorter `--days`.
 
 ## 2. Read the numbers
 
@@ -34,7 +35,7 @@ Done when you have a one-line reading of every section, including the ones that 
 
 ## 3. Read the sampled turns
 
-For each sample, read the owner message and the reply under `entries`. When you need the turn's tool calls or more context, page that session's transcript around the entry (`GET /api/sessions/<sessionId>/transcript`). Classify each sampled turn as one of:
+For each sample, read the owner message and the reply under `entries`. One whole entry, unclamped, is `GET /api/sessions/<sessionId>/entry/<entryId>`. When you need the turn's tool calls or more context, read the entries around it: `GET /api/sessions/<sessionId>/entry/<entryId>/around?before=5&after=10` (each at most 50) answers `{ index, total, from, entries }`. Send the same `Authorization: Bearer $OS1_TOKEN` header. Don't fetch the whole transcript. Classify each sampled turn as one of:
 
 - **slow**: which stage took the time (model, tools, transcription, speech), and whether the work needed doing at all.
 - **misunderstood**: the reply answered something other than what was asked, or the owner had to ask again.
@@ -65,3 +66,13 @@ Keep it to one screen:
 Quote no more of the owner's messages than the point needs. Everything stays on this machine: the report goes to the owner, never into an issue, pull request or commit.
 
 Done when every improvement names its evidence and its measure.
+
+## 6. Clean up
+
+Delete the review file, whether or not the report is finished:
+
+```bash
+rm -f "$REVIEW"
+```
+
+Done when the file is gone.
