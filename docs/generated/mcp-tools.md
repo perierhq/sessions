@@ -80,9 +80,10 @@ touches an in-process tool:
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
 | [`opensession-supervisor`](#opensession-supervisor) | 4 | interactive | Only on a supervisor session (session.supervisor). |
+| [`opensession-lead`](#opensession-lead) | 3 | **unwired** | – |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-41 servers, 200 tools.
+42 servers, 203 tools.
 
 ## opensession-sessions
 
@@ -1628,6 +1629,33 @@ Dismiss an inbox item that no longer needs the owner.
 `mcp__opensession-supervisor__post_item` · input: `kind` ("needs-you" | "fyi", required), `title` (string, required), `body` (string), `options` (string[]), `project` (string), `dedupe_key` (string), `urgency` ("normal" | "down")
 
 Raise something to the owner. kind needs-you pushes their phone (held during their quiet hours unless urgency is down); fyi waits for the daily digest. Use needs-you only for a decision only they can make: two short lines and the options, recommended option first. The same dedupe_key updates an open item instead of adding another.
+
+## opensession-lead
+
+A project lead's read-only view of its project and its proposals to the owner.
+
+- **Source** `packages/core/opensession-server/src/server/leads/mcp.ts`
+- **Wired in** nowhere
+- **Runs** **unwired**
+- **Note** Bound to one project. Mounted on the project lead's goal once leads run (adrs/supervisor-and-leads.md).
+
+### `project_overview`
+
+`mcp__opensession-lead__project_overview` · input: `format` ("markdown" | "json")
+
+Read example in one view: open incidents, which signals flap and the rule change each needs, support conversations waiting for a person, each inbox's autonomy, open pull requests with failing checks, and this month's spend. Read-only.
+
+### `flap_report`
+
+`mcp__opensession-lead__flap_report` · input: `windowDays` (integer), `selfCloseMinutes` (integer), `format` ("markdown" | "json")
+
+Tell flaps from outages for example's signals: per signal, incidents opened, closed by themselves within N minutes, fixed, open times, and a concrete signal rule change for each one that only flaps. Read-only; propose a change with propose (category signal-rule-change).
+
+### `propose`
+
+`mcp__opensession-lead__propose` · input: `category` ("fix-verified" | "ci-repair" | "support-routine-reply" | "signal-rule-change" | "dependency-major" | "ban-user" | "rotate-key" | "public-release" | "refund" | "pricing" | "dispute" | "tax-legal" | "contract" | "production-data-write", required), `title` (string, required), `body` (string, required), `options` (string[]), `kind` ("proposal" | "needs-you")
+
+Propose an action for example to its owner. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner.
 
 ## opensession-incident-access
 

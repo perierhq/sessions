@@ -295,6 +295,8 @@ export async function remigrateProject(
       current === null ? null : withDocumentDefaults(project, current);
     return {
       ...document,
+      // The lead has no legacy settings: a re-run keeps it as it is.
+      lead: previous?.lead ?? document.lead,
       revision: (previous?.revision ?? 0) + 1,
       releaseHookSecret:
         document.releaseHookSecret ?? previous?.releaseHookSecret,

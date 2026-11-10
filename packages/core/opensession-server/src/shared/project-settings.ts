@@ -25,6 +25,11 @@ import {
   type NeverWithoutYou,
   type NightRule,
 } from "./incident-response";
+import {
+  defaultLeadSettings,
+  type ProjectLeadPatch,
+  type ProjectLeadSettings,
+} from "./project-lead";
 
 // ── Roles ────────────────────────────────────────────────────────────────
 
@@ -176,6 +181,8 @@ export interface ProjectSettingsDocument {
   sandbox: SandboxChoice;
   models: Partial<Record<ProjectRole, string>>;
   incidents: ProjectIncidentPolicy;
+  /** The project lead's charter (shared/project-lead.ts). */
+  lead: ProjectLeadSettings;
   production: ProjectProduction;
   access: ProjectAccess;
   automationId?: string;
@@ -233,6 +240,7 @@ export interface ProjectSettingsPatch {
   incidents?: Partial<Omit<ProjectIncidentPolicy, "night">> & {
     night?: NightRule | null;
   };
+  lead?: ProjectLeadPatch;
   production?: { runners?: string[]; actions?: IncidentAction[] };
   access?: {
     cells?: AccessCellChange[];
@@ -497,7 +505,8 @@ export interface ProjectRemigrateResult {
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 /** A project nobody has set anything for: every role on the global
- *  defaults, incident policy at today's defaults, no production, and the
+ *  defaults, incident policy at today's defaults, the lead off, no
+ *  production, and the
  *  access today's defaults give (verifier read-only, no web search;
  *  Support read-only, no connectors, no web search). */
 export function defaultProjectDocument(
@@ -520,6 +529,7 @@ export function defaultProjectDocument(
       neverWithoutYou: [...DEFAULT_NEVER_WITHOUT_YOU],
       budget: { ...DEFAULT_BUDGET },
     },
+    lead: defaultLeadSettings(),
     production: { runners: [], actions: [], releases: [] },
     access: {
       modes: {

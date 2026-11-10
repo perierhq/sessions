@@ -17,10 +17,31 @@ import {
   type NightRule,
   checkBudgetUsd,
 } from "../../shared/incident-response";
+import {
+  DEFAULT_LEAD_BUDGET_USD,
+  LEAD_CATEGORIES,
+  LEAD_CATEGORY_LABELS,
+  LEAD_LEVELS,
+  LEAD_STAGES,
+  MAX_LEAD_BUDGET_USD,
+  PINNED_ONLY_YOU,
+  type LeadCategory,
+  type LeadLevel,
+  type ProjectLeadSettings,
+  defaultLeadSettings,
+  isLeadCategory,
+  isLeadLevel,
+  isLeadStage,
+  isPinnedOnlyYou,
+  leadLevel,
+  leadLevelWithin,
+  leadStageWithin,
+} from "../../shared/project-lead";
 import type {
   ProjectIncidentPolicy,
   ProjectSettingsDocument,
 } from "../../shared/project-settings";
+import { resolveOwner } from "../incidents/owner";
 import { sameModel } from "../incidents/response/models";
 import {
   INCIDENT_SERVICE_USER,
@@ -590,6 +611,8 @@ export function documentInvariantProblem(
     return "Pick a different model for the verifier";
   if ((d.access.webSearch as string[]).includes("verifier"))
     return "The verifier never searches the web";
+  const leadProblem = leadInvariantProblem(d.lead);
+  if (leadProblem) return leadProblem;
   for (const role of ["investigator", "verifier"] as const) {
     const problem = egressRouteProblem(d.access.routes[role]);
     if (problem) return `Egress for the ${role}: ${problem}`;
@@ -616,4 +639,131 @@ export function egressRouteProblem(route: unknown): string | null {
     default:
       return `unknown route ${JSON.stringify(route.route)}`;
   }
+}
+
+// ── The project lead ────────────────────────────────────────────────────────
+
+/** Why a pinned category can't be lowered. */
+export function pinnedLeadError(category: LeadCategory): string {
+  return `Only you decide ${LEAD_CATEGORY_LABELS[category].toLowerCase()}: a lead may prepare, never act (lead.rules.${category})`;
+}
+
+/** A stored lead block merged over the defaults: unknown values read as
+ *  their default and pinned categories as only you, so a document from an
+ *  older build, or one written by hand, never gives a lead more room. */
+export function leadWithDefaults(raw: unknown): ProjectLeadSettings {
+  const base = defaultLeadSettings();
+  if (!isRecord(raw)) return base;
+  const stored = isRecord(raw.rules) ? raw.rules : {};
+  const rules = Object.fromEntries(
+    LEAD_CATEGORIES.map((c) => [
+      c,
+      leadLevel(stored as Partial<Record<LeadCategory, LeadLevel>>, c),
+    ]),
+  ) as Record<LeadCategory, LeadLevel>;
+  return {
+    enabled: raw.enabled === true,
+    stage: isLeadStage(raw.stage) ? raw.stage : base.stage,
+    rules,
+    budgetUsdPerMonth: numberIn(raw.budgetUsdPerMonth, 0, MAX_LEAD_BUDGET_USD)
+      ? raw.budgetUsdPerMonth
+      : DEFAULT_LEAD_BUDGET_USD,
+    ...(typeof raw.goalId === "string" && raw.goalId
+      ? { goalId: raw.goalId }
+      : {}),
+    ...(typeof raw.owner === "string" && raw.owner ? { owner: raw.owner } : {}),
+  };
+}
+
+/** `current` with the lead fields in `input` checked and applied. The goal
+ *  is the server's to set; pinned categories never go below only you. */
+export function applyLeadPatch(
+  current: ProjectLeadSettings,
+  input: Record<string, unknown>,
+): Result<ProjectLeadSettings> {
+  if ("goalId" in input)
+    return { error: "The lead's goal (lead.goalId) is set by the server" };
+  const next: ProjectLeadSettings = { ...current, rules: { ...current.rules } };
+  if ("enabled" in input) {
+    if (typeof input.enabled !== "boolean")
+      return { error: "Lead on (lead.enabled) must be true or false" };
+    next.enabled = input.enabled;
+  }
+  if ("stage" in input) {
+    if (!isLeadStage(input.stage))
+      return {
+        error: `Lead stage (lead.stage) must be one of ${LEAD_STAGES.join(", ")}`,
+      };
+    next.stage = input.stage;
+  }
+  if ("rules" in input) {
+    if (!isRecord(input.rules))
+      return { error: "Lead rules (lead.rules) must be an object" };
+    for (const [category, level] of Object.entries(input.rules)) {
+      if (!isLeadCategory(category))
+        return { error: `Unknown lead category "${category}"` };
+      if (!isLeadLevel(level))
+        return {
+          error: `Lead rule (lead.rules.${category}) must be one of ${LEAD_LEVELS.join(", ")}`,
+        };
+      if (isPinnedOnlyYou(category) && level !== "only-you")
+        return { error: pinnedLeadError(category) };
+      next.rules[category] = level;
+    }
+  }
+  if ("budgetUsdPerMonth" in input) {
+    if (!numberIn(input.budgetUsdPerMonth, 0, MAX_LEAD_BUDGET_USD))
+      return {
+        error: `Lead budget (lead.budgetUsdPerMonth) must be from $0 to $${MAX_LEAD_BUDGET_USD}`,
+      };
+    next.budgetUsdPerMonth = input.budgetUsdPerMonth;
+  }
+  if ("owner" in input) {
+    if (input.owner === null || input.owner === "") delete next.owner;
+    else {
+      if (typeof input.owner !== "string")
+        return { error: "Lead owner (lead.owner) must be a person" };
+      const owner = resolveOwner(input.owner);
+      if (typeof owner !== "string")
+        return { error: `Lead owner (lead.owner): ${owner.error}` };
+      next.owner = owner;
+    }
+  }
+  return next;
+}
+
+/**
+ * Dotted paths of the lead changes that give it more room: turned on, a
+ * later stage, a category moved towards alone, a higher budget, or a
+ * different owner (who it answers to). Tightening is open to every writer.
+ */
+export function loosenedLeadFields(
+  before: ProjectLeadSettings,
+  after: ProjectLeadSettings,
+): string[] {
+  const out: string[] = [];
+  if (!before.enabled && after.enabled) out.push("lead.enabled");
+  if (!leadStageWithin(after.stage, before.stage)) out.push("lead.stage");
+  for (const c of LEAD_CATEGORIES)
+    if (!leadLevelWithin(after.rules[c], before.rules[c]))
+      out.push(`lead.rules.${c}`);
+  if (after.budgetUsdPerMonth > before.budgetUsdPerMonth)
+    out.push("lead.budgetUsdPerMonth");
+  if ((before.owner ?? "") !== (after.owner ?? "")) out.push("lead.owner");
+  return out.sort();
+}
+
+/** Rules over a whole lead block, checked on the document a write commits
+ *  to (server writes too). */
+export function leadInvariantProblem(lead: ProjectLeadSettings): string | null {
+  for (const c of PINNED_ONLY_YOU)
+    if (lead.rules[c] !== "only-you") return pinnedLeadError(c);
+  for (const c of LEAD_CATEGORIES)
+    if (!isLeadLevel(lead.rules[c]))
+      return `Lead rule (lead.rules.${c}) must be one of ${LEAD_LEVELS.join(", ")}`;
+  if (!isLeadStage(lead.stage))
+    return `Lead stage (lead.stage) must be one of ${LEAD_STAGES.join(", ")}`;
+  if (!numberIn(lead.budgetUsdPerMonth, 0, MAX_LEAD_BUDGET_USD))
+    return `Lead budget (lead.budgetUsdPerMonth) must be from $0 to $${MAX_LEAD_BUDGET_USD}`;
+  return null;
 }

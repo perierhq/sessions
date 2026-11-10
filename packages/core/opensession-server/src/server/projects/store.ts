@@ -1,6 +1,7 @@
 // One settings document per project on the `projects` application catalog
 // namespace: the project's sandbox, a model per role, the incident policy,
-// production Runners and actions, and the role-by-capability access table.
+// the project lead's charter, production Runners and actions, and the
+// role-by-capability access table.
 // Written only through `updateProjectDocument` (revisioned, validated
 // against the committed value, one audit line per write with dotted field
 // paths) and `patchProjectDocumentAsServer` (releases, pairing,
@@ -53,12 +54,16 @@ import {
   parseSandboxChoice,
   RUNNABLE_SANDBOX_PROVIDERS,
 } from "../sandbox/config";
+import { LEAD_CATEGORIES } from "../../shared/project-lead";
 import {
+  applyLeadPatch,
   applyPolicyPatch,
   documentInvariantProblem,
   failed,
   isRecord,
+  leadWithDefaults,
   loosenedFields,
+  loosenedLeadFields,
   productionRunnerProblem,
   validateActionList,
   validatePolicyFields,
@@ -76,6 +81,8 @@ export const STALE_REVISION_ERROR = "Settings changed since you loaded them";
 const PERSON_ONLY_ERROR =
   "Only a signed-in person can change actions or production Runners";
 const LOOSEN_ERROR = "Only a signed-in person can loosen the incident policy";
+const LOOSEN_LEAD_ERROR =
+  "Only a signed-in person can give the project lead more room";
 const WIDEN_ERROR = "Only a signed-in person can give agents more access";
 const SIGN_IN = "Sign in to grant credentials to incident agents";
 const OWNER_NOT_ON_ROSTER =
@@ -240,6 +247,7 @@ export function withDocumentDefaults(
         base.incidents.neverWithoutYou,
       ),
     },
+    lead: leadWithDefaults(stored.lead),
     production: {
       runners: list(production.runners, []),
       actions: list(production.actions, []),
@@ -816,6 +824,12 @@ function applyPatch(
     if (failed(policy)) refuse(policy.error);
     next.incidents = applyPolicyPatch(current.incidents, policy);
   }
+  if (patch.lead !== undefined) {
+    if (!isRecord(patch.lead)) refuse("Lead settings must be an object");
+    const lead = applyLeadPatch(current.lead, patch.lead);
+    if (failed(lead)) refuse(lead.error);
+    next.lead = lead;
+  }
   if (patch.production !== undefined) {
     const input = patch.production as unknown;
     if (!isRecord(input)) refuse("Production must be an object");
@@ -906,6 +920,17 @@ export function changedFieldPaths(
       )
     )
       out.push(`incidents.${field}`);
+  for (const field of [
+    "enabled",
+    "stage",
+    "budgetUsdPerMonth",
+    "goalId",
+    "owner",
+  ] as const)
+    if (before.lead[field] !== after.lead[field]) out.push(`lead.${field}`);
+  for (const category of LEAD_CATEGORIES)
+    if (before.lead.rules[category] !== after.lead.rules[category])
+      out.push(`lead.rules.${category}`);
   for (const field of ["runners", "actions", "releases"] as const)
     if (!same(before.production[field], after.production[field]))
       out.push(`production.${field}`);
@@ -1098,6 +1123,9 @@ export async function updateProjectDocument(
             403,
             looser.map((f) => `incidents.${f}`),
           );
+        const leadLooser = loosenedLeadFields(current.lead, next.lead);
+        if (leadLooser.length)
+          throw new Refused(LOOSEN_LEAD_ERROR, 403, leadLooser);
         const wider = widenedFieldPaths(current, next);
         if (wider.length) throw new Refused(WIDEN_ERROR, 403, wider);
       }

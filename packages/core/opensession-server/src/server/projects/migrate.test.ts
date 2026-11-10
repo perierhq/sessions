@@ -275,6 +275,7 @@ test("re-migrating one project needs a confirm, backs up, then recomposes it", a
     {
       expectedRevision: 1,
       incidents: { maxRounds: 1 },
+      lead: { enabled: true, stage: "coordinate" },
       // A narrowing made on the page since the migration.
       access: {
         cells: [{ row: { kind: "webSearch" }, role: "reviews", value: false }],
@@ -327,6 +328,8 @@ test("re-migrating one project needs a confirm, backs up, then recomposes it", a
     incidents: { autonomy: "watch" },
   });
   expect(doc.incidents.maxRounds).not.toBe(1);
+  // The lead has no legacy settings, so a re-run keeps it.
+  expect(doc.lead).toMatchObject({ enabled: true, stage: "coordinate" });
   expect(await legacyDrift()).toEqual([]);
   expect(kit.audits.at(-1)).toMatchObject({
     kind: "project_settings_remigrated",

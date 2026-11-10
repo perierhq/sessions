@@ -71,6 +71,7 @@ import { createDesktopMcpServer } from "./desktop-mcp";
 import { createSelfDeployMcpServer } from "./self-deploy";
 import { createWebMcpServer } from "./web-mcp";
 import { createIncidentAccessMcpServer } from "./incidents/access/mcp";
+import { createLeadMcpServer } from "./leads/mcp";
 
 /**
  * The classes of run that carry in-process servers. One entry per wiring site,
@@ -688,6 +689,15 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     condition: "Only on a supervisor session (session.supervisor).",
     note: "Acts on the inbox of the session's owner only (supervisor-inbox.ts).",
     build: () => createSupervisorMcpServer({ user: USER }),
+  },
+  {
+    name: "opensession-lead",
+    summary: INTERNAL_MCP_CAPABILITIES["opensession-lead"].summary,
+    source: "packages/core/opensession-server/src/server/leads/mcp.ts",
+    wiring: [],
+    runClasses: ["unwired"],
+    note: "Bound to one project. Mounted on the project lead's goal once leads run (adrs/supervisor-and-leads.md).",
+    build: () => createLeadMcpServer("example"),
   },
   {
     name: "opensession-incident-access",
