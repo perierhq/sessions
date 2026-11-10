@@ -371,6 +371,27 @@ environment. Two engines share it:
   tool calls and transcripts through `/api/desk/voice/tool` and
   `/transcript`.
 
+## Blob speech (Fish Audio)
+
+The Blob app reads its answers aloud with [Fish Audio](https://docs.fish.audio)
+text to speech when the server has a Fish API key; otherwise it uses the
+device's own voices. The key never reaches the device
+(`src/server/blob-speech.ts`).
+
+- Set the key once with `PUT /api/blob/speech/key` `{ "apiKey": "..." }`
+  (an empty string clears it). It is stored in
+  `stateDir("blob")/speech.json` (0600) and only returned masked.
+  `FISH_AUDIO_API_KEY` is used when no key is stored.
+- `PUT /api/blob/speech/settings` `{ "model": "s2.1-pro" | "s2.1-pro-free",
+"voiceId"?: string | null }` picks the model and an optional Fish voice id
+  (`reference_id`). `s2.1-pro` is the default. `s2.1-pro-free` costs nothing
+  but is slower, and Fish may train on its requests.
+- `GET /api/blob/speech/status` returns `configured`, `keyMasked`, `model`
+  and `voiceId`.
+- `POST /api/blob/speech` `{ "text": "..." }` streams `audio/mpeg` from Fish
+  to the client. Text is trimmed and cut at 1500 characters; each user may
+  make 30 requests a minute. No key is a 503; a Fish failure is a 502.
+
 ## AWS creds for runs (`AGENT_AWS_REGION`)
 
 `packages/core/opensession-server/src/server/aws-creds.ts` mints short-lived
