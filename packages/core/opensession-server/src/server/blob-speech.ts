@@ -17,8 +17,14 @@ const settingsPath = () => `${dir()}/speech.json`;
 export const FISH_TTS_URL = "https://api.fish.audio/v1/tts";
 
 /** `s2.1-pro` is the paid, faster model. `s2.1-pro-free` costs nothing but is
- * slower and Fish may train on its requests. Anything else is refused. */
-export const BLOB_SPEECH_MODELS = ["s2.1-pro", "s2.1-pro-free"] as const;
+ * slower and Fish may train on its requests. `drama-3` is the directable,
+ * more expressive model at a higher price ($50 per M bytes; $10 until 30 Nov
+ * 2026). Anything else is refused. */
+export const BLOB_SPEECH_MODELS = [
+  "s2.1-pro",
+  "s2.1-pro-free",
+  "drama-3",
+] as const;
 export type BlobSpeechModel = (typeof BLOB_SPEECH_MODELS)[number];
 export const BLOB_SPEECH_MODEL: BlobSpeechModel = "s2.1-pro";
 
@@ -30,7 +36,7 @@ export const BLOB_SPEECH_MAX_CHARS = 1500;
 const MAX_VOICE_ID_CHARS = 128;
 
 export function isBlobSpeechModel(value: unknown): value is BlobSpeechModel {
-  return value === "s2.1-pro" || value === "s2.1-pro-free";
+  return (BLOB_SPEECH_MODELS as readonly unknown[]).includes(value);
 }
 
 interface SpeechSettingsFile {
@@ -92,6 +98,14 @@ function updateSettingsFile(
 
 /** The stored settings with the key resolved: the stored key, else the
  * FISH_AUDIO_API_KEY environment variable. */
+/**
+ * The voice Blob uses until one is chosen. Fish picks a fresh random speaker
+ * for every request without a `reference_id`, and Blob reads an answer as
+ * several requests (one per sentence or piece), so an unset voice changed
+ * between sentences. A public Fish voice ("Sarah": calm, conversational).
+ */
+export const DEFAULT_BLOB_VOICE_ID = "933563129e564b19a115bedd57b7406a";
+
 async function resolvedSettings(): Promise<{
   key?: string;
   model: BlobSpeechModel;
@@ -248,7 +262,7 @@ export async function synthesizeBlobSpeech(
         text,
         format: "mp3",
         latency: "balanced",
-        ...(voiceId ? { reference_id: voiceId } : {}),
+        reference_id: voiceId || DEFAULT_BLOB_VOICE_ID,
       }),
       signal,
     });
