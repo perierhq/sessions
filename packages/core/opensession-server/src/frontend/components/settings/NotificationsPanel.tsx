@@ -35,6 +35,7 @@ import {
   type NotificationAlerts,
 } from "../../lib/notifications";
 import { getCurrentUser } from "../UserPicker";
+import { BarkSection } from "./BarkSection";
 import { Select, SettingRow } from "./shared";
 
 // ── Notifications ──────────────────────────────────────────────────────────
@@ -205,6 +206,8 @@ export function NotificationsPanel() {
         {alertError ||
           "Everything still lands in your inbox. These choose what also sends a banner, a sound and a push, on every device."}
       </SettingsHint>
+
+      <BarkSection />
     </SettingsPanel>
   );
 }

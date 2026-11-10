@@ -4,9 +4,10 @@
  *
  * This is the only way the server notifies a person. `notifyUser` records the
  * event, tells that person's open clients over the WebSocket, and sends Web
- * Push to their devices when their alert settings allow it. Clients never
- * work out notifications by diffing session lists: a banner can only come
- * from a new record, so reconnecting or restarting an app cannot replay one.
+ * Push to their devices (and Bark, bark.ts, when they set it up) when their
+ * alert settings allow it. Clients never work out notifications by diffing
+ * session lists: a banner can only come from a new record, so reconnecting
+ * or restarting an app cannot replay one.
  *
  * An event is delivered as an alert (unread, pushed), quietly (the row
  * updates in place, no push) or as a replace (the row updates and a banner
@@ -231,13 +232,29 @@ export async function deliverNotification(
     });
   } catch {}
   if (alert || replace) {
+    const kind = alert ? "alert" : "replace";
     try {
+      const { payload, options } = await pushFor(thread, event, kind);
+      // Bark (bark.ts) runs on its own: a slow Bark server never holds up
+      // Web Push or the caller, and it never throws.
+      void import("./bark")
+        .then(async ({ sendBarkNotification }) =>
+          sendBarkNotification(
+            user,
+            thread,
+            event,
+            kind,
+            payload,
+            await topicFor(thread.id),
+          ),
+        )
+        .catch((error) => {
+          console.warn(
+            "[notifications] bark failed:",
+            error instanceof Error ? error.message : error,
+          );
+        });
       const { sendPushToUser } = await import("./push");
-      const { payload, options } = await pushFor(
-        thread,
-        event,
-        alert ? "alert" : "replace",
-      );
       if (options) await sendPushToUser(user, payload, options);
       else await sendPushToUser(user, payload);
     } catch (error) {

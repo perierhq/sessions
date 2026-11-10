@@ -11,12 +11,21 @@
  *   POST /api/supervisor/items/:id/dismiss      { user }
  *   GET  /api/supervisor/prefs?user=
  *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle? }
+ *   GET  /api/supervisor/bark                    keys masked; signed in only
+ *   PUT  /api/supervisor/bark                    { enabled?, serverUrl?, openIn?, deviceKey?, encryption? }
+ *   POST /api/supervisor/bark/test
  */
 
 import type { RouteContext } from "./context";
-import { requestUser } from "./context";
+import { requestUser, verifiedPerson } from "./context";
 import { findSessionAsync } from "../session-cache";
 import { ensureSupervisorSession } from "../supervisor";
+import {
+  getBarkSettings,
+  sendBarkTest,
+  setBarkSettings,
+  validateBarkPatch,
+} from "../bark";
 import {
   answerSupervisorItem,
   dismissSupervisorItem,
@@ -121,6 +130,44 @@ export async function handleSupervisorRoutes(
     if ("error" in patch)
       return Response.json({ error: patch.error }, { status: 400 });
     return Response.json({ prefs: await setSupervisorPrefs(user, patch) });
+  }
+
+  // Bark holds the person's device and encryption keys: signed-in people
+  // only, never a claimed name or an automation.
+  if (path === "/api/supervisor/bark" || path === "/api/supervisor/bark/test") {
+    const user = verifiedPerson(ctx);
+    if (!user)
+      return Response.json(
+        { error: "Sign in to set up Bark" },
+        { status: 401 },
+      );
+
+    if (path === "/api/supervisor/bark" && req.method === "GET")
+      return Response.json({ bark: await getBarkSettings(user) });
+
+    if (path === "/api/supervisor/bark" && req.method === "PUT") {
+      const body = await req.json().catch(() => null);
+      const { user: _user, ...fields } =
+        body && typeof body === "object"
+          ? body
+          : ({} as Record<string, unknown>);
+      const patch = validateBarkPatch(fields);
+      if ("error" in patch)
+        return Response.json({ error: patch.error }, { status: 400 });
+      const result = await setBarkSettings(user, patch);
+      if (!result.ok)
+        return Response.json({ error: result.error }, { status: 400 });
+      return Response.json({ bark: result.settings });
+    }
+
+    if (path === "/api/supervisor/bark/test" && req.method === "POST") {
+      const result = await sendBarkTest(user);
+      if (result.ok) return Response.json({ ok: true });
+      return Response.json(
+        { error: result.error },
+        { status: result.setup ? 400 : 502 },
+      );
+    }
   }
 
   return undefined;
