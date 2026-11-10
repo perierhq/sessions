@@ -13,8 +13,11 @@ import type { LeadGoalFields, LeadWakePlan } from "../goal-runner";
 import {
   LEAD_UNAVAILABLE_REASON,
   WAKE_CHECK_FAILED_REASON,
+  goalMonthSpend,
+  monthOf,
   type Goal,
 } from "../goals";
+import { supervisorInboxKey } from "../supervisor-inbox";
 import { leadCharter } from "./charter";
 import { LEAD_SOURCE_PREFIX, leadOwner, leadSource } from "./report";
 
@@ -23,11 +26,15 @@ export const LEAD_OFF_REASON = "The lead is off in the project settings";
 export const KILL_SWITCH_REASON = "Agents are paused for this project";
 const BUDGET_REASON_PREFIX = "Over the lead's budget";
 /** A new goal waits under this until its id is in the settings. */
-const STARTING_REASON = "Starting: the lead is recording its goal";
+export const STARTING_REASON = "Starting: the lead is recording its goal";
 /** A goal leadProject names that the settings no longer point at. */
 const NOT_THE_LEAD_REASON = "Another goal leads this project";
-/** How often an idle tick may retry a pause the runner made. */
+/** How often an idle tick may retry a pause the runner made, or a budget
+ *  pause from an earlier month. */
 const RETRY_MS = 10 * 60_000;
+/** Boot retries of the lead goals that failed, doubling up to the cap. */
+const BOOT_RETRY_MS = 60_000;
+const BOOT_RETRY_MAX_MS = 30 * 60_000;
 
 export interface LeadGoalDeps {
   now(): number;
@@ -43,6 +50,9 @@ export interface LeadGoalDeps {
   mutateGoal: (typeof import("../goals"))["mutateGoal"];
   appendLedger: (typeof import("../goals"))["appendLedger"];
   postSupervisorItem: (typeof import("../supervisor-inbox"))["postSupervisorItem"];
+  listProjectDocuments(): Promise<ProjectSettingsDocument[]>;
+  /** Run `fn` once after `ms`; never holds the process open. */
+  later(fn: () => void, ms: number): void;
 }
 
 const liveDeps: LeadGoalDeps = {
@@ -66,6 +76,11 @@ const liveDeps: LeadGoalDeps = {
     (await import("../goals")).appendLedger(...args),
   postSupervisorItem: async (...args) =>
     (await import("../supervisor-inbox")).postSupervisorItem(...args),
+  listProjectDocuments: async () =>
+    (await import("../projects/store")).listProjectDocuments(),
+  later: (fn, ms) => {
+    setTimeout(fn, ms).unref?.();
+  },
 };
 
 let override: Partial<LeadGoalDeps> | undefined;
@@ -116,14 +131,6 @@ function sameFields(goal: Goal, fields: LeadGoalFields) {
   );
 }
 
-function monthOf(at: number): string {
-  return new Date(at).toISOString().slice(0, 7);
-}
-
-function spentThisMonth(goal: Pick<Goal, "spend">, now: number): number {
-  return goal.spend?.month === monthOf(now) ? goal.spend.usd : 0;
-}
-
 /** Why the lead's goal must not run now, or null. */
 export function leadBlockReason(
   doc: ProjectSettingsDocument,
@@ -132,10 +139,28 @@ export function leadBlockReason(
 ): string | null {
   if (!doc.lead.enabled) return LEAD_OFF_REASON;
   if (doc.incidents.agentsPaused) return KILL_SWITCH_REASON;
-  const spent = spentThisMonth(goal, now);
+  const spent = goalMonthSpend(goal, now);
   if (!(spent < doc.lead.budgetUsdPerMonth))
     return `${BUDGET_REASON_PREFIX}: $${Number(spent.toFixed(2))} of $${doc.lead.budgetUsdPerMonth} this month`;
   return null;
+}
+
+/** Whether the lead's own rules made this pause (its settings, its
+ *  budget, its start, or the runner failing to ask it), so the lead may
+ *  lift it. A pause or a finish from the goals page or API is the owner's
+ *  and stays until the owner resumes the goal. */
+export function leadOwnsPause(goal: Pick<Goal, "status" | "pauseReason">) {
+  if (goal.status !== "paused") return false;
+  const reason = goal.pauseReason ?? "";
+  return (
+    reason === LEAD_OFF_REASON ||
+    reason === KILL_SWITCH_REASON ||
+    reason === STARTING_REASON ||
+    reason === NOT_THE_LEAD_REASON ||
+    reason === LEAD_UNAVAILABLE_REASON ||
+    reason.startsWith(BUDGET_REASON_PREFIX) ||
+    reason.startsWith(WAKE_CHECK_FAILED_REASON)
+  );
 }
 
 export type EnsureResult =
@@ -149,8 +174,8 @@ const chains = new Map<string, Promise<unknown>>();
  * that already leads the project, or create one when the lead is on and
  * has none (storing its id in the settings), rewrite its charter when the
  * settings changed, pause it when the lead is off, and make it active
- * again whenever the lead is on and nothing blocks it, whoever paused or
- * finished it. Serialized per project, so two settings writes never
+ * again when the lead is on, nothing blocks it and the pause was its own
+ * (leadOwnsPause). Serialized per project, so two settings writes never
  * create two goals.
  */
 export function ensureLeadGoal(project: string): Promise<EnsureResult> {
@@ -177,8 +202,7 @@ async function findLeadGoal(
 ): Promise<Goal | null> {
   if (doc.lead.goalId) {
     const named = await d.getGoal(doc.lead.goalId);
-    if (named && (!named.leadProject || named.leadProject === project))
-      return named;
+    if (named?.leadProject === project) return named;
   }
   const orphan = (await d.listGoals())
     .filter((g) => g.leadProject === project)
@@ -245,7 +269,7 @@ async function ensureNow(project: string): Promise<EnsureResult> {
   const fields = leadGoalFields(project, doc, d);
   const now = d.now();
   const block = leadBlockReason(doc, existing, now);
-  const resume = !block && existing.status !== "active";
+  const resume = !block && leadOwnsPause(existing);
   if (
     sameFields(existing, fields) &&
     !resume &&
@@ -256,11 +280,10 @@ async function ensureNow(project: string): Promise<EnsureResult> {
     ...g,
     ...fields,
     leadProject: project,
-    ...(resume && g.status !== "active"
+    ...(resume && leadOwnsPause(g)
       ? {
           status: "active" as const,
           pauseReason: undefined,
-          doneReason: undefined,
           nextWakeAt: new Date(now).toISOString(),
         }
       : {}),
@@ -323,7 +346,7 @@ export async function leadWakeCheck(goal: Goal): Promise<LeadWakePlan> {
   }
   return {
     fields: leadGoalFields(project, doc, d),
-    budgetUsd: doc.lead.budgetUsdPerMonth - spentThisMonth(goal, now),
+    budgetUsd: doc.lead.budgetUsdPerMonth - goalMonthSpend(goal, now),
     web: doc.lead.stage !== "watch",
   };
 }
@@ -333,8 +356,8 @@ const idleRetries = new Map<string, number>();
 /**
  * On a tick, for a lead's goal that isn't active: a budget pause from an
  * earlier month lapses (its spend starts again at 0), and a pause the
- * runner made because it couldn't ask the lead is retried every few
- * minutes. Both go through ensureLeadGoal, which resumes the goal only
+ * runner made because it couldn't ask the lead is retried, each at most
+ * every few minutes. Both go through ensureLeadGoal, which resumes the goal only
  * when nothing blocks it.
  */
 export async function leadGoalIdle(goal: Goal, now: number): Promise<void> {
@@ -348,7 +371,9 @@ export async function leadGoalIdle(goal: Goal, now: number): Promise<void> {
     reason === LEAD_UNAVAILABLE_REASON ||
     reason.startsWith(WAKE_CHECK_FAILED_REASON);
   if (!monthTurned && !runnerPause) return;
-  if (runnerPause && now - (idleRetries.get(goal.id) ?? 0) < RETRY_MS) return;
+  // Both are retried at most every few minutes: a budget of $0 stays over
+  // it in the new month, so its pause would otherwise be retried each tick.
+  if (now - (idleRetries.get(goal.id) ?? 0) < RETRY_MS) return;
   idleRetries.set(goal.id, now);
   try {
     await ensureLeadGoal(project);
@@ -362,10 +387,12 @@ export async function leadGoalIdle(goal: Goal, now: number): Promise<void> {
 
 /**
  * One of the lead's items was answered. The owner's own answer lands in
- * the lead's ledger and wakes it soon, resuming it if nothing blocks it;
+ * the lead's ledger and wakes it soon, resuming it from a pause of its
+ * own if nothing blocks it;
  * at the watch stage an approval changes nothing by itself: the next wake
  * prepares the change and proposes it. An answer the supervisor recorded
- * from a conversation is logged as such and approves nothing.
+ * from a conversation, or one from someone who isn't the lead's owner now,
+ * is logged as such and approves nothing.
  */
 export async function handleLeadAnswer(
   item: SupervisorItem,
@@ -380,13 +407,25 @@ export async function handleLeadAnswer(
   const goal = await d.getGoal(doc.lead.goalId);
   if (!goal) return;
   const what = `"${item.title}"${item.dedupeKey ? ` (${item.dedupeKey})` : ""}`;
-  if (answeredBy !== "owner") {
+  // Only the lead's owner answering in their own inbox counts as the
+  // owner's answer: the item may sit in an earlier owner's inbox.
+  const owner = leadOwner(doc);
+  const ownersAnswer =
+    answeredBy === "owner" &&
+    !!owner &&
+    supervisorInboxKey(item.user ?? "") === supervisorInboxKey(owner);
+  if (!ownersAnswer) {
     await d.appendLedger(
       goal,
-      [
-        `The supervisor recorded an answer to ${what}: ${answer}`,
-        "This is the supervisor's note of a conversation, not the owner's answer: it approves nothing. If it matters, propose it again so the owner answers it.",
-      ].join("\n\n"),
+      answeredBy === "owner"
+        ? [
+            `${item.user || "Someone"} answered ${what}: ${answer}`,
+            "They are not the lead's owner now, so it approves nothing. If it matters, propose it again so the owner answers it.",
+          ].join("\n\n")
+        : [
+            `The supervisor recorded an answer to ${what}: ${answer}`,
+            "This is the supervisor's note of a conversation, not the owner's answer: it approves nothing. If it matters, propose it again so the owner answers it.",
+          ].join("\n\n"),
     );
     return;
   }
@@ -405,8 +444,47 @@ export async function handleLeadAnswer(
   );
 }
 
+/**
+ * Bring the goal of every project whose lead is on, or has a goal, in line
+ * with its settings, so a write the listener missed (a restart between the
+ * write and its ensure) still lands. Projects still on their legacy
+ * settings have no lead. Retried later, with a doubling delay, until every
+ * one succeeds.
+ */
+export async function ensureLeadGoalsAtBoot(
+  delayMs: number = BOOT_RETRY_MS,
+): Promise<void> {
+  const d = deps();
+  let ok = true;
+  try {
+    for (const doc of await d.listProjectDocuments()) {
+      if (!doc.lead.enabled && !doc.lead.goalId) continue;
+      try {
+        await ensureLeadGoal(doc.project);
+      } catch (error) {
+        ok = false;
+        console.warn(
+          `[leads] ${doc.project}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+  } catch (error) {
+    ok = false;
+    console.warn(
+      "[leads] could not list the project settings:",
+      error instanceof Error ? error.message : error,
+    );
+  }
+  if (ok) return;
+  d.later(() => {
+    void ensureLeadGoalsAtBoot(Math.min(delayMs * 2, BOOT_RETRY_MAX_MS));
+  }, delayMs);
+}
+
 /** Register the lead's listeners: settings writes, the owner's answers and
- *  the goal runner's lead hooks. Idempotent; called from boot. */
+ *  the goal runner's lead hooks, then bring every lead's goal in line once.
+ *  Idempotent; called from boot. */
 export async function startProjectLeads(): Promise<void> {
   const g = globalThis as { __projectLeadsStarted?: boolean };
   if (g.__projectLeadsStarted) return;
@@ -427,4 +505,5 @@ export async function startProjectLeads(): Promise<void> {
   });
   onSupervisorAnswer(LEAD_SOURCE_PREFIX, handleLeadAnswer);
   runner.registerLeadGoalHooks({ wake: leadWakeCheck, idle: leadGoalIdle });
+  void ensureLeadGoalsAtBoot();
 }

@@ -676,6 +676,8 @@ export async function listSupervisorItems(
     kind?: SupervisorItemKind;
     /** Only items changed at or after this ms epoch. */
     since?: number;
+    /** Only items whose `dedupeKey` starts with this. */
+    dedupeKeyPrefix?: string;
     limit?: number;
   } = {},
 ): Promise<SupervisorItem[]> {
@@ -690,7 +692,9 @@ export async function listSupervisorItems(
       (item) =>
         (!options.state || item.state === options.state) &&
         (!options.kind || item.kind === options.kind) &&
-        (options.since === undefined || item.updatedAt >= options.since),
+        (options.since === undefined || item.updatedAt >= options.since) &&
+        (options.dedupeKeyPrefix === undefined ||
+          !!item.dedupeKey?.startsWith(options.dedupeKeyPrefix)),
     )
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, limit);

@@ -22,6 +22,7 @@ import {
   LEAD_UNAVAILABLE_REASON,
   WAKE_CHECK_FAILED_REASON,
   addGoalSpend,
+  getGoal,
   listGoals,
   mutateGoal,
   type Goal,
@@ -156,37 +157,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Says why a goal must not wake now (it is paused with that reason), or
- *  null. Registered by owners of goals with extra rules, such as a project
- *  lead's budget, so this runner stays generic. */
-export type GoalWakeCheck = (goal: Goal) => Promise<string | null>;
-
-const wakeChecks: Set<GoalWakeCheck> = (g.__goalWakeChecks ??= new Set());
-
-/** Add a check run at the start of every wake; returns the unsubscribe. */
-export function registerGoalWakeCheck(check: GoalWakeCheck): () => void {
-  wakeChecks.add(check);
-  return () => {
-    wakeChecks.delete(check);
-  };
-}
-
-/** The first reason a check gives. A check that throws is logged; it lets
- *  an ordinary goal's wake go ahead and blocks a project lead's. */
-async function wakeBlocked(goal: Goal): Promise<string | null> {
-  for (const check of [...wakeChecks]) {
-    try {
-      const reason = await check(goal);
-      if (reason) return reason;
-    } catch (error) {
-      console.error(`[goals] wake check for "${goal.name}" failed:`, error);
-      if (goal.leadProject)
-        return `${WAKE_CHECK_FAILED_REASON}: ${errorText(error)}`;
-    }
-  }
-  return null;
-}
-
 function buildGoalWakePrompt(
   goal: Goal,
   wake: number,
@@ -264,11 +234,6 @@ export async function runGoal(stored: Goal): Promise<void> {
       }
       lead = plan;
       goal = { ...stored, ...plan.fields };
-    }
-    const blocked = await wakeBlocked(goal);
-    if (blocked) {
-      await pauseBeforeWake(goal, blocked);
-      return;
     }
     // Code goals keep ONE persistent worktree so the engine session (keyed on
     // cwd) resumes cleanly across wakes; ask goals read the main checkout,
@@ -366,9 +331,11 @@ export async function runGoal(stored: Goal): Promise<void> {
           return;
         }
       } else if (runCostUsd < lead.budgetUsd * LEAD_WRAP_UP_FACTOR) return;
+      // Only a cancel that landed counts: otherwise the next usage event
+      // tries again.
+      if (!(await cancelAgentRunToken(runToken).catch(() => false))) return;
       stopped = true;
-      console.log(`[goals] "${goal.name}" is past its budget; stopping it`);
-      await cancelAgentRunToken(runToken).catch(() => false);
+      console.log(`[goals] "${goal.name}" is past its budget; stopped it`);
     };
     for await (const event of runAgent({
       prompt: buildGoalWakePrompt(goal, wake, cwd, lead),
@@ -522,6 +489,83 @@ async function pauseBeforeWake(goal: Goal, reason: string): Promise<void> {
       : current,
   );
   console.log(`[goals] "${goal.name}" paused before its wake: ${reason}`);
+}
+
+/** What boot recovery does with a goal's run a restart interrupted:
+ *  `resume` it with the interactive server set (an ordinary goal, as
+ *  before), or `rewake` it. A project lead's wake is never resumed: its
+ *  tools, wake check and budget exist only inside runGoal, so the run is
+ *  settled and the goal woken afresh. An unreadable goal is rewoken too,
+ *  since it may be a lead's. */
+export function goalRecoveryPlan(
+  goal: Pick<Goal, "leadProject"> | null | undefined,
+): "resume" | "rewake" {
+  return goal && !goal.leadProject ? "resume" : "rewake";
+}
+
+/** The in-process servers a goal session's resumed run gets: the
+ *  interactive set and its self-cadence tools for an ordinary goal, none
+ *  for a lead's (settleInterruptedGoalRun keeps it from resuming at all). */
+export async function goalRecoveryMcpServers(
+  goalId: string,
+  interactive: () => Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (goalRecoveryPlan(await getGoal(goalId)) !== "resume") return {};
+  return {
+    ...interactive(),
+    "opensession-goal-self": createGoalSelfMcpServer(goalId),
+  };
+}
+
+export const INTERRUPTED_WAKE_ERROR =
+  "Interrupted by a restart: woken again instead of resumed";
+
+/**
+ * Boot recovery's hook for an interrupted run: true when it is a goal's run
+ * that must not be resumed (goalRecoveryPlan says `rewake`). Its wake is
+ * then recorded as interrupted and the goal is due now, so the ticker runs
+ * a fresh runGoal. The goal is the one its session names, else, for a wake
+ * stopped before its session file was written, the one whose session it
+ * is. Fails closed: a goal it can't read is not resumed.
+ */
+export async function settleInterruptedGoalRun(
+  run: { osSessionId?: string; kind?: string },
+  sessionGoalId: string | undefined,
+): Promise<boolean> {
+  if (!sessionGoalId && run.kind !== "goal") return false;
+  let goal: Goal | null;
+  try {
+    goal = sessionGoalId
+      ? await getGoal(sessionGoalId)
+      : ((await listGoals()).find(
+          (g) => !!run.osSessionId && g.osSessionId === run.osSessionId,
+        ) ?? null);
+  } catch (error) {
+    console.error(
+      `[goals] could not read the goal of an interrupted run:`,
+      error,
+    );
+    return true;
+  }
+  if (!sessionGoalId && !goal) return false;
+  if (goalRecoveryPlan(goal) === "resume") return false;
+  if (!goal) return true;
+  const now = new Date().toISOString();
+  await mutateGoal(goal.id, (current) => ({
+    ...current,
+    lastRunStatus: "error",
+    lastRunError: INTERRUPTED_WAKE_ERROR,
+    ...(current.status === "active" && current.nextWakeAt > now
+      ? { nextWakeAt: now }
+      : {}),
+  })).catch((error: unknown) =>
+    console.error(
+      `[goals] "${goal.name}" could not record its interrupted wake:`,
+      error,
+    ),
+  );
+  console.log(`[goals] "${goal.name}" was interrupted; waking it afresh`);
+  return true;
 }
 
 /**

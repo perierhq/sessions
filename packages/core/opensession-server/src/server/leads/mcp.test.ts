@@ -9,10 +9,14 @@ import {
 } from "../../shared/project-settings";
 import { __setOwnerRosterForTest } from "../incidents/owner";
 import { useIncidentTestKernel } from "../incidents/testing/kernel-fixture";
+import { catalogDocuments } from "../catalog-documents";
 import {
+  SUPERVISOR_ITEMS_NAMESPACE,
   __resetSupervisorInboxForTest,
   __setSupervisorInboxDepsForTest,
   listSupervisorItems,
+  postSupervisorItem,
+  supervisorInboxKey,
 } from "../supervisor-inbox";
 import { createLeadMcpServer } from "./mcp";
 import { __setLeadOverviewDepsForTest } from "./overview";
@@ -303,6 +307,47 @@ describe("opensession-lead", () => {
     expect(notes.map((n) => n.dedupeKey).sort()).toEqual([
       "lead:acme:digest:2026-11-10",
       "lead:acme:digest:2026-11-11",
+    ]);
+  });
+
+  test("post_digest_note finds today's note behind a full inbox", async () => {
+    const { call } = await client();
+    await call("post_digest_note", { text: "Two flaps." });
+    // That note went out in a digest: a later one starts a new item.
+    await catalogDocuments(SUPERVISOR_ITEMS_NAMESPACE).update(
+      supervisorInboxKey("Ada"),
+      (doc) => {
+        const d = doc as { items: Array<Record<string, unknown>> };
+        return {
+          ...d,
+          items: d.items.map((item) => ({ ...item, digestedAt: clock })),
+        };
+      },
+    );
+    for (let i = 0; i < 101; i++) {
+      clock += 1_000;
+      await postSupervisorItem({
+        user: "Ada",
+        source: "supervisor",
+        kind: "fyi",
+        title: `Note ${i}`,
+        body: "x",
+        dedupeKey: `other:${i}`,
+      });
+    }
+    await call("post_digest_note", { text: "Two flaps, one proposal." });
+    const notes = await listSupervisorItems("Ada", {
+      kind: "fyi",
+      dedupeKeyPrefix: "lead:acme:digest:",
+    });
+    // The digested note is kept as it was; the new one is its own item.
+    expect(
+      notes
+        .map((n) => [n.dedupeKey, n.body])
+        .sort((a, b) => a[0]!.localeCompare(b[0]!)),
+    ).toEqual([
+      ["lead:acme:digest:2026-11-10", "Two flaps."],
+      ["lead:acme:digest:2026-11-10:2", "Two flaps, one proposal."],
     ]);
   });
 });

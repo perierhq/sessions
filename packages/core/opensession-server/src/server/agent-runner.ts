@@ -1658,6 +1658,11 @@ export async function resumeInterruptedRuns(
   onEvent?: (osSessionId: string, event: StreamEvent) => void | Promise<void>,
   snapshotLocalHostRuns: ActiveRunRecord[] = [],
   deferRecovery?: (run: ActiveRunRecord) => boolean | Promise<boolean>,
+  /** True for a run its owner starts again itself instead (a project
+   *  lead's goal wake): its journal is cleared and its session settled,
+   *  never resumed. Asked after the GitHub, Slack and workflow owners; one
+   *  that throws counts as true. */
+  restartedByOwner?: (run: ActiveRunRecord) => boolean | Promise<boolean>,
 ): Promise<string[]> {
   const resumed: string[] = [];
   const settledRunKeys = new Set<string>();
@@ -1965,6 +1970,23 @@ export async function resumeInterruptedRuns(
     // workflow store marks the run interrupted on boot, and replaying a lone
     // child agent without its script would be noise.
     if (run.kind?.startsWith("workflow")) {
+      rememberHandledSession(run);
+      journalClear(run.runKey);
+      if (run.osSessionId)
+        await transitionRunState(run.osSessionId, "turn_end");
+      continue;
+    }
+    // A hook that throws can't vouch for the run: settle it unresumed.
+    const ownerRestarts = await Promise.resolve()
+      .then(() => restartedByOwner?.(run))
+      .catch((error: unknown) => {
+        console.error(
+          `[runner] Recovery owner check failed for ${run.runKey}:`,
+          error,
+        );
+        return true;
+      });
+    if (ownerRestarts) {
       rememberHandledSession(run);
       journalClear(run.runKey);
       if (run.osSessionId)

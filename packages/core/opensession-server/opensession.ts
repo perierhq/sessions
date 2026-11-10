@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 
-import { createGoalSelfMcpServer } from "./src/agents/slack/goal-tools";
 import { type AgentModule } from "./src/agents/types";
 import { loadIntegrations } from "./src/server/integrations/load";
 import {
@@ -100,7 +99,11 @@ import {
   githubReconnectRequired,
   startGithubTokenRefresher,
 } from "./src/server/github-auth";
-import { startGoalTicker } from "./src/server/goal-runner";
+import {
+  goalRecoveryMcpServers,
+  settleInterruptedGoalRun,
+  startGoalTicker,
+} from "./src/server/goal-runner";
 import { startSessionHistoryIndexing } from "./src/server/session-index";
 import { startEventLoopLagMonitor } from "./src/server/system-stats";
 import { startGatewayProfilerSignal } from "./src/server/gateway-profiler";
@@ -1276,15 +1279,11 @@ if (!g.__opensessionBooted) {
                     session,
                     bksSessionId,
                   );
-                const servers: Record<string, unknown> = session.goalId
-                  ? {
-                      ...interactiveMcpServers(user, bksSessionId),
-                      "opensession-goal-self": createGoalSelfMcpServer(
-                        session.goalId,
-                      ),
-                    }
-                  : interactiveMcpServers(user, bksSessionId);
-                return servers;
+                if (session.goalId)
+                  return await goalRecoveryMcpServers(session.goalId, () =>
+                    interactiveMcpServers(user, bksSessionId),
+                  );
+                return interactiveMcpServers(user, bksSessionId);
               } catch (e) {
                 console.error(
                   `[runner] In-process MCP rebuild failed for ${bksSessionId}:`,
@@ -1310,6 +1309,15 @@ if (!g.__opensessionBooted) {
               !!run.promptEntryId &&
               !!(run.runnerId || run.sandboxId) &&
               creationOwnsPrompt(run.osSessionId, run.promptEntryId),
+            // A project lead's goal wake starts afresh through runGoal, which
+            // alone holds its tools, wake check and budget.
+            async (run) =>
+              settleInterruptedGoalRun(
+                run,
+                run.osSessionId
+                  ? findSession(run.osSessionId)?.goalId
+                  : undefined,
+              ),
           );
           if (resumedIds.length > 0) {
             console.log(

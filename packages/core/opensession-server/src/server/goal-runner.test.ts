@@ -57,6 +57,8 @@ let lastRun: RunOpts | null = null;
 /** Steers and cancels sent to a run, by its token. */
 let steers: Array<{ token: string; text: string }> = [];
 let cancels: string[] = [];
+/** Whether each cancel lands, in turn; true once the list runs out. */
+let cancelResults: boolean[] = [];
 const realAgentRunner = await import("./agent-runner");
 mock.module("./agent-runner", () => ({
   ...realAgentRunner,
@@ -72,7 +74,7 @@ mock.module("./agent-runner", () => ({
   },
   cancelAgentRunToken: async (token: string) => {
     cancels.push(token);
-    return true;
+    return cancelResults.shift() ?? true;
   },
 }));
 // The session file and live transcript watchers are not under test.
@@ -102,10 +104,12 @@ mock.module("./goals", () => ({
 }));
 
 const {
-  registerGoalWakeCheck,
+  INTERRUPTED_WAKE_ERROR,
+  goalRecoveryMcpServers,
   registerLeadGoalHooks,
   runGoal,
   runningGoals,
+  settleInterruptedGoalRun,
   tickGoals,
 } = await import("./goal-runner");
 const { createGoalSelfMcpServer } = await import("../agents/slack/goal-tools");
@@ -132,6 +136,7 @@ beforeEach(() => {
   lastRun = null;
   steers = [];
   cancels = [];
+  cancelResults = [];
   lists = 0;
   listGate = null;
 });
@@ -327,41 +332,7 @@ describe("goal wake", () => {
   });
 });
 
-describe("goal wake checks, leads and spend", () => {
-  test("a wake check pauses the goal before it runs", async () => {
-    const goal = await dueGoal();
-    const other = await dueGoal({ name: "Other" });
-    const off = registerGoalWakeCheck(async (g) =>
-      g.id === goal.id ? "Over budget" : null,
-    );
-    try {
-      await runGoal(goal);
-      expect(runs).toBe(0);
-      expect(await getGoal(goal.id)).toMatchObject({
-        status: "paused",
-        pauseReason: "Over budget",
-        wakeCount: 0,
-      });
-      await runGoal(other);
-      expect(runs).toBe(1);
-    } finally {
-      off();
-    }
-  });
-
-  test("a wake check that throws lets an ordinary wake go ahead", async () => {
-    const goal = await dueGoal();
-    const off = registerGoalWakeCheck(async () => {
-      throw new Error("settings unreadable");
-    });
-    try {
-      await runGoal(goal);
-      expect(runs).toBe(1);
-    } finally {
-      off();
-    }
-  });
-
+describe("leads and spend", () => {
   test("the lead project can't be set through a patch or the API body", async () => {
     const goal = await dueGoal({
       ...({ leadProject: "app" } as object),
@@ -562,25 +533,6 @@ describe("a project lead's goal", () => {
       status: "paused",
       pauseReason: "Its wake check failed: settings unreadable",
     });
-
-    // A generic check that throws blocks a lead too.
-    offHooks = registerLeadGoalHooks({
-      wake: async () => plan,
-      idle: async () => {},
-    });
-    const off = registerGoalWakeCheck(async () => {
-      throw new Error("check broke");
-    });
-    try {
-      const third = await leadGoal();
-      await runGoal(third);
-      expect(runs).toBe(0);
-      expect((await getGoal(third.id))?.pauseReason).toBe(
-        "Its wake check failed: check broke",
-      );
-    } finally {
-      off();
-    }
   });
 
   test("a block from the lead pauses it with the reason", async () => {
@@ -680,5 +632,125 @@ describe("a project lead's goal", () => {
     await tickGoals();
     expect(idles).toEqual([goal.id]);
     expect(runs).toBe(0);
+  });
+
+  test("a cancel that doesn't land is tried again and claims no stop", async () => {
+    const usage = (costUsd: number) => ({
+      costUsd,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      contextTokens: 1,
+    });
+    script = async function* () {
+      yield { type: "usage_snapshot", usage: usage(2.1) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(3.2) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(3.4) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(3.6) } as StreamEvent;
+    };
+    cancelResults = [false, true];
+    const goal = await leadGoal();
+    await runGoal(goal);
+    const token = lastRun!.startToken!;
+    // Tried at 3.2, again at 3.4, then stopped; never a third time.
+    expect(cancels).toEqual([token, token]);
+    expect((await getGoal(goal.id))?.lastRunError).toBe(
+      "Stopped: it reached its budget",
+    );
+
+    cancelResults = [false, false, false];
+    cancels = [];
+    const other = await leadGoal();
+    await runGoal(other);
+    expect(cancels).toHaveLength(3);
+    expect((await getGoal(other.id))?.lastRunError).toBeUndefined();
+  });
+});
+
+describe("restart recovery of a goal's run", () => {
+  test("a lead's interrupted wake is woken afresh, never resumed with the interactive tools", async () => {
+    const created = await createGoal(
+      {
+        name: "Lead: Shop",
+        mission: "Lead the shop.",
+        createdBy: "Project lead",
+        firstWakeAt: "2099-01-01T00:00:00Z",
+      },
+      { leadProject: "shop" },
+    );
+    if ("error" in created) throw new Error(created.error);
+    const interactive = () => ({
+      "opensession-admin": {},
+      "opensession-sessions": {},
+      "opensession-goals": {},
+    });
+    expect(await goalRecoveryMcpServers(created.id, interactive)).toEqual({});
+    const before = Date.now();
+    expect(await settleInterruptedGoalRun({ kind: "goal" }, created.id)).toBe(
+      true,
+    );
+    const goal = (await getGoal(created.id))!;
+    expect(goal).toMatchObject({
+      status: "active",
+      lastRunStatus: "error",
+      lastRunError: INTERRUPTED_WAKE_ERROR,
+    });
+    expect(Date.parse(goal.nextWakeAt)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(goal.nextWakeAt)).toBeLessThanOrEqual(Date.now());
+    // The ticker then runs it through runGoal, which fails closed here: no
+    // lead hooks are registered, so it pauses instead of running.
+    await tickGoals();
+    await settled(created.id);
+    expect(runs).toBe(0);
+    expect((await getGoal(created.id))?.status).toBe("paused");
+  });
+
+  test("a lead's wake stopped before its session file is found by its session", async () => {
+    const created = await createGoal(
+      {
+        name: "Lead: Shop",
+        mission: "Lead the shop.",
+        createdBy: "Project lead",
+      },
+      { leadProject: "shop" },
+    );
+    if ("error" in created) throw new Error(created.error);
+    await mutateGoal(created.id, (g) => ({ ...g, osSessionId: "os-lead-1" }));
+    expect(
+      await settleInterruptedGoalRun(
+        { kind: "goal", osSessionId: "os-lead-1" },
+        undefined,
+      ),
+    ).toBe(true);
+    // Another kind of run, or a session no goal owns, is left alone.
+    expect(
+      await settleInterruptedGoalRun(
+        { kind: "interactive", osSessionId: "os-lead-1" },
+        undefined,
+      ),
+    ).toBe(false);
+    expect(
+      await settleInterruptedGoalRun(
+        { kind: "goal", osSessionId: "os-other" },
+        undefined,
+      ),
+    ).toBe(false);
+  });
+
+  test("an ordinary goal resumes as before; an unknown goal does not", async () => {
+    const goal = await dueGoal();
+    const interactive = () => ({ "opensession-admin": {} });
+    expect(
+      Object.keys(await goalRecoveryMcpServers(goal.id, interactive)).sort(),
+    ).toEqual(["opensession-admin", "opensession-goal-self"]);
+    expect(await settleInterruptedGoalRun({ kind: "goal" }, goal.id)).toBe(
+      false,
+    );
+    expect((await getGoal(goal.id))?.lastRunError).toBeUndefined();
+    expect(await settleInterruptedGoalRun({ kind: "goal" }, "missing")).toBe(
+      true,
+    );
+    expect(await goalRecoveryMcpServers("missing", interactive)).toEqual({});
   });
 });

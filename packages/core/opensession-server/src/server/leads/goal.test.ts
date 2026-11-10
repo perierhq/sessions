@@ -31,8 +31,10 @@ import {
 import {
   KILL_SWITCH_REASON,
   LEAD_OFF_REASON,
+  STARTING_REASON,
   __setLeadGoalDepsForTest,
   ensureLeadGoal,
+  ensureLeadGoalsAtBoot,
   handleLeadAnswer,
   leadGoalIdle,
   leadWakeCheck,
@@ -168,7 +170,7 @@ describe("ensureLeadGoal", () => {
     expect(goal.mission).toContain("may cost $20 a month");
   });
 
-  test("off pauses the goal; on makes it active again, whoever paused it", async () => {
+  test("off pauses the goal; on makes it active again", async () => {
     await setLead({ enabled: true });
     await ensureLeadGoal(PROJECT);
     await setLead({ enabled: false });
@@ -183,21 +185,41 @@ describe("ensureLeadGoal", () => {
     const resumed = await leadGoal();
     expect(resumed.status).toBe("active");
     expect(resumed.nextWakeAt).toBe(new Date(clock).toISOString());
+  });
 
-    // The settings own a lead's status: a pause or a finish from anywhere
-    // else lasts until the next settings pass.
-    for (const status of ["paused", "done", "failed"] as const) {
-      await mutateGoal(resumed.id, (g) => ({
+  test("a pause or a finish from the goals page or API sticks", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    for (const [status, pauseReason] of [
+      ["paused", undefined],
+      ["paused", "Paused from the UI"],
+      ["paused", "Hit safety cap of 5 wakes — resume to continue."],
+      ["done", undefined],
+      ["failed", undefined],
+    ] as const) {
+      await mutateGoal(goal.id, (g) => ({ ...g, status, pauseReason }));
+      await ensureLeadGoal(PROJECT);
+      const after = await leadGoal();
+      expect(after.status).toBe(status);
+      expect(after.pauseReason).toBe(pauseReason);
+    }
+    // Each pause the lead's own rules made lifts once nothing blocks it.
+    for (const pauseReason of [
+      LEAD_OFF_REASON,
+      KILL_SWITCH_REASON,
+      STARTING_REASON,
+      LEAD_UNAVAILABLE_REASON,
+      "Its wake check failed: settings unreadable",
+      "Over the lead's budget: $5 of $5 this month",
+    ]) {
+      await mutateGoal(goal.id, (g) => ({
         ...g,
-        status,
-        pauseReason: "Waiting on the owner",
-        doneReason: "Finished",
+        status: "paused",
+        pauseReason,
       }));
       expect((await ensureLeadGoal(PROJECT)).action).toBe("resumed");
-      const again = await leadGoal();
-      expect(again.status).toBe("active");
-      expect(again.pauseReason).toBeUndefined();
-      expect(again.doneReason).toBeUndefined();
+      expect((await leadGoal()).status).toBe("active");
     }
   });
 
@@ -255,7 +277,7 @@ describe("ensureLeadGoal", () => {
         mission: "Old charter.",
         createdBy: "Project lead",
       },
-      { leadProject: PROJECT, pauseReason: "Starting" },
+      { leadProject: PROJECT, pauseReason: STARTING_REASON },
     );
     if ("error" in orphan) throw new Error(orphan.error);
     const result = await ensureLeadGoal(PROJECT);
@@ -265,6 +287,26 @@ describe("ensureLeadGoal", () => {
     const adopted = await leadGoal();
     expect(adopted.status).toBe("active");
     expect(adopted.mission).toStartWith("You are the project lead for Acme");
+  });
+
+  test("a goal id in the settings that isn't this project's lead is not adopted", async () => {
+    await setLead({ enabled: true });
+    const plain = await createGoal({
+      name: "Flake burndown",
+      mission: "Fix flakes.",
+      createdBy: "Ada",
+    });
+    if ("error" in plain) throw new Error(plain.error);
+    const { patchProjectDocumentAsServer } = await import("../projects/store");
+    await patchProjectDocumentAsServer(PROJECT, (d) => ({
+      ...d,
+      lead: { ...d.lead, goalId: plain.id },
+    }));
+    const result = await ensureLeadGoal(PROJECT);
+    expect(result.action).toBe("created");
+    expect((result as { goalId: string }).goalId).not.toBe(plain.id);
+    expect((await getGoal(plain.id))?.leadProject).toBeUndefined();
+    expect((await getGoal(plain.id))?.mission).toBe("Fix flakes.");
   });
 
   test("a deleted goal is created again", async () => {
@@ -449,6 +491,34 @@ describe("leadGoalIdle", () => {
     expect((await leadGoal()).status).toBe("active");
   });
 
+  test("a $0 budget's pause is retried at most every ten minutes", async () => {
+    await setLead({ enabled: true, budgetUsdPerMonth: 0 });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: "Over the lead's budget: $0 of $0 this month",
+      spend: { month: "2026-10", usd: 0.5 },
+    }));
+    let reads = 0;
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      projectDocument: async (project) => {
+        reads++;
+        return getProjectDocument(project);
+      },
+    });
+    for (let minute = 0; minute < 10; minute++)
+      await leadGoalIdle(await leadGoal(), clock + minute * 60_000);
+    expect(reads).toBe(1);
+    await leadGoalIdle(await leadGoal(), clock + 10 * 60_000);
+    expect(reads).toBe(2);
+    expect((await leadGoal()).status).toBe("paused");
+  });
+
   test("other pauses are left to the settings", async () => {
     await setLead({ enabled: true });
     await ensureLeadGoal(PROJECT);
@@ -554,7 +624,28 @@ describe("the owner's answers", () => {
     });
   });
 
-  test("the owner's answer resumes a paused lead and wakes it", async () => {
+  test("the owner's answer resumes a lead from its own pause and wakes it", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: LEAD_UNAVAILABLE_REASON,
+    }));
+    clock += 60_000;
+    await handleLeadAnswer(
+      { source: "lead:acme", title: "Acme: CI repair", user: "Ada" } as never,
+      "Approve",
+      "owner",
+    );
+    expect(await leadGoal()).toMatchObject({
+      status: "active",
+      nextWakeAt: new Date(clock).toISOString(),
+    });
+  });
+
+  test("the owner's answer leaves a pause from the goals page alone", async () => {
     await setLead({ enabled: true });
     await ensureLeadGoal(PROJECT);
     const goal = await leadGoal();
@@ -563,15 +654,96 @@ describe("the owner's answers", () => {
       status: "paused",
       pauseReason: "Paused from the UI",
     }));
-    clock += 60_000;
     await handleLeadAnswer(
-      { source: "lead:acme", title: "Acme: CI repair" } as never,
+      { source: "lead:acme", title: "Acme: CI repair", user: "ada" } as never,
       "Approve",
       "owner",
     );
-    expect(await leadGoal()).toMatchObject({
-      status: "active",
-      nextWakeAt: new Date(clock).toISOString(),
+    expect(await readLedger(await leadGoal())).toContain(
+      'Owner answered "Acme: CI repair": Approve',
+    );
+    expect((await leadGoal()).status).toBe("paused");
+  });
+
+  test("an answer from someone who isn't the lead's owner approves nothing", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      nextWakeAt: "2026-11-10T18:00:00.000Z",
+    }));
+    await handleLeadAnswer(
+      { source: "lead:acme", title: "Acme: CI repair", user: "Grace" } as never,
+      "Approve",
+      "owner",
+    );
+    const ledger = await readLedger(await leadGoal());
+    expect(ledger).toContain('Grace answered "Acme: CI repair": Approve');
+    expect(ledger).toContain("not the lead's owner now");
+    expect(ledger).not.toContain("Owner answered");
+    expect((await leadGoal()).nextWakeAt).toBe("2026-11-10T18:00:00.000Z");
+  });
+});
+
+describe("ensureLeadGoalsAtBoot", () => {
+  test("brings every lead's goal in line, retrying a failure later", async () => {
+    await setLead({ enabled: true });
+    const retries: Array<{ fn: () => void; ms: number }> = [];
+    let lists = 0;
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      listProjectDocuments: async () => {
+        if (++lists === 1) throw new Error("catalog down");
+        return [await getProjectDocument(PROJECT)];
+      },
+      later: (fn, ms) => {
+        retries.push({ fn, ms });
+      },
     });
+    await ensureLeadGoalsAtBoot();
+    expect(await listGoals()).toEqual([]);
+    expect(retries.map((r) => r.ms)).toEqual([60_000]);
+    retries[0]!.fn();
+    const active = async () =>
+      (await listGoals()).some((g) => g.status === "active");
+    for (let i = 0; i < 100 && !(await active()); i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    expect((await leadGoal()).status).toBe("active");
+    expect(retries).toHaveLength(1);
+  });
+
+  test("a project whose ensure fails is retried with a longer delay", async () => {
+    await setLead({ enabled: true });
+    const retries: number[] = [];
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      setGoalId: async () => {
+        throw new Error("catalog down");
+      },
+      later: (_fn, ms) => {
+        retries.push(ms);
+      },
+    });
+    await ensureLeadGoalsAtBoot(20 * 60_000);
+    expect(retries).toEqual([20 * 60_000]);
+  });
+
+  test("leaves projects whose lead was never on alone", async () => {
+    const retries: number[] = [];
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      listProjectDocuments: async () => [await getProjectDocument(PROJECT)],
+      later: (_fn, ms) => {
+        retries.push(ms);
+      },
+    });
+    await ensureLeadGoalsAtBoot();
+    expect(await listGoals()).toEqual([]);
+    expect(retries).toEqual([]);
   });
 });

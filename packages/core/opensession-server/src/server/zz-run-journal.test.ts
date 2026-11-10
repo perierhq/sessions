@@ -227,6 +227,56 @@ describe("run journal", () => {
     }
   });
 
+  it("settles a run its owner restarts itself without resuming it", async () => {
+    const sessionId = `goal-${crypto.randomUUID()}`;
+    const runKey = `goal-run-${crypto.randomUUID()}`;
+    const asked: string[] = [];
+    const fake = makeFakeEngine([{ kind: "clean" }]);
+    agent.__setEngineForTest(fake.engine);
+    try {
+      await mod.journalSet({
+        runKey,
+        osSessionId: sessionId,
+        prompt: "wake",
+        cwd: "/tmp",
+        kind: "goal",
+        mcpServers: [],
+        startedAt: new Date().toISOString(),
+      });
+      await transitionRunState(
+        sessionId,
+        "boot_journal_found",
+        undefined,
+        () => {},
+      );
+      const resumed = await agent.resumeInterruptedRuns(
+        undefined,
+        undefined,
+        () => {
+          throw new Error("must not rebuild tools for a restarted run");
+        },
+        undefined,
+        undefined,
+        [],
+        undefined,
+        (run) => {
+          asked.push(run.runKey);
+          return run.runKey === runKey;
+        },
+      );
+      expect(resumed).toContain(sessionId);
+      expect(asked).toEqual([runKey]);
+      expect(fake.calls).toHaveLength(0);
+      expect(agent.isAgentSessionBusy(sessionId)).toBe(false);
+      expect(mod.activeRunRecords().some((run) => run.runKey === runKey)).toBe(
+        false,
+      );
+    } finally {
+      mod.journalClear(runKey);
+      await clearRunState(sessionId);
+    }
+  });
+
   it("keeps an unclaimed journal owner fenced until recovery proves it absent", async () => {
     const sessionId = `queued-recovery-${crypto.randomUUID()}`;
     const runKey = `run-${crypto.randomUUID()}`;

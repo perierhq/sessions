@@ -196,9 +196,11 @@ export async function postLeadDigestNote(
   if (!owner) return { queued: false, reason: NOBODY };
   const day = new Date(now).toISOString().slice(0, 10);
   const base = `${leadSource(project)}:digest:${day}`;
+  // Today's notes only, found by their key however full the inbox is.
   const open = await listSupervisorItems(owner, {
     kind: "fyi",
     state: "open",
+    dedupeKeyPrefix: base,
     limit: 100,
   });
   let dedupeKey = base;
