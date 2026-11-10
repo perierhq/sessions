@@ -147,7 +147,7 @@ describe("opensession-lead", () => {
       source: "lead:acme",
       project: PROJECT,
       // The server writes the title. The body leads with what Blob says
-      // (the lead's first paragraph), then the rule that applied, the
+      // (the lead's say fence or first paragraph), then the rule that applied, the
       // lead's title and the rest.
       title: "Acme: Signal rule changes",
       options: ["Raise to 8 failures in a row", "Leave it"],
@@ -186,7 +186,23 @@ describe("opensession-lead", () => {
     expect(pushes).toEqual(["Ada"]);
   });
 
-  test("the body's first paragraph is what Blob says; the rest is shown", async () => {
+  test("the body's say fence is what Blob says; the rest is shown", async () => {
+    const { call } = await client();
+    await call("propose", {
+      ...flapProposal,
+      body: "```say\nThe status signal keeps flapping.\n\nI'd raise its threshold.\n```\n| Opened | Closed alone |\n| --- | --- |\n| 16 | 16 |",
+    });
+    const [item] = await listSupervisorItems("Ada");
+    expect(item!.body.split("\n\n")).toEqual([
+      "```say\nThe status signal keeps flapping.",
+      "I'd raise its threshold.\n```",
+      "Rule: Asks first: Signal rule changes, from the project settings.",
+      "Status page flaps",
+      "| Opened | Closed alone |\n| --- | --- |\n| 16 | 16 |",
+    ]);
+  });
+
+  test("without a say fence, the first paragraph is what Blob says", async () => {
     const { call } = await client();
     await call("propose", {
       ...flapProposal,
@@ -213,13 +229,13 @@ describe("opensession-lead", () => {
           | undefined
       )?.description;
     expect(byName.get("propose")?.description).toContain(
-      "the first paragraph is spoken, the rest is shown, in the owner's report style",
+      "a leading ```say fence is spoken, the rest is shown, in the owner's report style",
     );
     expect(param("propose", "body")).toContain(
-      "First paragraph: what Blob says aloud when it presents the decision",
+      "A ```say fence first: what Blob says aloud when it presents the decision",
     );
     expect(param("post_digest_note", "text")).toContain(
-      "First paragraph: what Blob says aloud",
+      "A ```say fence first: what Blob says aloud",
     );
   });
 

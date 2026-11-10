@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { nextOwnerSpoke, supervisorClockLine } from "./supervisor-clock";
+import { recordOwnerSpoke, supervisorClockLine } from "./supervisor-clock";
+import type { UnifiedSession } from "./types";
 
 describe("supervisorClockLine", () => {
   // Tuesday 2026-11-10 13:05 UTC, 14:05 in Warsaw.
@@ -69,13 +70,40 @@ describe("supervisorClockLine", () => {
   });
 });
 
-describe("nextOwnerSpoke", () => {
-  test("shifts the last message into previousAt", () => {
-    const first = nextOwnerSpoke(undefined, new Date("2026-11-10T08:00:00Z"));
-    expect(first).toEqual({ at: "2026-11-10T08:00:00.000Z" });
-    expect(nextOwnerSpoke(first, new Date("2026-11-10T09:00:00Z"))).toEqual({
-      at: "2026-11-10T09:00:00.000Z",
-      previousAt: "2026-11-10T08:00:00.000Z",
+describe("recordOwnerSpoke", () => {
+  test("two owner turns: the second sees the first, and each is written", async () => {
+    const session = { id: "sup-1" } as UnifiedSession;
+    const writes: Array<{ id: string; at: string }> = [];
+    const write = async (
+      id: string,
+      patch: { supervisorOwnerSpoke: { at: string } },
+    ) => {
+      writes.push({ id, at: patch.supervisorOwnerSpoke.at });
+    };
+    const turn = async (at: string) => {
+      const now = new Date(at);
+      const previousAt = await recordOwnerSpoke(session, now, write);
+      return supervisorClockLine({ now, timeZone: "UTC", previousAt });
+    };
+
+    const first = await turn("2026-11-10T08:00:00Z");
+    expect(first).toContain(
+      "This is their first message in this conversation.",
+    );
+    expect(first).toContain("First conversation today: yes.");
+
+    const second = await turn("2026-11-10T08:25:00Z");
+    expect(second).toContain(
+      "Their previous message in this conversation was 25 minutes ago.",
+    );
+    expect(second).toContain("First conversation today: no.");
+
+    expect(writes).toEqual([
+      { id: "sup-1", at: "2026-11-10T08:00:00.000Z" },
+      { id: "sup-1", at: "2026-11-10T08:25:00.000Z" },
+    ]);
+    expect(session.supervisorOwnerSpoke).toEqual({
+      at: "2026-11-10T08:25:00.000Z",
     });
   });
 });

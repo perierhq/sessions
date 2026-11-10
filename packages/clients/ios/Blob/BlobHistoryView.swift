@@ -106,7 +106,10 @@ struct BlobHistoryRow: View {
                 // Past replies are read, not answered: their quick replies
                 // are left out, so no chip changes state or height as the
                 // conversation moves on.
-                BlobReplyView(reply: BlobReply(Self.withoutChoices(reply)), sayStyle: .said)
+                // A spoken script is a small "Blob said" line; an older reply
+                // without one keeps its first paragraph as the Say line.
+                let past = BlobReply(Self.withoutChoices(reply))
+                BlobReplyView(reply: past, sayStyle: past.scripted ? .said : .line)
             }
         }
         .accessibilityElement(children: .contain)

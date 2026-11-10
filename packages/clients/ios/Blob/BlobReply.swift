@@ -22,6 +22,8 @@ import Foundation
 ///     "```say\n[warm] Two things. {#pr-12} One shipped.\n```\n\n- [PR](u){#pr-12}"
 ///         → say "Two things. One shipped.", spoken "[warm] Two things. One shipped.", show "- [PR](u){#pr-12}"
 ///     "```say\nStill writ"                     → say "Still writ", show ""
+///     "```say\nHi.\n\n```metrics\nA: 1\n```"   → say "Hi.", show "```metrics\nA: 1\n```"   (never closed)
+///     "```say\nOne. Two. Three. Four. Five."   → say "One. Two. Three.", show "Four. Five."
 ///     "**Done.** All green.\n\n```metrics\n…```" → say "Done. All green.", show "```metrics\n…```"
 ///     "Two things:\n- one\n- two"               → say "Two things:", show "- one\n- two"
 ///     "```csv\n…```\n\nAfter."                  → say "", show the whole reply
@@ -56,15 +58,35 @@ struct BlobReply: Equatable {
         }
         if index < lines.count, let fence = Self.sayFence(lines[index]) {
             var script: [String] = []
+            var closed = false
+            var blank = false
             index += 1
+            // The script ends at its closing fence. A fence that was never
+            // closed ends where another block opens: a fence line, or a
+            // block after a blank line.
             while index < lines.count {
-                defer { index += 1 }
-                if Self.closes(lines[index], fence) { break }
-                script.append(lines[index].trimmingCharacters(in: .whitespaces))
+                let line = lines[index]
+                if Self.closes(line, fence) { index += 1; closed = true; break }
+                if CueMarkers.fenceMarker(line) != nil { break }
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty { blank = true; index += 1; continue }
+                if blank, Self.startsBlock(line) { break }
+                blank = false
+                script.append(trimmed)
+                index += 1
             }
-            spoken = BlobSentenceStreamer.plain(CueMarkers.strip(script.joined(separator: " ")))
+            var raw = script.joined(separator: " ")
+            var overflow = ""
+            if !closed {
+                // Unclosed, it may have swallowed the reply: say only its start.
+                let capped = Self.capped(raw)
+                overflow = CueMarkers.strip(String(raw.dropFirst(capped.count)))
+                raw = capped
+            }
+            spoken = BlobSentenceStreamer.plain(CueMarkers.strip(raw))
             say = CueMarkers.withoutDirections(spoken)
-            show = lines[min(index, lines.count)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            let rest = lines[min(index, lines.count)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            show = [overflow, rest].filter { !$0.isEmpty }.joined(separator: "\n\n")
             scripted = true
             return
         }
@@ -79,6 +101,32 @@ struct BlobReply: Equatable {
         spoken = say
         show = lines[index...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         scripted = false
+    }
+
+    /// Most of an unclosed script that is said: this many sentences, and no
+    /// more than `scriptChars`.
+    static let scriptSentences = 3
+    static let scriptChars = 600
+
+    /// The start of an unclosed script that is said: up to
+    /// `scriptSentences` complete sentences and `scriptChars` characters,
+    /// cut at a sentence end (or, failing one, a space). The text itself
+    /// when it is within both.
+    static func capped(_ text: String) -> String {
+        let chars = Array(text)
+        var ends: [Int] = []
+        var from = 0
+        while ends.count < scriptSentences, let end = BlobSentenceStreamer.sentenceEnd(in: chars, from: from) {
+            ends.append(end)
+            from = end
+        }
+        var limit = ends.count == scriptSentences ? ends[ends.count - 1] : chars.count
+        if limit > scriptChars {
+            limit = ends.last(where: { $0 <= scriptChars })
+                ?? chars[..<scriptChars].lastIndex(where: \.isWhitespace)
+                ?? scriptChars
+        }
+        return String(chars[..<limit])
     }
 
     /// The opening of a say fence (```say, ~~~say): its marker, to close it.

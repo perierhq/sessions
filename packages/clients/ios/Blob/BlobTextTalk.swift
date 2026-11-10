@@ -71,21 +71,32 @@ final class BlobTextTalk {
     init() {
         listener.onEnd = { [weak self] decision in self?.listeningEnded(decision) }
         speaker.onCue = { [weak self] id in self?.cueStarted(id) }
+        speaker.onQueueDrained = { [weak self] in self?.queueDrained() }
     }
 
     /// The shown element the words being spoken point at (`BlobCues`): set
     /// when a segment with a cue starts playing, kept through segments
-    /// without one, cleared with the reply. `tick` changes on every cue, so
-    /// the same element pulses again when pointed at again.
+    /// without one, cleared once the reply has been read or with the reply.
+    /// `tick` is new on every cue, never reused, so the same element pulses
+    /// again when pointed at again, and only then (`CuePulses`).
     struct Focus: Equatable {
         var id: String
         var tick: Int
     }
 
     private(set) var focus: Focus?
+    private var cueTicks = 0
 
     private func cueStarted(_ id: String) {
-        focus = Focus(id: id, tick: (focus?.tick ?? 0) + 1)
+        cueTicks += 1
+        focus = Focus(id: id, tick: cueTicks)
+    }
+
+    /// Reading caught up. Once the reply has settled there is nothing left
+    /// to say, so nothing is pointed at; mid-stream the next segment may
+    /// still keep the focus.
+    private func queueDrained() {
+        if !replying { focus = nil }
     }
 
     var active: Bool { phase != .idle }
@@ -432,6 +443,8 @@ final class BlobTextTalk {
         let rest = sentences.finish(answer)
         BlobMetrics.shared.willSpeak(rest.count)
         speaker.enqueue(rest)
+        // Read to the end already, while it streamed.
+        if !speaker.readingReply { focus = nil }
     }
 
     /// Stops reading and forgets what was read: the next reply starts fresh.
@@ -439,6 +452,7 @@ final class BlobTextTalk {
         speaker.stop()
         spokenAnswer = nil
         focus = nil
+        CuePulses.reset()
         sentences = BlobSentenceStreamer()
         hushed = false
     }
@@ -447,6 +461,7 @@ final class BlobTextTalk {
     func hush() {
         BlobMetrics.shared.stopping(speaking: replyHasVoice, by: .hush)
         speaker.stop()
+        focus = nil
         if phase == .waiting { hushed = true }
     }
 

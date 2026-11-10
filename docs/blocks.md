@@ -295,9 +295,12 @@ is what Blob shows, and is never read aloud.
 - [PR #12](https://example.test/pull/12){#pr-12} merged
 ````
 
+- **Only first.** A say fence is the script only when it opens the reply.
+  Anywhere further down it stays code.
 - **Delivery hint.** A bracketed run at the start (`[warm, unhurried]`) is a
-  direction for the voice. It goes to the speech request, since the Fish
-  Audio Drama 3 model reads brackets as direction, and is never shown.
+  direction for the voice. It goes ahead of every speech request for the
+  script, since the Fish Audio Drama 3 model reads brackets as direction,
+  and is never shown. A bracket later in the script is words.
 - **Cues.** `{#id}` in the script marks where the speech turns to the shown
   element with the same id, at a sentence start or in the middle of one:
   `{#inc-4} Checkout flapped again.` or
@@ -311,15 +314,23 @@ is what Blob shows, and is never read aloud.
 
 The Blob app (`packages/clients/ios/Blob/BlobReply.swift`,
 `BlobCues.swift`) cuts the script into segments at sentence ends and at
-cues, and each segment is one speech request and one playback item, so
-focus moves exactly when a segment's audio starts: the element with that id
-scrolls into view and pulses once. A segment without a cue keeps the current
-focus, and an id nothing carries is ignored. Fish Audio's API takes no
+cues, and plays each segment as one playback item, so focus moves exactly
+when a segment's audio starts: the element with that id scrolls into view
+and pulses once (not under Reduce Motion). Segments in a row without a cue
+share one speech request, up to 280 characters. A segment without a cue
+keeps the current focus, the focus clears once the reply has been read, and
+an id nothing carries is ignored. Anything shaped like a cue (`{#...}`) is
+never shown or read, valid id or not. Fish Audio's API takes no
 previous text as context, so a cut at a cue mid-sentence with fewer than four
 words before it is skipped: those words join the next segment, which takes
 the cue to its start. The script is shown only as a passing caption while it
-is spoken. A reply with no say fence falls back to speaking its first
-paragraph.
+is spoken, and the caption stays when it was not heard (reading aloud off,
+hushed, or nothing played). A reply with no say fence falls back to speaking
+its first paragraph.
+
+A say fence that is never closed ends at the next fence line or at a block
+after a blank line, and only its first three sentences (600 characters at
+most) are said; the rest is shown. The web leaves such a fence as code.
 
 Everywhere else the script is a small muted "Said aloud" line, the hint and
 the cues dropped, and the web drops every cue anchor before it renders

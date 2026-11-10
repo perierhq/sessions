@@ -296,6 +296,7 @@ import {
   supervisorStyleContext,
   supervisorClockContext,
 } from "./supervisor-inbox";
+import { recordOwnerSpoke } from "./supervisor-clock";
 import {
   SUPERVISOR_WITHHELD_SERVERS,
   supervisorInboxOwner,
@@ -3359,6 +3360,12 @@ async function runSessionPromptInner(
   let briefedAnswers: string[] = [];
   let seedDue = false;
   if (inboxOwner) {
+    // When the owner spoke before this turn; this turn's time replaces it
+    // (supervisor-clock.ts). Every owner turn passes here, whichever entry
+    // point sent it.
+    const previousSpoke = await recordOwnerSpoke(session).catch(
+      () => session.supervisorOwnerSpoke?.at,
+    );
     const [inbox, style, clock] = await Promise.all([
       supervisorInboxContext(inboxOwner).catch(() => undefined),
       // The owner's report style (BLUF, SBAR or plain), one line, also
@@ -3366,10 +3373,7 @@ async function runSessionPromptInner(
       supervisorStyleContext(inboxOwner).catch(() => undefined),
       // The owner's local time and how long since they last spoke, so Blob
       // greets once a day rather than every turn (supervisor-clock.ts).
-      supervisorClockContext(
-        inboxOwner,
-        session.supervisorOwnerSpoke?.previousAt,
-      ).catch(() => undefined),
+      supervisorClockContext(inboxOwner, previousSpoke).catch(() => undefined),
     ]);
     if (inbox) {
       prompt = `${inbox.context}\n\n${prompt}`;

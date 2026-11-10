@@ -7,8 +7,10 @@ import Observation
 /// first paragraph of a decision (`BlobReply.spoken`), never what is shown.
 /// A reply is read segment by segment (`BlobSegment`), one request and one
 /// playback item each; when a segment with a cue starts playing, `onCue`
-/// says which shown element to focus. A delivery hint (`[warm]`) goes to the
-/// server voice as direction and is left out for an Apple voice. When the server has a Fish Audio
+/// says which shown element to focus. Segments in a row without a cue are
+/// joined into one request, up to `serverPieceChars`. The script's leading
+/// delivery hint (`[warm]`) goes to the server voice as direction ahead of
+/// every request and is left out for an Apple voice. When the server has a Fish Audio
 /// key (`GET /api/blob/speech/status`), the server voice reads every answer,
 /// Polish included. Otherwise, or when a request fails, Apple's Premium or
 /// Enhanced voices read it. Apps can't use the current Siri voices, and the
@@ -60,13 +62,23 @@ final class BlobSpeaker: NSObject {
     private var appleForReply = false
 
     private struct Queued {
-        let text: String
+        var text: String
         let cue: String?
+        let delivery: String?
         var audio: Task<Data, Error>?
+
+        /// The server voice request: the hint, then the words.
+        var request: String { CueMarkers.directed(text, hint: delivery) }
     }
+
+    /// Some of the current reply was heard: audio played or an Apple voice
+    /// spoke. False after `stop` until the next one is.
+    private(set) var heardReply = false
 
     /// Called when a segment with a cue starts playing, with the cue's id.
     @ObservationIgnored var onCue: ((String) -> Void)?
+    /// Called when the reply's queue has been read to its end.
+    @ObservationIgnored var onQueueDrained: (() -> Void)?
 
     override init() {
         super.init()
@@ -136,11 +148,24 @@ final class BlobSpeaker: NSObject {
         guard UserDefaults.standard.object(forKey: Self.readAloudKey) as? Bool ?? true else { return }
         let items = segments.compactMap { segment -> Queued? in
             let text = Self.plain(segment.text)
-            return text.isEmpty ? nil : Queued(text: text, cue: segment.cue)
+            return text.isEmpty ? nil : Queued(text: text, cue: segment.cue, delivery: segment.delivery)
         }
         guard !items.isEmpty else { return }
-        if queueTask == nil { cutOff() }
-        queue.append(contentsOf: items)
+        let fresh = queueTask == nil
+        if fresh { cutOff() }
+        for item in items {
+            // A segment without a cue joins the one before it while that one
+            // is not requested yet and stays short: fewer, more natural
+            // requests. A cue starts its own, so focus moves on time; the
+            // first of a fresh reply stays alone, so speech starts fast.
+            if item.cue == nil, let last = queue.last, last.audio == nil, last.delivery == item.delivery,
+               !(fresh && queue.count == 1),
+               last.text.count + 1 + item.text.count <= Self.serverPieceChars {
+                queue[queue.count - 1].text += " " + item.text
+            } else {
+                queue.append(item)
+            }
+        }
         speaking = true
         if usesServerVoice, !appleForReply { requestAhead() }
         if queueTask == nil { queueTask = Task { await readQueue() } }
@@ -149,7 +174,7 @@ final class BlobSpeaker: NSObject {
     /// Starts the server requests for the next `queueAhead` sentences.
     private func requestAhead() {
         for index in queue.indices.prefix(Self.queueAhead) where queue[index].audio == nil {
-            queue[index].audio = Self.fetch(queue[index].text)
+            queue[index].audio = Self.fetch(queue[index].request)
         }
     }
 
@@ -162,7 +187,7 @@ final class BlobSpeaker: NSObject {
             if Task.isCancelled { return }
         }
         try? BlobListener.activateSession(record: false)
-        while let next = queue.first {
+        while !queue.isEmpty {
             if appleForReply { useServer = false }
             var data: Data?
             if useServer {
@@ -189,19 +214,23 @@ final class BlobSpeaker: NSObject {
             // Audio that won't play is read with an Apple voice too.
             var played = false
             if let data { played = await play(data) }
+            if played { heardReply = true }
             if Task.isCancelled { return }
-            if !played { await sayWithApple(next.text) }
+            if !played, await sayWithApple(item.text) { heardReply = true }
             if Task.isCancelled { return }
         }
         queueTask = nil
         speaking = false
+        onQueueDrained?()
     }
 
     /// Reads one sentence with an Apple voice and returns when it ends; at
     /// once when no good voice fits.
-    private func sayWithApple(_ plain: String) async {
-        guard speakWithApple(plain) else { return }
+    @discardableResult
+    private func sayWithApple(_ plain: String) async -> Bool {
+        guard speakWithApple(plain) else { return false }
         await withCheckedContinuation { utteranceDone = $0 }
+        return true
     }
 
     private func speakWithApple(_ plain: String) -> Bool {
@@ -229,9 +258,12 @@ final class BlobSpeaker: NSObject {
             if !Task.isCancelled { _ = speakWithApple(plain) }
             return
         }
-        let pieces = Self.pieces(plain)
+        // Each piece is its own request, so each carries the hint.
+        let (hint, words) = CueMarkers.leadingDirection(plain)
+        let pieces = Self.pieces(words)
+        let request = { (piece: String?) in piece.map { CueMarkers.directed($0, hint: hint) } }
         try? BlobListener.activateSession(record: false)
-        var next: Task<Data, Error>? = Self.fetch(pieces.first)
+        var next: Task<Data, Error>? = Self.fetch(request(pieces.first))
         for index in pieces.indices {
             let data: Data
             do {
@@ -250,7 +282,7 @@ final class BlobSpeaker: NSObject {
                 return
             }
             if Task.isCancelled { next?.cancel(); return }
-            next = Self.fetch(index + 1 < pieces.count ? pieces[index + 1] : nil)
+            next = Self.fetch(request(index + 1 < pieces.count ? pieces[index + 1] : nil))
             _ = await play(data)
             if Task.isCancelled { next?.cancel(); return }
         }
@@ -303,6 +335,7 @@ final class BlobSpeaker: NSObject {
     func stop() {
         cutOff()
         appleForReply = false
+        heardReply = false
     }
 
     /// Stops whatever is reading and clears the queue.
@@ -388,7 +421,7 @@ final class BlobSpeaker: NSObject {
 
     /// Markdown read aloud sounds like punctuation; speak the words only.
     static func plain(_ markdown: String) -> String {
-        var s = markdown.replacingOccurrences(of: "[ \t]*" + CueMarkers.pattern, with: "", options: .regularExpression)
+        var s = markdown.replacingOccurrences(of: "[ \t]*" + CueMarkers.loosePattern, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: #"```[\s\S]*?```"#, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression)
         s = s.replacingOccurrences(of: #"(?m)^\s*([#>]+|[-*+]|\d+\.)\s+"#, with: "", options: .regularExpression)

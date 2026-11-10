@@ -631,7 +631,12 @@ describe("standing sessions", () => {
     expect(note).toContain("Never claim something you didn't do");
     expect(note).toContain('say "I don\'t know" plainly');
     expect(note).toContain("One to three sentences, then stop.");
-    expect(note).toContain("a reply opens with a ```say fence");
+    expect(note).toContain(
+      "Only when the turn's Blob context asks for it, a reply opens with a ```say fence",
+    );
+    expect(note).toContain(
+      "Anywhere else, write a normal reply with no say fence.",
+    );
     expect(note).toContain(
       "It talks about what is shown and never repeats it.",
     );

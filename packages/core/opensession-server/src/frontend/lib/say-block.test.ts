@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { parseSay, stripCueAnchors } from "./say-block";
+import {
+  closedSayScript,
+  opensBody,
+  parseSay,
+  stripCueAnchors,
+  type BodyNode,
+} from "./say-block";
 
 describe("parseSay", () => {
   it("joins the script's lines into one line of words", () => {
@@ -39,6 +45,16 @@ describe("parseSay", () => {
     );
   });
 
+  it("drops anything shaped like a cue, valid or not", () => {
+    expect(parseSay("Look here {#pr.12/x} and there.")?.text).toBe(
+      "Look here and there.",
+    );
+  });
+
+  it("only a leading bracket is a delivery hint", () => {
+    expect(parseSay("Done. [aside] More.")?.text).toBe("Done. [aside] More.");
+  });
+
   it("is null when nothing would be said", () => {
     expect(parseSay("")).toBeNull();
     expect(parseSay("  \n ")).toBeNull();
@@ -75,5 +91,57 @@ describe("stripCueAnchors", () => {
   it("returns the same string when there is no cue", () => {
     const src = "Plain text\n\n- list";
     expect(stripCueAnchors(src)).toBe(src);
+  });
+});
+
+describe("closedSayScript", () => {
+  it("declines a script holding a fence line: the say fence was never closed", () => {
+    expect(
+      closedSayScript("Here's the plan.\n\n```metrics\nUsers: 12"),
+    ).toBeNull();
+    expect(closedSayScript("Here's the plan.")?.text).toBe("Here's the plan.");
+  });
+});
+
+describe("opensBody", () => {
+  type Fake = BodyNode & { children: Fake[] };
+  const node = (nodeType: number, textContent = "", children: Fake[] = []) => {
+    const n: Fake = {
+      nodeType,
+      textContent,
+      children,
+      parentNode: null,
+      previousSibling: null,
+    };
+    children.forEach((child, i) => {
+      child.parentNode = n;
+      child.previousSibling = children[i - 1] ?? null;
+    });
+    return n;
+  };
+
+  it("is true for the first block, past whitespace and comments", () => {
+    const pre = node(1);
+    const root = node(1, "", [node(3, "\n  "), node(8, "x"), pre, node(1)]);
+    expect(opensBody(pre, root)).toBe(true);
+  });
+
+  it("is false after another block or text", () => {
+    const pre = node(1);
+    node(1, "", [node(1), pre]);
+    expect(opensBody(pre, pre.parentNode!)).toBe(false);
+    const late = node(1);
+    const root = node(1, "", [node(3, "Hi"), late]);
+    expect(opensBody(late, root)).toBe(false);
+  });
+
+  it("looks through a wrapper", () => {
+    const pre = node(1);
+    const wrap = node(1, "", [pre]);
+    const root = node(1, "", [wrap]);
+    expect(opensBody(pre, root)).toBe(true);
+    const other = node(1, "", [node(1), node(1, "", [node(1)])]);
+    const deep = other.children[1]!.children[0]!;
+    expect(opensBody(deep, other)).toBe(false);
   });
 });

@@ -71,15 +71,22 @@ enum TranscriptRichBlocks {
                 out.append(.markdown(value))
             }
         }
+        // Whether anything but whitespace came before: a say fence is Blob's
+        // script only when it opens the body; further down it is code.
+        var opened = false
         for segment in MarkdownFenceSegmenter.split(text, claims: claimedLangs.contains) {
             switch segment {
             case .fence(let lang, let source, let raw):
-                if let block = block(lang: lang, source: source) {
+                if lang == "say", opened {
+                    markdown(raw)
+                } else if let block = block(lang: lang, source: source) {
                     out.append(block)
                 } else {
                     markdown(raw)
                 }
+                opened = true
             case .markdown(let value):
+                if value.contains(where: { !$0.isWhitespace }) { opened = true }
                 for piece in lineBlocks(of: value) {
                     if case .markdown(let prose) = piece {
                         for table in MarkdownTableSegmenter.split(prose) {
@@ -122,6 +129,9 @@ enum TranscriptRichBlocks {
         case "math":
             return MathTypesetter.typeset(source).map { .math(lines: $0, source: source) }
         case "say":
+            // A fence line inside means it was never closed: keep it as code.
+            guard !source.components(separatedBy: "\n").contains(where: { CueMarkers.fenceMarker($0) != nil })
+            else { return nil }
             return SayBlock.parse(source).map(TranscriptRichBlock.say)
         case "metrics":
             return MetricsBlock.parse(source).map(TranscriptRichBlock.metrics)

@@ -36,7 +36,8 @@ struct BlobSaidLine: View {
 ///
 /// What is shown is drawn in parts cut at its cue anchors (`BlobCues.parts`),
 /// each with the scroll id `partId(index)`, so the words being spoken can
-/// bring their element into view; the part `focus` points at pulses once.
+/// bring their element into view; the part `focus` points at pulses once
+/// per cue (not under Reduce Motion).
 struct BlobReplyView: View {
     enum SayStyle { case line, said, hidden }
 
@@ -114,17 +115,36 @@ private struct BlobShownPart: View {
     }
 }
 
+/// The cue ticks that already pulsed, for the reply being read. A view that
+/// is drawn again (the reply settling, a scroll, a pane opening) sees the
+/// same tick and must not pulse twice; the first view to see a tick claims
+/// it. Cleared with the reply (`BlobTextTalk`); ticks are never reused.
+@MainActor
+enum CuePulses {
+    private static var claimed: Set<Int> = []
+
+    /// True the first time `tick` is claimed.
+    static func claim(_ tick: Int) -> Bool { claimed.insert(tick).inserted }
+
+    static func reset() { claimed.removeAll() }
+}
+
 /// An element the spoken words point at: each new `tick` brings up an
-/// accent tint that fades over about a second. A nil tick (focus moved
-/// away) does nothing.
+/// accent tint that fades over about a second, once (`CuePulses`). A nil
+/// tick (focus moved away) does nothing. With Reduce Motion there is no
+/// pulse; the element is still scrolled into view.
 private struct CuePulse: ViewModifier {
     let tick: Int?
-    /// The last tick that pointed here.
+    /// Counts this view's pulses; each change runs the tint once.
     @State private var pulsed = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: tick, initial: true) { _, tick in if let tick { pulsed = tick } }
+            .onChange(of: tick, initial: true) { _, tick in
+                guard let tick, CuePulses.claim(tick), !reduceMotion else { return }
+                pulsed += 1
+            }
             .phaseAnimator([0.0, 1.0, 0.0], trigger: pulsed) { view, glow in
                 view.background {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)

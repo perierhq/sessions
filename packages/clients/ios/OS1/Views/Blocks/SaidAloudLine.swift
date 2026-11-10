@@ -6,8 +6,9 @@ struct SaidAloudLine: View {
     let text: String
 
     var body: some View {
-        (Text("Said aloud").fontWeight(.semibold).foregroundStyle(OS1VisualStyle.textFaint)
-            + Text("  ") + Text(text).foregroundStyle(OS1VisualStyle.textDim))
+        let label = Text("Said aloud:").fontWeight(.semibold).foregroundStyle(OS1VisualStyle.textFaint)
+        let words = Text(verbatim: text).foregroundStyle(OS1VisualStyle.textDim)
+        Text("\(label) \(words)")
             .font(.footnote)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)

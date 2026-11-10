@@ -10,40 +10,36 @@
  * first conversation of their local day. The charter (supervisor.ts, "How
  * Blob speaks") says what to do with it.
  *
- * The previous message's time is kept on the session file like the Blob
- * surface (blob-surface.ts): each prompt the owner sends shifts `at` into
- * `previousAt`, so the turn that answers it still sees the one before.
+ * The owner's last message time is kept on the session file like the Blob
+ * surface (blob-surface.ts). Each owner turn reads it, then writes its own
+ * time (`recordOwnerSpoke`), so the turn sees the message before it.
  */
 import { isTimeZone, localClock } from "./supervisor-quiet-hours";
-import { supervisorInboxOwner } from "./supervisor-mcp";
 import { touchNativeSession } from "./session-cache";
 import type { SupervisorOwnerSpoke, UnifiedSession } from "./types";
 
 const MINUTE_MS = 60_000;
 
-/** The record after the owner sends a message at `now`. */
-export function nextOwnerSpoke(
-  previous: SupervisorOwnerSpoke | undefined,
-  now: Date = new Date(),
-): SupervisorOwnerSpoke {
-  const at = now.toISOString();
-  return previous?.at ? { at, previousAt: previous.at } : { at };
-}
-
 /**
- * Record that the owner sent a prompt to their supervisor session. Anyone
- * else's prompt, and every other session, is left alone.
+ * Record that the owner is speaking now and return when they spoke before.
+ * Called once per owner-driven supervisor turn (run-session.ts), after the
+ * turn is known to be the owner's, so retries, slash commands and every
+ * entry point (HTTP, WebSocket, ask and voice replies) count the same way.
+ * The write is awaited so the next turn reads it.
  */
-export function maybeRecordOwnerMessage(
-  session: UnifiedSession | undefined,
-  user: string | null | undefined,
+export async function recordOwnerSpoke(
+  session: UnifiedSession,
   now: Date = new Date(),
-): void {
-  if (!session?.supervisor || session.source !== "opensession") return;
-  if (!supervisorInboxOwner(session, user)) return;
-  const next = nextOwnerSpoke(session.supervisorOwnerSpoke, now);
-  touchNativeSession(session.id, { supervisorOwnerSpoke: next });
+  write: (
+    id: string,
+    patch: { supervisorOwnerSpoke: SupervisorOwnerSpoke },
+  ) => Promise<void> = touchNativeSession,
+): Promise<string | undefined> {
+  const previousAt = session.supervisorOwnerSpoke?.at;
+  const next: SupervisorOwnerSpoke = { at: now.toISOString() };
+  await write(session.id, { supervisorOwnerSpoke: next });
   session.supervisorOwnerSpoke = next;
+  return previousAt;
 }
 
 const weekdays = new Map<string, Intl.DateTimeFormat>();

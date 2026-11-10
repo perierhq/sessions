@@ -968,11 +968,14 @@ struct BlobHomeView: View {
     }
 
     /// The spoken script, as a quiet subtitle while Blob says it; it fades
-    /// once Blob is done. It stays when reading aloud is off, since nothing
-    /// else carries it. A reply without a script shows its Say line instead.
+    /// once Blob has said it. It stays when it was not heard: reading aloud
+    /// is off, Blob was hushed, or nothing played (no voice fit, a call was
+    /// on), since nothing else carries it. A reply without a script shows
+    /// its Say line instead.
     @ViewBuilder
     private func spokenCaption(_ reply: BlobReply) -> some View {
-        if reply.scripted, !reply.say.isEmpty, text.reading || !readAloud {
+        let unheard = !readAloud || text.hushed || !text.speaker.heardReply
+        if reply.scripted, !reply.say.isEmpty, text.reading || unheard {
             Text(reply.say)
                 .font(.footnote)
                 .foregroundStyle(OS1VisualStyle.textDim)

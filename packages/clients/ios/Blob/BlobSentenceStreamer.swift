@@ -35,6 +35,9 @@ import Foundation
 ///
 ///     feed("``")                        → []      (could still open a say fence)
 ///
+///     feed("```say\nHi there.\n\n```metrics\n")  → ["Hi there."]  (never closed: ends at the next fence)
+///     feed("```say\nOne. Two. Three. Four. Five.") → ["One.", "Two.", "Three."]  (unclosed: three at most)
+///
 ///     feed("**Done.** All gr")          → ["Done."]
 ///     feed("**Done.** All green.\n\n- a") → ["All green."]
 ///
@@ -63,18 +66,22 @@ struct BlobSentenceStreamer {
         if let closedAt, markdown.hasPrefix(closedAt) { return [] }
         closedAt = nil
         let (say, closed) = Self.sayPart(of: markdown)
-        let chars = Array(say)
+        // The leading delivery hint rides every segment; while it is still
+        // being typed, nothing is complete yet.
+        guard let split = Self.splitHint(say, closed: closed) else { return [] }
+        let delivery = split.hint
+        let chars = Array(split.rest)
         // A different message (the text before a tool call gave way to the
         // next one) or a rewrite: start over, still skipping what was read.
         if cursor > chars.count || chars[..<cursor] != source[..<cursor] { cursor = 0 }
         source = chars
         var out: [BlobSegment] = []
         while let end = BlobCues.segmentEnd(in: chars, from: cursor) {
-            take(chars[cursor..<end], into: &out)
+            take(chars[cursor..<end], delivery: delivery, into: &out)
             cursor = end
         }
         if closed {
-            take(chars[cursor...], into: &out)
+            take(chars[cursor...], delivery: delivery, into: &out)
             cursor = chars.count
             closedAt = markdown
         }
@@ -86,22 +93,23 @@ struct BlobSentenceStreamer {
     mutating func finish(_ markdown: String) -> [BlobSegment] {
         // A line break ends the last line; for a reply without a say fence a
         // second one closes the Say part too.
-        let chars = Array(Self.sayPart(of: markdown + "\n\n").0)
+        let (delivery, script) = CueMarkers.leadingDirection(Self.sayPart(of: markdown + "\n\n").0)
+        let chars = Array(script)
         var out: [BlobSegment] = []
         var start = 0
         while let end = BlobCues.segmentEnd(in: chars, from: start) {
-            take(chars[start..<end], into: &out)
+            take(chars[start..<end], delivery: delivery, into: &out)
             start = end
         }
-        take(chars[start...], into: &out)
+        take(chars[start...], delivery: delivery, into: &out)
         source = []
         cursor = 0
         closedAt = nil
         return out
     }
 
-    private mutating func take(_ raw: ArraySlice<Character>, into out: inout [BlobSegment]) {
-        let segment = BlobCues.segment(String(raw))
+    private mutating func take(_ raw: ArraySlice<Character>, delivery: String?, into out: inout [BlobSegment]) {
+        let segment = BlobCues.segment(String(raw), delivery: delivery)
         let key = Self.key(segment.text)
         guard !key.isEmpty, !spoken.contains(key) else { return }
         spoken.insert(key)
@@ -145,19 +153,52 @@ struct BlobSentenceStreamer {
         return (undecided ? text : text + partial, false)
     }
 
+    /// The leading delivery hint of the Say text and the words after it;
+    /// nil while a leading `[` could still be a hint or a link.
+    static func splitHint(_ say: String, closed: Bool) -> (hint: String?, rest: String)? {
+        let head = say.drop { $0.isWhitespace }
+        if !closed, head.first == "[" {
+            // Undecided until the bracket closes and the next character
+            // shows it is not a link's `](`.
+            guard let close = head.firstIndex(of: "]"), head.index(after: close) < head.endIndex else { return nil }
+        }
+        return CueMarkers.leadingDirection(say)
+    }
+
     /// The inside of a say fence so far (`lines` start after its opening).
-    /// Closed at the closing fence; the last line waits while it could be one.
+    /// Closed at the closing fence; the last line waits while it could be
+    /// one. A fence that was never closed ends as `BlobReply` ends it: at a
+    /// fence line, or a block after a blank line; and only its start is
+    /// said (`BlobReply.capped`), so what it swallowed stays silent.
     private static func scriptPart(
         _ lines: ArraySlice<String>, fence: (char: Character, length: Int)
     ) -> (String, closed: Bool) {
         var text = ""
+        var blank = false
+        func ended(_ text: String, closed: Bool) -> (String, closed: Bool) {
+            let capped = BlobReply.capped(text)
+            return capped.count < text.trimmingCharacters(in: .whitespaces).count ? (capped, true) : (text, closed)
+        }
         for line in lines.dropLast() {
             if BlobReply.closes(line, fence) { return (text, true) }
-            text += line.trimmingCharacters(in: .whitespaces) + " "
+            if CueMarkers.fenceMarker(line) != nil { return ended(text, closed: true) }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { blank = true; continue }
+            if blank, BlobReply.startsBlock(line) { return ended(text, closed: true) }
+            blank = false
+            text += trimmed + " "
         }
         let partial = (lines.last ?? "").trimmingCharacters(in: .whitespaces)
-        if !partial.isEmpty, partial.allSatisfy({ $0 == fence.char }) { return (text, false) }
-        return (text + partial, false)
+        if !partial.isEmpty, partial.allSatisfy({ $0 == fence.char }) { return ended(text, closed: false) }
+        if CueMarkers.fenceMarker(partial) != nil { return ended(text, closed: true) }
+        if blank, !partial.isEmpty {
+            if BlobReply.startsBlock(partial) { return ended(text, closed: true) }
+            // It could still turn into a list item, a heading or a row.
+            if partial.allSatisfy(\.isNumber) || BlobReply.startsBlock(partial + " x") {
+                return ended(text, closed: false)
+            }
+        }
+        return ended(text + partial, closed: false)
     }
 
     /// Whether an unfinished first line could still become ```say.

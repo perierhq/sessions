@@ -3,15 +3,23 @@ import Foundation
 /// One piece of what Blob says: the words sent to the voice as one request
 /// and played as one item, and the shown element it points at.
 struct BlobSegment: Equatable {
-    /// Plain words for the voice; a delivery hint (`[warm]`) stays, cues don't.
+    /// Plain words for the voice: no cues, no delivery hint.
     var text: String
     /// The `{#id}` of the shown element to focus when this starts playing.
     var cue: String?
+    /// The script's leading delivery hint (`warm, unhurried`), sent ahead of
+    /// every segment's words to the server voice (`request`), since each
+    /// segment is its own request. Never shown, never read by Apple.
+    var delivery: String?
 
-    init(_ text: String, cue: String? = nil) {
+    init(_ text: String, cue: String? = nil, delivery: String? = nil) {
         self.text = text
         self.cue = cue
+        self.delivery = delivery
     }
+
+    /// The text of this segment's server voice request.
+    var request: String { CueMarkers.directed(text, hint: delivery) }
 }
 
 /// How the spoken script points at what a reply shows (docs/blocks.md,
@@ -34,6 +42,8 @@ struct BlobSegment: Equatable {
 ///         → ["Checkout flapped again right after 2.3.4,"], ["and Pat's fix is waiting." #pr-12]
 ///     segments("It flapped {#inc-4} right after 2.3.4.")
 ///         → ["It flapped right after 2.3.4." #inc-4]          (two words before the marker: joined)
+///     segments("[warm] Two things. {#pr-12} One shipped today.")
+///         → ["Two things." warm], ["One shipped today." #pr-12 warm]  (the hint rides every segment)
 ///
 /// Showing: the shown markdown is cut into parts so each anchored element
 /// can be scrolled to and pulsed. A fence, a list item (with its indented
@@ -93,27 +103,34 @@ enum BlobCues {
         }
     }
 
-    /// The segment for raw script text: the last marker in it is its cue (a
-    /// short run joined forward hands its marker on), the words are plain.
-    static func segment(_ raw: String) -> BlobSegment {
-        BlobSegment(BlobSentenceStreamer.plain(CueMarkers.strip(raw)), cue: CueMarkers.ids(in: raw).last)
+    /// The segment for raw script text (its delivery hint already taken
+    /// off, `CueMarkers.leadingDirection`): the last marker in it is its cue
+    /// (a short run joined forward hands its marker on), the words are plain.
+    static func segment(_ raw: String, delivery: String? = nil) -> BlobSegment {
+        BlobSegment(
+            BlobSentenceStreamer.plain(CueMarkers.strip(raw)),
+            cue: CueMarkers.ids(in: raw).last,
+            delivery: delivery
+        )
     }
 
-    /// The whole script cut into segments, as the streamer cuts it.
+    /// The whole script cut into segments, as the streamer cuts it, each
+    /// carrying the script's leading delivery hint.
     static func segments(_ script: String) -> [BlobSegment] {
-        let chars = Array(script)
+        let (delivery, rest) = CueMarkers.leadingDirection(script)
+        let chars = Array(rest)
         var out: [BlobSegment] = []
         var start = 0
         while let end = segmentEnd(in: chars, from: start) {
-            out.append(segment(String(chars[start..<end])))
+            out.append(segment(String(chars[start..<end]), delivery: delivery))
             start = end
         }
-        out.append(segment(String(chars[start...])))
+        out.append(segment(String(chars[start...]), delivery: delivery))
         return out.filter { !$0.text.isEmpty }
     }
 
     private static func words(in chars: ArraySlice<Character>) -> Int {
-        CueMarkers.withoutDirections(CueMarkers.strip(String(chars))).split(whereSeparator: \.isWhitespace).count
+        CueMarkers.strip(String(chars)).split(whereSeparator: \.isWhitespace).count
     }
 
     // MARK: Showing

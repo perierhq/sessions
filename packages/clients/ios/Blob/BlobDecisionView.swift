@@ -48,7 +48,9 @@ struct BlobDecisionView: View {
                 }
                 let reply = BlobReply(item.body)
                 if !reply.isEmpty {
-                    BlobReplyView(reply: reply)
+                    // The card carries its script as the Say line, so it is
+                    // not lost when reading aloud is off.
+                    BlobReplyView(reply: reply, sayStyle: .line)
                         .padding(.top, 10)
                 }
             }
