@@ -7,6 +7,7 @@ import type { RouteContext } from "./context";
 import { handleBlobSpeechRoutes } from "./blob-speech";
 import {
   BLOB_SPEECH_MAX_CHARS,
+  DEFAULT_BLOB_VOICE_ID,
   BLOB_SPEECH_PER_MINUTE,
   FISH_TTS_URL,
   resetBlobSpeechRateLimit,
@@ -108,7 +109,7 @@ describe("Blob speech settings", () => {
     expect(status).toEqual({
       configured: false,
       model: "s2.1-pro",
-      models: ["s2.1-pro", "s2.1-pro-free"],
+      models: ["s2.1-pro", "s2.1-pro-free", "drama-3"],
     });
   });
 
@@ -220,12 +221,16 @@ describe("Blob speech synthesis", () => {
     });
   });
 
-  test("no reference_id without a voice id", async () => {
+  test("the default voice without a voice id, so every piece sounds the same", async () => {
     await call("/api/blob/speech/key", "PUT", { apiKey: "fish-secret-abcd" });
     mockFish();
     await call("/api/blob/speech", "POST", { text: "Hi" });
+    await call("/api/blob/speech", "POST", { text: "Again" });
     expect(calls[0].headers.get("model")).toBe("s2.1-pro");
-    expect(calls[0].body).not.toHaveProperty("reference_id");
+    expect(calls.map((c) => c.body.reference_id)).toEqual([
+      DEFAULT_BLOB_VOICE_ID,
+      DEFAULT_BLOB_VOICE_ID,
+    ]);
   });
 
   test("empty text is rejected and long text is cut at the cap", async () => {
