@@ -289,6 +289,7 @@ import {
   sessionRepoIds,
 } from "./session-repos";
 import { deskStateContext } from "./desk-state";
+import { blobSurfaceContext } from "./blob-surface";
 import {
   automationSessionMcp,
   interactiveMcpServers,
@@ -3293,6 +3294,12 @@ async function runSessionPromptInner(
   if (session.desk && runInputs.sessionNote) {
     const deskState = deskStateContext(sessionNotePerson(session, user));
     if (deskState) prompt = `${deskState}\n\n${prompt}`;
+  }
+
+  // Shown in the Blob app: say where, so the reply fits (blob-surface.ts).
+  if (session.desk) {
+    const blob = blobSurfaceContext(session);
+    if (blob) prompt = `${blob}\n\n${prompt}`;
   }
 
   // Retrieval is query-specific context for this turn. Keep it out of the
