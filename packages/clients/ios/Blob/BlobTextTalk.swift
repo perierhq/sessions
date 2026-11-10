@@ -102,15 +102,31 @@ final class BlobTextTalk {
         phase = .waiting
         Task {
             let text = await listener.stop().trimmingCharacters(in: .whitespacesAndNewlines)
-            heard = text
-            guard !text.isEmpty else { reset(); return }
-            do {
-                let model = try await deskModel()
-                sentAt = model.entries.count
-                model.sendQuickReply(text)
-            } catch {
-                phase = .failed(error.localizedDescription)
-            }
+            await deliver(text)
+        }
+    }
+
+    /// A typed message, for when speaking isn't an option. Same path as speech
+    /// from here on, whether or not the server has a voice key.
+    func send(typed raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        listener.cancel()
+        speaker.stop()
+        spokenAnswer = nil
+        phase = .waiting
+        Task { await deliver(text) }
+    }
+
+    private func deliver(_ text: String) async {
+        heard = text
+        guard !text.isEmpty else { reset(); return }
+        do {
+            let model = try await deskModel()
+            sentAt = model.entries.count
+            model.sendQuickReply(text)
+        } catch {
+            phase = .failed(error.localizedDescription)
         }
     }
 

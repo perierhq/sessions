@@ -16,6 +16,10 @@ struct BlobHomeView: View {
     /// Room a reply may take: the screen below Blob, minus what you said.
     @State private var replyHeight: CGFloat = 420
     @State private var showSettings = false
+    /// Writing instead of speaking.
+    @State private var typing = false
+    @State private var draft = ""
+    @FocusState private var fieldFocused: Bool
     @AppStorage("blob.hasTalked") private var hasTalked = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -46,7 +50,12 @@ struct BlobHomeView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(coordinateSpace: .local) { location in
-                if hit(location) { toggleTalk() }
+                if hit(location) {
+                    toggleTalk()
+                } else if typing && draft.isEmpty {
+                    typing = false
+                    fieldFocused = false
+                }
             }
             .onLongPressGesture { showSettings = true }
             .onAppear {
@@ -60,11 +69,22 @@ struct BlobHomeView: View {
             }
             .ignoresSafeArea()
         }
+        // Outside the full-bleed layer so it rides above the keyboard.
+        .overlay(alignment: .bottom) { writeBar }
         .background(OS1VisualStyle.background.ignoresSafeArea())
         .sheet(isPresented: $showSettings) { BlobSettingsView(speaker: text.speaker) }
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
         .onChange(of: text.settled) { _, settled in if settled { text.answerSettled() } }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: typing)
         .task { voiceConfigured = await BlobTextTalk.voiceConfigured() }
+        #if DEBUG
+        .onAppear {
+            if ProcessInfo.processInfo.environment["BLOB_DEMO_TYPING"] != nil {
+                draft = "what shipped this week?"
+                typing = true
+            }
+        }
+        #endif
         .onChange(of: scenePhase) { _, phase in
             // A backgrounded app must never hold the mic open.
             if phase == .background {
@@ -76,10 +96,12 @@ struct BlobHomeView: View {
 
     /// The live voice call, unless the server says it has no voice key.
     private var usesVoice: Bool { voiceConfigured != false }
-    private var talking: Bool { usesVoice ? engine.active : text.active }
+    /// Typed messages, and speech without a voice key, go through `text`.
+    private var talking: Bool { engine.active || text.active }
+    private var textConversation: Bool { text.active || !usesVoice }
 
     private var statusLabel: String {
-        if usesVoice { return engine.state.label }
+        if !textConversation { return engine.state.label }
         switch text.phase {
         case .listening: return "Listening"
         case .waiting: return text.thinking ? "Thinking" : "Answering"
@@ -91,9 +113,10 @@ struct BlobHomeView: View {
         #if DEBUG
         if let demo = BlobDemo.current { return demo.mode }
         #endif
-        if !usesVoice {
-            // No voice key: Blob listens through dictation and answers in text,
-            // so "speaking" is a smile with no voice pulse.
+        if typing && !text.active { return draft.isEmpty ? .quiet : .listen }
+        if textConversation {
+            // Typed, or no voice key: Blob answers in text (and may read it
+            // aloud with an Apple voice).
             switch text.phase {
             case .idle, .failed: return .quiet
             case .listening: return .listen
@@ -113,12 +136,12 @@ struct BlobHomeView: View {
     private func targets(in size: CGSize, insets: EdgeInsets, at date: Date) -> BlobTargets {
         let center = CGPoint(x: insets.leading + (size.width - insets.leading - insets.trailing) / 2, y: size.height * 0.4)
         let slot = Self.slot(in: size, insets: insets)
-        var talking = talking, mode = mode, level = usesVoice ? Double(engine.audioLevel) : text.level(at: date)
+        var talking = talking, mode = mode, level = textConversation ? text.level(at: date) : Double(engine.audioLevel)
         #if DEBUG
         if let demo = BlobDemo.at(date) { talking = demo.talking; mode = demo.mode; level = demo.level }
         #endif
         // A reply on screen gets the room: Blob moves up and keeps talking from there.
-        let showingReply = (!usesVoice && text.answer != nil) || Self.demoReply != nil
+        let showingReply = text.answer != nil || Self.demoReply != nil
         let top = CGPoint(x: center.x, y: max(insets.top, 20) + 56)
         return BlobTargets(
             mode: mode,
@@ -185,7 +208,8 @@ struct BlobHomeView: View {
     }
 
     private func toggleTalk() {
-        if !usesVoice {
+        if typing { typing = false; fieldFocused = false }
+        if text.active || !usesVoice {
             hasTalked = true
             text.tap()
             return
@@ -203,7 +227,7 @@ struct BlobHomeView: View {
     @ViewBuilder
     private func captions(insets: EdgeInsets) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if (!usesVoice && text.active) || Self.demoReply != nil {
+            if text.active || Self.demoReply != nil {
                 textCaptions
             } else if engine.active, let caption = engine.caption, !caption.text.isEmpty {
                 Text(caption.text)
@@ -225,7 +249,7 @@ struct BlobHomeView: View {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textDim)
-            } else if !hasTalked && !talking && !Self.demoRunning {
+            } else if !hasTalked && !talking && !typing && !Self.demoRunning {
                 Text("Tap me to talk")
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textFaint)
@@ -234,9 +258,67 @@ struct BlobHomeView: View {
         }
         .padding(.leading, insets.leading + 24)
         .padding(.trailing, insets.trailing + 24)
-        .padding(.bottom, max(insets.bottom, 20) + (talking ? 28 : 60))
+        .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : talking ? 28 : 60))
         .animation(.easeOut(duration: 0.24), value: engine.caption?.text)
-        .allowsHitTesting(!usesVoice && text.answer != nil)
+        .allowsHitTesting(text.answer != nil)
+    }
+
+    /// Writing instead of speaking: a small keyboard button while Blob is
+    /// quiet, a one-line field while you type. Return sends.
+    @ViewBuilder
+    private var writeBar: some View {
+        if typing {
+            HStack(spacing: 8) {
+                TextField("Write to Blob", text: $draft, axis: .vertical)
+                    .lineLimit(1...4)
+                    .focused($fieldFocused)
+                    .submitLabel(.send)
+                    .onSubmit(sendDraft)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(Capsule().fill(OS1VisualStyle.hover))
+                Button(action: sendDraft) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(Circle().fill(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? AnyShapeStyle(OS1VisualStyle.textFaint) : AnyShapeStyle(OS1VisualStyle.accentInk)))
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Send")
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if !engine.active && text.phase != .listening {
+            HStack {
+                Button {
+                    typing = true
+                    fieldFocused = true
+                } label: {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 17, weight: .regular))
+                        .foregroundStyle(OS1VisualStyle.textDim)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Write instead")
+                Spacer()
+            }
+            .padding(.leading, 14)
+            .padding(.bottom, 4)
+        }
+    }
+
+    private func sendDraft() {
+        let message = draft
+        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        draft = ""
+        hasTalked = true
+        // The field stays open, so the next line is one tap away.
+        text.send(typed: message)
     }
 
     /// Text mode: what you said, then Blob's answer. A long answer scrolls.
