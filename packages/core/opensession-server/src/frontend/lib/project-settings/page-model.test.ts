@@ -240,6 +240,7 @@ describe("chips and copy", () => {
       "access",
       "knowledge",
       "incidents",
+      "lead",
     ]);
   });
 
@@ -253,6 +254,7 @@ describe("chips and copy", () => {
       "production",
       "access",
       "incidents",
+      "lead",
     ]);
     expect(ids(true)).toContain("knowledge");
   });
