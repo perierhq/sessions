@@ -17,14 +17,29 @@
  *   fact with its kind, the supervisor session as source and an expiry for
  *   facts that only hold for a while. The receive checks (credentials,
  *   metadata) apply as for any write. Dreaming merges and prunes later.
- * - The cursor moves only after every fact of a run was written, or when a
- *   run found nothing to write. A failed model call or write leaves it, and
- *   the next turn's run reads the same exchanges again.
+ * - A fact already in the scope in any state (active, expired, superseded,
+ *   archived: the index keeps one record per text) is skipped. A write the
+ *   memory service refuses for good (a 4xx, a credential, a duplicate, or
+ *   "saved but not indexed") skips that fact and the run goes on.
+ * - The cursor moves once every fact of a run was written or skipped, or
+ *   when a run found nothing to write. A failed model call or a transient
+ *   write failure leaves it, and the next turn's run reads the same
+ *   exchanges again.
+ * - A run while the supervisor session has a live turn reads nothing and
+ *   tries again later; a last reply that is not final yet (tool work after
+ *   it) is left for a later run.
+ * - Two processes may run the writer for the same person at once and both
+ *   call the model. That is harmless: the cursor moves by compare-and-set,
+ *   so only one run advances it, and the other's facts are skipped as
+ *   duplicates.
  * - Off switch: the supervisor pref `memoryWriter` (on by default). Only in
  *   repo memory mode, the default; other modes have no personal repository.
+ *   While off, each run moves the cursor to the current session's end, so
+ *   turning it on reads only what comes after. A record without a cursor
+ *   (made before the writer) starts at its session's end too: no backfill.
  */
 import { memoryRolloutMode } from "./memory-v2/runtime";
-import type { MemoryKind } from "./memory-v2/types";
+import { MEMORY_STATES, type MemoryKind } from "./memory-v2/types";
 import { findSecrets } from "./memory-repo/secrets";
 import type { EntryInput } from "./memory-repo/service";
 import { wrapContext } from "./prompt-context";
@@ -61,6 +76,9 @@ const PAGE_ROWS = 200;
 const EXCHANGE_SIDE_CHARS = 1_500;
 /** All exchanges of a run as the model sees them, in characters. */
 const EXCHANGES_CHARS = 16_000;
+/** Runs in a row put off by a live turn or an unfinished reply before the
+ *  writer waits for the next turn to schedule it. */
+export const WRITER_MAX_DEFERRALS = 6;
 /** Already-remembered entries shown to the model, to skip repeats. */
 const EXISTING_ENTRIES = 40;
 const EXISTING_CHARS = 4_000;
@@ -92,6 +110,10 @@ interface WriterDeps {
     sinceSeq: number,
     limit: number,
   ): Promise<{ entries: SeqTranscriptEntry[] }>;
+  /** seq of a session's last transcript row, 0 when it has none. */
+  lastSeq(sessionId: string): Promise<number>;
+  /** The session has a live turn in this process. */
+  busy(sessionId: string): boolean | Promise<boolean>;
   /** One tool-less small-model call; null on any failure. */
   complete(
     prompt: string,
@@ -99,7 +121,9 @@ interface WriterDeps {
   ): Promise<string | null>;
   /** Summaries already in the scope, newest first. */
   existing(scopeKey: string, limit: number): Promise<string[]>;
-  write(input: EntryInput): Promise<void>;
+  /** Add the entry; false when the scope already holds the same text in
+   *  any state, and nothing was written. */
+  write(input: EntryInput): Promise<boolean>;
   sessionLink(sessionId: string): Promise<string>;
 }
 
@@ -118,6 +142,14 @@ const defaultDeps: WriterDeps = {
       sinceSeq,
       limit,
     ),
+  lastSeq: async (sessionId) => {
+    const page = await (
+      await import("./actor-transcript")
+    ).transcript.readTail(sessionId, 1);
+    return page.entries.at(-1)?.seq ?? 0;
+  },
+  busy: async (sessionId) =>
+    (await import("./agent-runner")).isAgentSessionBusy(sessionId),
   complete: async (prompt, opts) =>
     (await import("./one-shot")).oneShot(prompt, {
       ...opts,
@@ -136,16 +168,26 @@ const defaultDeps: WriterDeps = {
   },
   write: async (input) => {
     const { memoryRepo } = await import("./memory-repo/client");
-    // The index keeps one record per text: a repeat would commit a second
-    // line and then fail as unindexed, so it is skipped instead.
-    const same = await memoryRepo.index("search", input.text, {
-      scopeKeys: [input.scopeKey],
-      states: ["active"],
-      limit: 5,
-    });
-    if (same.items.some((record) => sameFact(record.summary, input.text)))
-      return;
+    const { memoryFingerprint } = await import("./memory-v2/store");
+    // The index keeps one record per scope and text in every state: a repeat
+    // of an expired or archived entry would commit a second line and then
+    // fail as unindexed, so it is skipped instead.
+    const fingerprint = memoryFingerprint(input.text);
+    const known = await memoryRepo.index(
+      "all",
+      [input.scopeKey],
+      [...MEMORY_STATES],
+    );
+    if (
+      known.some(
+        (record) =>
+          record.fingerprint === fingerprint ||
+          sameFact(record.summary, input.text),
+      )
+    )
+      return false;
     await memoryRepo.service("addEntry", input);
+    return true;
   },
   sessionLink: async (sessionId) =>
     (await import("./run-instructions")).sessionLink(sessionId),
@@ -171,15 +213,40 @@ export function __setSupervisorMemoryWriterDepsForTest(
   };
 }
 
+/**
+ * A write the memory service refused for good: the same text again gets the
+ * same answer, so the fact is skipped instead of holding the cursor. Errors
+ * cross the worker as MemoryRepoError with a status (client.ts
+ * rebuildError); "saved but not indexed" is a 500 that a retry would only
+ * repeat, one more line each time.
+ */
+export function permanentWriteError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (
+    error.name === "SecretInMemoryError" ||
+    error.name === "DuplicateMemoryError"
+  )
+    return true;
+  if (error.name !== "MemoryRepoError") return false;
+  const status = Reflect.get(error, "status");
+  return (
+    (typeof status === "number" && status >= 400 && status < 500) ||
+    /saved but not indexed/i.test(error.message)
+  );
+}
+
 /** Pending debounce timer per person. */
 const timers = new Map<string, unknown>();
 /** A run in progress per person; a timer that fires meanwhile waits. */
 const running = new Map<string, Promise<unknown>>();
+/** Runs in a row put off per person (WRITER_MAX_DEFERRALS). */
+const deferrals = new Map<string, number>();
 
 export function __resetSupervisorMemoryWriterForTest(): void {
   for (const timer of timers.values()) deps.clearTimer(timer);
   timers.clear();
   running.clear();
+  deferrals.clear();
 }
 
 /**
@@ -213,7 +280,24 @@ async function startRun(user: string, key: string): Promise<void> {
   }
   const run = runSupervisorMemoryWriter(user)
     .then((result) => {
-      if (result.more) scheduleSupervisorMemoryWriter(user);
+      if (result.more) {
+        deferrals.delete(key);
+        scheduleSupervisorMemoryWriter(user);
+        return;
+      }
+      if (!result.retry) {
+        deferrals.delete(key);
+        return;
+      }
+      // A live turn or an unfinished reply: look again later, a bounded
+      // number of times; the turn's own end schedules a run as well.
+      const count = (deferrals.get(key) ?? 0) + 1;
+      if (count > WRITER_MAX_DEFERRALS) {
+        deferrals.delete(key);
+        return;
+      }
+      deferrals.set(key, count);
+      scheduleSupervisorMemoryWriter(user);
     })
     .catch((error) =>
       console.warn(
@@ -229,12 +313,14 @@ async function startRun(user: string, key: string): Promise<void> {
 }
 
 export interface WriterRunResult {
-  status: "off" | "none" | "nothing" | "written" | "failed" | "moved";
+  status: "off" | "none" | "nothing" | "written" | "failed" | "moved" | "busy";
   facts: WriterFact[];
   /** Where the cursor is after the run. */
   cursor?: SupervisorMemoryCursor;
   /** More exchanges are waiting past this run's bound. */
   more: boolean;
+  /** Put off by a live turn or an unfinished reply: run again later. */
+  retry?: boolean;
 }
 
 /** The owner's personal memory scope key (`user-<id>`). */
@@ -249,21 +335,48 @@ export function personalScopeKey(user: string): string | undefined {
 export async function runSupervisorMemoryWriter(
   user: string,
 ): Promise<WriterRunResult> {
-  const off: WriterRunResult = { status: "off", facts: [], more: false };
-  if (isShuttingDown() || !deps.enabled()) return off;
-  const prefs = await getSupervisorPrefs(user);
-  if (!prefs.memoryWriter) return off;
+  if (isShuttingDown()) return { status: "off", facts: [], more: false };
   const scopeKey = personalScopeKey(user);
   const record = await readSupervisorRecord(user);
   if (!record || !scopeKey) return { status: "none", facts: [], more: false };
-
   const from = record.memoryCursor;
+  const on = deps.enabled() && (await getSupervisorPrefs(user)).memoryWriter;
+
+  // Off, or a record made before the writer: hold the cursor at the current
+  // session's end, so what was said before is never mined.
+  if (!on || !from) {
+    const end: SupervisorMemoryCursor = {
+      sessionId: record.sessionId,
+      seq: await deps.lastSeq(record.sessionId),
+    };
+    const behind =
+      !from || from.sessionId !== end.sessionId || from.seq < end.seq;
+    const moved = behind
+      ? await advanceSupervisorMemoryCursor(user, from, end)
+      : false;
+    return {
+      status: on ? (moved ? "moved" : "nothing") : "off",
+      facts: [],
+      cursor: moved ? end : from,
+      more: false,
+    };
+  }
+
+  // A live turn is still adding to the conversation: read it once it ends.
+  if (await deps.busy(record.sessionId))
+    return {
+      status: "busy",
+      facts: [],
+      cursor: from,
+      more: false,
+      retry: true,
+    };
+
   // A cursor into a session the record no longer knows starts over on the
   // current one.
   const target: SupervisorMemoryCursor =
-    from &&
-    (from.sessionId === record.sessionId ||
-      record.previous.includes(from.sessionId))
+    from.sessionId === record.sessionId ||
+    record.previous.includes(from.sessionId)
       ? from
       : { sessionId: record.sessionId, seq: 0 };
   const retired = target.sessionId !== record.sessionId;
@@ -289,8 +402,9 @@ export async function runSupervisorMemoryWriter(
   // An exchange cut by the row bound may have its reply in the next page:
   // leave it for the next run, unless it is all this run has.
   const cut = !atEnd && exchanges.length > 1;
-  // The live session's last message may still be waiting for its reply.
-  const waiting = atEnd && !retired && !!last && !last.blob;
+  // The live session's last message may still be waiting for its reply, or
+  // the reply so far may be narration before more tool work.
+  const waiting = atEnd && !retired && !!last && !replyFinal(rows, last);
   if (last && (cut || waiting)) {
     exchanges = exchanges.slice(0, -1);
     upTo = last.startSeq - 1;
@@ -307,10 +421,11 @@ export async function runSupervisorMemoryWriter(
       ? { sessionId: record.sessionId, seq: 0 }
       : { sessionId: target.sessionId, seq: Math.max(target.seq, upTo) };
   const more = !atEnd || retired;
+  const retry = waiting ? { retry: true } : {};
 
   if (!exchanges.length) {
     const moved =
-      next.sessionId !== from?.sessionId || next.seq !== from?.seq
+      next.sessionId !== from.sessionId || next.seq !== from.seq
         ? await advanceSupervisorMemoryCursor(user, from, next)
         : false;
     return {
@@ -318,6 +433,7 @@ export async function runSupervisorMemoryWriter(
       facts: [],
       cursor: moved ? next : from,
       more: moved && more,
+      ...retry,
     };
   }
 
@@ -340,7 +456,7 @@ export async function runSupervisorMemoryWriter(
     if (seen.some((known) => sameFact(known, fact.text))) continue;
     seen.push(fact.text);
     try {
-      await deps.write({
+      const added = await deps.write({
         scopeKey,
         text: fact.text,
         kind: fact.kind,
@@ -350,14 +466,16 @@ export async function runSupervisorMemoryWriter(
         tags: ["supervisor"],
         ...(fact.expires ? { expires: fact.expires } : {}),
       });
+      if (added) wrote.push(fact);
     } catch (error) {
-      console.warn(
-        "[supervisor-memory] could not write a fact:",
-        error instanceof Error ? error.message : error,
-      );
+      const message = error instanceof Error ? error.message : error;
+      if (permanentWriteError(error)) {
+        console.warn("[supervisor-memory] skipped a fact:", message);
+        continue;
+      }
+      console.warn("[supervisor-memory] could not write a fact:", message);
       return { status: "failed", facts: wrote, cursor: from, more: false };
     }
-    wrote.push(fact);
   }
   const moved = await advanceSupervisorMemoryCursor(user, from, next);
   return {
@@ -365,13 +483,32 @@ export async function runSupervisorMemoryWriter(
     facts: wrote,
     cursor: moved ? next : from,
     more: moved && more,
+    ...retry,
   };
+}
+
+/** The exchange's reply is the turn's last word: no tool work after it. */
+function replyFinal(
+  rows: readonly SeqTranscriptEntry[],
+  exchange: SupervisorExchange,
+): boolean {
+  if (!exchange.blob) return false;
+  let final = false;
+  for (const row of rows) {
+    if (row.seq <= exchange.startSeq || row.seq > exchange.endSeq) continue;
+    if (row.type === "assistant" && !row.isReasoning && row.content?.trim())
+      final = true;
+    else if (row.type === "tool_use" || row.type === "tool_result")
+      final = false;
+  }
+  return final;
 }
 
 export const WRITER_SYSTEM = `You keep the owner's personal memory up to date from their conversations with Blob, their chief-of-staff assistant. Read the exchanges and return the durable facts a later conversation should know.
 
 Rules:
 - Only facts the owner stated or clearly confirmed in their own words. A Blob line is context for what the owner confirmed; never take a fact from Blob alone.
+- Text the owner pasted or quoted from someone else is not the owner's statement.
 - Keep preferences (how they like things done), decisions they made, people (who someone is, their role, how the owner works with them) and projects (what each is, its direction, what holds for weeks).
 - When something changed, say so: "Used to X, now Y."
 - Never secrets: passwords, tokens, keys, account numbers.

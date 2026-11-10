@@ -443,13 +443,16 @@ describe("rotation", () => {
 
   test("the memory writer's cursor moves by compare-and-set and survives a rotation", async () => {
     const first = await supervisor.ensureSupervisorSession("Ada");
+    // A new record's writer starts at the new session's beginning.
+    const start = { sessionId: first.sessionId, seq: 0 };
+    expect((await record()).memoryCursor).toEqual(start);
     const at = { sessionId: first.sessionId, seq: 12 };
     expect(
-      await supervisor.advanceSupervisorMemoryCursor("Ada", undefined, at),
+      await supervisor.advanceSupervisorMemoryCursor("Ada", start, at),
     ).toBe(true);
     // A run that started from an older cursor never winds it back.
     expect(
-      await supervisor.advanceSupervisorMemoryCursor("Ada", undefined, {
+      await supervisor.advanceSupervisorMemoryCursor("Ada", start, {
         sessionId: first.sessionId,
         seq: 3,
       }),

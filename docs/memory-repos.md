@@ -92,9 +92,18 @@ a turn the owner drove, a memory writer on a small model reads the new
 owner/Blob exchanges since its cursor and adds the facts the owner stated
 (preferences, decisions, people, projects) to their personal repository with
 `addEntry`: `via: supervisor`, the supervisor session as `source`, and
-`expires` on facts that hold for a while. The supervisor pref `memoryWriter`
-turns it off. The supervisor's snapshot picks the new entries up on its daily
-refresh; retrieval sees them on the next turn.
+`expires` on facts that hold for a while. A fact already in the repository in
+any state (including expired or archived) is skipped, and so is one the memory
+service refuses (a credential, bad metadata); only a transient failure stops
+the run and leaves its cursor. A run waits while Blob's turn is still going.
+
+The supervisor pref `memoryWriter` turns it off. While it is off, each run
+moves the cursor to the end of the current session, so turning it on again
+reads only what is said after that. A supervisor record without a cursor
+(one made before the writer existed) starts at its session's end the same
+way: earlier conversations are never mined. The supervisor's snapshot picks
+the new entries up on its daily refresh; retrieval sees them on the next
+turn.
 
 ## Dreaming
 

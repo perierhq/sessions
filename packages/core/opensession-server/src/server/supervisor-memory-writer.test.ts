@@ -57,7 +57,8 @@ let reads: Array<{ sessionId: string; since: number }>;
 let prompts: string[];
 let answer: string | null;
 let written: EntryInput[];
-let failWrite: boolean;
+let failWrite: Error | null;
+let busy: boolean;
 let timers: Array<{ run: () => void; ms: number; cleared: boolean }>;
 let restore: () => void = () => {};
 let restoreInbox: () => void = () => {};
@@ -93,6 +94,8 @@ async function setRecord(record: Record<string, unknown>) {
     .update(supervisorKey("Ada"), () => ({
       createdAt: "",
       compactions: 0,
+      // A record made today starts its writer at the session's beginning.
+      memoryCursor: { sessionId: record.sessionId, seq: 0 },
       ...record,
     }));
 }
@@ -115,7 +118,8 @@ beforeEach(() => {
   prompts = [];
   answer = '{"facts":[]}';
   written = [];
-  failWrite = false;
+  failWrite = null;
+  busy = false;
   timers = [];
   restoreInbox = inbox.__setSupervisorInboxDepsForTest({
     now: () => NOW,
@@ -144,14 +148,17 @@ beforeEach(() => {
           .slice(0, limit),
       };
     },
+    lastSeq: async (sessionId) => transcripts.get(sessionId)?.at(-1)?.seq ?? 0,
+    busy: () => busy,
     complete: async (prompt) => {
       prompts.push(prompt);
       return answer;
     },
     existing: async () => ["Prefers BLUF replies."],
     write: async (input) => {
-      if (failWrite) throw new Error("push rejected");
+      if (failWrite) throw failWrite;
       written.push(input);
+      return true;
     },
     sessionLink: async (id) => `https://os.example.test/session/${id}`,
   });
@@ -231,33 +238,96 @@ describe("writer run", () => {
 
   test("the cursor stays when the model or a write fails", async () => {
     await setRecord({ sessionId: "os-sup", previous: [] });
+    const start = { sessionId: "os-sup", seq: 0 };
     exchange("os-sup", "I prefer Polish invoices.", "Okay.");
     answer = null;
     expect((await writer.runSupervisorMemoryWriter("Ada")).status).toBe(
       "failed",
     );
-    expect(await cursor()).toBeUndefined();
+    expect(await cursor()).toEqual(start);
     answer = "I could not decide.";
     expect((await writer.runSupervisorMemoryWriter("Ada")).status).toBe(
       "failed",
     );
-    expect(await cursor()).toBeUndefined();
+    expect(await cursor()).toEqual(start);
 
     answer =
       '{"facts":[{"text":"Prefers Polish invoices.","kind":"preference"}]}';
-    failWrite = true;
+    failWrite = new Error("push rejected");
     expect((await writer.runSupervisorMemoryWriter("Ada")).status).toBe(
       "failed",
     );
-    expect(await cursor()).toBeUndefined();
-    failWrite = false;
+    expect(await cursor()).toEqual(start);
+    // The worker being away is transient too.
+    const { MemoryRepoError } = await import("./memory-repo/git-store");
+    failWrite = new MemoryRepoError("Memory request timed out.", 503);
+    expect((await writer.runSupervisorMemoryWriter("Ada")).status).toBe(
+      "failed",
+    );
+    expect(await cursor()).toEqual(start);
+    failWrite = null;
     expect((await writer.runSupervisorMemoryWriter("Ada")).status).toBe(
       "written",
     );
     expect(await cursor()).toEqual({ sessionId: "os-sup", seq: 3 });
   });
 
-  test("the off switch writes nothing and reads nothing", async () => {
+  test("a fact the memory service refuses for good is skipped and the run goes on", async () => {
+    await setRecord({ sessionId: "os-sup", previous: [] });
+    exchange("os-sup", "I prefer Polish invoices and short replies.", "Okay.");
+    answer = JSON.stringify({
+      facts: [
+        { text: "Prefers Polish invoices.", kind: "preference" },
+        { text: "Prefers short replies.", kind: "preference" },
+      ],
+    });
+    const { MemoryRepoError } = await import("./memory-repo/git-store");
+    for (const refusal of [
+      new MemoryRepoError("Line 3: unknown kind.", 400),
+      new MemoryRepoError("The memory was saved but not indexed.", 500),
+      Object.assign(new Error("Looks like a credential."), {
+        name: "SecretInMemoryError",
+      }),
+      new MemoryRepoError("Duplicate memory.", 409),
+    ])
+      expect(writer.permanentWriteError(refusal)).toBe(true);
+    expect(writer.permanentWriteError(new Error("push rejected"))).toBe(false);
+    expect(
+      writer.permanentWriteError(new MemoryRepoError("Worker stopped.", 503)),
+    ).toBe(false);
+
+    restore();
+    restore = writer.__setSupervisorMemoryWriterDepsForTest({
+      now: () => NOW,
+      enabled: () => true,
+      busy: () => false,
+      readSince: async (sessionId, since, limit) => ({
+        entries: (transcripts.get(sessionId) ?? [])
+          .filter((row) => row.seq > since)
+          .slice(0, limit),
+      }),
+      complete: async () => answer,
+      existing: async () => [],
+      write: async (input) => {
+        if (input.text.includes("Polish"))
+          throw new MemoryRepoError("Line 3: unknown kind.", 400);
+        written.push(input);
+        return true;
+      },
+      sessionLink: async (id) => `https://os.example.test/session/${id}`,
+    });
+    const result = await writer.runSupervisorMemoryWriter("Ada");
+    expect(result.status).toBe("written");
+    expect(result.facts.map((fact) => fact.text)).toEqual([
+      "Prefers short replies.",
+    ]);
+    expect(written.map((input) => input.text)).toEqual([
+      "Prefers short replies.",
+    ]);
+    expect(await cursor()).toEqual({ sessionId: "os-sup", seq: 3 });
+  });
+
+  test("while off it reads and writes nothing, and keeps the cursor at the session's end", async () => {
     await setRecord({ sessionId: "os-sup", previous: [] });
     exchange("os-sup", "I prefer short replies.", "Sure.");
     expect((await inbox.getSupervisorPrefs("Ada")).memoryWriter).toBe(true);
@@ -266,7 +336,88 @@ describe("writer run", () => {
     expect(result.status).toBe("off");
     expect(reads).toEqual([]);
     expect(prompts).toEqual([]);
-    expect(await cursor()).toBeUndefined();
+    expect(await cursor()).toEqual({ sessionId: "os-sup", seq: 3 });
+    exchange("os-sup", "I prefer Polish invoices.", "Okay.");
+    await writer.runSupervisorMemoryWriter("Ada");
+    expect(await cursor()).toEqual({ sessionId: "os-sup", seq: 6 });
+
+    // Turned on again, only what is said after that is read.
+    await inbox.setSupervisorPrefs("Ada", { memoryWriter: true });
+    exchange("os-sup", "Call me Ada.", "Will do.");
+    await writer.runSupervisorMemoryWriter("Ada");
+    expect(reads).toEqual([{ sessionId: "os-sup", since: 6 }]);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("Call me Ada.");
+    expect(prompts[0]).not.toContain("short replies");
+    expect(prompts[0]).not.toContain("Polish");
+  });
+
+  test("a record without a cursor starts at the session's end: no backfill", async () => {
+    await setRecord({
+      sessionId: "os-sup",
+      previous: [],
+      memoryCursor: undefined,
+    });
+    exchange("os-sup", "I prefer short replies.", "Sure.");
+    const first = await writer.runSupervisorMemoryWriter("Ada");
+    expect(first.status).toBe("moved");
+    expect(reads).toEqual([]);
+    expect(prompts).toEqual([]);
+    expect(await cursor()).toEqual({ sessionId: "os-sup", seq: 3 });
+    exchange("os-sup", "Call me Ada.", "Will do.");
+    await writer.runSupervisorMemoryWriter("Ada");
+    expect(reads).toEqual([{ sessionId: "os-sup", since: 3 }]);
+    expect(prompts[0]).toContain("Call me Ada.");
+    expect(prompts[0]).not.toContain("short replies");
+  });
+
+  test("a live turn puts the run off and it tries again later", async () => {
+    await setRecord({ sessionId: "os-sup", previous: [] });
+    exchange("os-sup", "I prefer mornings for calls.", "Okay.");
+    busy = true;
+    const result = await writer.runSupervisorMemoryWriter("Ada");
+    expect(result).toMatchObject({ status: "busy", retry: true });
+    expect(reads).toEqual([]);
+    expect(prompts).toEqual([]);
+    expect(await cursor()).toEqual({ sessionId: "os-sup", seq: 0 });
+
+    // Scheduled, it reschedules a bounded number of times.
+    writer.scheduleSupervisorMemoryWriter("Ada");
+    for (let i = 0; i < writer.WRITER_MAX_DEFERRALS + 2; i++) {
+      const pending = timers.filter((timer) => !timer.cleared);
+      if (!pending.length) break;
+      for (const timer of pending) {
+        timer.cleared = true;
+        timer.run();
+      }
+      await Bun.sleep(20);
+    }
+    expect(timers).toHaveLength(writer.WRITER_MAX_DEFERRALS + 1);
+    expect(prompts).toEqual([]);
+
+    busy = false;
+    writer.scheduleSupervisorMemoryWriter("Ada");
+    timers.at(-1)!.run();
+    await Bun.sleep(20);
+    expect(prompts).toHaveLength(1);
+    expect(await cursor()).toEqual({ sessionId: "os-sup", seq: 3 });
+  });
+
+  test("a reply followed by more tool work is not final and waits", async () => {
+    await setRecord({ sessionId: "os-sup", previous: [] });
+    exchange("os-sup", "First question", "First answer");
+    exchange("os-sup", "Second question", "Let me check.");
+    append("os-sup", {
+      id: "t-more",
+      type: "tool_use",
+      content: "",
+      timestamp: "2026-07-01T09:05:00Z",
+    });
+    const result = await writer.runSupervisorMemoryWriter("Ada");
+    expect(result.retry).toBe(true);
+    expect(prompts[0]).toContain("First question");
+    expect(prompts[0]).not.toContain("Second question");
+    expect(await cursor()).toEqual({ sessionId: "os-sup", seq: 3 });
   });
 
   test("a message still waiting for its reply is left for the next run", async () => {
@@ -341,6 +492,7 @@ describe("writer run", () => {
     restore();
     restore = writer.__setSupervisorMemoryWriterDepsForTest({
       enabled: () => false,
+      lastSeq: async () => 0,
       readSince: async () => {
         throw new Error("must not read");
       },
@@ -420,6 +572,7 @@ describe("parseWriterFacts", () => {
       "Never secrets",
       "Never customers' personal data",
       "Nothing transient",
+      "pasted or quoted from someone else is not the owner's statement",
     ])
       expect(writer.WRITER_SYSTEM).toContain(rule);
   });
@@ -447,6 +600,7 @@ describe("with the memory service", () => {
       restore = writer.__setSupervisorMemoryWriterDepsForTest({
         now: () => NOW,
         enabled: () => true,
+        busy: () => false,
         readSince: async (sessionId, since, limit) => ({
           entries: (transcripts.get(sessionId) ?? [])
             .filter((row) => row.seq > since)
@@ -454,10 +608,12 @@ describe("with the memory service", () => {
         }),
         complete: async (prompt) => {
           prompts.push(prompt);
-          return '{"facts":[{"text":"Prefers SBAR for incident reports.","kind":"preference"}]}';
+          return answer;
         },
         sessionLink: async (id) => `https://os.example.test/session/${id}`,
       });
+      answer =
+        '{"facts":[{"text":"Prefers SBAR for incident reports.","kind":"preference"}]}';
       await setRecord({ sessionId: "os-sup", previous: [] });
       exchange("os-sup", "Use SBAR for incidents from now on.", "Will do.");
 
@@ -518,6 +674,35 @@ describe("with the memory service", () => {
           /Prefers SBAR/g,
         ),
       ).toHaveLength(1);
+
+      // A fact whose entry has expired is still in the index: the same text
+      // again adds no second line, and the cursor moves on.
+      await service.addEntry({
+        scopeKey: "user-ada",
+        text: "Away until June 20.",
+        kind: "status",
+        expires: "2026-06-20",
+      });
+      const expired = await service.index.list(
+        { scopeKeys: ["user-ada"], states: ["expired"] },
+        { limit: 10 },
+      );
+      expect(expired.items.map((item) => item.summary)).toEqual([
+        "Away until June 20.",
+      ]);
+      exchange("os-sup", "I'm away until June 20.", "Noted.");
+      answer = '{"facts":[{"text":"Away until June 20.","kind":"reference"}]}';
+      const repeat = await writer.runSupervisorMemoryWriter("Ada");
+      expect(repeat.status).toBe("nothing");
+      expect(await cursor()).toEqual({ sessionId: "os-sup", seq: 9 });
+      const files = await service.listFiles("user-ada");
+      let lines = 0;
+      for (const file of files.filter((path) => path.endsWith(".md")))
+        lines +=
+          (await service.readFile("user-ada", file))?.match(
+            /Away until June 20\./g,
+          )?.length ?? 0;
+      expect(lines).toBe(1);
     } finally {
       __setMemoryRepoServiceForTest(null);
       service.close();

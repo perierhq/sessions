@@ -314,6 +314,24 @@ describe("recent conversations in the seed", () => {
     });
     expect(seed).toContain('Owner: "Hi" Blob: "Hey."');
   });
+
+  test("quotes inside a line are escaped", async () => {
+    tails.set(
+      "os-old",
+      exchange(
+        'Tell Bob "ship it" today',
+        'Told him: "ship it".',
+        "2026-06-30T10:00:00Z",
+      ),
+    );
+    const seed = await memory.supervisorSeedContext("Ada", {
+      rotated: true,
+      previous: ["os-old"],
+    });
+    expect(seed).toContain(
+      'Owner: "Tell Bob \\"ship it\\" today" Blob: "Told him: \\"ship it\\"."',
+    );
+  });
 });
 
 describe("memory snapshot refresh", () => {

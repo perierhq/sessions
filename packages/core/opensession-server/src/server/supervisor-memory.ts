@@ -119,10 +119,11 @@ export async function recentSupervisorConversations(
   const lines = exchanges.slice(-SEED_CONVERSATION_EXCHANGES).map((x) => {
     const when = localStamp(x.at, timeZone);
     const owner = oneLine(x.owner, CONVERSATION_LINE_CHARS);
+    // Quoted as JSON strings, so a quote inside cannot end the line's quote.
     const blob = x.blob
-      ? oneLine(spokenPart(x.blob), CONVERSATION_LINE_CHARS)
-      : "(no reply)";
-    return `- ${when ? `${when} ` : ""}Owner: "${owner}" Blob: "${blob}"`;
+      ? JSON.stringify(oneLine(spokenPart(x.blob), CONVERSATION_LINE_CHARS))
+      : '"(no reply)"';
+    return `- ${when ? `${when} ` : ""}Owner: ${JSON.stringify(owner)} Blob: ${blob}`;
   });
   // Newest kept: drop the oldest lines until the section fits.
   let bytes = lines.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);

@@ -51,7 +51,9 @@ export interface SupervisorRecord {
   seededSessionId?: string;
   /** How far the memory writer (supervisor-memory-writer.ts) has read: the
    *  last transcript seq it turned into memory, in that session. Carried
-   *  across rotations so the retired session's tail is still read. */
+   *  across rotations so the retired session's tail is still read. Set at
+   *  seq 0 when the record is created; a record without one (made before
+   *  the writer existed) starts at its session's current end. */
   memoryCursor?: SupervisorMemoryCursor;
 }
 
@@ -354,10 +356,9 @@ async function mint(
         createdAt: now,
         previous,
         compactions: 0,
-        // The writer finishes the retired session's tail first.
-        ...(current?.memoryCursor
-          ? { memoryCursor: current.memoryCursor }
-          : {}),
+        // The writer finishes the retired session's tail first; a new
+        // record's writer starts at the new session's beginning.
+        memoryCursor: current?.memoryCursor ?? { sessionId: id, seq: 0 },
       };
       return next;
     }),
