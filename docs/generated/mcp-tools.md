@@ -1733,7 +1733,7 @@ Tell flaps from outages for example's signals: per signal, incidents opened, clo
 
 `mcp__opensession-lead__propose` · input: `category` ("fix-verified" | "ci-repair" | "support-routine-reply" | "signal-rule-change" | "dependency-major" | "ban-user" | "rotate-key" | "public-release" | "refund" | "pricing" | "dispute" | "tax-legal" | "contract" | "production-data-write", required), `title` (string, required), `body` (string, required), `options` (string[]), `subject` (string), `kind` ("proposal" | "needs-you")
 
-Propose an action for example to its owner. Write the body as Blob presents it: the first paragraph is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner.
+Propose an action for example to its owner. Write the body as Blob presents it: a leading ```say fence is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner.
 
 ### `post_digest_note`
 

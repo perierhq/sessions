@@ -4,9 +4,10 @@
 // recommended; a digest note is one fyi item per day. Repeats about the
 // same subject update one item instead of adding another. Every proposal
 // is audited with the rule that decided it. The server writes each item's
-// title and the rule line. The body leads with the lead's first paragraph,
-// what Blob says when it presents the decision (say and show,
-// blob-surface.ts); the rule, the lead's title and the rest follow.
+// title and the rule line. The body leads with the lead's ```say fence (or,
+// without one, its first paragraph), what Blob says when it presents the
+// decision (say and show, blob-surface.ts); the rule, the lead's title and
+// the rest follow.
 import {
   LEAD_CATEGORY_LABELS,
   type LeadCategory,
@@ -65,19 +66,27 @@ export function proposalTitle(label: string, category: LeadCategory): string {
   return `${label}: ${LEAD_CATEGORY_LABELS[category]}`;
 }
 
-/** The body: the lead's first paragraph (what Blob says), then the rule
- *  the server applied, the lead's title and the rest of its text (what Blob
+/** A leading ```say fence, through its closing fence. */
+const SAY_FENCE = /^(`{3,}|~{3,})[ \t]*say[ \t]*\n[\s\S]*?\n\1[ \t]*(?:\n|$)/;
+
+/** What Blob says and what it shows: the leading say fence and the rest, or
+ *  the first paragraph and the rest when the body has no fence. */
+function splitSay(body: string): { say: string; shown: string } {
+  const fence = SAY_FENCE.exec(body);
+  if (fence)
+    return { say: fence[0].trim(), shown: body.slice(fence[0].length).trim() };
+  const [say = "", ...shown] = body.split(/\n\s*\n/);
+  return { say: say.trim(), shown: shown.join("\n\n").trim() };
+}
+
+/** The body: what Blob says (the lead's say fence), then the rule the
+ *  server applied, the lead's title and the rest of its text (what Blob
  *  shows). */
 export function proposalBody(
   proposal: Pick<LeadProposal, "title" | "body" | "decision">,
 ): string {
-  const [say = "", ...shown] = proposal.body.trim().split(/\n\s*\n/);
-  return [
-    say.trim(),
-    `Rule: ${proposal.decision.rule}.`,
-    proposal.title,
-    shown.join("\n\n").trim(),
-  ]
+  const { say, shown } = splitSay(proposal.body.trim());
+  return [say, `Rule: ${proposal.decision.rule}.`, proposal.title, shown]
     .filter(Boolean)
     .join("\n\n");
 }

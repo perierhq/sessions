@@ -26,6 +26,7 @@ import { mermaidUpgrader } from "./mermaid-fence";
 import { paletteUpgrader } from "./palette-block";
 import { tableUpgrader } from "./table-block";
 import { metricsUpgrader } from "./metrics-block";
+import { sayUpgrader } from "./say-block";
 import { slidesUpgrader } from "./slides-block";
 import { treeUpgrader } from "./tree-block";
 import type { MarkdownContext } from "./markdown";
@@ -106,6 +107,7 @@ export const FENCE_UPGRADERS: readonly FenceUpgrader[] = [
   choicesUpgrader,
   treeUpgrader,
   compareUpgrader,
+  sayUpgrader,
 ];
 
 /** The upgrader that claims a fence, if any. */

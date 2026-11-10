@@ -35,22 +35,22 @@ describe("leadCharter", () => {
     expect(text).not.toContain("a month");
   });
 
-  test("tells the lead the body's first paragraph is what Blob says", () => {
+  test("tells the lead the body's say fence is what Blob says", () => {
     const text = charter();
     expect(text).toContain("## How you write to the owner");
     expect(text).toContain(
-      "- Say: the first paragraph is what Blob says aloud when it presents it.",
+      "- Say: open with a ```say fence holding what Blob says aloud when it presents it.",
     );
     expect(text).toContain("Never numbers, lists or tables.");
     expect(text).toContain(
-      "- Show: everything after the first paragraph is shown, never spoken",
+      "- Show: everything after the say fence is shown, never spoken",
     );
     expect(text).not.toContain("\u2014");
   });
 
   test("carries the owner's report style, BLUF by default", () => {
     expect(charter()).toContain(
-      "The owner's report style is BLUF: the bottom line or the ask first",
+      "The owner's report style is BLUF: what is shown leads with the bottom line or the ask",
     );
     const doc = base();
     const sbar = leadCharter({
@@ -60,7 +60,7 @@ describe("leadCharter", () => {
       reportStyle: "sbar",
     });
     expect(sbar).toContain(
-      "The owner's report style is SBAR: in the shown part, four short labelled parts: Situation, Background, Assessment, Recommendation.",
+      "The owner's report style is SBAR: what is shown is four short labelled parts: Situation, Background, Assessment, Recommendation.",
     );
     expect(sbar).not.toContain("BLUF");
   });

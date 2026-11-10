@@ -191,6 +191,9 @@ export interface UnifiedSession {
   /** Where the Blob app last asked to show this supervisor's replies
    *  (blob-surface.ts). */
   blobSurface?: BlobSurface;
+  /** When the owner last messaged this supervisor session
+   *  (supervisor-clock.ts). */
+  supervisorOwnerSpoke?: SupervisorOwnerSpoke;
   /** How many spawn_task hops away from a human-created session this is
    *  (opensession-sessions spawn_task loop guard: refused at depth ≥ 2). Absent =
    *  0 = created by a human or by create_session. */
@@ -712,6 +715,8 @@ export interface NativeSessionFile {
   supervisorRetiredAt?: string;
   /** Blob app surface from its last prompt (blob-surface.ts); unset otherwise. */
   blobSurface?: BlobSurface;
+  /** When the owner last messaged this supervisor (supervisor-clock.ts). */
+  supervisorOwnerSpoke?: SupervisorOwnerSpoke;
   /** spawn_task hop count from a human-created session (loop guard; see
    *  UnifiedSession.spawnDepth). Stamped by opensession-sessions' spawn_task. */
   spawnDepth?: number;
@@ -859,6 +864,12 @@ export interface FileWatcherState {
   lastMtime: number;
   lastByteOffset: number;
   viewers: Set<any>;
+}
+
+/** When the owner last messaged their supervisor session, as an ISO time
+ *  (supervisor-clock.ts). */
+export interface SupervisorOwnerSpoke {
+  at: string;
 }
 
 /** Where the Blob app shows a supervisor reply (blob-surface.ts, adrs/blob-views.md). */

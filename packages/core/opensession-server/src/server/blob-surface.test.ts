@@ -59,14 +59,43 @@ describe("Blob surface", () => {
       now,
     );
     expect(text).toContain(
-      "the first paragraph is what Blob says aloud and shows as its Say line",
+      "Say: open with a ```say fence holding the script Blob speaks aloud.",
     );
-    expect(text).toContain("never read out numbers, lists or tables");
     expect(text).toContain(
-      "everything after the first paragraph is shown and never spoken",
+      "Write it for the ear: one to three short sentences",
     );
+    expect(text).toContain("It talks about what is shown and never repeats it");
+    expect(text).toContain("[warm, unhurried], only when the tone helps");
+    expect(text).toContain(
+      "Show: everything after the say fence is shown and never spoken. View first, prose minimal",
+    );
+    expect(text).toContain("Tables only when the owner asked for data.");
+    expect(text).toContain("No paragraph recaps.");
     expect(text).toContain("docs/blocks.md");
-    expect(text).not.toContain("may read the prose aloud");
+    expect(text).not.toContain("first paragraph");
+  });
+
+  test("tells Blob how to point at what it shows with cues", () => {
+    const text = blobSurfaceContext(
+      {
+        supervisor: true,
+        blobSurface: { panes: 1, width: "compact", at: now.toISOString() },
+      },
+      now,
+    );
+    expect(text).toContain(
+      "put {#id} in the script where the speech turns to a shown element, at a sentence start or mid-sentence",
+    );
+    expect(text).toContain(
+      "Checkout flapped again right after 2.3.4, {#pr-12} and Pat's fix is waiting.",
+    );
+    expect(text).toContain("```metrics {#stats}");
+    expect(text).toContain("[PR #12](url){#pr-12}");
+    expect(text).toContain("Keep at least four words between cues");
+    expect(text).toContain(
+      "only when pointing helps, and at most one per sentence",
+    );
+    expect(text).toContain("the cue itself is never read");
   });
 
   test("says nothing outside the supervisor, without a surface, or once it is stale", () => {

@@ -294,7 +294,9 @@ import {
   markSupervisorAnswersBriefed,
   supervisorInboxContext,
   supervisorStyleContext,
+  supervisorClockContext,
 } from "./supervisor-inbox";
+import { recordOwnerSpoke } from "./supervisor-clock";
 import {
   SUPERVISOR_WITHHELD_SERVERS,
   supervisorInboxOwner,
@@ -3358,17 +3360,27 @@ async function runSessionPromptInner(
   let briefedAnswers: string[] = [];
   let seedDue = false;
   if (inboxOwner) {
-    const [inbox, style] = await Promise.all([
+    // When the owner spoke before this turn; this turn's time replaces it
+    // (supervisor-clock.ts). Every owner turn passes here, whichever entry
+    // point sent it.
+    const previousSpoke = await recordOwnerSpoke(session).catch(
+      () => session.supervisorOwnerSpoke?.at,
+    );
+    const [inbox, style, clock] = await Promise.all([
       supervisorInboxContext(inboxOwner).catch(() => undefined),
       // The owner's report style (BLUF, SBAR or plain), one line, also
       // per turn so a change keeps the prompt cache.
       supervisorStyleContext(inboxOwner).catch(() => undefined),
+      // The owner's local time and how long since they last spoke, so Blob
+      // greets once a day rather than every turn (supervisor-clock.ts).
+      supervisorClockContext(inboxOwner, previousSpoke).catch(() => undefined),
     ]);
     if (inbox) {
       prompt = `${inbox.context}\n\n${prompt}`;
       briefedAnswers = inbox.answered;
     }
     if (style) prompt = `${style}\n\n${prompt}`;
+    if (clock) prompt = `${clock}\n\n${prompt}`;
     // A new supervisor session (a rotation or a new person) starts from
     // the ledger, the last exchanges of the sessions before it and the
     // last week's digests (supervisor-memory.ts). Every

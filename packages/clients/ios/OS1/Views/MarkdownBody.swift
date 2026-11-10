@@ -176,6 +176,8 @@ struct MarkdownBody: View {
             MediaFigureView(figure: figure)
         case .callout(let callout):
             CalloutView(callout: callout, dimmed: dimmed)
+        case .say(let words):
+            SaidAloudLine(text: words)
         }
     }
 

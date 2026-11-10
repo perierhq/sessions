@@ -37,6 +37,7 @@ the reader needs.
 | ` ```artifact ` (`svg`)              | Sandboxed HTML/SVG, sized to fit, expandable           | `lib/artifact-block.ts`                                           |
 | ` ```slides `                        | Swipeable deck of markdown slides split on `---`       | `lib/slides-block.ts`                                             |
 | ` ```metrics `                       | Metric cards: big number, label, delta                 | `lib/metrics-block.ts`                                            |
+| ` ```say `                           | Blob's spoken script, a quiet "Said aloud" line        | `lib/say-block.ts`, `server/blob-surface.ts`                      |
 
 Paths are under `packages/core/opensession-server/src/frontend/`. Each row's
 section below is owned by the module that renders it; keep the grammar there
@@ -277,6 +278,64 @@ for reading, `1204` as `1,204`). Renders as a row of cards: the value big and
 tabular, the label under it, the delta beside the value and coloured by its
 lead character: `+`, `▲` or `↑` is up, `-`, `▼` or `↓` is down, anything else
 is neutral. A fence that does not parse stays a code block.
+
+### Spoken script
+
+A reply written for the Blob app (`server/blob-surface.ts` tells the
+supervisor when) opens with a ` ```say ` fence: the script Blob speaks,
+one to three short sentences written for the ear. Everything after the fence
+is what Blob shows, and is never read aloud.
+
+````
+```say
+[warm, unhurried] Two things matter. {#inc-4} Checkout flapped again, I'd roll back. {#pr-12} And the sermon drafts shipped.
+```
+
+- Checkout errors, last hour {#inc-4}
+- [PR #12](https://example.test/pull/12){#pr-12} merged
+````
+
+- **Only first.** A say fence is the script only when it opens the reply.
+  Anywhere further down it stays code.
+- **Delivery hint.** A bracketed run at the start (`[warm, unhurried]`) is a
+  direction for the voice. It goes ahead of every speech request for the
+  script, since the Fish Audio Drama 3 model reads brackets as direction,
+  and is never shown. A bracket later in the script is words.
+- **Cues.** `{#id}` in the script marks where the speech turns to the shown
+  element with the same id, at a sentence start or in the middle of one:
+  `{#inc-4} Checkout flapped again.` or
+  `Checkout flapped again right after 2.3.4, {#pr-12} and Pat's fix is waiting.`
+  An id is letters, digits, `_` and `-`. Use at most one per sentence, and
+  only when pointing helps. A shown element takes an id after a fence's
+  language (` ```metrics {#stats} `), right after a link
+  (`[PR #12](url){#pr-12}`), or at the end of a line, which marks that line
+  (a list item takes its indented lines with it). The ids are the element
+  keys a later view spec will use.
+
+The Blob app (`packages/clients/ios/Blob/BlobReply.swift`,
+`BlobCues.swift`) cuts the script into segments at sentence ends and at
+cues, and plays each segment as one playback item, so focus moves exactly
+when a segment's audio starts: the element with that id scrolls into view
+and pulses once (not under Reduce Motion). Segments in a row without a cue
+share one speech request, up to 280 characters. A segment without a cue
+keeps the current focus, the focus clears once the reply has been read, and
+an id nothing carries is ignored. Anything shaped like a cue (`{#...}`) is
+never shown or read, valid id or not. Fish Audio's API takes no
+previous text as context, so a cut at a cue mid-sentence with fewer than four
+words before it is skipped: those words join the next segment, which takes
+the cue to its start. The script is shown only as a passing caption while it
+is spoken, and the caption stays when it was not heard (reading aloud off,
+hushed, or nothing played). A reply with no say fence falls back to speaking
+its first paragraph.
+
+A say fence that is never closed ends at the next fence line or at a block
+after a blank line, and only its first three sentences (600 characters at
+most) are said; the rest is shown. The web leaves such a fence as code.
+
+Everywhere else the script is a small muted "Said aloud" line, the hint and
+the cues dropped, and the web drops every cue anchor before it renders
+(`stripCueAnchors`); the native app does the same. A client without the
+block shows the fence as code, which still reads.
 
 ## Adding a block kind
 

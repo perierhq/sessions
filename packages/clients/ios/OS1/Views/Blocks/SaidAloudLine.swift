@@ -1,0 +1,17 @@
+import SwiftUI
+
+/// A ```say fence in a transcript (`SayBlock`): what Blob said aloud, as one
+/// quiet line above what the reply shows.
+struct SaidAloudLine: View {
+    let text: String
+
+    var body: some View {
+        let label = Text("Said aloud:").fontWeight(.semibold).foregroundStyle(OS1VisualStyle.textFaint)
+        let words = Text(verbatim: text).foregroundStyle(OS1VisualStyle.textDim)
+        Text("\(label) \(words)")
+            .font(.footnote)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel("Said aloud: \(text)")
+    }
+}

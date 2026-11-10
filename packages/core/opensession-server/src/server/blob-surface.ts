@@ -53,15 +53,20 @@ export function maybePersistBlobSurface(
 }
 
 /**
- * Say and show: how a reply is split in Blob. The first paragraph is what
- * Blob says aloud and shows as its Say line; everything after it is shown
- * and never spoken.
+ * Say and show: how a reply is split in Blob. A ```say fence opens the reply
+ * with the script Blob speaks, written for the ear; everything after it is
+ * shown and never spoken. A `{#id}` cue in the script points at the shown
+ * element carrying the same id (docs/blocks.md, "Spoken script"). The
+ * app reads the fence (BlobReply.swift, BlobCues.swift); a reply without one
+ * falls back to speaking its first paragraph.
  */
 export const SAY_SHOW_LINES = [
-  "Write the reply in two parts.",
-  "Say: the first paragraph is what Blob says aloud and shows as its Say line. One or two spoken sentences that describe what is shown and give the bottom line; never read out numbers, lists or tables.",
-  "Show: everything after the first paragraph is shown and never spoken. Use views from the block catalog in docs/blocks.md (metrics, csv tables, charts, choices) plus short text; show rather than tell.",
-  "Keep it to what fits; offer the rest as choices instead of writing it out.",
+  "Write every reply in two parts: what Blob says, then what Blob shows.",
+  "Say: open with a ```say fence holding the script Blob speaks aloud. Write it for the ear: one to three short sentences, natural spoken words and contractions, no markdown, lists, tables, URLs or ids read aloud, and no numbers read out like a table.",
+  'It talks about what is shown and never repeats it ("Here\'s what happened overnight. The two things that matter are on screen."). It may start with a delivery hint in square brackets, like [warm, unhurried], only when the tone helps.',
+  "Show: everything after the say fence is shown and never spoken. View first, prose minimal: point at the real things (sessions, pull requests, incidents, people) as links the app can open, with their status, and use timelines, images and screenshots, and choices for a decision, from the block catalog in docs/blocks.md.",
+  "Cues: only when pointing helps, and at most one per sentence, put {#id} in the script where the speech turns to a shown element, at a sentence start or mid-sentence (\"Checkout flapped again right after 2.3.4, {#pr-12} and Pat's fix is waiting.\"), and give that element the same id: after a fence's language (```metrics {#stats}), right after a link ([PR #12](url){#pr-12}), or at the end of a line. Blob focuses the element when the words after the cue start; the cue itself is never read. Keep at least four words between cues; ids are short, made of letters, digits and dashes.",
+  "Tables only when the owner asked for data. No paragraph recaps. Keep it to what fits; offer the rest as choices instead of writing it out.",
 ] as const;
 
 /** The context note for this turn, or nothing when Blob isn't the reader. */

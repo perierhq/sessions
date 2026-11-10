@@ -9,9 +9,10 @@ import os
 /// or the server's Fish Audio, else Apple's own text stands. The recording
 /// goes to Fish only when you picked Fish, or turned on Fish until Parakeet
 /// is ready. The text goes to the supervisor like a typed message, and Blob
-/// shows the answer and reads its first paragraph aloud (`BlobReply`,
-/// `BlobSpeaker`), sentence by sentence as the reply streams in
-/// (`BlobSentenceStreamer`): with the server's Fish
+/// shows the answer and reads its spoken script aloud (`BlobReply`,
+/// `BlobSpeaker`), segment by segment as the reply streams in
+/// (`BlobSentenceStreamer`), focusing what each cue points at (`focus`):
+/// with the server's Fish
 /// Audio voice when it has one, else with a Premium or Enhanced Apple voice
 /// when one fits.
 ///
@@ -69,6 +70,33 @@ final class BlobTextTalk {
 
     init() {
         listener.onEnd = { [weak self] decision in self?.listeningEnded(decision) }
+        speaker.onCue = { [weak self] id in self?.cueStarted(id) }
+        speaker.onQueueDrained = { [weak self] in self?.queueDrained() }
+    }
+
+    /// The shown element the words being spoken point at (`BlobCues`): set
+    /// when a segment with a cue starts playing, kept through segments
+    /// without one, cleared once the reply has been read or with the reply.
+    /// `tick` is new on every cue, never reused, so the same element pulses
+    /// again when pointed at again, and only then (`CuePulses`).
+    struct Focus: Equatable {
+        var id: String
+        var tick: Int
+    }
+
+    private(set) var focus: Focus?
+    private var cueTicks = 0
+
+    private func cueStarted(_ id: String) {
+        cueTicks += 1
+        focus = Focus(id: id, tick: cueTicks)
+    }
+
+    /// Reading caught up. Once the reply has settled there is nothing left
+    /// to say, so nothing is pointed at; mid-stream the next segment may
+    /// still keep the focus.
+    private func queueDrained() {
+        if !replying { focus = nil }
     }
 
     var active: Bool { phase != .idle }
@@ -78,7 +106,7 @@ final class BlobTextTalk {
     }
     /// The answer that was last read aloud, so it is read once.
     private var spokenAnswer: String?
-    /// The Say sentences of the reply being written, read as each completes.
+    /// The Say segments of the reply being written, read as each completes.
     private var sentences = BlobSentenceStreamer()
     /// Reading was cut off (Esc); the rest of this reply stays silent.
     private(set) var hushed = false
@@ -292,7 +320,7 @@ final class BlobTextTalk {
     func askCameUp(_ ask: BlobAsk, callActive: Bool) {
         guard ask.id != spokenAsk, phase != .listening, !callActive else { return }
         spokenAsk = ask.id
-        let say = ask.reply.say
+        let say = ask.reply.spoken
         if !say.isEmpty { speaker.speak(say) }
     }
 
@@ -399,8 +427,8 @@ final class BlobTextTalk {
         return !desk.isRunning && !desk.isStreaming && answer != nil
     }
 
-    /// Reads what is left of the finished answer's first paragraph: the
-    /// sentences that did not stream, or were rewritten when it landed. The
+    /// Reads what is left of the finished answer's spoken script: the
+    /// segments that did not stream, or were rewritten when it landed. The
     /// rest is only shown (`BlobReply`). Called when `settled` turns true.
     func answerSettled() {
         guard let answer else { return }
@@ -415,12 +443,16 @@ final class BlobTextTalk {
         let rest = sentences.finish(answer)
         BlobMetrics.shared.willSpeak(rest.count)
         speaker.enqueue(rest)
+        // Read to the end already, while it streamed.
+        if !speaker.readingReply { focus = nil }
     }
 
     /// Stops reading and forgets what was read: the next reply starts fresh.
     private func stopReading() {
         speaker.stop()
         spokenAnswer = nil
+        focus = nil
+        CuePulses.reset()
         sentences = BlobSentenceStreamer()
         hushed = false
     }
@@ -429,6 +461,7 @@ final class BlobTextTalk {
     func hush() {
         BlobMetrics.shared.stopping(speaking: replyHasVoice, by: .hush)
         speaker.stop()
+        focus = nil
         if phase == .waiting { hushed = true }
     }
 

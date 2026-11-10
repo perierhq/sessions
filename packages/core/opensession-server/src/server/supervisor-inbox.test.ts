@@ -744,7 +744,7 @@ describe("briefing", () => {
     const bluf = await inbox.supervisorStyleContext("Ada");
     expect(bluf).toContain('source="supervisor-report-style"');
     expect(bluf).toContain(
-      "The owner's report style is BLUF: the bottom line or the ask first, then what supports it.",
+      "The owner's report style is BLUF: what is shown leads with the bottom line or the ask, then what supports it.",
     );
     await inbox.setSupervisorPrefs("Ada", { reportStyle: "sbar" });
     const sbar = await inbox.supervisorStyleContext("Ada");
@@ -752,11 +752,11 @@ describe("briefing", () => {
       "four short labelled parts: Situation, Background, Assessment, Recommendation",
     );
     expect(sbar).toContain(
-      "The spoken first paragraph states the situation and the recommendation.",
+      "What Blob says aloud stays conversational in every style",
     );
     await inbox.setSupervisorPrefs("Ada", { reportStyle: "plain" });
     expect(await inbox.supervisorStyleContext("Ada")).toContain(
-      "The owner's report style is plain: no fixed shape",
+      "The owner's report style is plain: no fixed shape; show what fits.",
     );
     expect(await inbox.supervisorReportStyle("Ada")).toBe("plain");
     expect(await inbox.supervisorStyleContext("  ")).toBeUndefined();

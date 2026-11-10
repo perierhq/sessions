@@ -49,8 +49,9 @@ struct BlobReplySplit: Equatable {
         for segment in MarkdownFenceSegmenter.split(markdown, claims: TranscriptRichBlocks.claimedLangs.contains) {
             switch segment {
             case .fence(let lang, let source, let raw):
-                // Quick replies answer the conversation, so they stay with it.
-                if lang != "choices", TranscriptRichBlocks.block(lang: lang, source: source) != nil {
+                // Quick replies answer the conversation, so they stay with it,
+                // and so does the spoken script, which opens it.
+                if lang != "choices", lang != "say", TranscriptRichBlocks.block(lang: lang, source: source) != nil {
                     visuals.append(raw)
                 } else {
                     prose.append(raw)
@@ -88,30 +89,55 @@ struct BlobReplySplit: Equatable {
 
 /// The trailing pane: the current reply's visual blocks, top-aligned, with
 /// its own scroll. Without any, whatever else is waiting on you (`side`),
-/// or nothing at all.
+/// or nothing at all. When the spoken words point at a block here (`focus`,
+/// its cue anchor on the block's first line), the pane scrolls to it and it
+/// pulses.
 struct BlobSidePane<Side: View>: View {
     let visuals: [String]
+    var focus: BlobTextTalk.Focus?
     let margins: EdgeInsets
     @ViewBuilder let side: () -> Side
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                if visuals.isEmpty {
-                    side()
-                } else {
-                    ForEach(Array(visuals.enumerated()), id: \.offset) { _, block in
-                        MarkdownBody(block)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+        let ids = visuals.map(Self.anchorIds)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if visuals.isEmpty {
+                        side()
+                    } else {
+                        ForEach(Array(visuals.enumerated()), id: \.offset) { index, block in
+                            MarkdownBody(block)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .cuePulse(focus.flatMap { ids[index].contains($0.id) ? $0.tick : nil })
+                                .id(Self.visualId(index))
+                        }
                     }
                 }
+                .frame(maxWidth: 560, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(margins)
             }
-            .frame(maxWidth: 560, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(margins)
+            .defaultScrollAnchor(.top)
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollIndicators(.hidden)
+            .onChange(of: focus) { _, focus in
+                guard let focus, let index = ids.firstIndex(where: { $0.contains(focus.id) }) else { return }
+                if reduceMotion {
+                    proxy.scrollTo(Self.visualId(index), anchor: .center)
+                } else {
+                    withAnimation(.smooth(duration: 0.45)) { proxy.scrollTo(Self.visualId(index), anchor: .center) }
+                }
+            }
         }
-        .defaultScrollAnchor(.top)
-        .scrollBounceBehavior(.basedOnSize)
-        .scrollIndicators(.hidden)
+    }
+
+    static func visualId(_ index: Int) -> String { "blob-visual-\(index)" }
+
+    /// A block's anchors: on a fence's opening line or a figure's line.
+    static func anchorIds(_ block: String) -> [String] {
+        CueMarkers.anchorIds(inLine: String(block.prefix { $0 != "\n" }))
     }
 }

@@ -17,6 +17,7 @@ import { cleanSessionTitle } from "./session-title";
 import { INTERNAL_ORIGINS, UUIDV7, internalUrlTarget } from "./session-url";
 import { sessionAssetRawUrl } from "./api/sessions";
 import { type TellaVideoEmbed, tellaVideoEmbed } from "./tella-embed";
+import { stripCueAnchors } from "./say-block";
 import { expandIconMarkup } from "../components/icons";
 
 // Dedicated marked instance for session messages so this config doesn't leak
@@ -2031,7 +2032,9 @@ export function renderMarkdown(src: string, ctx?: MarkdownContext): string {
   renderedPrRefs = new Set();
   renderRawLinks = { depth: 0 };
   try {
-    const parsed = md.parse(collapseDuplicatePrReferences(src));
+    const parsed = md.parse(
+      collapseDuplicatePrReferences(stripCueAnchors(src)),
+    );
     if (parsed instanceof Promise) throw new Error("Unexpected async markdown");
     out = parsed;
   } catch {

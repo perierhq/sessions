@@ -42,8 +42,8 @@ enum BlobAsk: Equatable, Identifiable {
     }
 
     /// What Blob says and shows. A question is the run's markdown, split
-    /// like a reply (`BlobReply`): the first paragraph is read aloud and shown
-    /// as the Say line. A merge is one sentence, said as written.
+    /// like a reply (`BlobReply`): its spoken script, or else its first
+    /// paragraph, is read aloud, and drawn the way a reply's is. A merge is one sentence, said as written.
     var reply: BlobReply {
         switch self {
         case .question(let ask):
@@ -122,7 +122,9 @@ struct BlobAskView: View {
                     .accessibilityAddTraits(.isHeader)
                 let reply = ask.reply
                 if !reply.isEmpty {
-                    BlobReplyView(reply: reply)
+                    // The card carries its script as the Say line, so it is
+                    // not lost when reading aloud is off.
+                    BlobReplyView(reply: reply, sayStyle: .line)
                         .padding(.top, 10)
                 }
                 let facts = ask.facts
