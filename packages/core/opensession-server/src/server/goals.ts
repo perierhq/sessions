@@ -82,9 +82,22 @@ export interface Goal {
   fallbackModel?: string;
   /** External MCP server allowlist for this goal's runs (least privilege). */
   mcpServers?: string[];
+  /** The project this goal leads (server/leads/goal.ts). Server-owned: set
+   *  at creation by the lead, never by a patch or the goals API. */
+  leadProject?: string;
+  /** What this goal's runs cost in one UTC month (`YYYY-MM`), as their
+   *  terminal usage reported it. Runner-owned. */
+  spend?: { month: string; usd: number };
   createdBy: string;
   createdAt: string;
 }
+
+/** Why the runner paused a project lead's goal without running it: no lead
+ *  on this server to ask, or asking it failed. The lead lifts both once it
+ *  can answer again (server/leads/goal.ts). */
+export const LEAD_UNAVAILABLE_REASON =
+  "The project lead isn't running on this server";
+export const WAKE_CHECK_FAILED_REASON = "Its wake check failed";
 
 // ── Store ────────────────────────────────────────────────────
 
@@ -173,20 +186,48 @@ function sanitizeMcpList(list?: unknown): string[] | undefined {
     .map((s) => s.trim());
 }
 
-export async function createGoal(input: {
-  name: string;
-  mission: string;
-  mode?: "ask" | "code";
-  repo?: string;
-  model?: string;
-  fallbackModel?: string;
-  mcpServers?: string[];
-  minWakeMinutes?: number;
-  maxWakes?: number;
-  /** ISO8601 first wake; omitted/empty = wake on the next tick. */
-  firstWakeAt?: string;
-  createdBy: string;
-}): Promise<Goal | { error: string }> {
+/** The UTC month (`YYYY-MM`) of `at`. */
+export function monthOf(at: number): string {
+  return new Date(at).toISOString().slice(0, 7);
+}
+
+/** What the goal's runs cost in the UTC month of `now`. */
+export function goalMonthSpend(goal: Pick<Goal, "spend">, now: number): number {
+  return goal.spend?.month === monthOf(now) ? goal.spend.usd : 0;
+}
+
+/** `spend` with `usd` more in the month of `at`; a new month starts at 0. */
+export function addGoalSpend(
+  spend: Goal["spend"],
+  usd: number,
+  at: number,
+): Goal["spend"] {
+  if (!(usd > 0)) return spend;
+  const month = monthOf(at);
+  const base = spend?.month === month ? spend.usd : 0;
+  return { month, usd: Math.round((base + usd) * 10_000) / 10_000 };
+}
+
+export async function createGoal(
+  input: {
+    name: string;
+    mission: string;
+    mode?: "ask" | "code";
+    repo?: string;
+    model?: string;
+    fallbackModel?: string;
+    mcpServers?: string[];
+    minWakeMinutes?: number;
+    maxWakes?: number;
+    /** ISO8601 first wake; omitted/empty = wake on the next tick. */
+    firstWakeAt?: string;
+    createdBy: string;
+  },
+  /** Server-owned fields, never taken from an API body. `pauseReason`
+   *  creates the goal paused, so it can't wake before its owner has
+   *  recorded it (a project lead stores the id in its settings first). */
+  owned: { leadProject?: string; pauseReason?: string } = {},
+): Promise<Goal | { error: string }> {
   if (!input.name?.trim()) return { error: "Name is required" };
   if (!input.mission?.trim()) return { error: "Mission is required" };
 
@@ -211,7 +252,8 @@ export async function createGoal(input: {
     id,
     name: input.name.trim(),
     mission: input.mission.trim(),
-    status: "active",
+    status: owned.pauseReason ? "paused" : "active",
+    ...(owned.pauseReason ? { pauseReason: owned.pauseReason } : {}),
     mode: input.mode === "code" ? "code" : "ask",
     repo: input.repo?.trim() || undefined,
     nextWakeAt,
@@ -225,6 +267,7 @@ export async function createGoal(input: {
     model: input.model?.trim() || undefined,
     fallbackModel: input.fallbackModel?.trim() || undefined,
     mcpServers: sanitizeMcpList(input.mcpServers),
+    ...(owned.leadProject ? { leadProject: owned.leadProject } : {}),
     createdBy: input.createdBy || "Anonymous",
     createdAt: new Date().toISOString(),
   };
@@ -245,7 +288,8 @@ export async function createGoal(input: {
 
 /** Fields an operator (via opensession-goals or the goals API) may patch.
  *  Runtime/scheduling fields (engineSessionId, wakeCount, lastRun*,
- *  worktreePath) are owned by the runner, and `id` and `stateFile` are fixed
+ *  worktreePath, spend) are owned by the runner, `leadProject` by the
+ *  project lead, and `id` and `stateFile` are fixed
  *  at creation: the ledger tools read and write `stateFile` by path. */
 const PATCHABLE_GOAL_FIELDS = [
   "name",
@@ -279,6 +323,33 @@ function patchableFields(patch: unknown): GoalPatch {
   return out;
 }
 
+/** Fields a project lead's settings decide (server/leads/goal.ts): a patch
+ *  may not change them on a lead's goal, and each wake rebuilds them. */
+export const LEAD_OWNED_GOAL_FIELDS = [
+  "mission",
+  "mode",
+  "repo",
+  "minWakeMinutes",
+  "mcpServers",
+] as const satisfies readonly (keyof Goal)[];
+
+class LeadOwnedField extends Error {
+  constructor(readonly fields: string[]) {
+    super(fields.join(", "));
+  }
+}
+
+/** The lead-owned fields `fields` would change on `goal`. Sending a
+ *  value it already has (a form that posts every field) changes nothing. */
+function leadOwnedChanges(goal: Goal, fields: GoalPatch): string[] {
+  if (!goal.leadProject) return [];
+  return LEAD_OWNED_GOAL_FIELDS.filter(
+    (key) =>
+      key in fields &&
+      JSON.stringify(fields[key] ?? null) !== JSON.stringify(goal[key] ?? null),
+  );
+}
+
 export async function updateGoal(
   id: string,
   patch: GoalPatch,
@@ -286,13 +357,22 @@ export async function updateGoal(
   const fields = patchableFields(patch);
   if ("mcpServers" in fields)
     fields.mcpServers = sanitizeMcpList(fields.mcpServers);
-  const next = await mutateGoal(id, (g) => {
-    const merged: Goal = { ...g, ...fields };
-    if (typeof merged.minWakeMinutes === "number")
-      merged.minWakeMinutes = Math.max(MIN_WAKE_FLOOR, merged.minWakeMinutes);
-    return merged;
-  });
-  return next ?? { error: "Goal not found" };
+  try {
+    const next = await mutateGoal(id, (g) => {
+      const locked = leadOwnedChanges(g, fields);
+      if (locked.length) throw new LeadOwnedField(locked);
+      const merged: Goal = { ...g, ...fields };
+      if (typeof merged.minWakeMinutes === "number")
+        merged.minWakeMinutes = Math.max(MIN_WAKE_FLOOR, merged.minWakeMinutes);
+      return merged;
+    });
+    return next ?? { error: "Goal not found" };
+  } catch (error) {
+    if (!(error instanceof LeadOwnedField)) throw error;
+    return {
+      error: `This goal is a project lead's: its ${error.fields.join(", ")} come from the project's lead settings`,
+    };
+  }
 }
 
 /** Resume a paused/done goal: mark active and (re)schedule a wake. */

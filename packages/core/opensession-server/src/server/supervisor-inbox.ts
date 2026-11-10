@@ -102,6 +102,9 @@ export interface PostSupervisorItemInput {
   options?: string[];
   dedupeKey?: string;
   urgency?: SupervisorItemUrgency;
+  /** Raise it at most once: when any item, open or closed, already has
+   *  this `dedupeKey`, nothing changes and that item is returned. */
+  once?: boolean;
 }
 
 export const MAX_ITEMS = 200;
@@ -571,7 +574,13 @@ export async function postSupervisorItem(
     plan: "push" | "hold" | "none";
     wasNotified: boolean;
   } = { item: null, created: false, plan: "none", wasNotified: false };
+  let already: SupervisorItem | undefined;
   await updateDocument(user, (doc) => {
+    already =
+      input.once && dedupeKey
+        ? doc.items.find((item) => item.dedupeKey === dedupeKey)
+        : undefined;
+    if (already) return doc;
     const { prefs, timeZone } = prefsAndZone(doc, user);
     const quiet = inQuietHours(prefs, timeZone, now);
     const existing = dedupeKey
@@ -628,6 +637,7 @@ export async function postSupervisorItem(
       ),
     };
   });
+  if (already) return { item: already, created: false, delivery: "none" };
   const item = outcome.item as SupervisorItem | null;
   if (!item) throw new Error("supervisor item was not recorded");
 
@@ -666,6 +676,8 @@ export async function listSupervisorItems(
     kind?: SupervisorItemKind;
     /** Only items changed at or after this ms epoch. */
     since?: number;
+    /** Only items whose `dedupeKey` starts with this. */
+    dedupeKeyPrefix?: string;
     limit?: number;
   } = {},
 ): Promise<SupervisorItem[]> {
@@ -680,7 +692,9 @@ export async function listSupervisorItems(
       (item) =>
         (!options.state || item.state === options.state) &&
         (!options.kind || item.kind === options.kind) &&
-        (options.since === undefined || item.updatedAt >= options.since),
+        (options.since === undefined || item.updatedAt >= options.since) &&
+        (options.dedupeKeyPrefix === undefined ||
+          !!item.dedupeKey?.startsWith(options.dedupeKeyPrefix)),
     )
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, limit);

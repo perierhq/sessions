@@ -70,9 +70,14 @@ function wiredGoal(): string[] {
   const start = source.indexOf("function goalMcpServers(");
   const end = source.indexOf("\n}\n\nfunction buildGoalWakePrompt", start);
   if (start < 0 || end < 0) throw new Error("goal wiring markers missing");
+  // A lead's goal and an ordinary one mount some of the same servers.
   return [
-    ...source.slice(start, end).matchAll(/"(opensession-[a-z-]+)"\s*:/g),
-  ].map((match) => match[1]!);
+    ...new Set(
+      [
+        ...source.slice(start, end).matchAll(/"(opensession-[a-z-]+)"\s*:/g),
+      ].map((match) => match[1]!),
+    ),
+  ];
 }
 
 describe("MCP server catalog", () => {

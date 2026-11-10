@@ -65,8 +65,10 @@ describe("renderInternalMcpCapabilities", () => {
     // per-turn note names its tools instead, and from 7,500 for
     // opensession-html, one more server at the usual ~150 chars, from
     // 7,700 for the ~100-char rule to link child sessions in a report, from
-    // 7,800 for opensession-gpu, and from 7,900 for opensession-supervisor
-    // (only on a supervisor session). The incident access and support
+    // 7,800 for opensession-gpu, from 7,900 for opensession-supervisor
+    // (only on a supervisor session), and from 8,100 for opensession-lead,
+    // which a lead's goal mounts beside the goal servers. The incident
+    // access and support
     // servers are only ever mounted alone, so they are left out.
     const mountedAlone = new Set([
       "opensession-incident-access",
@@ -79,7 +81,7 @@ describe("renderInternalMcpCapabilities", () => {
           .map((name) => [name, {}]),
       ),
     );
-    expect(together.length).toBeLessThan(8_100);
+    expect(together.length).toBeLessThan(8_400);
   });
 
   test("is empty when nothing internal is mounted", () => {

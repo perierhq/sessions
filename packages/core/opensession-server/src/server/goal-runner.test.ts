@@ -18,19 +18,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigAsync } from "./config";
 import type { Goal } from "./goals";
+import type { LeadGoalFields, LeadWakePlan } from "./goal-runner";
 import type { StreamEvent } from "./run-events";
 
 const root = mkdtempSync(join(tmpdir(), "goal-runner-test-"));
 const previousRoot = process.env.OPENSESSION_STATE_DIR;
 const previousConfig = process.env.OPENSESSION_CONFIG;
 process.env.OPENSESSION_STATE_DIR = root;
-// An ask goal runs in the default repo's checkout; register one.
+// An ask goal runs in the default repo's checkout; register one, and a
+// second repo for a project lead.
 const config = join(root, "config.json");
 writeFileSync(
   config,
   JSON.stringify({
     repos: {
       app: { repo: join(root, "app"), ghRepo: "acme/app", default: true },
+      shop: { repo: join(root, "shop"), ghRepo: "acme/shop" },
     },
   }),
 );
@@ -41,14 +44,38 @@ await getConfigAsync();
 let script: (opts: { prompt: string }) => AsyncGenerator<StreamEvent> =
   async function* () {};
 let runs = 0;
+interface RunOpts {
+  prompt: string;
+  cwd: string;
+  inProcessMcp?: Record<string, unknown>;
+  mcpServers: unknown;
+  aws?: boolean;
+  startToken?: string;
+}
+/** What the last wake handed the engine. */
+let lastRun: RunOpts | null = null;
+/** Steers and cancels sent to a run, by its token. */
+let steers: Array<{ token: string; text: string }> = [];
+let cancels: string[] = [];
+/** Whether each cancel lands, in turn; true once the list runs out. */
+let cancelResults: boolean[] = [];
 const realAgentRunner = await import("./agent-runner");
 mock.module("./agent-runner", () => ({
   ...realAgentRunner,
-  runAgent: (opts: { prompt: string }) => {
+  runAgent: (opts: RunOpts) => {
     runs++;
+    lastRun = opts;
     return script(opts);
   },
   isAgentSessionBusy: () => false,
+  steerAgentRunToken: (token: string, text: string) => {
+    steers.push({ token, text });
+    return true;
+  },
+  cancelAgentRunToken: async (token: string) => {
+    cancels.push(token);
+    return cancelResults.shift() ?? true;
+  },
 }));
 // The session file and live transcript watchers are not under test.
 const realSessionCache = await import("./session-cache");
@@ -76,7 +103,16 @@ mock.module("./goals", () => ({
   },
 }));
 
-const { runGoal, runningGoals, tickGoals } = await import("./goal-runner");
+const {
+  INTERRUPTED_WAKE_ERROR,
+  goalRecoveryMcpServers,
+  registerLeadGoalHooks,
+  runGoal,
+  runningGoals,
+  settleInterruptedGoalRun,
+  tickGoals,
+} = await import("./goal-runner");
+const { createGoalSelfMcpServer } = await import("../agents/slack/goal-tools");
 const { createGoal, getGoal, mutateGoal, updateGoal } = realGoals;
 const { SessionKernelStore, __setSessionKernelStoreForTest } =
   await import("./session-kernel");
@@ -97,6 +133,10 @@ beforeEach(() => {
   previousStore = __setSessionKernelStoreForTest(store);
   script = async function* () {};
   runs = 0;
+  lastRun = null;
+  steers = [];
+  cancels = [];
+  cancelResults = [];
   lists = 0;
   listGate = null;
 });
@@ -289,5 +329,428 @@ describe("goal wake", () => {
     await runGoal(goal);
     expect(runs).toBe(0);
     expect(await getGoal(goal.id)).toBeNull();
+  });
+});
+
+describe("leads and spend", () => {
+  test("the lead project can't be set through a patch or the API body", async () => {
+    const goal = await dueGoal({
+      ...({ leadProject: "app" } as object),
+    });
+    expect(goal.leadProject).toBeUndefined();
+    const patched = await updateGoal(goal.id, {
+      ...({ leadProject: "app" } as object),
+    });
+    expect("error" in patched ? patched : patched.leadProject).toBeUndefined();
+  });
+  test("each run's cost adds to the goal's spend this month", async () => {
+    const goal = await dueGoal();
+    script = async function* () {
+      yield { type: "init", sessionId: "engine-1" } as StreamEvent;
+      yield {
+        type: "done",
+        sessionId: "engine-1",
+        usage: {
+          costUsd: 0.75,
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          contextTokens: 1,
+        },
+      } as StreamEvent;
+    };
+    const month = new Date().toISOString().slice(0, 7);
+    await runGoal(goal);
+    expect((await getGoal(goal.id))?.spend).toEqual({ month, usd: 0.75 });
+    await runGoal((await getGoal(goal.id))!);
+    expect((await getGoal(goal.id))?.spend).toEqual({ month, usd: 1.5 });
+    // Last month's spend doesn't count towards this one.
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      spend: { month: "2020-01", usd: 99 },
+    }));
+    await runGoal((await getGoal(goal.id))!);
+    expect((await getGoal(goal.id))?.spend).toEqual({ month, usd: 0.75 });
+  });
+});
+
+describe("a project lead's goal", () => {
+  const fields: LeadGoalFields = {
+    name: "Lead: Shop",
+    mission: "Lead the shop, from its settings.",
+    mode: "ask",
+    repo: "shop",
+    minWakeMinutes: 60,
+    mcpServers: [],
+  };
+  let plan: LeadWakePlan;
+  let idles: string[];
+  let offHooks: () => void = () => {};
+
+  beforeEach(() => {
+    plan = { fields, budgetUsd: 2, web: false };
+    idles = [];
+    offHooks = registerLeadGoalHooks({
+      wake: async () => plan,
+      idle: async (goal) => {
+        idles.push(goal.id);
+      },
+    });
+  });
+  afterEach(() => offHooks());
+
+  async function leadGoal(extra: Partial<Goal> = {}): Promise<Goal> {
+    const created = await createGoal(
+      {
+        name: "Lead: Shop",
+        mission: "Lead the shop.",
+        createdBy: "Project lead",
+        firstWakeAt: PAST,
+      },
+      { leadProject: "shop" },
+    );
+    if ("error" in created) throw new Error(created.error);
+    return (await mutateGoal(created.id, (g) => ({ ...g, ...extra })))!;
+  }
+
+  async function toolNames(server: unknown): Promise<string[]> {
+    const { Client } =
+      await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } =
+      await import("@modelcontextprotocol/sdk/inMemory.js");
+    const c = new Client({ name: "test", version: "1.0.0" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await (
+      server as { instance: { connect(t: unknown): Promise<void> } }
+    ).instance.connect(b);
+    await c.connect(a);
+    return (await c.listTools()).tools.map((t) => t.name).sort();
+  }
+
+  test("runs with the lead's tools: no ask_human, no web while it watches, no way to end itself", async () => {
+    const lead = await leadGoal();
+    await runGoal(lead);
+    expect(Object.keys(lastRun!.inProcessMcp!).sort()).toEqual([
+      "opensession-goal-self",
+      "opensession-lead",
+    ]);
+    expect(
+      await toolNames(lastRun!.inProcessMcp!["opensession-goal-self"]),
+    ).toEqual(["append_ledger", "set_next_wake", "update_phase"]);
+    expect(lastRun!.prompt).toContain("only through opensession-lead");
+    expect(lastRun!.prompt).not.toContain("ask_human");
+    expect(lastRun!.prompt).not.toContain("mark_paused");
+    expect(lastRun!.prompt).not.toContain("mark_done");
+    expect(lastRun!.prompt).toContain("this wake may spend about $2");
+    // Past watch it may read the web.
+    plan = { fields, budgetUsd: 2, web: true };
+    await runGoal((await getGoal(lead.id))!);
+    expect(Object.keys(lastRun!.inProcessMcp!)).toContain("opensession-web");
+
+    const plain = await dueGoal();
+    await runGoal(plain);
+    expect(Object.keys(lastRun!.inProcessMcp!).sort()).toEqual([
+      "opensession-goal-self",
+      "opensession-humans",
+      "opensession-web",
+    ]);
+    expect(
+      await toolNames(lastRun!.inProcessMcp!["opensession-goal-self"]),
+    ).toContain("mark_done");
+    expect(lastRun!.mcpServers).toBe("all");
+    expect(lastRun!.aws).toBe(true);
+  });
+
+  test("runs on the settings' fields, in its project's checkout, with no connectors and no cloud credentials", async () => {
+    // Whatever an older record or a patch left in it.
+    const goal = await leadGoal({
+      mission: "Do anything you like.",
+      mcpServers: undefined,
+      mode: "ask",
+      repo: undefined,
+      minWakeMinutes: 5,
+    });
+    await runGoal(goal);
+    expect(lastRun!.prompt).toContain("Lead the shop, from its settings.");
+    expect(lastRun!.prompt).not.toContain("Do anything you like.");
+    expect(lastRun!.mcpServers).toEqual([]);
+    expect(lastRun!.aws).toBe(false);
+    expect(lastRun!.cwd).toBe(join(root, "shop"));
+    expect(await getGoal(goal.id)).toMatchObject({
+      mission: fields.mission,
+      repo: "shop",
+      minWakeMinutes: 60,
+      mcpServers: [],
+    });
+  });
+
+  test("a patch can't change what the settings decide", async () => {
+    const goal = await leadGoal();
+    for (const patch of [
+      { mission: "Do anything." },
+      { mode: "code" as const },
+      { repo: "app" },
+      { minWakeMinutes: 5 },
+      { mcpServers: ["github"] },
+    ]) {
+      const result = await updateGoal(goal.id, patch);
+      expect("error" in result ? result.error : "").toStartWith(
+        "This goal is a project lead's: its ",
+      );
+    }
+    // The same values, or other fields, are fine.
+    const same = await updateGoal(goal.id, {
+      mission: goal.mission,
+      name: "Lead: Shop (renamed)",
+      model: "claude-sonnet",
+    });
+    expect("error" in same ? same.error : same.name).toBe(
+      "Lead: Shop (renamed)",
+    );
+  });
+
+  test("fails closed: no lead on the server, or a lead check that throws, pauses it unrun", async () => {
+    offHooks();
+    const goal = await leadGoal();
+    await runGoal(goal);
+    expect(runs).toBe(0);
+    expect(await getGoal(goal.id)).toMatchObject({
+      status: "paused",
+      pauseReason: "The project lead isn't running on this server",
+    });
+
+    offHooks = registerLeadGoalHooks({
+      wake: async () => {
+        throw new Error("settings unreadable");
+      },
+      idle: async () => {},
+    });
+    const other = await leadGoal();
+    await runGoal(other);
+    expect(runs).toBe(0);
+    expect(await getGoal(other.id)).toMatchObject({
+      status: "paused",
+      pauseReason: "Its wake check failed: settings unreadable",
+    });
+  });
+
+  test("a block from the lead pauses it with the reason", async () => {
+    plan = { block: "Agents are paused for this project" };
+    const goal = await leadGoal();
+    await runGoal(goal);
+    expect(runs).toBe(0);
+    expect((await getGoal(goal.id))?.pauseReason).toBe(
+      "Agents are paused for this project",
+    );
+  });
+
+  test("at its budget it is asked to wrap up, and past half again stopped", async () => {
+    const usage = (costUsd: number) => ({
+      costUsd,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      contextTokens: 1,
+    });
+    script = async function* () {
+      yield { type: "init", sessionId: "engine-1" } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(1) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(2.1) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(2.5) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(3.2) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(3.4) } as StreamEvent;
+      yield {
+        type: "done",
+        sessionId: "engine-1",
+        usage: usage(3.4),
+      } as StreamEvent;
+    };
+    const goal = await leadGoal();
+    await runGoal(goal);
+    const token = lastRun!.startToken!;
+    expect(token).toBeTruthy();
+    expect(steers).toHaveLength(1);
+    expect(steers[0]!.token).toBe(token);
+    expect(steers[0]!.text).toContain("You reached what this wake may spend.");
+    expect(cancels).toEqual([token]);
+    const month = new Date().toISOString().slice(0, 7);
+    expect(await getGoal(goal.id)).toMatchObject({
+      spend: { month, usd: 3.4 },
+      lastRunError: "Stopped: it reached its budget",
+    });
+  });
+
+  test("an ordinary goal has no budget to hold to", async () => {
+    script = async function* () {
+      yield {
+        type: "usage_snapshot",
+        usage: {
+          costUsd: 500,
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          contextTokens: 1,
+        },
+      } as StreamEvent;
+    };
+    await runGoal(await dueGoal());
+    expect(steers).toEqual([]);
+    expect(cancels).toEqual([]);
+  });
+
+  test("what a wake spent is recorded even when the wake throws", async () => {
+    script = async function* () {
+      yield {
+        type: "usage_snapshot",
+        usage: {
+          costUsd: 0.4,
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          contextTokens: 1,
+        },
+      } as StreamEvent;
+      throw new Error("engine crashed");
+    };
+    const goal = await leadGoal();
+    await runGoal(goal);
+    const month = new Date().toISOString().slice(0, 7);
+    expect(await getGoal(goal.id)).toMatchObject({
+      spend: { month, usd: 0.4 },
+      lastRunStatus: "error",
+    });
+  });
+
+  test("the ticker hands a lead's idle goal to the lead", async () => {
+    const goal = await leadGoal({ status: "paused", pauseReason: "x" });
+    const plain = await dueGoal();
+    await mutateGoal(plain.id, (g) => ({ ...g, status: "paused" }));
+    await tickGoals();
+    expect(idles).toEqual([goal.id]);
+    expect(runs).toBe(0);
+  });
+
+  test("a cancel that doesn't land is tried again and claims no stop", async () => {
+    const usage = (costUsd: number) => ({
+      costUsd,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      contextTokens: 1,
+    });
+    script = async function* () {
+      yield { type: "usage_snapshot", usage: usage(2.1) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(3.2) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(3.4) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(3.6) } as StreamEvent;
+    };
+    cancelResults = [false, true];
+    const goal = await leadGoal();
+    await runGoal(goal);
+    const token = lastRun!.startToken!;
+    // Tried at 3.2, again at 3.4, then stopped; never a third time.
+    expect(cancels).toEqual([token, token]);
+    expect((await getGoal(goal.id))?.lastRunError).toBe(
+      "Stopped: it reached its budget",
+    );
+
+    cancelResults = [false, false, false];
+    cancels = [];
+    const other = await leadGoal();
+    await runGoal(other);
+    expect(cancels).toHaveLength(3);
+    expect((await getGoal(other.id))?.lastRunError).toBeUndefined();
+  });
+});
+
+describe("restart recovery of a goal's run", () => {
+  test("a lead's interrupted wake is woken afresh, never resumed with the interactive tools", async () => {
+    const created = await createGoal(
+      {
+        name: "Lead: Shop",
+        mission: "Lead the shop.",
+        createdBy: "Project lead",
+        firstWakeAt: "2099-01-01T00:00:00Z",
+      },
+      { leadProject: "shop" },
+    );
+    if ("error" in created) throw new Error(created.error);
+    const interactive = () => ({
+      "opensession-admin": {},
+      "opensession-sessions": {},
+      "opensession-goals": {},
+    });
+    expect(await goalRecoveryMcpServers(created.id, interactive)).toEqual({});
+    const before = Date.now();
+    expect(await settleInterruptedGoalRun({ kind: "goal" }, created.id)).toBe(
+      true,
+    );
+    const goal = (await getGoal(created.id))!;
+    expect(goal).toMatchObject({
+      status: "active",
+      lastRunStatus: "error",
+      lastRunError: INTERRUPTED_WAKE_ERROR,
+    });
+    expect(Date.parse(goal.nextWakeAt)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(goal.nextWakeAt)).toBeLessThanOrEqual(Date.now());
+    // The ticker then runs it through runGoal, which fails closed here: no
+    // lead hooks are registered, so it pauses instead of running.
+    await tickGoals();
+    await settled(created.id);
+    expect(runs).toBe(0);
+    expect((await getGoal(created.id))?.status).toBe("paused");
+  });
+
+  test("a lead's wake stopped before its session file is found by its session", async () => {
+    const created = await createGoal(
+      {
+        name: "Lead: Shop",
+        mission: "Lead the shop.",
+        createdBy: "Project lead",
+      },
+      { leadProject: "shop" },
+    );
+    if ("error" in created) throw new Error(created.error);
+    await mutateGoal(created.id, (g) => ({ ...g, osSessionId: "os-lead-1" }));
+    expect(
+      await settleInterruptedGoalRun(
+        { kind: "goal", osSessionId: "os-lead-1" },
+        undefined,
+      ),
+    ).toBe(true);
+    // Another kind of run, or a session no goal owns, is left alone.
+    expect(
+      await settleInterruptedGoalRun(
+        { kind: "interactive", osSessionId: "os-lead-1" },
+        undefined,
+      ),
+    ).toBe(false);
+    expect(
+      await settleInterruptedGoalRun(
+        { kind: "goal", osSessionId: "os-other" },
+        undefined,
+      ),
+    ).toBe(false);
+  });
+
+  test("an ordinary goal resumes as before; an unknown goal does not", async () => {
+    const goal = await dueGoal();
+    const interactive = () => ({ "opensession-admin": {} });
+    expect(
+      Object.keys(await goalRecoveryMcpServers(goal.id, interactive)).sort(),
+    ).toEqual(["opensession-admin", "opensession-goal-self"]);
+    expect(await settleInterruptedGoalRun({ kind: "goal" }, goal.id)).toBe(
+      false,
+    );
+    expect((await getGoal(goal.id))?.lastRunError).toBeUndefined();
+    expect(await settleInterruptedGoalRun({ kind: "goal" }, "missing")).toBe(
+      true,
+    );
+    expect(await goalRecoveryMcpServers("missing", interactive)).toEqual({});
   });
 });

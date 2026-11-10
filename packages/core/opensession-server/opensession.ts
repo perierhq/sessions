@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 
-import { createGoalSelfMcpServer } from "./src/agents/slack/goal-tools";
 import { type AgentModule } from "./src/agents/types";
 import { loadIntegrations } from "./src/server/integrations/load";
 import {
@@ -100,7 +99,11 @@ import {
   githubReconnectRequired,
   startGithubTokenRefresher,
 } from "./src/server/github-auth";
-import { startGoalTicker } from "./src/server/goal-runner";
+import {
+  goalRecoveryMcpServers,
+  settleInterruptedGoalRun,
+  startGoalTicker,
+} from "./src/server/goal-runner";
 import { startSessionHistoryIndexing } from "./src/server/session-index";
 import { startEventLoopLagMonitor } from "./src/server/system-stats";
 import { startGatewayProfilerSignal } from "./src/server/gateway-profiler";
@@ -154,6 +157,7 @@ import { startIncidentSignals } from "./src/server/incidents/scheduler";
 import { startIncidentNotifications } from "./src/server/incidents/notifier";
 import { startSupportNotifications } from "./src/server/support/notify";
 import { startSupervisorInbox } from "./src/server/supervisor-inbox";
+import { startProjectLeads } from "./src/server/leads/goal";
 import { startSupportRetention } from "./src/server/support/retention";
 import { installSupportPipeline } from "./src/server/support/routing";
 import { startSupportTick } from "./src/server/support/tick";
@@ -948,6 +952,11 @@ if (!g.__opensessionBooted) {
     // after them, failed pushes retry, and each person's daily digest is
     // sent at their digest time, from a once-a-minute sweep.
     startSupervisorInbox();
+    // Project leads: a goal per project whose lead is on, kept in line with
+    // its settings; the owner's answers reach the lead's ledger.
+    startProjectLeads().catch((error: unknown) =>
+      console.error("[leads] start failed:", error),
+    );
     // Incident, signal and access changes reach open incident views.
     startIncidentBroadcasts();
     // Impact queries run once a minute for open incidents.
@@ -1270,15 +1279,11 @@ if (!g.__opensessionBooted) {
                     session,
                     bksSessionId,
                   );
-                const servers: Record<string, unknown> = session.goalId
-                  ? {
-                      ...interactiveMcpServers(user, bksSessionId),
-                      "opensession-goal-self": createGoalSelfMcpServer(
-                        session.goalId,
-                      ),
-                    }
-                  : interactiveMcpServers(user, bksSessionId);
-                return servers;
+                if (session.goalId)
+                  return await goalRecoveryMcpServers(session.goalId, () =>
+                    interactiveMcpServers(user, bksSessionId),
+                  );
+                return interactiveMcpServers(user, bksSessionId);
               } catch (e) {
                 console.error(
                   `[runner] In-process MCP rebuild failed for ${bksSessionId}:`,
@@ -1304,6 +1309,15 @@ if (!g.__opensessionBooted) {
               !!run.promptEntryId &&
               !!(run.runnerId || run.sandboxId) &&
               creationOwnsPrompt(run.osSessionId, run.promptEntryId),
+            // A project lead's goal wake starts afresh through runGoal, which
+            // alone holds its tools, wake check and budget.
+            async (run) =>
+              settleInterruptedGoalRun(
+                run,
+                run.osSessionId
+                  ? findSession(run.osSessionId)?.goalId
+                  : undefined,
+              ),
           );
           if (resumedIds.length > 0) {
             console.log(

@@ -6,13 +6,28 @@
  * goals.ts; this is the runner + ticker (they need the run/MCP wiring).
  */
 
+import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { createHumansMcpServer } from "../agents/slack/humans-tools";
 import { createGoalSelfMcpServer } from "../agents/slack/goal-tools";
-import { runAgent, isAgentSessionBusy } from "./agent-runner";
+import {
+  cancelAgentRunToken,
+  isAgentSessionBusy,
+  runAgent,
+  steerAgentRunToken,
+} from "./agent-runner";
 import { defaultRepo, personaName } from "./config";
 import { isDevInstance } from "./dev-mode";
-import { listGoals, mutateGoal, type Goal } from "./goals";
+import {
+  LEAD_UNAVAILABLE_REASON,
+  WAKE_CHECK_FAILED_REASON,
+  addGoalSpend,
+  getGoal,
+  listGoals,
+  mutateGoal,
+  type Goal,
+} from "./goals";
+import { createLeadMcpServer } from "./leads/mcp";
 import { automaticFallbackModel, providerFor } from "./models";
 import { engineSessionPatch } from "./sessions";
 import { STRIPE_CONFIRM_TOOLS } from "./runner-shared";
@@ -42,19 +57,38 @@ export const runningGoals: Set<string> = (g.__runningGoals ??= new Set());
 /** MCP surface for a goal's own run: pull-a-human-in + its self-cadence controls.
  *  Deliberately excludes opensession-admin / opensession-sessions — an autonomous,
  *  weeks-long run gets least privilege (can't reconfigure the agent or steer other
- *  sessions); human sign-off goes through opensession-humans ask_human. */
+ *  sessions); human sign-off goes through opensession-humans ask_human.
+ *  A project lead's goal reaches its owner only through the supervisor inbox
+ *  (opensession-lead's propose), so it gets no ask_human. */
 function goalMcpServers(
   osSessionId: string,
-  goalId: string,
+  goal: Pick<Goal, "id" | "leadProject">,
   createdBy: string,
+  lead: LeadRunPlan | undefined,
 ): Record<string, unknown> {
+  if (goal.leadProject)
+    return {
+      // TODO(coordinate/act stages): spawning fix workers
+      // (opensession-sessions spawn_task, send_to_session) for leads past
+      // watch. Out of scope while every lead watches.
+      "opensession-lead": createLeadMcpServer(goal.leadProject),
+      // Its status is its settings': no tools to pause or finish itself.
+      "opensession-goal-self": createGoalSelfMcpServer(goal.id, {
+        lead: true,
+      }),
+      // A watching lead reads the project, not the web: what it reads
+      // there could carry instructions it has no business taking.
+      ...(lead?.web
+        ? { "opensession-web": createWebMcpServer({ sessionId: osSessionId }) }
+        : {}),
+    };
   return {
     "opensession-humans": createHumansMcpServer({
       sessionId: osSessionId,
       createdBy,
       isAdmin: true,
     }),
-    "opensession-goal-self": createGoalSelfMcpServer(goalId),
+    "opensession-goal-self": createGoalSelfMcpServer(goal.id),
     // Goals often measure public URLs over time. Give them the same bounded,
     // SSRF-safe reader as interactive sessions instead of opening curl in the
     // ask-mode shell allowlist.
@@ -62,7 +96,76 @@ function goalMcpServers(
   };
 }
 
-function buildGoalWakePrompt(goal: Goal, wake: number, cwd: string): string {
+/** The goal fields a project lead's settings decide, rebuilt every wake. */
+export type LeadGoalFields = Pick<
+  Goal,
+  "name" | "mission" | "mode" | "repo" | "minWakeMinutes"
+> & { mcpServers: string[] };
+
+/** A lead's goal may wake: its fields from the settings, what it may still
+ *  spend this month, and whether it reads the web. */
+export interface LeadRunPlan {
+  fields: LeadGoalFields;
+  budgetUsd: number;
+  web: boolean;
+}
+
+/** What a project lead's settings say about one wake of its goal
+ *  (server/leads/goal.ts): why it must not run, or how it runs. */
+export type LeadWakePlan = { block: string } | LeadRunPlan;
+
+export interface LeadGoalHooks {
+  /** Run at the start of every wake of a lead's goal. */
+  wake(goal: Goal): Promise<LeadWakePlan>;
+  /** Run on each tick for a lead's goal that isn't active, to lift a pause
+   *  that no longer holds (a new month under the budget). */
+  idle(goal: Goal, now: number): Promise<void>;
+}
+
+/** Set by startProjectLeads. A lead's goal never runs without it. */
+export function registerLeadGoalHooks(hooks: LeadGoalHooks): () => void {
+  g.__leadGoalHooks = hooks;
+  return () => {
+    if (g.__leadGoalHooks === hooks) g.__leadGoalHooks = undefined;
+  };
+}
+
+function leadHooks(): LeadGoalHooks | undefined {
+  return g.__leadGoalHooks as LeadGoalHooks | undefined;
+}
+
+/** The lead's plan for this wake; fails closed: no hooks, or hooks that
+ *  throw, block it. */
+async function leadWakePlan(goal: Goal): Promise<LeadWakePlan> {
+  const hooks = leadHooks();
+  if (!hooks) return { block: LEAD_UNAVAILABLE_REASON };
+  try {
+    return await hooks.wake(goal);
+  } catch (error) {
+    console.error(`[goals] lead wake check for "${goal.name}" failed:`, error);
+    return { block: `${WAKE_CHECK_FAILED_REASON}: ${errorText(error)}` };
+  }
+}
+
+/** A lead's run past its budget is asked once to finish, and stopped at
+ *  this many times its budget (the incident post-release check's rule). */
+const LEAD_WRAP_UP_FACTOR = 1.5;
+const LEAD_WRAP_UP =
+  "You reached what this wake may spend. Stop reading and proposing now: append what you have to the ledger with append_ledger, set your next wake with set_next_wake, and end the wake.";
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function buildGoalWakePrompt(
+  goal: Goal,
+  wake: number,
+  cwd: string,
+  lead?: LeadRunPlan,
+): string {
+  const next = goal.leadProject
+    ? `- Decide when you wake next with opensession-goal-self \`set_next_wake\`. If you set none, you'll be woken again in ~24h by default.\n`
+    : `- Decide what happens next with opensession-goal-self: \`set_next_wake\` (e.g. "in 7 days" after shipping, so metrics can actually move before you re-measure), or \`mark_paused\` if you're blocked on a human decision, or \`mark_done\`/\`mark_failed\` when the mission is settled. If you set none, you'll be woken again in ~24h by default.\n`;
   const parts = [
     `# Your mission (pinned)\n\n${goal.mission}`,
     `---`,
@@ -70,10 +173,16 @@ function buildGoalWakePrompt(goal: Goal, wake: number, cwd: string): string {
     `Your durable fact ledger is at:\n    ${goal.stateFile}\nRead it FIRST every wake — it is the authoritative record of what you've baselined, decided, shipped, and measured. Your in-context memory may have been compacted; the ledger is not.`,
     `Do ONE meaningful increment this wake. Then, before you finish, ALWAYS:\n` +
       `- Append what you learned/did this wake (concrete numbers, PR URLs, decisions) to the ledger via the opensession-goal-self \`append_ledger\` tool.\n` +
-      `- Decide what happens next with opensession-goal-self: \`set_next_wake\` (e.g. "in 7 days" after shipping, so metrics can actually move before you re-measure), or \`mark_paused\` if you're blocked on a human decision, or \`mark_done\`/\`mark_failed\` when the mission is settled. If you set none, you'll be woken again in ~24h by default.\n` +
+      next +
       `- Keep \`update_phase\` current so progress is visible at a glance.`,
-    `Human gates: to get sign-off or a decision from a teammate, use the opensession-humans \`ask_human\` tool — it DMs them as ${personaName()} and folds their reply back into this session. Do NOT email or impersonate anyone.`,
+    goal.leadProject
+      ? `Reaching the owner: only through opensession-lead \`propose\` and \`post_digest_note\`, which go to the supervisor inbox. Do NOT email, message or impersonate anyone.`
+      : `Human gates: to get sign-off or a decision from a teammate, use the opensession-humans \`ask_human\` tool — it DMs them as ${personaName()} and folds their reply back into this session. Do NOT email or impersonate anyone.`,
   ];
+  if (lead)
+    parts.push(
+      `Budget: this wake may spend about $${Number(lead.budgetUsd.toFixed(2))}, what is left of this month's. At that you are asked to wrap up, and past it the wake is stopped.`,
+    );
   if (goal.mode === "code") {
     const repo = getRepo(goal.repo);
     const branchLabel = JSON.stringify(repo.defaultBranch);
@@ -102,16 +211,37 @@ function buildGoalWakePrompt(goal: Goal, wake: number, cwd: string): string {
 
 /** Run one wake of a goal: resume (or create) its session, drive one increment,
  *  then persist whatever cadence/status the run chose (with a 24h fallback). */
-export async function runGoal(goal: Goal): Promise<void> {
-  if (runningGoals.has(goal.id)) return;
-  runningGoals.add(goal.id);
+export async function runGoal(stored: Goal): Promise<void> {
+  if (runningGoals.has(stored.id)) return;
+  runningGoals.add(stored.id);
   const startedAt = new Date();
-  const wake = goal.wakeCount + 1;
-  const bksId = goal.osSessionId || newSessionId();
+  const wake = stored.wakeCount + 1;
+  const bksId = stored.osSessionId || newSessionId();
+  let goal = stored;
+  // The run's cost so far: usage is run-cumulative, so the largest figure
+  // seen is the cost. Recorded whatever way the wake ends.
+  let runCostUsd = 0;
+  let spendRecorded = false;
   try {
+    // A lead's goal runs on what its settings say now, never on what a
+    // patch or an older record left in it.
+    let lead: LeadRunPlan | undefined;
+    if (stored.leadProject) {
+      const plan = await leadWakePlan(stored);
+      if ("block" in plan) {
+        await pauseBeforeWake(stored, plan.block);
+        return;
+      }
+      lead = plan;
+      goal = { ...stored, ...plan.fields };
+    }
     // Code goals keep ONE persistent worktree so the engine session (keyed on
-    // cwd) resumes cleanly across wakes; ask goals read the main checkout.
-    let cwd = defaultRepo().repo;
+    // cwd) resumes cleanly across wakes; ask goals read the main checkout,
+    // a lead's the checkout of its project.
+    let cwd =
+      goal.leadProject && goal.repo
+        ? getRepo(goal.repo).repo
+        : defaultRepo().repo;
     let branch = goal.branch || "";
     if (goal.mode === "code") {
       const repo = getRepo(goal.repo);
@@ -130,6 +260,7 @@ export async function runGoal(goal: Goal): Promise<void> {
     // Merge onto the stored record: a deleted goal stays deleted.
     const started = await mutateGoal(goal.id, (current) => ({
       ...current,
+      ...lead?.fields,
       osSessionId: bksId,
       branch: branch || undefined,
       worktreePath: goal.mode === "code" ? cwd : undefined,
@@ -186,16 +317,43 @@ export async function runGoal(goal: Goal): Promise<void> {
 
     let engineSessionId = goal.engineSessionId || "";
     let errorMsg = "";
+    const runToken = randomUUID();
+    let wrappedUp = false;
+    let stopped = false;
+    // A lead's wake past what it may spend: asked once to wrap up, stopped
+    // if it keeps going.
+    const holdToBudget = async () => {
+      if (!lead || stopped || runCostUsd < lead.budgetUsd) return;
+      if (!wrappedUp) {
+        wrappedUp = true;
+        if (steerAgentRunToken(runToken, LEAD_WRAP_UP)) {
+          console.log(`[goals] "${goal.name}" reached its budget; wrapping up`);
+          return;
+        }
+      } else if (runCostUsd < lead.budgetUsd * LEAD_WRAP_UP_FACTOR) return;
+      // Only a cancel that landed counts: otherwise the next usage event
+      // tries again.
+      if (!(await cancelAgentRunToken(runToken).catch(() => false))) return;
+      stopped = true;
+      console.log(`[goals] "${goal.name}" is past its budget; stopped it`);
+    };
     for await (const event of runAgent({
-      prompt: buildGoalWakePrompt(goal, wake, cwd),
+      prompt: buildGoalWakePrompt(goal, wake, cwd, lead),
       sessionId: goal.engineSessionId || undefined,
       cwd,
       mode: goal.mode,
       model: goal.model,
-      mcpServers: goal.mcpServers ?? "all",
-      inProcessMcp: goalMcpServers(bksId, goal.id, createdBy),
+      // A lead never falls back to every connector: its list comes from its
+      // settings, and is empty while it watches.
+      mcpServers: goal.leadProject
+        ? (lead?.fields.mcpServers ?? [])
+        : (goal.mcpServers ?? "all"),
+      inProcessMcp: goalMcpServers(bksId, goal, createdBy, lead),
       confirmTools: STRIPE_CONFIRM_TOOLS,
-      aws: true,
+      // A lead reads its project through opensession-lead; it gets no
+      // cloud credentials.
+      aws: !goal.leadProject,
+      startToken: runToken,
       author: gitIdentityFor(goal.name),
       // A goal runs on behalf of its creator; gate per-user MCP servers to them.
       user: createdBy,
@@ -243,6 +401,10 @@ export async function runGoal(goal: Goal): Promise<void> {
         if (event.model) effectiveModel = event.model;
       }
       if (event.type === "error") errorMsg = event.content || "Unknown error";
+      if (typeof event.usage?.costUsd === "number") {
+        runCostUsd = Math.max(runCostUsd, event.usage.costUsd);
+        await holdToBudget();
+      }
     }
     await persistSession(engineSessionId);
 
@@ -263,13 +425,18 @@ export async function runGoal(goal: Goal): Promise<void> {
         lastRunAt: startedAt.toISOString(),
         lastRunStatus: errorMsg ? "error" : "ok",
         lastRunError: errorMsg || undefined,
+        spend: addGoalSpend(fresh.spend, runCostUsd, Date.now()),
       };
+      if (stopped && !errorMsg)
+        merged.lastRunError = "Stopped: it reached its budget";
+      if (!merged.spend) delete merged.spend;
       defaulted =
         merged.status === "active" &&
         Date.parse(merged.nextWakeAt) <= startedAt.getTime();
       if (defaulted) merged.nextWakeAt = dayAfter(startedAt);
       return merged;
     });
+    spendRecorded = true;
     if (defaulted)
       console.log(
         `[goals] "${goal.name}" set no next wake — defaulting to +24h`,
@@ -300,8 +467,105 @@ export async function runGoal(goal: Goal): Promise<void> {
       );
     }
   } finally {
-    runningGoals.delete(goal.id);
+    if (!spendRecorded && runCostUsd > 0)
+      await mutateGoal(stored.id, (fresh) => ({
+        ...fresh,
+        spend: addGoalSpend(fresh.spend, runCostUsd, Date.now()),
+      })).catch((error: unknown) =>
+        console.error(
+          `[goals] "${stored.name}" could not record its spend:`,
+          error,
+        ),
+      );
+    runningGoals.delete(stored.id);
   }
+}
+
+/** Pause a goal that must not wake now, with the reason. */
+async function pauseBeforeWake(goal: Goal, reason: string): Promise<void> {
+  await mutateGoal(goal.id, (current) =>
+    current.status === "active"
+      ? { ...current, status: "paused", pauseReason: reason }
+      : current,
+  );
+  console.log(`[goals] "${goal.name}" paused before its wake: ${reason}`);
+}
+
+/** What boot recovery does with a goal's run a restart interrupted:
+ *  `resume` it with the interactive server set (an ordinary goal, as
+ *  before), or `rewake` it. A project lead's wake is never resumed: its
+ *  tools, wake check and budget exist only inside runGoal, so the run is
+ *  settled and the goal woken afresh. An unreadable goal is rewoken too,
+ *  since it may be a lead's. */
+export function goalRecoveryPlan(
+  goal: Pick<Goal, "leadProject"> | null | undefined,
+): "resume" | "rewake" {
+  return goal && !goal.leadProject ? "resume" : "rewake";
+}
+
+/** The in-process servers a goal session's resumed run gets: the
+ *  interactive set and its self-cadence tools for an ordinary goal, none
+ *  for a lead's (settleInterruptedGoalRun keeps it from resuming at all). */
+export async function goalRecoveryMcpServers(
+  goalId: string,
+  interactive: () => Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (goalRecoveryPlan(await getGoal(goalId)) !== "resume") return {};
+  return {
+    ...interactive(),
+    "opensession-goal-self": createGoalSelfMcpServer(goalId),
+  };
+}
+
+export const INTERRUPTED_WAKE_ERROR =
+  "Interrupted by a restart: woken again instead of resumed";
+
+/**
+ * Boot recovery's hook for an interrupted run: true when it is a goal's run
+ * that must not be resumed (goalRecoveryPlan says `rewake`). Its wake is
+ * then recorded as interrupted and the goal is due now, so the ticker runs
+ * a fresh runGoal. The goal is the one its session names, else, for a wake
+ * stopped before its session file was written, the one whose session it
+ * is. Fails closed: a goal it can't read is not resumed.
+ */
+export async function settleInterruptedGoalRun(
+  run: { osSessionId?: string; kind?: string },
+  sessionGoalId: string | undefined,
+): Promise<boolean> {
+  if (!sessionGoalId && run.kind !== "goal") return false;
+  let goal: Goal | null;
+  try {
+    goal = sessionGoalId
+      ? await getGoal(sessionGoalId)
+      : ((await listGoals()).find(
+          (g) => !!run.osSessionId && g.osSessionId === run.osSessionId,
+        ) ?? null);
+  } catch (error) {
+    console.error(
+      `[goals] could not read the goal of an interrupted run:`,
+      error,
+    );
+    return true;
+  }
+  if (!sessionGoalId && !goal) return false;
+  if (goalRecoveryPlan(goal) === "resume") return false;
+  if (!goal) return true;
+  const now = new Date().toISOString();
+  await mutateGoal(goal.id, (current) => ({
+    ...current,
+    lastRunStatus: "error",
+    lastRunError: INTERRUPTED_WAKE_ERROR,
+    ...(current.status === "active" && current.nextWakeAt > now
+      ? { nextWakeAt: now }
+      : {}),
+  })).catch((error: unknown) =>
+    console.error(
+      `[goals] "${goal.name}" could not record its interrupted wake:`,
+      error,
+    ),
+  );
+  console.log(`[goals] "${goal.name}" was interrupted; waking it afresh`);
+  return true;
 }
 
 /**
@@ -343,7 +607,11 @@ export async function tickGoals(): Promise<void> {
 }
 
 async function tickGoal(goal: Goal, now: number): Promise<void> {
-  if (goal.status !== "active") return;
+  if (goal.status !== "active") {
+    // A lead's pause may lapse on its own (a new month under the budget).
+    if (goal.leadProject) await leadHooks()?.idle(goal, now);
+    return;
+  }
   if (Date.parse(goal.nextWakeAt) > now) return;
   if (runningGoals.has(goal.id)) return;
   // A prior process's run may still be resuming from the journal — don't

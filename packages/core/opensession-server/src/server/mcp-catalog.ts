@@ -71,6 +71,7 @@ import { createDesktopMcpServer } from "./desktop-mcp";
 import { createSelfDeployMcpServer } from "./self-deploy";
 import { createWebMcpServer } from "./web-mcp";
 import { createIncidentAccessMcpServer } from "./incidents/access/mcp";
+import { createLeadMcpServer } from "./leads/mcp";
 
 /**
  * The classes of run that carry in-process servers. One entry per wiring site,
@@ -249,7 +250,7 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     ],
     runClasses: ["interactive", "slack", "goal"],
     condition:
-      "Interactive runs need a session id (the answer routes back to it).",
+      "Interactive runs need a session id (the answer routes back to it). Not on a project lead's goal, which reaches the owner through the supervisor inbox.",
     build: () =>
       createHumansMcpServer({
         sessionId: SESSION_ID,
@@ -688,6 +689,16 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     condition: "Only on a supervisor session (session.supervisor).",
     note: "Acts on the inbox of the session's owner only (supervisor-inbox.ts).",
     build: () => createSupervisorMcpServer({ user: USER }),
+  },
+  {
+    name: "opensession-lead",
+    summary: INTERNAL_MCP_CAPABILITIES["opensession-lead"].summary,
+    source: "packages/core/opensession-server/src/server/leads/mcp.ts",
+    wiring: ["packages/core/opensession-server/src/server/goal-runner.ts"],
+    runClasses: ["goal"],
+    condition: "Only on a project lead's goal (goal.leadProject).",
+    note: "Bound to the lead's project. A lead's goal gets it instead of opensession-humans: it reaches the owner only through the supervisor inbox.",
+    build: () => createLeadMcpServer("example"),
   },
   {
     name: "opensession-incident-access",

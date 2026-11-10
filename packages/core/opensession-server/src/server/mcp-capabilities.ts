@@ -249,6 +249,12 @@ export const INTERNAL_MCP_CAPABILITIES = {
     guidance:
       "Your inbox from leads: list_items; answer_item when the owner answers in chat; dismiss_item; post_item for a needs-you push or an fyi for the digest.",
   },
+  "opensession-lead": {
+    summary:
+      "A project lead's read-only view of its project, its proposals and digest notes to the owner.",
+    guidance:
+      "project_overview and flap_report read your project; flap_report names the rule change each flapping signal needs. You change nothing yourself: propose sends each suggestion to the owner's inbox (only-you actions as kind needs-you, prepared), and post_digest_note writes the day's note for their digest.",
+  },
   "opensession-incident-access": {
     summary:
       "Read-only host commands, egress requests and borrowed credentials for one incident agent.",
