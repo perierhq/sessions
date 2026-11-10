@@ -1,7 +1,9 @@
-// opensession-lead: a project lead's own tools, bound to one project. Two
-// read-only views (the project overview and the flap triage) and `propose`,
-// which checks the project's lead rules before handing a proposal on.
-// Not wired to a run yet: phase 2 mounts it on the lead's goal.
+// opensession-lead: a project lead's own tools, bound to one project and
+// mounted on its goal (goal-runner.ts). Two read-only views (the project
+// overview and the flap triage), `propose`, which checks the project's lead
+// rules before raising a proposal in the owner's supervisor inbox, and
+// `post_digest_note`, the day's note for the owner's digest. None of them
+// changes the project.
 import { z } from "zod";
 import {
   LEAD_CATEGORIES,
@@ -11,7 +13,12 @@ import {
 import { createSdkMcpServer, tool } from "../inprocess-mcp";
 import { flapReportMarkdown } from "./flaps";
 import { buildFlapReport, buildLeadOverview, leadSources } from "./overview";
-import { LEAD_PROPOSAL_KINDS, deliverLeadProposal } from "./report";
+import {
+  LEAD_PROPOSAL_KINDS,
+  type LeadDelivery,
+  deliverLeadProposal,
+  postLeadDigestNote,
+} from "./report";
 
 function text(s: string, isError = false) {
   return {
@@ -87,10 +94,20 @@ export function createLeadMcpServer(project: string) {
           .max(4000)
           .describe("What you found, what you propose and why, with numbers."),
         options: z
-          .array(z.string().min(1).max(200))
+          .array(z.string().min(1).max(120))
           .max(5)
           .optional()
-          .describe("Choices for the owner, if any."),
+          .describe(
+            "Choices for the owner, the one you recommend first. Default: Approve, Not now.",
+          ),
+        subject: z
+          .string()
+          .min(1)
+          .max(120)
+          .optional()
+          .describe(
+            "What this is about, stable across wakes (e.g. 'sig-status consecutive.failures', 'PR 42'); a repeat about the same subject updates the owner's item instead of adding one. Default: the title.",
+          ),
         kind: z
           .enum(LEAD_PROPOSAL_KINDS)
           .optional()
@@ -103,6 +120,7 @@ export function createLeadMcpServer(project: string) {
         title: string;
         body: string;
         options?: string[];
+        subject?: string;
         kind?: (typeof LEAD_PROPOSAL_KINDS)[number];
       }) => {
         const doc = await leadSources().projectDocument(project);
@@ -116,17 +134,36 @@ export function createLeadMcpServer(project: string) {
             `Only the owner decides ${LEAD_CATEGORY_LABELS[args.category].toLowerCase()} (${decision.rule}). Prepare it and ask the owner: call propose again with kind needs-you and what you prepared.`,
             true,
           );
-        await deliverLeadProposal(project, {
+        const delivered = await deliverLeadProposal(project, doc, {
           kind,
           category: args.category,
           title: args.title.trim(),
           body: args.body.trim(),
           options: (args.options ?? []).map((o) => o.trim()).filter(Boolean),
+          ...(args.subject?.trim() ? { subject: args.subject.trim() } : {}),
           decision,
         });
+        if (!delivered.queued) return text(delivered.reason, true);
         return text(
-          `Queued for the owner as ${kind === "needs-you" ? "needs you" : "a proposal"}. Rule: ${decision.rule}.`,
+          `${delivered.created ? "Queued" : "Updated"} for the owner as ${kind === "needs-you" ? "needs you" : "a proposal"} (${delivered.itemId}). Rule: ${decision.rule}.`,
         );
+      },
+    ),
+    tool(
+      "post_digest_note",
+      `Write today's note on ${project} for the owner's daily digest: what you saw, what you proposed, what is waiting. A later note today replaces this one, so include everything. Nobody is pushed for it.`,
+      { text: z.string().min(1).max(4000).describe("Markdown, short.") },
+      async (args: { text: string }) => {
+        const sources = leadSources();
+        const doc = await sources.projectDocument(project);
+        const delivered: LeadDelivery = await postLeadDigestNote(
+          project,
+          doc,
+          args.text.trim(),
+          sources.now(),
+        );
+        if (!delivered.queued) return text(delivered.reason, true);
+        return text(`Saved for today's digest (${delivered.itemId}).`);
       },
     ),
   ];

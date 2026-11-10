@@ -5,6 +5,7 @@
 // here opens a session or its database. Lists are capped so the result fits
 // a tool reply.
 import type { Incident, Signal } from "../../shared/incidents";
+import type { Goal } from "../goals";
 import { isOpenIncident } from "../../shared/incidents";
 import type { ProjectSettingsDocument } from "../../shared/project-settings";
 import type { InboxConfig, SupportIndexRow } from "../../shared/support";
@@ -45,6 +46,7 @@ export interface LeadOverviewDeps {
   openSupportRows(): Promise<SupportIndexRow[]>;
   /** Open pull requests across projects, or null with no indexed source. */
   openPrs(): Promise<OverviewPr[] | null>;
+  getGoal(id: string): Promise<Goal | null>;
 }
 
 export interface LeadOverview {
@@ -115,8 +117,9 @@ export interface LeadOverview {
   spend: {
     /** What the project's incident agents spent this UTC month. */
     incidentAgentsUsd: number;
-    /** The lead's own runs aren't metered yet (phase 2). */
-    leadUsd: null;
+    /** What the lead's own goal runs cost this UTC month; null without a
+     *  lead goal. */
+    leadUsd: number | null;
     leadBudgetUsdPerMonth: number;
   };
 }
@@ -150,6 +153,7 @@ const liveDeps: LeadOverviewDeps = {
       status: ["open", "waiting"],
     }),
   openPrs: async () => (await import("../pr-cache")).getOpenPrSummaries(),
+  getGoal: async (id) => (await import("../goals")).getGoal(id),
 };
 
 /** The live sources, with any test replacements. */
@@ -204,13 +208,14 @@ export async function buildLeadOverview(
 ): Promise<{ json: LeadOverview; markdown: string }> {
   const d = deps();
   const now = d.now();
-  const [doc, signals, incidents, inboxes, rows, prs] = await Promise.all([
-    d.projectDocument(project),
+  const doc = await d.projectDocument(project);
+  const [signals, incidents, inboxes, rows, prs, goal] = await Promise.all([
     d.listSignals(),
     d.listIncidents(project),
     d.listInboxes(),
     d.openSupportRows(),
     d.openPrs(),
+    doc.lead.goalId ? d.getGoal(doc.lead.goalId) : Promise.resolve(null),
   ]);
   const own = incidents.filter((i) => i.project === project);
   const open = own.filter(isOpenIncident);
@@ -287,7 +292,8 @@ export async function buildLeadOverview(
     ci: { unavailable: CI_UNAVAILABLE },
     spend: {
       incidentAgentsUsd: monthUsd,
-      leadUsd: null,
+      leadUsd:
+        goal && goal.spend?.month === month ? goal.spend.usd : goal ? 0 : null,
       leadBudgetUsdPerMonth: doc.lead.budgetUsdPerMonth,
     },
   };
@@ -375,7 +381,7 @@ export function overviewMarkdown(o: LeadOverview): string {
     o.ci.unavailable,
     "",
     "## Spend this month",
-    `Incident agents: $${o.spend.incidentAgentsUsd}. The lead's own runs aren't counted yet; its budget is $${o.spend.leadBudgetUsdPerMonth} a month.`,
+    `Incident agents: $${o.spend.incidentAgentsUsd}. The lead: ${o.spend.leadUsd === null ? "no goal yet" : `$${o.spend.leadUsd}`} of its $${o.spend.leadBudgetUsdPerMonth} a month.`,
   );
   const text = lines.join("\n");
   return text.length > OVERVIEW_MAX_CHARS

@@ -250,7 +250,7 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     ],
     runClasses: ["interactive", "slack", "goal"],
     condition:
-      "Interactive runs need a session id (the answer routes back to it).",
+      "Interactive runs need a session id (the answer routes back to it). Not on a project lead's goal, which reaches the owner through the supervisor inbox.",
     build: () =>
       createHumansMcpServer({
         sessionId: SESSION_ID,
@@ -694,9 +694,10 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     name: "opensession-lead",
     summary: INTERNAL_MCP_CAPABILITIES["opensession-lead"].summary,
     source: "packages/core/opensession-server/src/server/leads/mcp.ts",
-    wiring: [],
-    runClasses: ["unwired"],
-    note: "Bound to one project. Mounted on the project lead's goal once leads run (adrs/supervisor-and-leads.md).",
+    wiring: ["packages/core/opensession-server/src/server/goal-runner.ts"],
+    runClasses: ["goal"],
+    condition: "Only on a project lead's goal (goal.leadProject).",
+    note: "Bound to the lead's project. A lead's goal gets it instead of opensession-humans: it reaches the owner only through the supervisor inbox.",
     build: () => createLeadMcpServer("example"),
   },
   {

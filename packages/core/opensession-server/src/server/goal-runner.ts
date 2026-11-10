@@ -12,7 +12,8 @@ import { createGoalSelfMcpServer } from "../agents/slack/goal-tools";
 import { runAgent, isAgentSessionBusy } from "./agent-runner";
 import { defaultRepo, personaName } from "./config";
 import { isDevInstance } from "./dev-mode";
-import { listGoals, mutateGoal, type Goal } from "./goals";
+import { addGoalSpend, listGoals, mutateGoal, type Goal } from "./goals";
+import { createLeadMcpServer } from "./leads/mcp";
 import { automaticFallbackModel, providerFor } from "./models";
 import { engineSessionPatch } from "./sessions";
 import { STRIPE_CONFIRM_TOOLS } from "./runner-shared";
@@ -42,24 +43,64 @@ export const runningGoals: Set<string> = (g.__runningGoals ??= new Set());
 /** MCP surface for a goal's own run: pull-a-human-in + its self-cadence controls.
  *  Deliberately excludes opensession-admin / opensession-sessions — an autonomous,
  *  weeks-long run gets least privilege (can't reconfigure the agent or steer other
- *  sessions); human sign-off goes through opensession-humans ask_human. */
+ *  sessions); human sign-off goes through opensession-humans ask_human.
+ *  A project lead's goal reaches its owner only through the supervisor inbox
+ *  (opensession-lead's propose), so it gets no ask_human. */
 function goalMcpServers(
   osSessionId: string,
-  goalId: string,
+  goal: Pick<Goal, "id" | "leadProject">,
   createdBy: string,
 ): Record<string, unknown> {
   return {
-    "opensession-humans": createHumansMcpServer({
-      sessionId: osSessionId,
-      createdBy,
-      isAdmin: true,
-    }),
-    "opensession-goal-self": createGoalSelfMcpServer(goalId),
+    ...(goal.leadProject
+      ? {
+          // TODO(coordinate/act stages): spawning fix workers
+          // (opensession-sessions spawn_task, send_to_session) for leads
+          // past watch. Out of scope while every lead watches.
+          "opensession-lead": createLeadMcpServer(goal.leadProject),
+        }
+      : {
+          "opensession-humans": createHumansMcpServer({
+            sessionId: osSessionId,
+            createdBy,
+            isAdmin: true,
+          }),
+        }),
+    "opensession-goal-self": createGoalSelfMcpServer(goal.id),
     // Goals often measure public URLs over time. Give them the same bounded,
     // SSRF-safe reader as interactive sessions instead of opening curl in the
     // ask-mode shell allowlist.
     "opensession-web": createWebMcpServer({ sessionId: osSessionId }),
   };
+}
+
+/** Says why a goal must not wake now (it is paused with that reason), or
+ *  null. Registered by owners of goals with extra rules, such as a project
+ *  lead's budget, so this runner stays generic. */
+export type GoalWakeCheck = (goal: Goal) => Promise<string | null>;
+
+const wakeChecks: Set<GoalWakeCheck> = (g.__goalWakeChecks ??= new Set());
+
+/** Add a check run at the start of every wake; returns the unsubscribe. */
+export function registerGoalWakeCheck(check: GoalWakeCheck): () => void {
+  wakeChecks.add(check);
+  return () => {
+    wakeChecks.delete(check);
+  };
+}
+
+/** The first reason a check gives; a check that throws is logged and lets
+ *  the wake go ahead. */
+async function wakeBlocked(goal: Goal): Promise<string | null> {
+  for (const check of [...wakeChecks]) {
+    try {
+      const reason = await check(goal);
+      if (reason) return reason;
+    } catch (error) {
+      console.error(`[goals] wake check for "${goal.name}" failed:`, error);
+    }
+  }
+  return null;
 }
 
 function buildGoalWakePrompt(goal: Goal, wake: number, cwd: string): string {
@@ -72,7 +113,9 @@ function buildGoalWakePrompt(goal: Goal, wake: number, cwd: string): string {
       `- Append what you learned/did this wake (concrete numbers, PR URLs, decisions) to the ledger via the opensession-goal-self \`append_ledger\` tool.\n` +
       `- Decide what happens next with opensession-goal-self: \`set_next_wake\` (e.g. "in 7 days" after shipping, so metrics can actually move before you re-measure), or \`mark_paused\` if you're blocked on a human decision, or \`mark_done\`/\`mark_failed\` when the mission is settled. If you set none, you'll be woken again in ~24h by default.\n` +
       `- Keep \`update_phase\` current so progress is visible at a glance.`,
-    `Human gates: to get sign-off or a decision from a teammate, use the opensession-humans \`ask_human\` tool — it DMs them as ${personaName()} and folds their reply back into this session. Do NOT email or impersonate anyone.`,
+    goal.leadProject
+      ? `Reaching the owner: only through opensession-lead \`propose\` and \`post_digest_note\`, which go to the supervisor inbox. Do NOT email, message or impersonate anyone.`
+      : `Human gates: to get sign-off or a decision from a teammate, use the opensession-humans \`ask_human\` tool — it DMs them as ${personaName()} and folds their reply back into this session. Do NOT email or impersonate anyone.`,
   ];
   if (goal.mode === "code") {
     const repo = getRepo(goal.repo);
@@ -109,6 +152,16 @@ export async function runGoal(goal: Goal): Promise<void> {
   const wake = goal.wakeCount + 1;
   const bksId = goal.osSessionId || newSessionId();
   try {
+    const blocked = await wakeBlocked(goal);
+    if (blocked) {
+      await mutateGoal(goal.id, (current) =>
+        current.status === "active"
+          ? { ...current, status: "paused", pauseReason: blocked }
+          : current,
+      );
+      console.log(`[goals] "${goal.name}" paused before its wake: ${blocked}`);
+      return;
+    }
     // Code goals keep ONE persistent worktree so the engine session (keyed on
     // cwd) resumes cleanly across wakes; ask goals read the main checkout.
     let cwd = defaultRepo().repo;
@@ -186,6 +239,8 @@ export async function runGoal(goal: Goal): Promise<void> {
 
     let engineSessionId = goal.engineSessionId || "";
     let errorMsg = "";
+    // The run's cost so far, from the terminal event's run-cumulative usage.
+    let runCostUsd = 0;
     for await (const event of runAgent({
       prompt: buildGoalWakePrompt(goal, wake, cwd),
       sessionId: goal.engineSessionId || undefined,
@@ -193,7 +248,7 @@ export async function runGoal(goal: Goal): Promise<void> {
       mode: goal.mode,
       model: goal.model,
       mcpServers: goal.mcpServers ?? "all",
-      inProcessMcp: goalMcpServers(bksId, goal.id, createdBy),
+      inProcessMcp: goalMcpServers(bksId, goal, createdBy),
       confirmTools: STRIPE_CONFIRM_TOOLS,
       aws: true,
       author: gitIdentityFor(goal.name),
@@ -243,6 +298,11 @@ export async function runGoal(goal: Goal): Promise<void> {
         if (event.model) effectiveModel = event.model;
       }
       if (event.type === "error") errorMsg = event.content || "Unknown error";
+      if (
+        (event.type === "done" || event.type === "error") &&
+        typeof event.usage?.costUsd === "number"
+      )
+        runCostUsd = Math.max(runCostUsd, event.usage.costUsd);
     }
     await persistSession(engineSessionId);
 
@@ -263,7 +323,9 @@ export async function runGoal(goal: Goal): Promise<void> {
         lastRunAt: startedAt.toISOString(),
         lastRunStatus: errorMsg ? "error" : "ok",
         lastRunError: errorMsg || undefined,
+        spend: addGoalSpend(fresh.spend, runCostUsd, Date.now()),
       };
+      if (!merged.spend) delete merged.spend;
       defaulted =
         merged.status === "active" &&
         Date.parse(merged.nextWakeAt) <= startedAt.getTime();

@@ -82,6 +82,12 @@ export interface Goal {
   fallbackModel?: string;
   /** External MCP server allowlist for this goal's runs (least privilege). */
   mcpServers?: string[];
+  /** The project this goal leads (server/leads/goal.ts). Server-owned: set
+   *  at creation by the lead, never by a patch or the goals API. */
+  leadProject?: string;
+  /** What this goal's runs cost in one UTC month (`YYYY-MM`), as their
+   *  terminal usage reported it. Runner-owned. */
+  spend?: { month: string; usd: number };
   createdBy: string;
   createdAt: string;
 }
@@ -173,20 +179,46 @@ function sanitizeMcpList(list?: unknown): string[] | undefined {
     .map((s) => s.trim());
 }
 
-export async function createGoal(input: {
-  name: string;
-  mission: string;
-  mode?: "ask" | "code";
-  repo?: string;
-  model?: string;
-  fallbackModel?: string;
-  mcpServers?: string[];
-  minWakeMinutes?: number;
-  maxWakes?: number;
-  /** ISO8601 first wake; omitted/empty = wake on the next tick. */
-  firstWakeAt?: string;
-  createdBy: string;
-}): Promise<Goal | { error: string }> {
+/** The UTC month (`YYYY-MM`) of `at`. */
+export function monthOf(at: number): string {
+  return new Date(at).toISOString().slice(0, 7);
+}
+
+/** What the goal's runs cost in the UTC month of `now`. */
+export function goalMonthSpend(goal: Pick<Goal, "spend">, now: number): number {
+  return goal.spend?.month === monthOf(now) ? goal.spend.usd : 0;
+}
+
+/** `spend` with `usd` more in the month of `at`; a new month starts at 0. */
+export function addGoalSpend(
+  spend: Goal["spend"],
+  usd: number,
+  at: number,
+): Goal["spend"] {
+  if (!(usd > 0)) return spend;
+  const month = monthOf(at);
+  const base = spend?.month === month ? spend.usd : 0;
+  return { month, usd: Math.round((base + usd) * 10_000) / 10_000 };
+}
+
+export async function createGoal(
+  input: {
+    name: string;
+    mission: string;
+    mode?: "ask" | "code";
+    repo?: string;
+    model?: string;
+    fallbackModel?: string;
+    mcpServers?: string[];
+    minWakeMinutes?: number;
+    maxWakes?: number;
+    /** ISO8601 first wake; omitted/empty = wake on the next tick. */
+    firstWakeAt?: string;
+    createdBy: string;
+  },
+  /** Server-owned fields, never taken from an API body. */
+  owned: { leadProject?: string } = {},
+): Promise<Goal | { error: string }> {
   if (!input.name?.trim()) return { error: "Name is required" };
   if (!input.mission?.trim()) return { error: "Mission is required" };
 
@@ -225,6 +257,7 @@ export async function createGoal(input: {
     model: input.model?.trim() || undefined,
     fallbackModel: input.fallbackModel?.trim() || undefined,
     mcpServers: sanitizeMcpList(input.mcpServers),
+    ...(owned.leadProject ? { leadProject: owned.leadProject } : {}),
     createdBy: input.createdBy || "Anonymous",
     createdAt: new Date().toISOString(),
   };
@@ -245,7 +278,8 @@ export async function createGoal(input: {
 
 /** Fields an operator (via opensession-goals or the goals API) may patch.
  *  Runtime/scheduling fields (engineSessionId, wakeCount, lastRun*,
- *  worktreePath) are owned by the runner, and `id` and `stateFile` are fixed
+ *  worktreePath, spend) are owned by the runner, `leadProject` by the
+ *  project lead, and `id` and `stateFile` are fixed
  *  at creation: the ledger tools read and write `stateFile` by path. */
 const PATCHABLE_GOAL_FIELDS = [
   "name",

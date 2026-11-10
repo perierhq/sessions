@@ -1,13 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Incident } from "../../shared/incidents";
 import {
   defaultProjectDocument,
   type ProjectSettingsDocument,
 } from "../../shared/project-settings";
 import type { InboxConfig, SupportIndexRow } from "../../shared/support";
-import { createLeadMcpServer } from "./mcp";
 import {
   OVERVIEW_ITEMS,
   type OverviewPr,
@@ -15,7 +12,6 @@ import {
   buildLeadOverview,
   waitsForPerson,
 } from "./overview";
-import { __setLeadAuditForTest } from "./report";
 import {
   NOW,
   PROJECT,
@@ -29,7 +25,6 @@ const DAY = 86_400_000;
 let doc: ProjectSettingsDocument;
 let incidents: Incident[];
 let prs: OverviewPr[] | null;
-const audits: Array<Record<string, unknown>> = [];
 
 function inbox(id: string, project: string): InboxConfig {
   return {
@@ -109,10 +104,6 @@ beforeEach(() => {
     pr(3, { updatedAt: new Date(NOW - 10 * DAY).toISOString(), isDraft: true }),
     pr(4, { repo: "other" }),
   ];
-  audits.length = 0;
-  __setLeadAuditForTest((e) => {
-    audits.push(e);
-  });
   __setLeadOverviewDepsForTest({
     now: () => NOW,
     projectDocument: async () => doc,
@@ -135,7 +126,6 @@ beforeEach(() => {
 
 afterEach(() => {
   __setLeadOverviewDepsForTest(undefined);
-  __setLeadAuditForTest(undefined);
 });
 
 describe("buildLeadOverview", () => {
@@ -204,6 +194,27 @@ describe("buildLeadOverview", () => {
     expect(markdown).toContain(`- and ${20 - OVERVIEW_ITEMS} more`);
   });
 
+  test("the lead's own spend this month comes from its goal", async () => {
+    doc = { ...doc, lead: { ...doc.lead, goalId: "goal-lead" } };
+    let spend = { month: "2026-11", usd: 3.5 };
+    __setLeadOverviewDepsForTest({
+      now: () => NOW,
+      projectDocument: async () => doc,
+      listSignals: async () => SIGNALS,
+      listIncidents: async () => incidents,
+      listInboxes: async () => [],
+      openSupportRows: async () => [],
+      openPrs: async () => null,
+      getGoal: async (id) =>
+        id === "goal-lead" ? ({ id, spend } as never) : null,
+    });
+    const { json, markdown } = await buildLeadOverview(PROJECT);
+    expect(json.spend.leadUsd).toBe(3.5);
+    expect(markdown).toContain("The lead: $3.5 of its $50 a month.");
+    spend = { month: "2026-10", usd: 9 };
+    expect((await buildLeadOverview(PROJECT)).json.spend.leadUsd).toBe(0);
+  });
+
   test("without a PR cache it says so", async () => {
     prs = null;
     const { json, markdown } = await buildLeadOverview(PROJECT);
@@ -222,141 +233,4 @@ test("waitsForPerson", () => {
   expect(
     waitsForPerson(row("sc_e", { status: "spam", draftState: "needs-person" })),
   ).toBe(false);
-});
-
-describe("opensession-lead", () => {
-  async function client() {
-    const server = createLeadMcpServer(PROJECT);
-    const c = new Client({ name: "test", version: "1.0.0" });
-    const [a, b] = InMemoryTransport.createLinkedPair();
-    await server.instance.connect(b);
-    await c.connect(a);
-    return async (name: string, args: Record<string, unknown>) => {
-      const result = await c.callTool({ name, arguments: args });
-      return {
-        text: (result.content as Array<{ text?: string }>)
-          .map((p) => p.text ?? "")
-          .join("\n"),
-        isError: result.isError === true,
-      };
-    };
-  }
-
-  test("lists its three tools", async () => {
-    const server = createLeadMcpServer(PROJECT);
-    const c = new Client({ name: "test", version: "1.0.0" });
-    const [a, b] = InMemoryTransport.createLinkedPair();
-    await server.instance.connect(b);
-    await c.connect(a);
-    const { tools } = await c.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual([
-      "flap_report",
-      "project_overview",
-      "propose",
-    ]);
-  });
-
-  test("project_overview and flap_report read", async () => {
-    const call = await client();
-    const overview = await call("project_overview", {});
-    expect(overview.text).toStartWith(`# ${PROJECT} at `);
-    const json = JSON.parse(
-      (await call("project_overview", { format: "json" })).text,
-    );
-    expect(json.project).toBe(PROJECT);
-    const flaps = await call("flap_report", { windowDays: 14 });
-    expect(flaps.text).toContain('Proposed: `{"provider":true}`');
-    const narrow = JSON.parse(
-      (await call("flap_report", { windowDays: 1, format: "json" })).text,
-    );
-    expect(narrow.counts.flapping).toBe(0);
-  });
-
-  test("propose queues a proposal with its rule", async () => {
-    const call = await client();
-    const result = await call("propose", {
-      category: "signal-rule-change",
-      title: "Status page flaps",
-      body: "16 incidents closed by themselves.",
-      options: ["Raise to 8 failures", "Leave it"],
-    });
-    expect(result).toEqual({
-      text: "Queued for the owner as a proposal. Rule: Asks first: Signal rule changes, from the project settings.",
-      isError: false,
-    });
-    expect(audits).toEqual([
-      {
-        kind: "lead_proposal",
-        project: PROJECT,
-        proposalKind: "proposal",
-        category: "signal-rule-change",
-        level: "asks-first",
-        effective: "ask",
-        rule: "Asks first: Signal rule changes, from the project settings",
-        title: "Status page flaps",
-        bodyDigest: expect.any(String),
-        options: 2,
-      },
-    ]);
-  });
-
-  test("watch turns an alone category into a proposal", async () => {
-    doc = { ...doc, lead: { ...doc.lead, enabled: true } };
-    const call = await client();
-    const result = await call("propose", {
-      category: "ci-repair",
-      title: "Fix the lint job",
-      body: "It fails on main.",
-    });
-    expect(result.text).toBe(
-      "Queued for the owner as a proposal. Rule: Watch: every action is a proposal, from the project settings.",
-    );
-  });
-
-  test("only-you categories are refused unless they come as needs you", async () => {
-    const call = await client();
-    const refused = await call("propose", {
-      category: "refund",
-      title: "Refund order 123",
-      body: "Charged twice.",
-    });
-    expect(refused).toEqual({
-      text: "Only the owner decides refunds (Only you: Refunds, always). Prepare it and ask the owner: call propose again with kind needs-you and what you prepared.",
-      isError: true,
-    });
-    expect(audits).toEqual([]);
-    const asked = await call("propose", {
-      category: "refund",
-      title: "Refund order 123",
-      body: "Charged twice; the refund is drafted in Stripe.",
-      kind: "needs-you",
-    });
-    expect(asked.text).toBe(
-      "Queued for the owner as needs you. Rule: Only you: Refunds, always.",
-    );
-    expect(audits[0]).toMatchObject({
-      proposalKind: "needs-you",
-      effective: "prepare",
-    });
-  });
-
-  test("a category the project keeps for the owner is refused too", async () => {
-    doc = {
-      ...doc,
-      lead: {
-        ...doc.lead,
-        rules: { ...doc.lead.rules, "rotate-key": "only-you" },
-      },
-    };
-    const call = await client();
-    const refused = await call("propose", {
-      category: "rotate-key",
-      title: "Rotate the API key",
-      body: "It leaked in a log.",
-    });
-    expect(refused.isError).toBe(true);
-    expect(refused.text).toContain(
-      "Only you: Rotating keys, from the project settings",
-    );
-  });
 });

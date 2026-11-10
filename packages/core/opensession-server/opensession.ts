@@ -154,6 +154,7 @@ import { startIncidentSignals } from "./src/server/incidents/scheduler";
 import { startIncidentNotifications } from "./src/server/incidents/notifier";
 import { startSupportNotifications } from "./src/server/support/notify";
 import { startSupervisorInbox } from "./src/server/supervisor-inbox";
+import { startProjectLeads } from "./src/server/leads/goal";
 import { startSupportRetention } from "./src/server/support/retention";
 import { installSupportPipeline } from "./src/server/support/routing";
 import { startSupportTick } from "./src/server/support/tick";
@@ -948,6 +949,11 @@ if (!g.__opensessionBooted) {
     // after them, failed pushes retry, and each person's daily digest is
     // sent at their digest time, from a once-a-minute sweep.
     startSupervisorInbox();
+    // Project leads: a goal per project whose lead is on, kept in line with
+    // its settings; the owner's answers reach the lead's ledger.
+    startProjectLeads().catch((error: unknown) =>
+      console.error("[leads] start failed:", error),
+    );
     // Incident, signal and access changes reach open incident views.
     startIncidentBroadcasts();
     // Impact queries run once a minute for open incidents.

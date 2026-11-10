@@ -251,9 +251,9 @@ export const INTERNAL_MCP_CAPABILITIES = {
   },
   "opensession-lead": {
     summary:
-      "A project lead's read-only view of its project and its proposals to the owner.",
+      "A project lead's read-only view of its project, its proposals and digest notes to the owner.",
     guidance:
-      "project_overview and flap_report read your project; flap_report names the rule change each flapping signal needs. You change nothing yourself: propose sends each suggestion to the owner. Send what only the owner may do as kind needs-you, prepared.",
+      "project_overview and flap_report read your project; flap_report names the rule change each flapping signal needs. You change nothing yourself: propose sends each suggestion to the owner's inbox (only-you actions as kind needs-you, prepared), and post_digest_note writes the day's note for their digest.",
   },
   "opensession-incident-access": {
     summary:

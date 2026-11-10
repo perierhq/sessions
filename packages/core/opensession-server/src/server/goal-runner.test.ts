@@ -41,11 +41,18 @@ await getConfigAsync();
 let script: (opts: { prompt: string }) => AsyncGenerator<StreamEvent> =
   async function* () {};
 let runs = 0;
+/** What the last wake handed the engine. */
+let lastRun: { prompt: string; inProcessMcp?: Record<string, unknown> } | null =
+  null;
 const realAgentRunner = await import("./agent-runner");
 mock.module("./agent-runner", () => ({
   ...realAgentRunner,
-  runAgent: (opts: { prompt: string }) => {
+  runAgent: (opts: {
+    prompt: string;
+    inProcessMcp?: Record<string, unknown>;
+  }) => {
     runs++;
+    lastRun = opts;
     return script(opts);
   },
   isAgentSessionBusy: () => false,
@@ -76,7 +83,8 @@ mock.module("./goals", () => ({
   },
 }));
 
-const { runGoal, runningGoals, tickGoals } = await import("./goal-runner");
+const { registerGoalWakeCheck, runGoal, runningGoals, tickGoals } =
+  await import("./goal-runner");
 const { createGoal, getGoal, mutateGoal, updateGoal } = realGoals;
 const { SessionKernelStore, __setSessionKernelStoreForTest } =
   await import("./session-kernel");
@@ -97,6 +105,7 @@ beforeEach(() => {
   previousStore = __setSessionKernelStoreForTest(store);
   script = async function* () {};
   runs = 0;
+  lastRun = null;
   lists = 0;
   listGate = null;
 });
@@ -289,5 +298,108 @@ describe("goal wake", () => {
     await runGoal(goal);
     expect(runs).toBe(0);
     expect(await getGoal(goal.id)).toBeNull();
+  });
+});
+
+describe("goal wake checks, leads and spend", () => {
+  test("a wake check pauses the goal before it runs", async () => {
+    const goal = await dueGoal();
+    const other = await dueGoal({ name: "Other" });
+    const off = registerGoalWakeCheck(async (g) =>
+      g.id === goal.id ? "Over budget" : null,
+    );
+    try {
+      await runGoal(goal);
+      expect(runs).toBe(0);
+      expect(await getGoal(goal.id)).toMatchObject({
+        status: "paused",
+        pauseReason: "Over budget",
+        wakeCount: 0,
+      });
+      await runGoal(other);
+      expect(runs).toBe(1);
+    } finally {
+      off();
+    }
+  });
+
+  test("a wake check that throws lets the wake go ahead", async () => {
+    const goal = await dueGoal();
+    const off = registerGoalWakeCheck(async () => {
+      throw new Error("settings unreadable");
+    });
+    try {
+      await runGoal(goal);
+      expect(runs).toBe(1);
+    } finally {
+      off();
+    }
+  });
+
+  test("a lead's goal gets the lead tools and no ask_human", async () => {
+    const lead = await createGoal(
+      { name: "Lead: app", mission: "Lead app.", createdBy: "Project lead" },
+      { leadProject: "app" },
+    );
+    if ("error" in lead) throw new Error(lead.error);
+    expect(lead.leadProject).toBe("app");
+    await runGoal(lead);
+    expect(Object.keys(lastRun!.inProcessMcp!).sort()).toEqual([
+      "opensession-goal-self",
+      "opensession-lead",
+      "opensession-web",
+    ]);
+    expect(lastRun!.prompt).toContain("only through opensession-lead");
+    expect(lastRun!.prompt).not.toContain("ask_human");
+
+    const plain = await dueGoal();
+    await runGoal(plain);
+    expect(Object.keys(lastRun!.inProcessMcp!).sort()).toEqual([
+      "opensession-goal-self",
+      "opensession-humans",
+      "opensession-web",
+    ]);
+  });
+
+  test("the lead project can't be set through a patch or the API body", async () => {
+    const goal = await dueGoal({
+      ...({ leadProject: "app" } as object),
+    });
+    expect(goal.leadProject).toBeUndefined();
+    const patched = await updateGoal(goal.id, {
+      ...({ leadProject: "app" } as object),
+    });
+    expect("error" in patched ? patched : patched.leadProject).toBeUndefined();
+  });
+
+  test("each run's cost adds to the goal's spend this month", async () => {
+    const goal = await dueGoal();
+    script = async function* () {
+      yield { type: "init", sessionId: "engine-1" } as StreamEvent;
+      yield {
+        type: "done",
+        sessionId: "engine-1",
+        usage: {
+          costUsd: 0.75,
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          contextTokens: 1,
+        },
+      } as StreamEvent;
+    };
+    const month = new Date().toISOString().slice(0, 7);
+    await runGoal(goal);
+    expect((await getGoal(goal.id))?.spend).toEqual({ month, usd: 0.75 });
+    await runGoal((await getGoal(goal.id))!);
+    expect((await getGoal(goal.id))?.spend).toEqual({ month, usd: 1.5 });
+    // Last month's spend doesn't count towards this one.
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      spend: { month: "2020-01", usd: 99 },
+    }));
+    await runGoal((await getGoal(goal.id))!);
+    expect((await getGoal(goal.id))?.spend).toEqual({ month, usd: 0.75 });
   });
 });
