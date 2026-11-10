@@ -194,6 +194,7 @@ export function liveActivitySnapshot(
         !session.archived &&
         !session.automation &&
         !session.desk &&
+        !session.supervisor &&
         ownsSession(registration, session)
       );
     })
@@ -225,6 +226,7 @@ export function liveActivitySnapshot(
         !session.archived &&
         !session.automation &&
         !session.desk &&
+        !session.supervisor &&
         !session.spawnedBy &&
         ownsSession(registration, session) &&
         // Nothing to read until the turn completes.

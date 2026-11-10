@@ -289,6 +289,7 @@ import {
   sessionRepoIds,
 } from "./session-repos";
 import { deskStateContext } from "./desk-state";
+import { blobSurfaceContext } from "./blob-surface";
 import {
   automationSessionMcp,
   interactiveMcpServers,
@@ -3193,13 +3194,16 @@ async function runSessionPromptInner(
   // marks the engine change; the handoff itself is plumbing (see prompt-context).
   if (switchHandoff)
     prompt = `${wrapContext(switchHandoff, "handoff")}\n\n${prompt}`;
-  // Bridge a Desk voice call into this text turn: the GPT Realtime turns are
-  // mirrored into the visible transcript, but the text engine's own
-  // conversation state never saw them — without this note the first text
-  // message after a call gets a Desk that's amnesiac about the conversation
-  // it apparently just had (see desk-voice.ts).
-  if (session.desk) {
-    const voiceHandoff = takeVoiceHandoff(sessionId);
+  // Bridge a Desk or supervisor voice call into this text turn: the GPT
+  // Realtime turns are mirrored into the visible transcript, but the text
+  // engine's own conversation state never saw them — without this note the
+  // first text message after a call gets a session that's amnesiac about the
+  // conversation it apparently just had (see desk-voice.ts).
+  if (session.desk || session.supervisor) {
+    const voiceHandoff = takeVoiceHandoff(
+      sessionId,
+      session.supervisor ? "Supervisor" : "Desk",
+    );
     if (voiceHandoff)
       prompt = `${wrapContext(voiceHandoff, "handoff")}\n\n${prompt}`;
   }
@@ -3289,10 +3293,18 @@ async function runSessionPromptInner(
 
   // The Desk's live state (what is waiting, running, unread) changes on
   // nearly every turn, so it rides in this turn's message rather than the
-  // system prompt, where each change re-cached the whole conversation.
-  if (session.desk && runInputs.sessionNote) {
+  // system prompt, where each change re-cached the whole conversation. The
+  // supervisor keeps the same briefing (supervisor.ts).
+  if ((session.desk || session.supervisor) && runInputs.sessionNote) {
     const deskState = deskStateContext(sessionNotePerson(session, user));
     if (deskState) prompt = `${deskState}\n\n${prompt}`;
+  }
+
+  // Shown in the Blob app: say where, so the reply fits (blob-surface.ts).
+  // Blob talks to the supervisor, not the Desk.
+  if (session.supervisor) {
+    const blob = blobSurfaceContext(session);
+    if (blob) prompt = `${blob}\n\n${prompt}`;
   }
 
   // Retrieval is query-specific context for this turn. Keep it out of the

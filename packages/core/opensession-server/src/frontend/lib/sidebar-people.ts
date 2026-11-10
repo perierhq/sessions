@@ -64,6 +64,7 @@ export function sidebarPersonSessions(
     if (
       session.archived ||
       session.desk ||
+      session.supervisor ||
       keptSessionIds.has(session.id) ||
       !sessionIsRecentlyActive(session, nowMs)
     )

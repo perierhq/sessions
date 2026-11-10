@@ -141,8 +141,10 @@ export function CatchUpDeck({
         !s.archived &&
         !s.automation &&
         // The Desk is a summonable overlay you already read as you talk to
-        // it (⌘J), not work to catch up on.
+        // it (⌘J), not work to catch up on. The supervisor is read in the
+        // Blob app the same way.
         !s.desk &&
+        !s.supervisor &&
         // A spawned worker is an implementation detail of its parent, the
         // same rule the workspace rows apply, so it never puts a card in
         // the queue on its own.

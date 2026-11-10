@@ -56,6 +56,7 @@ import {
   sessionRuntimeSnapshot,
   type SessionRuntimeSnapshot,
 } from "../session-cache";
+import { maybePersistBlobSurface } from "../blob-surface";
 import {
   asDataUrlList,
   countImageRefs,
@@ -662,6 +663,7 @@ export function sessionListRow(
   if (!row.attachedRepos?.length) delete row.attachedRepos;
   if (!row.linkedPrs?.length) delete row.linkedPrs;
   if (!row.desk) delete row.desk;
+  if (!row.supervisor) delete row.supervisor;
   if (!row.repoLess) delete row.repoLess;
   if (!row.titleOverridden) delete row.titleOverridden;
   if (!row.workspacePreparing) delete row.workspacePreparing;
@@ -798,8 +800,10 @@ export function archivedIndexRow(
           ],
         }
       : {}),
-    // Desk sessions are hidden from every list; clients filter on it.
+    // Desk and supervisor sessions are hidden from every list; clients
+    // filter on them.
     ...(s.desk ? { desk: true } : {}),
+    ...(s.supervisor ? { supervisor: true } : {}),
   };
 }
 
@@ -1364,6 +1368,7 @@ export async function handleSessionsRoutes(
         effort?: unknown;
         fastMode?: unknown;
         speed?: unknown;
+        surface?: unknown;
         busyMode?: unknown;
         files?: unknown;
         pastedTexts?: unknown;
@@ -1436,6 +1441,7 @@ export async function handleSessionsRoutes(
           typeof body?.effort === "string" ? body.effort : undefined,
         );
         maybePersistSpeed(session, body?.speed, body?.fastMode);
+        maybePersistBlobSurface(session, body?.surface);
       }
       let result: Awaited<
         ReturnType<ReturnType<typeof getSessionControl>["deliverToSession"]>

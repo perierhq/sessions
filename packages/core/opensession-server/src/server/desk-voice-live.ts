@@ -30,7 +30,7 @@
  * beyond what desk-voice.ts already does for mirroring.
  */
 
-import { ensureDeskSession } from "./desk";
+import { type StandingSession, standingSessionFor } from "./supervisor";
 import { VoiceReferenceLedger, linkSpokenReferences } from "./desk-voice-refs";
 import { REPOS } from "./worktree";
 import {
@@ -657,7 +657,8 @@ interface LiveCall {
   navigation?: DeskVoiceNavigation;
   id: string;
   user: string;
-  deskSessionId: string;
+  /** The standing session (Desk or supervisor) the call belongs to. */
+  standingSessionId: string;
   backendModel: LiveBackendModel;
   socket: WebSocket;
   rows: VoiceTranscriptRows;
@@ -894,11 +895,14 @@ export function createLiveVoiceCall(
   user: string,
   offerSdp: string,
   navigationLogin?: string,
+  standing: StandingSession = "desk",
 ): Promise<LiveCallStarted> {
   const previous = starting.get(user) ?? Promise.resolve();
   const run = previous
     .catch(() => {})
-    .then(() => createLiveVoiceCallNow(user, offerSdp, navigationLogin));
+    .then(() =>
+      createLiveVoiceCallNow(user, offerSdp, navigationLogin, standing),
+    );
   starting.set(user, run);
   void run
     .catch(() => {})
@@ -911,10 +915,11 @@ export function createLiveVoiceCall(
 async function createLiveVoiceCallNow(
   user: string,
   offerSdp: string,
-  navigationLogin?: string,
+  navigationLogin: string | undefined,
+  standing: StandingSession,
 ): Promise<LiveCallStarted> {
   const key = await requireVoiceApiKey();
-  const { sessionId } = ensureDeskSession(user);
+  const { sessionId } = await standingSessionFor(user, standing);
 
   // One call per user: a reload or a second tab must not leave the old call
   // (and its per-second billing) running headless.
@@ -962,7 +967,7 @@ async function createLiveVoiceCallNow(
     navigation,
     id: liveId,
     user,
-    deskSessionId: sessionId,
+    standingSessionId: sessionId,
     backendModel,
     socket,
     rows: new VoiceTranscriptRows({
@@ -976,7 +981,7 @@ async function createLiveVoiceCallNow(
       // browser's captions (frontend/lib/voice-captions.ts) can take down
       // exactly the fragments this row covers without matching its text.
       onRow: (row) =>
-        mirrorVoiceEntries(user, [
+        mirrorVoiceEntries(sessionId, [
           {
             id: `${row.id}-end-${row.endMs}`,
             role: row.role,
@@ -991,7 +996,7 @@ async function createLiveVoiceCallNow(
       send: (event) => sendEvent(call, event),
       onFailure: (message) => {
         call.rows.flushAll();
-        mirrorVoiceEntries(user, [
+        mirrorVoiceEntries(sessionId, [
           {
             id: `voice-${liveId}-backend-error`,
             role: "assistant",
@@ -1006,11 +1011,11 @@ async function createLiveVoiceCallNow(
           result =
             name === SHOW_IN_APP_TOOL.name
               ? await showInApp(call.navigation, args)
-              : await executeVoiceTool(user, name, args);
+              : await executeVoiceTool(user, sessionId, name, args);
         } catch (e) {
           result = { error: e instanceof Error ? e.message : String(e) };
         }
-        mirrorVoiceToolCall(user, callId, name, args, result);
+        mirrorVoiceToolCall(sessionId, callId, name, args, result);
         ledger.collect(name, args, result, knownRepos());
         return result;
       },
@@ -1081,7 +1086,7 @@ export function sendLiveVoiceText(
   // Acknowledge only what the backend actually received: a false here keeps
   // the browser's draft instead of mirroring a message nobody heard.
   if (!call.loop.sendText(trimmed)) return false;
-  mirrorVoiceEntries(user, [
+  mirrorVoiceEntries(call.standingSessionId, [
     { id: `voice-typed-${crypto.randomUUID()}`, role: "user", text: trimmed },
   ]);
   touch(call);

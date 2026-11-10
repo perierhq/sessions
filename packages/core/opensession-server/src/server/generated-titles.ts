@@ -209,7 +209,7 @@ function isSupport(
 
 /** Sessions whose title is set on purpose and never generated. */
 function fixedTitle(doc: NativeSessionFile | null): boolean {
-  return !!doc?.desk || isSupport(doc);
+  return !!doc?.desk || !!doc?.supervisor || isSupport(doc);
 }
 
 async function readSessionDoc(id: string): Promise<NativeSessionFile | null> {
@@ -246,6 +246,7 @@ async function persistTitle(id: string, title: string): Promise<string | null> {
 export type TitleRefreshSession = {
   title?: string;
   desk?: boolean;
+  supervisor?: boolean;
   externalRefs?: Array<{ kind: string }>;
   goalId?: string;
   automationId?: string;
@@ -342,7 +343,13 @@ export async function refreshGeneratedTitle(
   opts: { user?: string; session?: TitleRefreshSession } = {},
 ): Promise<string | null> {
   const { user, session } = opts;
-  if (session?.desk || session?.goalId || session?.automationId) return null;
+  if (
+    session?.desk ||
+    session?.supervisor ||
+    session?.goalId ||
+    session?.automationId
+  )
+    return null;
   if (session?.automation || isSupport(session)) return null;
   if (isMachineActor(user)) return null;
   const message = stripContext(prompt).trim();
@@ -508,7 +515,8 @@ export async function sweepCandidates(): Promise<
   for (const d of await catalogNativeSessions()) {
     const id = d.id;
     if (!/^(os|bks)-[0-9a-f]{8}-/.test(id)) continue;
-    if (d.desk || d.goalId || d.automationId || isSupport(d)) continue;
+    if (d.desk || d.supervisor || d.goalId || d.automationId || isSupport(d))
+      continue;
     const generated = getGeneratedTitle(id);
     if (generated && d.pendingWorkspaceTitle) {
       // A title can land before its workspace rename. Retry that durable marker

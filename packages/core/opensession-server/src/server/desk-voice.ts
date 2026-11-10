@@ -38,7 +38,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { stateDir } from "./paths";
 import { writeJsonAtomic } from "./shared/atomic-write";
-import { ensureDeskSession } from "./desk";
+import { type StandingSession, standingSessionFor } from "./supervisor";
 import { getSessionControl } from "./session-control";
 import { appendTranscriptEvents } from "./actor-transcript";
 import type { InProcessMcpServer } from "./inprocess-mcp";
@@ -189,14 +189,25 @@ export async function setVoiceBackendModel(
 // ---------------------------------------------------------------------------
 // Ephemeral secret mint — the OpenAI API key never reaches the browser.
 
-const VOICE_INSTRUCTIONS = `You are the user's Desk — their standing concierge for the Open Session workspace — currently on a voice call. You are the same Desk they type to; this call is one conversation with that Desk, not a separate assistant.
+const DESK_VOICE_INTRO = `You are the user's Desk — their standing concierge for the Open Session workspace — currently on a voice call. You are the same Desk they type to; this call is one conversation with that Desk, not a separate assistant.`;
 
-Voice discipline:
+/** Blob talks to the supervisor (supervisor.ts), which must not introduce
+ *  itself as the Desk. */
+const SUPERVISOR_VOICE_INTRO = `You are Blob, the user's supervisor for the projects they run with Open Session, currently on a voice call. You are the same supervisor they type to in the Blob app; this call continues that conversation, not a separate assistant.`;
+
+const VOICE_DISCIPLINE = `Voice discipline:
 - Spoken register: short, natural sentences. One or two per reply. No markdown, no lists, no IDs read aloud unless asked — refer to sessions by title.
 - You are an orchestrator, not the worker. For anything beyond a quick answer or a list edit, start a scoped worker session (start_session) and say you did.
 - Use the tools for anything about real state — sessions, todos — never guess or invent. If a tool fails, say so plainly.
 - Capture todos the moment the user mentions wanting or needing to do something. Never drop a todo unprompted.
 - Before steering or starting sessions, a one-line confirmation of what you're about to do is enough; don't over-confirm reads.`;
+
+/** The voice call's instructions for the standing session it belongs to. */
+export function voiceInstructions(standing: StandingSession = "desk"): string {
+  const intro =
+    standing === "supervisor" ? SUPERVISOR_VOICE_INTRO : DESK_VOICE_INTRO;
+  return `${intro}\n\n${VOICE_DISCIPLINE}`;
+}
 
 export const VOICE_TOOLS = [
   {
@@ -365,13 +376,17 @@ export async function recentDeskTurns(
   }
 }
 
-async function recentDeskContext(sessionId: string): Promise<string> {
+async function recentDeskContext(
+  sessionId: string,
+  standing: StandingSession = "desk",
+): Promise<string> {
   const turns = await recentDeskTurns(sessionId);
   if (!turns.length) return "";
+  const name = standing === "supervisor" ? "Blob" : "Desk";
   const lines = turns.map(
-    (t) => `${t.role === "user" ? "User" : "Desk"}: ${t.text}`,
+    (t) => `${t.role === "user" ? "User" : name}: ${t.text}`,
   );
-  return `\n\nRecent Desk conversation (text mode, continue from it):\n${lines.join("\n")}`;
+  return `\n\nRecent ${name} conversation (text mode, continue from it):\n${lines.join("\n")}`;
 }
 
 /** Server-owned Realtime session policy. Exported for contract tests so a
@@ -379,11 +394,14 @@ async function recentDeskContext(sessionId: string): Promise<string> {
 export async function buildVoiceSessionConfig(
   sessionId: string,
   user = "Open Session",
+  standing: StandingSession = "desk",
 ) {
   return {
     type: "realtime",
     model: DESK_VOICE_MODEL,
-    instructions: VOICE_INSTRUCTIONS + (await recentDeskContext(sessionId)),
+    instructions:
+      voiceInstructions(standing) +
+      (await recentDeskContext(sessionId, standing)),
     tools: [...VOICE_TOOLS, ...(await listVoiceMcpTools(user, sessionId))],
     tool_choice: "auto",
     audio: {
@@ -400,15 +418,18 @@ export async function buildVoiceSessionConfig(
   };
 }
 
-export async function mintVoiceSecret(user: string): Promise<{
+export async function mintVoiceSecret(
+  user: string,
+  standing: StandingSession = "desk",
+): Promise<{
   clientSecret: string;
   expiresAt: number;
   model: string;
   sessionId: string;
 }> {
   const key = await requireVoiceApiKey();
-  const { sessionId } = ensureDeskSession(user);
-  const session = await buildVoiceSessionConfig(sessionId, user);
+  const { sessionId } = await standingSessionFor(user, standing);
+  const session = await buildVoiceSessionConfig(sessionId, user, standing);
   const res = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
     method: "POST",
     headers: {
@@ -439,15 +460,17 @@ export async function mintVoiceSecret(user: string): Promise<{
 // ---------------------------------------------------------------------------
 // Tool facade — executes as the verified user, same underlying operations as
 // the Desk's interactive tools. Results are compact: they get spoken, not read.
+// `sessionId` is the standing session the call belongs to (the Desk or the
+// supervisor, standingSessionFor).
 
 export async function executeVoiceTool(
   user: string,
+  sessionId: string,
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
   const control = getSessionControl();
-  const desk = ensureDeskSession(user);
-  const mcp = await callVoiceMcpTool(user, desk.sessionId, name, args);
+  const mcp = await callVoiceMcpTool(user, sessionId, name, args);
   if (mcp.found) return mcp.result;
   switch (name) {
     case "list_current_work": {
@@ -457,6 +480,7 @@ export async function executeVoiceTool(
         .filter(
           (s) =>
             !s.desk &&
+            !s.supervisor &&
             s.state !== "archived" &&
             (s.state !== "idle" ||
               (s.lastActivity && Date.parse(s.lastActivity) > dayAgo)),
@@ -502,8 +526,8 @@ export async function executeVoiceTool(
         repo: typeof args.repo === "string" ? args.repo : undefined,
         mode,
         user,
-        createdByLogin: control.getSession(desk.sessionId)?.createdByLogin,
-        parentSessionId: desk.sessionId,
+        createdByLogin: control.getSession(sessionId)?.createdByLogin,
+        parentSessionId: sessionId,
       });
       return { id, started: true, mode };
     }
@@ -595,8 +619,12 @@ function appendHandoff(sessionId: string, entries: HandoffEntry[]): void {
 }
 
 /** Consume the pending voice handoff for a session (one-shot), formatted as a
- *  context note for the next text turn. Undefined when no voice turns landed. */
-export function takeVoiceHandoff(sessionId: string): string | undefined {
+ *  context note for the next text turn. Undefined when no voice turns landed.
+ *  `role` names the standing session that took the call. */
+export function takeVoiceHandoff(
+  sessionId: string,
+  role: "Desk" | "Supervisor" = "Desk",
+): string | undefined {
   const path = handoffPath(sessionId);
   let entries: HandoffEntry[] = [];
   try {
@@ -610,17 +638,18 @@ export function takeVoiceHandoff(sessionId: string): string | undefined {
   const lines = entries.map((e) =>
     e.role === "action"
       ? `Action: ${e.text}`
-      : `${e.role === "user" ? "User" : "Desk"} (voice): ${e.text}`,
+      : `${e.role === "user" ? "User" : role} (voice): ${e.text}`,
   );
-  return `## Voice conversation handoff\nWhile in voice mode, you (the Desk) had this spoken conversation through a voice model. It is already in the visible transcript — don't repeat or re-answer it; continue with full awareness of what was said and done:\n\n${lines.join("\n")}`;
+  return `## Voice conversation handoff\nWhile in voice mode, you (the ${role}) had this spoken conversation through a voice model. It is already in the visible transcript — don't repeat or re-answer it; continue with full awareness of what was said and done:\n\n${lines.join("\n")}`;
 }
 
+/** Mirror finalized voice turns into the standing session's transcript and
+ *  its handoff buffer. */
 export function mirrorVoiceEntries(
-  user: string,
+  sessionId: string,
   entries: { id: string; role: "user" | "assistant"; text: string }[],
 ): void {
   if (!entries.length) return;
-  const { sessionId } = ensureDeskSession(user);
   const now = new Date().toISOString();
   const tes: TranscriptEntry[] = entries.map((e) => ({
     id: e.id,
@@ -645,13 +674,12 @@ export function mirrorVoiceEntries(
 }
 
 export function mirrorVoiceToolCall(
-  user: string,
+  sessionId: string,
   callId: string,
   name: string,
   args: Record<string, unknown>,
   result: unknown,
 ): void {
-  const { sessionId } = ensureDeskSession(user);
   void appendTranscriptEvents(
     sessionId,
     voiceToolTranscriptEntries(callId, name, args, result),

@@ -1117,6 +1117,8 @@ export function nativeSessionRow(data: NativeSessionFile): UnifiedSession {
     agentStarted: data.agentStarted,
     spawnedBy: data.spawnedBy,
     desk: data.desk,
+    supervisor: data.supervisor,
+    blobSurface: data.blobSurface,
     spawnDepth: data.spawnDepth,
     attachedRepos: data.attachedRepos,
     stackedOn: data.stackedOn,

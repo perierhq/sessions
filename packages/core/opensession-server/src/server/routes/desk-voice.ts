@@ -10,6 +10,10 @@
  * connection to OpenAI, so `/secret`, `/tool`, `/transcript` and `/diag` are
  * its authenticated relay: secret minting (the real API key never reaches the
  * client), tool execution as the verified user, transcript mirroring.
+ *
+ * Each call belongs to a standing session: the Desk by default, or the
+ * supervisor when the body says `standing: "supervisor"` (supervisor.ts).
+ * Clients that never send it keep talking to the Desk.
  */
 
 import type { RouteContext } from "./context";
@@ -34,6 +38,7 @@ import {
   createLiveVoiceCall,
   sendLiveVoiceText,
 } from "../desk-voice-live";
+import { parseStanding, standingSessionFor } from "../supervisor";
 
 import { deskNavigationRequestSchema } from "../../shared/desk-navigation";
 
@@ -132,6 +137,7 @@ export async function handleDeskVoiceRoutes(
           user,
           body.sdp,
           body.navigation === true ? ctx.authUser?.login : undefined,
+          parseStanding(body.standing),
         ),
         {
           status: 201,
@@ -179,7 +185,9 @@ export async function handleDeskVoiceRoutes(
     const user = requestUser(ctx, body?.user);
     if (!user) return Response.json({ error: "missing user" }, { status: 400 });
     try {
-      return Response.json(await mintVoiceSecret(user));
+      return Response.json(
+        await mintVoiceSecret(user, parseStanding(body?.standing)),
+      );
     } catch (e: any) {
       return Response.json({ error: e?.message || String(e) }, { status: 502 });
     }
@@ -202,13 +210,17 @@ export async function handleDeskVoiceRoutes(
       body.args && typeof body.args === "object"
         ? (body.args as Record<string, unknown>)
         : {};
+    const { sessionId } = await standingSessionFor(
+      user,
+      parseStanding(body.standing),
+    );
     try {
-      const result = await executeVoiceTool(user, body.name, args);
-      mirrorVoiceToolCall(user, body.callId, body.name, args, result);
+      const result = await executeVoiceTool(user, sessionId, body.name, args);
+      mirrorVoiceToolCall(sessionId, body.callId, body.name, args, result);
       return Response.json({ result });
     } catch (e: any) {
       const message = e?.message || String(e);
-      mirrorVoiceToolCall(user, body.callId, body.name, args, {
+      mirrorVoiceToolCall(sessionId, body.callId, body.name, args, {
         error: message,
       });
       return Response.json({ error: message }, { status: 400 });
@@ -238,7 +250,13 @@ export async function handleDeskVoiceRoutes(
         },
       )
       .slice(0, 20);
-    mirrorVoiceEntries(user, entries);
+    if (entries.length) {
+      const { sessionId } = await standingSessionFor(
+        user,
+        parseStanding(body.standing),
+      );
+      mirrorVoiceEntries(sessionId, entries);
+    }
     return Response.json({ ok: true });
   }
 

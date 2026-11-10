@@ -199,8 +199,9 @@ export function buildDeskState(user: string): DeskState {
   const review: DeskWorkItem[] = [];
 
   for (const s of getCachedSessions()) {
-    // The Desk never lists itself, and never another person's work.
-    if (s.desk) continue;
+    // The Desk never lists itself or the supervisor (which carries the same
+    // briefing), and never another person's work.
+    if (s.desk || s.supervisor) continue;
     if (!samePerson(s.createdBy, user)) continue;
 
     const question = askSummary(s.id);

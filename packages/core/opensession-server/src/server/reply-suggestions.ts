@@ -107,8 +107,10 @@ export function anyPresentWatcher(sessionId: string): boolean {
 }
 
 /**
- * Is this a session a person converses with? Automations, goals and the Desk
- * run their own shapes of turn that nobody replies to from a composer.
+ * Is this a session a person converses with? Automations, goals, the Desk and
+ * the supervisor run their own shapes of turn that nobody replies to from a
+ * composer (the supervisor's surface is the Blob app, which offers its own
+ * choices).
  */
 export function conversationalSession(sessionId: string): boolean {
   const session = findSession(sessionId);
@@ -117,7 +119,8 @@ export function conversationalSession(sessionId: string): boolean {
   if (
     session.automation ||
     session.goalId ||
-    (session as { desk?: boolean }).desk
+    session.desk ||
+    session.supervisor
   )
     return false;
   return true;

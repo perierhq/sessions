@@ -605,6 +605,9 @@ export interface UnifiedSession {
   /** The user's standing Desk (concierge) session — fixed title, hidden from
    *  the session lists, opened via the Desk overlay (⌘J). */
   desk?: boolean;
+  /** The user's standing supervisor session, the one the Blob app talks to.
+   *  Hidden from the session lists like the Desk. */
+  supervisor?: boolean;
   /** Secondary repos this session also works in (cross-repo sessions). */
   attachedRepos?: Array<{ repo: string; branch: string; dir: string }>;
   /** PRs manually linked to this session (beyond branch/attached-repo ones). */

@@ -88,6 +88,10 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // `<id>.json` files in the goals state directory; each goal's
   // `<id>.ledger.md` stays a file there, which the import skips.
   "goals",
+  // Each person's standing supervisor session, keyed by canonicalName(user)
+  // (supervisor.ts). New, so its legacy directory is missing and imports as
+  // empty.
+  "supervisors",
 ] as const;
 
 export type ApplicationCatalogNamespace =

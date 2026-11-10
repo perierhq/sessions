@@ -228,7 +228,12 @@ export async function ensureSessionWorkspaces(
   // Archived sessions don't render, so they don't need one until they come back:
   // the same sweep files them on the scan right after an un-archive.
   const orphans = sessions.filter(
-    (s) => !s.workspaceId && !s.archived && !s.automation && !s.desk,
+    (s) =>
+      !s.workspaceId &&
+      !s.archived &&
+      !s.automation &&
+      !s.desk &&
+      !s.supervisor,
   );
   if (orphans.length === 0) return;
 
