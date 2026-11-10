@@ -932,6 +932,36 @@ export async function readNativeSessionAsync(
   return readNativeSession(sessionId);
 }
 
+/**
+ * One native session with no synchronous read anywhere, for background
+ * readers on the gateway thread (blob-review.ts): the catalog's committed
+ * copy, else the legacy file read asynchronously, with the transcript path
+ * resolved asynchronously. `readNativeSessionAsync` instead falls back to
+ * synchronous reads when the actor is down.
+ */
+export async function readNativeSessionNonBlocking(
+  sessionId: string,
+): Promise<UnifiedSession | undefined> {
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(sessionId)) return undefined;
+  let data: NativeSessionFile | undefined;
+  if (sessionKernelActorActive() || process.env.NODE_ENV === "test") {
+    try {
+      const stored = await sessionMetadata({ op: "catalog_get", sessionId });
+      if (stored) data = JSON.parse(stored.doc) as NativeSessionFile;
+    } catch (error) {
+      console.warn(
+        `[session-metadata] catalog read failed for ${sessionId}; reading the file:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+  data ??= await readSessionFileAsync(
+    `${SESSIONS_DIR}/${sessionId}.json`,
+  ).catch(() => undefined);
+  if (data?.id !== sessionId) return undefined;
+  return resolveSessionTranscriptPathAsync(nativeSessionListRowFromData(data));
+}
+
 export async function findSessionAsync(
   sessionId: string,
 ): Promise<UnifiedSession | undefined> {

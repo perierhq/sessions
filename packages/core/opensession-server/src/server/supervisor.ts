@@ -239,6 +239,15 @@ export async function currentSupervisorSessionId(
   return record?.sessionId ?? null;
 }
 
+/** The person's supervisor sessions, the current one first and then the
+ *  retired ones newest first, without creating or rotating anything. */
+export async function supervisorSessionIds(user: string): Promise<string[]> {
+  const record = recordOf(
+    await catalogDocuments(SUPERVISORS_NAMESPACE).get(supervisorKey(user)),
+  );
+  return record ? [record.sessionId, ...record.previous] : [];
+}
+
 async function ensureNow(
   user: string,
   key: string,

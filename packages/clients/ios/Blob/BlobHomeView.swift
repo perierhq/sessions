@@ -202,6 +202,7 @@ struct BlobHomeView: View {
             if phase == .background {
                 if !engine.shownOutsideApp { engine.stop() }
                 text.pause()
+                BlobMetrics.shared.background()
                 BlobParakeet.shared.unload()
             } else if phase == .active, BlobTranscriber.current == .parakeet {
                 BlobParakeet.shared.warm()

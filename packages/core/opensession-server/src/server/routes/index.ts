@@ -76,6 +76,7 @@ import { handleSupervisorRoutes } from "./supervisor";
 import { handleDeskVoiceRoutes } from "./desk-voice";
 import { handleBlobSpeechRoutes } from "./blob-speech";
 import { handleBlobTranscribeRoutes } from "./blob-transcribe";
+import { handleBlobMetricsRoutes } from "./blob-metrics";
 import { handleDeskNavigationRoutes } from "./desk-navigation";
 import { handleWorkflowsRoutes } from "./workflows";
 import { handleReportsRoutes } from "./reports";
@@ -171,6 +172,7 @@ export const routeHandlers: RouteHandler[] = [
   handleDeskVoiceRoutes,
   handleBlobSpeechRoutes,
   handleBlobTranscribeRoutes,
+  handleBlobMetricsRoutes,
   handleClientDiagnosticsRoutes,
   handleDeskNavigationRoutes,
   handleWorkflowsRoutes,

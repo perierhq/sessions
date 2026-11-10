@@ -102,6 +102,10 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // the supervisor inbox (supervisor-watch.ts). New, so its legacy
   // directory is missing and imports as empty.
   "supervisor-watch",
+  // Blob turn metrics, timings and counts only, one document per person per
+  // UTC day plus a per-person day index for retention (blob-metrics.ts).
+  // New, so its legacy directory is missing and imports as empty.
+  "blob-metrics",
 ] as const;
 
 export type ApplicationCatalogNamespace =

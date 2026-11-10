@@ -1559,6 +1559,37 @@ export async function handleSessionsRoutes(
     );
   }
 
+  // The entries around one transcript entry, for readers that need a turn's
+  // context without the whole transcript (the blob-review skill):
+  // `?before=5&after=5`, each at most 50. Same wire shape as /transcript.
+  {
+    const m = path.match(/^\/api\/sessions\/(.+)\/entry\/([^/]+)\/around$/);
+    if (m && req.method === "GET") {
+      const session = await findSessionAsync(decodeURIComponent(m[1]));
+      if (!session)
+        return Response.json({ error: "Session not found" }, { status: 404 });
+      const entryId = decodeURIComponent(m[2]);
+      const span = (name: string) =>
+        Math.min(
+          50,
+          Math.max(0, Math.floor(Number(url.searchParams.get(name) ?? 5)) || 0),
+        );
+      const entries = await mergedSessionTranscriptAsync(session);
+      const index = entries.findIndex((e) => e.id === entryId);
+      if (index < 0)
+        return Response.json({ error: "Entry not found" }, { status: 404 });
+      const from = Math.max(0, index - span("before"));
+      return Response.json({
+        index,
+        total: entries.length,
+        from,
+        entries: prepareEntriesForWire(
+          entries.slice(from, index + span("after") + 1),
+        ),
+      });
+    }
+  }
+
   // One transcript entry, unclamped. The WS wire clamps giant entry contents
   // (clampEntriesForWire) — the bubble's "Show full message" fetches the real
   // thing here.
