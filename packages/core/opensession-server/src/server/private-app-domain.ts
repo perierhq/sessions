@@ -774,6 +774,10 @@ async function requireLego(): Promise<string> {
   return lego;
 }
 
+/** Let's Encrypt's answer when a renewal order's ARI `replaces` field names a
+ * certificate this ACME account did not request. */
+const ARI_REPLACES_REFUSED = /Could not validate ARI 'replaces' field/i;
+
 async function issueCertificate(
   credential: PrivateAppCredential,
   lego: string,
@@ -807,12 +811,33 @@ async function issueCertificate(
           VERCEL_API_TOKEN: credential.apiToken,
           ...(credential.teamId ? { VERCEL_TEAM_ID: credential.teamId } : {}),
         };
-  const result = await runCommand(args, commandEnvironment(dnsEnvironment));
+  let result = await runCommand(args, commandEnvironment(dnsEnvironment));
+  // A renewal names the certificate it replaces (ARI, RFC 9773). Let's
+  // Encrypt refuses the order when another ACME account issued that
+  // certificate, for example after the account was registered again (lego
+  // keys accounts by email, so a new email means a new account), and it
+  // would refuse every day until the certificate expired. Renew once more
+  // without ARI: lego then falls back to its own 30-day window.
+  let retriedWithoutAri = false;
+  if (renew && result.code !== 0 && ARI_REPLACES_REFUSED.test(result.stderr)) {
+    retriedWithoutAri = true;
+    console.warn(
+      `[private-app] Let's Encrypt refused the ARI replacement for ${domain}; renewing without ARI`,
+    );
+    result = await runCommand(
+      [...args, "--ari-disable"],
+      commandEnvironment(dnsEnvironment),
+    );
+  }
   if (result.code !== 0) {
-    throw new Error(
+    const message =
       result.stderr.trim() ||
-        result.stdout.trim() ||
-        "Let’s Encrypt certificate request failed",
+      result.stdout.trim() ||
+      "Let’s Encrypt certificate request failed";
+    throw new Error(
+      retriedWithoutAri
+        ? `renewal without ARI after Let's Encrypt refused the ARI replacement: ${message}`
+        : message,
     );
   }
   const after = existsSync(certificatePath)

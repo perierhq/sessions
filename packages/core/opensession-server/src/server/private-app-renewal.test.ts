@@ -341,6 +341,58 @@ describe("private app certificate renewal", () => {
     expect(logs.join("\n")).toContain("reloaded Caddy with systemctl");
   });
 
+  test("renews without ARI when Let's Encrypt refuses the replaces field", async () => {
+    const p = paths();
+    await configure({
+      lego: { [DOMAIN]: OLD_CERT },
+      installed: { [DOMAIN]: OLD_CERT },
+    });
+    await writeFile(join(scratch, `next-${DOMAIN}.crt`), NEW_CERT);
+    await stub(
+      "lego",
+      `printf 'lego %s\\n' "$*" >> '${p.calls}'
+case "$*" in --version) echo 'lego version 4.26.0 linux/amd64'; exit 0;; esac
+case "$*" in *--ari-disable*) ;; *)
+  echo "acme: error: 403 :: POST :: urn:ietf:params:acme:error:unauthorized :: Could not validate ARI 'replaces' field :: requester account did not request the certificate being replaced by this order" >&2
+  exit 1;;
+esac
+mv '${scratch}/next-${DOMAIN}.crt' '${p.acme}/${DOMAIN}.crt'
+exit 0`,
+    );
+    expect(await renewPrivateAppCertificate(noServedProbe)).toBe(true);
+    const renewCalls = (await readFile(p.calls, "utf8"))
+      .split("\n")
+      .filter((line) => line.includes(" renew "));
+    expect(renewCalls).toHaveLength(2);
+    expect(renewCalls[0]).not.toContain("--ari-disable");
+    expect(renewCalls[1]).toContain("--ari-disable");
+    // A renew flag: it must follow the subcommand.
+    expect(renewCalls[1].indexOf(" renew ")).toBeLessThan(
+      renewCalls[1].indexOf("--ari-disable"),
+    );
+    expect(fingerprint(await installed(DOMAIN))).toBe(fingerprint(NEW_CERT));
+    expect((await renewalState())[DOMAIN].error).toBeUndefined();
+  });
+
+  test("does not retry other renewal failures without ARI", async () => {
+    const p = paths();
+    await configure({
+      lego: { [DOMAIN]: OLD_CERT },
+      installed: { [DOMAIN]: OLD_CERT },
+    });
+    await stub(
+      "lego",
+      `printf 'lego %s\\n' "$*" >> '${p.calls}'
+case "$*" in --version) echo 'lego version 4.26.0 linux/amd64'; exit 0;; esac
+echo 'acme: error: 429 :: rateLimited' >&2
+exit 1`,
+    );
+    expect(await renewPrivateAppCertificate(noServedProbe)).toBe(false);
+    const calls = await readFile(p.calls, "utf8");
+    expect(calls).not.toContain("--ari-disable");
+    expect((await renewalState())[DOMAIN].error).toContain("rateLimited");
+  });
+
   test("renews every configured domain and records failures per domain", async () => {
     const p = paths();
     await configure({
