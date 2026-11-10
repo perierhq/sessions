@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   catalogDocuments,
   importApplicationCatalog,
+  seedLegacyCatalogDocuments,
 } from "./catalog-documents";
 import { __setSessionKernelStoreForTest } from "./session-kernel/kernel";
 import { catalogUserStore } from "./shared/catalog-user-store";
@@ -68,6 +69,28 @@ describe("application catalog ownership", () => {
     await legacy("workspaces", "ws-first", { name: "Stale" });
     await importApplicationCatalog();
     expect(await documents.get("ws-first")).toEqual({ name: "Committed" });
+  });
+
+  test("a late seed adds named files written after the import, and nothing else", async () => {
+    await importApplicationCatalog();
+    const documents = catalogDocuments("goals");
+    await documents.set("goal-kept", { name: "Committed" });
+    await documents.set("goal-gone", { name: "Deleted" });
+    await documents.delete("goal-gone");
+    await legacy("goals", "goal-late", { name: "Late" });
+    await legacy("goals", "goal-kept", { name: "Stale" });
+    await legacy("goals", "goal-gone", { name: "Resurrected" });
+    await legacy("goals", "goal-unnamed", { name: "Not asked for" });
+    await seedLegacyCatalogDocuments("goals", [
+      "goal-late",
+      "goal-kept",
+      "goal-gone",
+      "goal-missing",
+    ]);
+    expect(await documents.list()).toEqual([
+      { key: "goal-kept", value: { name: "Committed" } },
+      { key: "goal-late", value: { name: "Late" } },
+    ]);
   });
 
   test("invalid legacy JSON fails migration instead of silently dropping a document", async () => {

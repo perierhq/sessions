@@ -23,7 +23,8 @@ import {
   deleteGoal,
   resumeGoal,
   appendLedger,
-  saveGoal,
+  readLedger,
+  mutateGoal,
 } from "../../server/goals";
 import { parseWhen } from "./parse-when";
 
@@ -47,7 +48,7 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
       `List ${personaName()}'s long-running goals (persistent, self-pacing missions): status, phase, next wake, and last run. Use to see what's in flight before creating a new one.`,
       {},
       async () => {
-        const all = listGoals();
+        const all = await listGoals();
         if (!all.length) return text("No goals yet.");
         return text(
           all
@@ -73,15 +74,9 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
       "Get the full detail of one goal by id, including its mission and the tail of its fact ledger.",
       { id: z.string() },
       async (args: { id: string }) => {
-        const g = getGoal(args.id);
+        const g = await getGoal(args.id);
         if (!g) return text(`No goal with id \`${args.id}\`.`);
-        let ledgerTail = "";
-        try {
-          const fs = await import("fs");
-          if (fs.existsSync(g.stateFile)) {
-            ledgerTail = fs.readFileSync(g.stateFile, "utf-8").slice(-2000);
-          }
-        } catch {}
+        const ledgerTail = (await readLedger(g)).slice(-2000);
         return text(
           `*${g.name}* [\`${g.id}\`] — ${g.status}, ${g.mode}, wake #${g.wakeCount}\n` +
             `next wake: ${g.nextWakeAt} (floor ${g.minWakeMinutes}m${g.maxWakes ? `, cap ${g.maxWakes}` : ""})\n` +
@@ -170,7 +165,7 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
               );
             firstWakeAt = iso;
           }
-          const res = createGoal({
+          const res = await createGoal({
             name: args.name,
             mission: args.mission,
             mode: args.mode,
@@ -206,7 +201,7 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
         },
         async (args: { id: string; [k: string]: unknown }) => {
           const { id, ...patch } = args;
-          const res = updateGoal(id, patch as any);
+          const res = await updateGoal(id, patch as any);
           if ("error" in res) return text(`Couldn't update it: ${res.error}`);
           return text(
             `Updated *${res.name}* [\`${res.id}\`] — ${res.status}, ${res.mode}.`,
@@ -218,7 +213,7 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
         "Pause a goal — the ticker stops waking it until you resume. Use to hold a mission while a decision is pending.",
         { id: z.string(), reason: z.string().optional() },
         async (args: { id: string; reason?: string }) => {
-          const res = updateGoal(args.id, {
+          const res = await updateGoal(args.id, {
             status: "paused",
             pauseReason: args.reason?.trim() || "Paused by operator",
           });
@@ -242,7 +237,7 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
             iso = (await parseWhen(args.when)) || undefined;
             if (!iso) return text(`Couldn't read "${args.when}" as a time.`);
           }
-          const res = resumeGoal(args.id, iso);
+          const res = await resumeGoal(args.id, iso);
           if ("error" in res) return text(`Couldn't resume it: ${res.error}`);
           return text(
             `Resumed *${res.name}* [\`${res.id}\`] — next wake ${res.nextWakeAt}.`,
@@ -254,13 +249,13 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
         "Wake a goal immediately, without waiting for its schedule (sets its next wake to now; the ticker picks it up within a minute).",
         { id: z.string() },
         async (args: { id: string }) => {
-          const g = getGoal(args.id);
-          if (!g) return text(`No goal with id \`${args.id}\`.`);
-          saveGoal({
-            ...g,
+          const nextWakeAt = new Date().toISOString();
+          const g = await mutateGoal(args.id, (current) => ({
+            ...current,
             status: "active",
-            nextWakeAt: new Date().toISOString(),
-          });
+            nextWakeAt,
+          }));
+          if (!g) return text(`No goal with id \`${args.id}\`.`);
           return text(`*${g.name}* will wake within a minute.`);
         },
       ),
@@ -269,8 +264,8 @@ export function createGoalsMcpServer(ctx: GoalsToolContext) {
         "Delete a goal and its ledger. Permanent. The opensession session it created is left as-is.",
         { id: z.string() },
         async (args: { id: string }) => {
-          const g = getGoal(args.id);
-          const ok = deleteGoal(args.id);
+          const g = await getGoal(args.id);
+          const ok = await deleteGoal(args.id);
           return text(
             ok
               ? `Deleted goal ${g ? `*${g.name}* ` : ""}[\`${args.id}\`].`
@@ -303,15 +298,21 @@ export function createGoalSelfMcpServer(goalId: string) {
           .describe("Natural-language next wake, e.g. 'in 7 days'."),
       },
       async (args: { when: string }) => {
-        const g = load();
-        if (!g) return text("Goal record missing.");
+        // Parse first: it is a model call, too slow to sit inside the
+        // read-modify-write.
         const iso = await parseWhen(args.when);
         if (!iso) return text(`Couldn't read "${args.when}" as a future time.`);
-        const floor = Date.now() + g.minWakeMinutes * 60_000;
-        const at = Math.max(Date.parse(iso), floor);
-        const nextWakeAt = new Date(at).toISOString();
-        saveGoal({ ...g, nextWakeAt, status: "active" });
-        return text(`Next wake set to ${nextWakeAt}.`);
+        const requested = Date.parse(iso);
+        const now = Date.now();
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
+          nextWakeAt: new Date(
+            Math.max(requested, now + current.minWakeMinutes * 60_000),
+          ).toISOString(),
+          status: "active",
+        }));
+        if (!g) return text("Goal record missing.");
+        return text(`Next wake set to ${g.nextWakeAt}.`);
       },
     ),
     tool(
@@ -319,13 +320,13 @@ export function createGoalSelfMcpServer(goalId: string) {
       "Pause this mission because you're blocked on a human decision or sign-off. Say clearly in `reason` what you need and from whom. (First pull them in with opensession-humans ask_human if you haven't.) The ticker won't wake you again until a human resumes the goal.",
       { reason: z.string().describe("What/who you're blocked on.") },
       async (args: { reason: string }) => {
-        const g = load();
-        if (!g) return text("Goal record missing.");
-        saveGoal({
-          ...g,
+        const pauseReason = args.reason?.trim() || "Awaiting human input";
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
           status: "paused",
-          pauseReason: args.reason?.trim() || "Awaiting human input",
-        });
+          pauseReason,
+        }));
+        if (!g) return text("Goal record missing.");
         return text(
           "Marked paused. I'll stay put until a human resumes this goal.",
         );
@@ -340,13 +341,13 @@ export function createGoalSelfMcpServer(goalId: string) {
           .describe("How the mission was completed / final outcome."),
       },
       async (args: { reason: string }) => {
-        const g = load();
-        if (!g) return text("Goal record missing.");
-        saveGoal({
-          ...g,
+        const doneReason = args.reason?.trim() || "Completed";
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
           status: "done",
-          doneReason: args.reason?.trim() || "Completed",
-        });
+          doneReason,
+        }));
+        if (!g) return text("Goal record missing.");
         return text("Marked done. The wake cycle is stopped.");
       },
     ),
@@ -355,13 +356,13 @@ export function createGoalSelfMcpServer(goalId: string) {
       "Give up on this mission because it can't be completed. Stops the wake cycle. Explain why in `reason`.",
       { reason: z.string().describe("Why the mission can't be completed.") },
       async (args: { reason: string }) => {
-        const g = load();
-        if (!g) return text("Goal record missing.");
-        saveGoal({
-          ...g,
+        const doneReason = args.reason?.trim() || "Failed";
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
           status: "failed",
-          doneReason: args.reason?.trim() || "Failed",
-        });
+          doneReason,
+        }));
+        if (!g) return text("Goal record missing.");
         return text("Marked failed. The wake cycle is stopped.");
       },
     ),
@@ -370,9 +371,12 @@ export function createGoalSelfMcpServer(goalId: string) {
       "Set a short human-readable phase label for where the mission is (e.g. 'week 2: shipping roundup'). Shown in list_goals.",
       { phase: z.string() },
       async (args: { phase: string }) => {
-        const g = load();
+        const phase = args.phase?.trim() || undefined;
+        const g = await mutateGoal(goalId, (current) => ({
+          ...current,
+          phase,
+        }));
         if (!g) return text("Goal record missing.");
-        saveGoal({ ...g, phase: args.phase?.trim() || undefined });
         return text("Phase updated.");
       },
     ),
@@ -381,10 +385,10 @@ export function createGoalSelfMcpServer(goalId: string) {
       "Append to your durable fact ledger — the authoritative record that survives context compaction. Write down baselines, decisions, PR URLs, and measured results here every wake, and read it back at the start of each wake. Be concrete (numbers, links).",
       { text: z.string().describe("What to record (markdown).") },
       async (args: { text: string }) => {
-        const g = load();
+        const g = await load();
         if (!g) return text("Goal record missing.");
         if (!args.text?.trim()) return text("Nothing to append.");
-        appendLedger(g, args.text);
+        await appendLedger(g, args.text);
         return text("Appended to ledger.");
       },
     ),

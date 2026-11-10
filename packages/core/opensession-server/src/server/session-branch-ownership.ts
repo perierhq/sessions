@@ -58,6 +58,13 @@ export async function ownedWorktreeHeadBranch(
     )
       return null; // shared HEAD is not any one session's ownership
   }
+  return checkoutHeadBranch(dir);
+}
+
+/** A checkout's HEAD branch, or null (detached or missing), read without
+ *  blocking: worktree.ts's worktreeHeadBranch for gateway callers. Follows a
+ *  `.git` pointer file to the worktree's git dir. */
+export async function checkoutHeadBranch(dir: string): Promise<string | null> {
   try {
     let gitDir = `${dir}/.git`;
     if ((await stat(gitDir)).isFile()) {

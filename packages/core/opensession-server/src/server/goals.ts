@@ -8,27 +8,38 @@
  * next wake), pauses for human sign-off, and stops when its success condition is
  * met. The mission is just a prompt string — nothing domain-specific lives here.
  *
- * This module is the pure data layer: the on-disk store + validation. The runner
- * (which drives the session) and the ticker live in opensession.ts next to the
- * session loop ticker, because they need the interactive MCP wiring; the two MCP
- * surfaces (opensession-goals management + opensession-goal-self self-cadence) live in
- * src/agents/slack/goal-tools.ts. Records are one JSON file per goal at
- * ~/.opensession-goals/<id>.json, mirroring the automation store.
+ * This module is the pure data layer: the store + validation. The runner (which
+ * drives the session) and the ticker live in goal-runner.ts, because they need
+ * the interactive MCP wiring; the two MCP surfaces (opensession-goals management
+ * + opensession-goal-self self-cadence) live in src/agents/slack/goal-tools.ts.
+ *
+ * Records are documents on the `goals` application catalog namespace, keyed by
+ * goal id (catalog-documents.ts imports the legacy `<id>.json` files once at
+ * boot and mirrors every write back to them). Each goal's fact ledger stays a
+ * real markdown file next to that mirror, `<id>.ledger.md`, because the goal's
+ * agent reads it by path with its file tools.
  */
 import { randomUUIDv7 } from "bun";
-import { writeJsonAtomic } from "./shared/atomic-write";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-  appendFileSync,
-  unlinkSync,
-  existsSync,
-} from "fs";
-import { stateDir } from "./paths";
+  catalogDocuments,
+  isValidCatalogKey,
+  legacyCatalogDirectory,
+} from "./catalog-documents";
 
-const GOALS_DIR = stateDir("goals");
+const NAMESPACE = "goals";
+
+// Bound on first use, never at import: the catalog client is a live effect.
+let documents: ReturnType<typeof catalogDocuments> | undefined;
+function goalDocuments(): ReturnType<typeof catalogDocuments> {
+  return (documents ??= catalogDocuments(NAMESPACE));
+}
+
+/** The directory holding the ledgers (and the catalog's JSON mirror). */
+function goalsDirectory(): Promise<string> {
+  return legacyCatalogDirectory(NAMESPACE);
+}
 
 export type GoalStatus = "active" | "paused" | "done" | "failed";
 
@@ -75,53 +86,80 @@ export interface Goal {
   createdAt: string;
 }
 
-mkdirSync(GOALS_DIR, { recursive: true });
-
 // ── Store ────────────────────────────────────────────────────
 
-export function listGoals(): Goal[] {
-  const out: Goal[] = [];
-  for (const file of readdirSync(GOALS_DIR)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      out.push(
-        JSON.parse(readFileSync(`${GOALS_DIR}/${file}`, "utf-8")) as Goal,
-      );
-    } catch {}
-  }
+export async function listGoals(): Promise<Goal[]> {
+  // SAFETY: only saveGoal and mutateGoal write this namespace, and the boot import seeds it
+  // from the same records the file store held.
+  const out = (await goalDocuments().list()).map((row) => row.value as Goal);
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
 }
 
-export function getGoal(id: string): Goal | null {
-  const path = `${GOALS_DIR}/${id}.json`;
-  if (!existsSync(path)) return null;
+/** Null for an unknown id, or one that can't be a goal id (a stray path
+ *  segment from a URL is a miss, not an error). */
+export async function getGoal(id: string): Promise<Goal | null> {
+  if (!isValidCatalogKey(id)) return null;
+  // SAFETY: as in listGoals, every document here is a saved Goal.
+  return (await goalDocuments().get(id)) as Goal | null;
+}
+
+/** Whole-record write, for a new goal. Anything that starts from a stored
+ *  copy goes through {@link mutateGoal}, so an overlapping writer is kept. */
+export async function saveGoal(g: Goal): Promise<void> {
+  await goalDocuments().set(g.id, g);
+}
+
+class GoalMissing extends Error {}
+
+/**
+ * Compare-and-set read-modify-write of one goal. `mutate` sees the freshest
+ * committed record and runs again on a conflict, so the runner's bookkeeping,
+ * the agent's own cadence tools and a pause from the UI never overwrite each
+ * other from a stale read. Keep `mutate` free of side effects: it may run more
+ * than once. Resolves null for an unknown id; nothing is created.
+ */
+export async function mutateGoal(
+  id: string,
+  mutate: (goal: Goal) => Goal,
+): Promise<Goal | null> {
+  if (!isValidCatalogKey(id)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf-8"));
-  } catch {
-    return null;
+    return await goalDocuments().update<Goal>(id, (value) => {
+      // Abort without writing: returning null would store a tombstone.
+      if (value === null) throw new GoalMissing();
+      // SAFETY: as in listGoals, every document here is a saved Goal.
+      return mutate(value as Goal);
+    });
+  } catch (error) {
+    if (error instanceof GoalMissing) return null;
+    throw error;
   }
 }
 
-export function saveGoal(g: Goal): void {
-  writeJsonAtomic(`${GOALS_DIR}/${g.id}.json`, g);
-}
-
-export function deleteGoal(id: string): boolean {
-  const path = `${GOALS_DIR}/${id}.json`;
-  if (!existsSync(path)) return false;
-  unlinkSync(path);
+export async function deleteGoal(id: string): Promise<boolean> {
+  if (!isValidCatalogKey(id)) return false;
+  if (!(await goalDocuments().delete(id))) return false;
   try {
-    const ledger = `${GOALS_DIR}/${id}.ledger.md`;
-    if (existsSync(ledger)) unlinkSync(ledger);
+    await rm(join(await goalsDirectory(), `${id}.ledger.md`), { force: true });
   } catch {}
   return true;
 }
 
 /** Append a timestamped entry to a goal's fact ledger (its durable memory). */
-export function appendLedger(goal: Goal, text: string): void {
+export async function appendLedger(goal: Goal, text: string): Promise<void> {
   const stamp = new Date().toISOString();
-  appendFileSync(goal.stateFile, `\n\n## ${stamp}\n\n${text.trim()}\n`);
+  await mkdir(dirname(goal.stateFile), { recursive: true });
+  await appendFile(goal.stateFile, `\n\n## ${stamp}\n\n${text.trim()}\n`);
+}
+
+/** The ledger's contents, or "" when it is missing or unreadable. */
+export async function readLedger(goal: Goal): Promise<string> {
+  try {
+    return await readFile(goal.stateFile, "utf-8");
+  } catch {
+    return "";
+  }
 }
 
 // ── Create / update ──────────────────────────────────────────
@@ -135,7 +173,7 @@ function sanitizeMcpList(list?: unknown): string[] | undefined {
     .map((s) => s.trim());
 }
 
-export function createGoal(input: {
+export async function createGoal(input: {
   name: string;
   mission: string;
   mode?: "ask" | "code";
@@ -148,7 +186,7 @@ export function createGoal(input: {
   /** ISO8601 first wake; omitted/empty = wake on the next tick. */
   firstWakeAt?: string;
   createdBy: string;
-}): Goal | { error: string } {
+}): Promise<Goal | { error: string }> {
   if (!input.name?.trim()) return { error: "Name is required" };
   if (!input.mission?.trim()) return { error: "Mission is required" };
 
@@ -161,6 +199,7 @@ export function createGoal(input: {
   }
 
   const id = `goal-${randomUUIDv7()}`;
+  const directory = await goalsDirectory();
   const minWakeMinutes = Math.max(
     MIN_WAKE_FLOOR,
     typeof input.minWakeMinutes === "number" && input.minWakeMinutes > 0
@@ -182,17 +221,18 @@ export function createGoal(input: {
         ? Math.floor(input.maxWakes)
         : undefined,
     wakeCount: 0,
-    stateFile: `${GOALS_DIR}/${id}.ledger.md`,
+    stateFile: join(directory, `${id}.ledger.md`),
     model: input.model?.trim() || undefined,
     fallbackModel: input.fallbackModel?.trim() || undefined,
     mcpServers: sanitizeMcpList(input.mcpServers),
     createdBy: input.createdBy || "Anonymous",
     createdAt: new Date().toISOString(),
   };
-  saveGoal(g);
+  await saveGoal(g);
 
   // Seed the ledger so the first wake has something to read.
-  writeFileSync(
+  await mkdir(directory, { recursive: true });
+  await writeFile(
     g.stateFile,
     `# Ledger — ${g.name}\n\n` +
       `This is the durable, authoritative record of this goal's work: baselines, ` +
@@ -203,61 +243,74 @@ export function createGoal(input: {
   return g;
 }
 
-/** Fields an operator (via opensession-goals) may patch. Runtime/scheduling fields
- *  (engineSessionId, wakeCount, lastRun*, worktreePath) are owned by the runner. */
-export function updateGoal(
+/** Fields an operator (via opensession-goals or the goals API) may patch.
+ *  Runtime/scheduling fields (engineSessionId, wakeCount, lastRun*,
+ *  worktreePath) are owned by the runner, and `id` and `stateFile` are fixed
+ *  at creation: the ledger tools read and write `stateFile` by path. */
+const PATCHABLE_GOAL_FIELDS = [
+  "name",
+  "mission",
+  "status",
+  "mode",
+  "repo",
+  "nextWakeAt",
+  "minWakeMinutes",
+  "maxWakes",
+  "model",
+  "fallbackModel",
+  "mcpServers",
+  "phase",
+  "pauseReason",
+  "doneReason",
+] as const satisfies readonly (keyof Goal)[];
+
+export type GoalPatch = Partial<
+  Pick<Goal, (typeof PATCHABLE_GOAL_FIELDS)[number]>
+>;
+
+/** Only the patchable fields, whatever the caller sent: an API body is
+ *  untrusted, so the whitelist holds at runtime, not just in the type. */
+function patchableFields(patch: unknown): GoalPatch {
+  const out: Record<string, unknown> = {};
+  if (!patch || typeof patch !== "object") return out;
+  for (const key of PATCHABLE_GOAL_FIELDS)
+    if (Object.hasOwn(patch, key))
+      out[key] = (patch as Record<string, unknown>)[key];
+  return out;
+}
+
+export async function updateGoal(
   id: string,
-  patch: Partial<
-    Pick<
-      Goal,
-      | "name"
-      | "mission"
-      | "status"
-      | "mode"
-      | "repo"
-      | "nextWakeAt"
-      | "minWakeMinutes"
-      | "maxWakes"
-      | "model"
-      | "fallbackModel"
-      | "mcpServers"
-      | "phase"
-      | "pauseReason"
-      | "doneReason"
-    >
-  >,
-): Goal | { error: string } {
-  const g = getGoal(id);
-  if (!g) return { error: "Goal not found" };
-  const next: Goal = { ...g, ...patch };
-  if ("mcpServers" in patch)
-    next.mcpServers = sanitizeMcpList(patch.mcpServers);
-  if (typeof next.minWakeMinutes === "number") {
-    next.minWakeMinutes = Math.max(MIN_WAKE_FLOOR, next.minWakeMinutes);
-  }
-  saveGoal(next);
-  return next;
+  patch: GoalPatch,
+): Promise<Goal | { error: string }> {
+  const fields = patchableFields(patch);
+  if ("mcpServers" in fields)
+    fields.mcpServers = sanitizeMcpList(fields.mcpServers);
+  const next = await mutateGoal(id, (g) => {
+    const merged: Goal = { ...g, ...fields };
+    if (typeof merged.minWakeMinutes === "number")
+      merged.minWakeMinutes = Math.max(MIN_WAKE_FLOOR, merged.minWakeMinutes);
+    return merged;
+  });
+  return next ?? { error: "Goal not found" };
 }
 
 /** Resume a paused/done goal: mark active and (re)schedule a wake. */
-export function resumeGoal(
+export async function resumeGoal(
   id: string,
   firstWakeAt?: string,
-): Goal | { error: string } {
-  const g = getGoal(id);
-  if (!g) return { error: "Goal not found" };
+): Promise<Goal | { error: string }> {
   let nextWakeAt = new Date().toISOString();
   if (firstWakeAt?.trim()) {
     const t = Date.parse(firstWakeAt.trim());
     if (Number.isNaN(t)) return { error: `Invalid time: "${firstWakeAt}"` };
     nextWakeAt = new Date(t).toISOString();
   }
-  const next: Goal = {
+  const next = await mutateGoal(id, (g) => ({
     ...g,
     status: "active",
     pauseReason: undefined,
     nextWakeAt,
-  };
-  saveGoal(next);
-  return next;
+  }));
+  return next ?? { error: "Goal not found" };
 }

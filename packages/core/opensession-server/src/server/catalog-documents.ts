@@ -84,6 +84,10 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   "knowledge-jobs",
   // Knowledge capture queue, `capture:<messageId>` (knowledge/ingest/capture.ts).
   "knowledge-pending",
+  // Goals, keyed by goal id (goals.ts). Imported once from the legacy
+  // `<id>.json` files in the goals state directory; each goal's
+  // `<id>.ledger.md` stays a file there, which the import skips.
+  "goals",
 ] as const;
 
 export type ApplicationCatalogNamespace =
@@ -122,7 +126,9 @@ function validateNamespace(namespace: string): void {
     throw new Error(`Unsupported application catalog namespace: ${namespace}`);
 }
 
-function isValidKey(key: string): boolean {
+/** Whether `key` can name a document: callers holding an untrusted id (a
+ *  URL segment) treat an invalid one as a miss instead of a thrown error. */
+export function isValidCatalogKey(key: string): boolean {
   return !(
     !key ||
     key.length > 256 ||
@@ -133,7 +139,7 @@ function isValidKey(key: string): boolean {
 }
 
 function validateKey(key: string): void {
-  if (!isValidKey(key))
+  if (!isValidCatalogKey(key))
     throw new Error("Invalid application catalog document key");
 }
 
@@ -238,7 +244,7 @@ async function seedDerived(
   for (const row of rows) {
     const size = Buffer.byteLength(row.key) + Buffer.byteLength(row.value);
     if (
-      !isValidKey(row.key) ||
+      !isValidCatalogKey(row.key) ||
       Buffer.byteLength(row.value) > CATALOG_DOCUMENT_MAX_VALUE_BYTES
     ) {
       console.warn(`[catalog] skipped unimportable ${namespace}/${row.key}`);
@@ -281,24 +287,50 @@ export async function importApplicationCatalog(): Promise<void> {
       if (!isMissing(error)) throw error;
       files = [];
     }
-    // One maximum-size document still fits the RPC body after JSON escaping.
-    for (const file of files) {
-      const key = file.slice(0, -5);
-      validateKey(key);
-      const path = join(directory, file);
-      if ((await stat(path)).size > CATALOG_DOCUMENT_MAX_VALUE_BYTES)
-        throw new Error(
-          `Legacy catalog document exceeds the import bound: ${namespace}/${key}`,
-        );
-      const value = await readFile(path, "utf8");
-      JSON.parse(value);
-      await sessionCatalogDocument({
-        op: "seed",
-        namespace,
-        rows: [{ key, value }],
-      });
-    }
+    for (const file of files)
+      await seedLegacyFile(namespace, directory, file.slice(0, -5));
     await sessionCatalogDocument({ op: "mark_import_complete", namespace });
+  }
+}
+
+/** Seed one legacy `<key>.json` file. One maximum-size document still fits
+ * the RPC body after JSON escaping. */
+async function seedLegacyFile(
+  namespace: string,
+  directory: string,
+  key: string,
+): Promise<void> {
+  validateKey(key);
+  const path = join(directory, `${key}.json`);
+  if ((await stat(path)).size > CATALOG_DOCUMENT_MAX_VALUE_BYTES)
+    throw new Error(
+      `Legacy catalog document exceeds the import bound: ${namespace}/${key}`,
+    );
+  const value = await readFile(path, "utf8");
+  JSON.parse(value);
+  await sessionCatalogDocument({
+    op: "seed",
+    namespace,
+    rows: [{ key, value }],
+  });
+}
+
+/** Seed named legacy files into a namespace whose boot import already ran,
+ * for a writer that produces them after boot (the demo generator). Like the
+ * import, a seed never overwrites a committed document or a deletion
+ * tombstone, so this is safe to repeat. Missing files are skipped. */
+export async function seedLegacyCatalogDocuments(
+  namespace: ApplicationCatalogNamespace,
+  keys: readonly string[],
+): Promise<void> {
+  validateNamespace(namespace);
+  const directory = await legacyCatalogDirectory(namespace);
+  for (const key of keys) {
+    try {
+      await seedLegacyFile(namespace, directory, key);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
   }
 }
 
