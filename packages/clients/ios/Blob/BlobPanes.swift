@@ -52,6 +52,34 @@ struct BlobPanes: Equatable {
     #endif
 }
 
+/// What the trailing pane holds on a wide surface while the current reply
+/// has nothing of its own for it (no visual blocks, no decision beside it).
+/// Two candidates are being compared; until one is picked, Release keeps
+/// `centered`. In DEBUG, `BLOB_DEMO_LAYOUT=blob|now` picks one.
+enum BlobWideLayout {
+    /// Nothing: the conversation is one centered column, and moves to the
+    /// leading pane only when there is something for the trailing one.
+    case centered
+    /// Blob itself, large in the middle of the trailing pane; the
+    /// conversation stays in the leading pane.
+    case blob
+    /// A quiet "Now" view (`BlobNowView`); the conversation stays in the
+    /// leading pane.
+    case now
+
+    static let current: BlobWideLayout = {
+        #if DEBUG
+        switch ProcessInfo.processInfo.environment["BLOB_DEMO_LAYOUT"] {
+        case "blob": return .blob
+        case "now": return .now
+        default: return .centered
+        }
+        #else
+        return .centered
+        #endif
+    }()
+}
+
 /// Where the page's columns go, in the home's full-bleed space. One column
 /// is centered (`centered`) until a reply has something for a second pane;
 /// then the conversation moves to `leading` and its visuals take
@@ -64,6 +92,10 @@ struct BlobPanes: Equatable {
 /// there it is the middle of the leading pane, so no line of text and not
 /// Blob's face ever sits across the fold, flat or half open, and splitting
 /// only adds the trailing pane without moving what you are reading.
+/// Otherwise it is as wide as the leading pane's column, so the move
+/// between them never re-wraps the text. With
+/// a `BlobWideLayout` that keeps the trailing pane in use, it is the
+/// middle of the leading pane too.
 struct BlobColumns: Equatable {
     struct Span: Equatable {
         var x: CGFloat
@@ -79,7 +111,7 @@ struct BlobColumns: Equatable {
     /// The widest a line of reading text runs.
     static let readable: CGFloat = 600
 
-    init(width: CGFloat, insets: EdgeInsets, panes: BlobPanes?) {
+    init(width: CGFloat, insets: EdgeInsets, panes: BlobPanes?, layout: BlobWideLayout = .centered) {
         let lo = insets.leading + 24
         let hi = width - insets.trailing - 24
         func reading(_ from: CGFloat, _ to: CGFloat) -> Span {
@@ -94,7 +126,11 @@ struct BlobColumns: Equatable {
         let leading = reading(lo, panes.fold.minX)
         self.leading = leading
         trailing = Span(x: panes.fold.maxX, width: max(0, min(560, hi - panes.fold.maxX)))
-        centered = panes.physical ? leading : reading(lo, hi)
+        // As wide as the leading pane's column, so moving between the two
+        // only changes where the column is, never how its text wraps.
+        centered = panes.physical || layout != .centered
+            ? leading
+            : Span(x: (lo + hi - leading.width) / 2, width: leading.width)
     }
 }
 
@@ -103,6 +139,17 @@ extension View {
     func blobColumn(_ span: BlobColumns.Span) -> some View {
         frame(width: span.width, alignment: .leading)
             .padding(.leading, span.x)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Puts the view in a column it moves between, such as the
+    /// conversation going from centered to the leading pane. The columns it
+    /// moves between have one width (`BlobColumns`), so only its position
+    /// animates and its text never re-wraps on the way.
+    func blobColumn(_ span: BlobColumns.Span, moving animation: Animation?) -> some View {
+        frame(width: span.width, alignment: .leading)
+            .offset(x: span.x)
+            .animation(animation, value: span.x)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

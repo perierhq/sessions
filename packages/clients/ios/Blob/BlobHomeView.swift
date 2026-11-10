@@ -51,11 +51,17 @@ struct BlobHomeView: View {
             let insets = outer.safeAreaInsets
             GeometryReader { geo in
             let panes = BlobPanes.layout(in: geo)
-            let columns = BlobColumns(width: geo.size.width, insets: insets, panes: panes)
+            let layout = BlobWideLayout.current
+            let columns = BlobColumns(width: geo.size.width, insets: insets, panes: panes, layout: layout)
             // The settled reply has a second pane: beside it while history
             // is closed, in the page's two columns while it is open.
             let split = panes != nil && sideBeside
             let side = split && !historyRevealed
+            // Without one, the layout decides what the trailing pane holds.
+            let pane: SidePane? = panes == nil || historyRevealed ? nil
+                : split ? .reply : layout == .now ? .now : nil
+            let home = panes != nil && !historyRevealed && !split && layout == .blob
+                ? columns.trailing.map { CGPoint(x: $0.midX, y: geo.size.height * 0.45) } : nil
             let talkCenter = CGPoint(x: columns.centered.midX, y: geo.size.height * 0.4)
             ZStack(alignment: .bottom) {
                 // One page across the surface. Its column is centered until
@@ -65,19 +71,19 @@ struct BlobHomeView: View {
                 page(insets: insets, columns: columns, split: split)
 
                 ZStack {
-                    if let panes, side {
-                        sidePane(insets: insets)
+                    if let panes, let pane {
+                        sidePane(insets: insets, now: pane == .now)
                             .frame(width: panes.trailingWidth)
                             .frame(maxWidth: .infinity, alignment: .trailing)
-                            .transition(reduceMotion ? .opacity : .offset(x: 40).combined(with: .opacity))
+                            .transition(sidePaneTransition)
                     }
                 }
-                .animation(reduceMotion ? .easeOut(duration: 0.2) : Self.paneSpring, value: side)
+                .animation(reduceMotion ? .easeOut(duration: 0.2) : Self.paneSpring, value: pane)
 
                 // Drawn over the page, so Blob stays visible in its slot, but
                 // never in the way of a scroll: taps are handled below.
                 TimelineView(.animation(paused: scenePhase != .active)) { timeline in
-                    let targets = targets(in: geo.size, insets: insets, center: talkCenter, at: timeline.date)
+                    let targets = targets(in: geo.size, insets: insets, center: talkCenter, home: home, at: timeline.date)
                     Canvas { context, _ in
                         physics.advance(to: timeline.date, targets: targets)
                         physics.draw(in: &context, dark: colorScheme == .dark, reduceMotion: reduceMotion)
@@ -96,14 +102,16 @@ struct BlobHomeView: View {
 
                 // What the supervisor is doing, as a thought beside Blob's
                 // head while it thinks, inside the safe area and on Blob's
-                // side of a fold.
+                // side of a fold; inside the trailing pane while Blob lives
+                // there.
+                let thoughtMinX = home != nil ? (panes?.fold.maxX ?? 0) + 12 : insets.leading + 12
                 BlobThinkingLayer(
                     talk: text,
                     physics: physics,
                     bounds: CGRect(
-                        x: insets.leading + 12,
+                        x: thoughtMinX,
                         y: max(insets.top, 20) + 8,
-                        width: max(0, geo.size.width - insets.leading - insets.trailing - 24),
+                        width: max(0, geo.size.width - insets.trailing - 12 - thoughtMinX),
                         height: max(0, geo.size.height - max(insets.top, 20) - max(insets.bottom, 20) - 96)
                     ),
                     fold: panes?.physical == true ? panes?.fold : nil,
@@ -111,7 +119,7 @@ struct BlobHomeView: View {
                 )
 
                 if !hasContent && !historyRevealed {
-                    captions(insets: insets, column: columns.centered)
+                    captions(insets: insets, column: home != nil ? columns.trailing ?? columns.centered : columns.centered)
                         .transition(.opacity)
                 }
 
@@ -349,15 +357,19 @@ struct BlobHomeView: View {
     /// Asleep in the bottom trailing corner, under the thumb; in the middle and
     /// bigger while you talk.
     /// `center` is where it talks: the middle of the page's centered column.
-    private func targets(in size: CGSize, insets: EdgeInsets, center: CGPoint, at date: Date) -> BlobTargets {
-        let slot = Self.slot(in: size, insets: insets)
+    /// `home`: the middle of the trailing pane, where Blob lives large
+    /// whatever it is doing (`BlobWideLayout.blob`) until the pane is
+    /// needed for the reply.
+    private func targets(in size: CGSize, insets: EdgeInsets, center: CGPoint, home: CGPoint?, at date: Date) -> BlobTargets {
+        let slot = home ?? Self.slot(in: size, insets: insets)
+        let rest: Double = home != nil ? 132 : 48
         var talking = talking, mode = mode, level = textConversation ? text.level(at: date) : Double(engine.audioLevel)
         #if DEBUG
         if let demo = BlobDemo.at(date) { talking = demo.talking; mode = demo.mode; level = demo.level }
         #endif
         // Content on the page gets the screen: Blob stays small in its slot
         // and keeps talking from there. So does history.
-        let docked = hasContent || historyRevealed
+        let docked = hasContent || historyRevealed || home != nil
         if historyRevealed { talking = false }
         // Something needs you: Blob wakes in its slot.
         if !talking && needsYou {
@@ -365,7 +377,7 @@ struct BlobHomeView: View {
             return BlobTargets(
                 mode: decisionSaid != nil || reading ? .speak : .you,
                 position: slot,
-                size: 48,
+                size: rest,
                 look: nil,
                 level: reading ? text.speaker.level(at: date) : 0
             )
@@ -373,7 +385,7 @@ struct BlobHomeView: View {
         return BlobTargets(
             mode: mode,
             position: talking && !docked ? center : slot,
-            size: talking && !docked ? 132 : 48,
+            size: talking && !docked ? 132 : rest,
             look: nil,
             level: level
         )
@@ -570,9 +582,28 @@ struct BlobHomeView: View {
         return content
     }
 
+    /// What leaves the trailing pane fades first, then what replaces it
+    /// comes in, so the two (the Now view and a reply's visuals) are never
+    /// drawn over each other.
+    private var sidePaneTransition: AnyTransition {
+        .asymmetric(
+            insertion: (reduceMotion ? AnyTransition.opacity : .offset(x: 40).combined(with: .opacity))
+                .animation((reduceMotion ? .easeOut(duration: 0.2) : Self.paneSpring).delay(0.15)),
+            removal: .opacity.animation(.easeIn(duration: 0.15))
+        )
+    }
+
+    /// What the trailing pane is showing while history is closed.
+    enum SidePane: Equatable {
+        /// The current reply's visual blocks, or a decision beside it.
+        case reply
+        /// `BlobNowView` (`BlobWideLayout.now`).
+        case now
+    }
+
     /// The trailing pane: the current reply's visual blocks; without any,
-    /// the decision waiting on you, or nothing.
-    private func sidePane(insets: EdgeInsets) -> some View {
+    /// the decision waiting on you; without that, `now` shows the Now view.
+    private func sidePane(insets: EdgeInsets, now: Bool) -> some View {
         BlobSidePane(
             visuals: currentVisuals,
             focus: text.focus,
@@ -583,9 +614,19 @@ struct BlobHomeView: View {
                 trailing: insets.trailing + 24
             )
         ) {
-            decisionBesideView
+            if now {
+                BlobNowView(
+                    running: text.desk?.isRunning == true,
+                    since: text.desk?.runStartedAt,
+                    waiting: decisions.open.filter { $0.id != decision?.id }
+                )
+            } else {
+                decisionBesideView
+            }
         }
-        .id(turnKey)
+        // A new turn starts the visuals from the top. The Now view stays
+        // across turns, and swaps with a reply's visuals as they come and go.
+        .id(now ? "now" : turnKey)
     }
 
     /// The decision waiting beside the settled reply, in the second pane.
@@ -653,8 +694,10 @@ struct BlobHomeView: View {
                                     }
                                 } else {
                                     current(split: split)
-                                        .blobColumn(side ? columns.leading ?? columns.centered : columns.centered)
-                                        .animation(reduceMotion ? nil : Self.paneSpring, value: side)
+                                        .blobColumn(
+                                            side ? columns.leading ?? columns.centered : columns.centered,
+                                            moving: reduceMotion ? nil : Self.paneSpring
+                                        )
                                 }
                             }
                             .padding(.top, historyRevealed ? 8 : 0)

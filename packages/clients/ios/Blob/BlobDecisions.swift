@@ -50,7 +50,8 @@ final class BlobDecisions {
     var position: Int { handledInRound + 1 }
     var count: Int { handledInRound + pending.count }
     /// Open on the server and not answered here, skipped ones included.
-    var waiting: Int { items.filter { !closed.contains($0.id) }.count }
+    var open: [Item] { items.filter { !closed.contains($0.id) } }
+    var waiting: Int { open.count }
 
     private func handled() {
         handledInRound += 1
