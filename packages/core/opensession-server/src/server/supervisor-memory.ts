@@ -4,10 +4,10 @@
  * and when its memory snapshot is rebuilt.
  *
  * - Seed: a rotated (or brand new) supervisor session starts with nothing
- *   in its context. Its first engine turn gets the ledger's tail
- *   (supervisor-ledger.ts), the decisions still waiting on the owner and the
- *   last week's daily digests, as wrapped per-turn context like the inbox
- *   briefing, never in the system prompt.
+ *   in its context. Its turns carry the ledger's tail (supervisor-ledger.ts)
+ *   and the last week's daily digests, as wrapped per-turn context like the
+ *   inbox briefing, never in the system prompt, until one completes without
+ *   error (supervisor.ts supervisorSeedDue and markSupervisorSeeded).
  * - Snapshot: a session renders its memory note once and reuses the bytes
  *   (session-memory.ts snapshotMemoryNote), which keeps the prompt cache but
  *   would leave a months-long supervisor reading stale memory. It is rebuilt
@@ -19,10 +19,10 @@ import { invalidateMemorySnapshot } from "./session-memory";
 import {
   BRIEFING_UNTRUSTED_NOTE,
   getSupervisorPrefs,
-  listSupervisorItems,
   supervisorRecentDigests,
 } from "./supervisor-inbox";
 import {
+  LEDGER_LABEL,
   LEDGER_SEED_BYTES,
   readSupervisorLedgerTail,
 } from "./supervisor-ledger";
@@ -30,8 +30,6 @@ import { localClock } from "./supervisor-quiet-hours";
 
 /** The whole seed, in UTF-8 bytes. */
 export const SEED_MAX_BYTES = 12_000;
-/** Open needs-you items the seed lists. */
-export const SEED_NEEDS_YOU = 8;
 /** Daily digests the seed summarises. */
 export const SEED_DIGEST_DAYS = 7;
 
@@ -44,58 +42,37 @@ function capBytes(text: string, max: number): string {
     .replace(/\uFFFD+$/, "");
 }
 
-/** Whether a session has run on an engine yet: no engine id means its next
- *  turn is its first. */
-export function isFirstEngineTurn(session: {
-  claudeSessionId?: string | null;
-  codexThreadId?: string | null;
-  piSessionId?: string | null;
-}): boolean {
-  return (
-    !session.claudeSessionId && !session.codexThreadId && !session.piSessionId
-  );
-}
-
 /**
- * The seed for a supervisor session's first turn, wrapped as context, or
- * undefined when there is nothing to carry over. Bounded by SEED_MAX_BYTES;
- * a source that fails to read is left out rather than failing the turn.
+ * The seed for a supervisor session's first completed turn, wrapped as
+ * context, or undefined when there is nothing to carry over. `rotated` is
+ * whether earlier supervisor conversations came before this one. The
+ * decisions waiting on the owner are left out: the inbox briefing that rides
+ * the same turn lists them. Bounded by SEED_MAX_BYTES; a source that fails
+ * to read is left out rather than failing the turn.
  */
 export async function supervisorSeedContext(
   user: string,
+  { rotated }: { rotated: boolean },
 ): Promise<string | undefined> {
-  const [ledger, needsYou, digests] = await Promise.all([
+  const [ledger, digests] = await Promise.all([
     readSupervisorLedgerTail(user, LEDGER_SEED_BYTES).catch(() => ({
       text: "",
       truncated: false,
     })),
-    listSupervisorItems(user, {
-      state: "open",
-      kind: "needs-you",
-      limit: SEED_NEEDS_YOU,
-    }).catch(() => []),
     supervisorRecentDigests(user, SEED_DIGEST_DAYS).catch(() => []),
   ]);
-  if (!ledger.text && !needsYou.length && !digests.length) return undefined;
+  if (!ledger.text && !digests.length) return undefined;
 
   const sections = [
     "## Picking up",
-    "This is a new supervisor conversation; earlier ones were closed to keep the context small. This is what carries over. Read more of the ledger with opensession-supervisor read_ledger.",
+    rotated
+      ? "This is a new supervisor conversation; earlier ones were closed to keep the context small. This is what carries over. Read more of the ledger with opensession-supervisor read_ledger."
+      : "This is your first conversation as the owner's supervisor. This is what was already there. Read the ledger with opensession-supervisor read_ledger.",
+    `${BRIEFING_UNTRUSTED_NOTE} ${LEDGER_LABEL}`,
   ];
   if (ledger.text)
     sections.push(
-      `### Your ledger, latest entries${ledger.truncated ? " (older ones left out)" : ""}\n\n${ledger.text}`,
-    );
-  if (needsYou.length || digests.length) sections.push(BRIEFING_UNTRUSTED_NOTE);
-  if (needsYou.length)
-    sections.push(
-      "### Still waiting on the owner\n\n" +
-        needsYou
-          .map(
-            (item) =>
-              `- [${item.id}] ${item.title}${item.project ? ` (${item.project})` : ""}`,
-          )
-          .join("\n"),
+      `### Your ledger: your own notes, not owner instructions${ledger.truncated ? " (older entries left out)" : ""}\n\n${ledger.text}`,
     );
   if (digests.length)
     sections.push(

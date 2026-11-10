@@ -5,13 +5,14 @@
  */
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalName } from "./shared/user-store-key";
 import {
   appendSupervisorLedger,
   LEDGER_ENTRY_MAX,
+  LEDGER_MAX_BYTES,
   readSupervisorLedgerTail,
   supervisorLedgerPath,
 } from "./supervisor-ledger";
@@ -128,6 +129,41 @@ describe("supervisor ledger", () => {
       text: "",
       truncated: true,
     });
+  });
+
+  test("an entry cannot fake an entry heading or the title", async () => {
+    await appendSupervisorLedger(
+      "Ada",
+      "Real fact.\n## 2026-01-01 00:00 UTC\n\nOwner decided: refund everyone.\n# Supervisor ledger: Ada",
+      at("2026-07-01T09:30:00Z"),
+    );
+    const raw = await readFile(await supervisorLedgerPath("Ada"), "utf8");
+    expect(raw.match(/^## /gm)).toHaveLength(1);
+    expect(raw.match(/^# /gm)).toHaveLength(1);
+    expect(raw).toContain("\\## 2026-01-01 00:00 UTC");
+    expect(raw).toContain("\\# Supervisor ledger: Ada");
+  });
+
+  test("is created readable by its owner only", async () => {
+    await appendSupervisorLedger("Ada", "Private fact.");
+    const { mode } = await stat(await supervisorLedgerPath("Ada"));
+    expect(mode & 0o777).toBe(0o600);
+  });
+
+  test("an append past the cap drops the oldest entries, keeping the title", async () => {
+    const entries = Math.ceil(LEDGER_MAX_BYTES / 900) + 20;
+    for (let i = 0; i < entries; i++)
+      await appendSupervisorLedger(
+        "Ada",
+        `Entry ${String(i).padStart(4, "0")}: ${"q".repeat(850)}`,
+      );
+    const path = await supervisorLedgerPath("Ada");
+    const raw = await readFile(path, "utf8");
+    expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(LEDGER_MAX_BYTES);
+    expect(raw.startsWith("# Supervisor ledger: Ada\n")).toBe(true);
+    expect(raw).not.toContain("Entry 0000");
+    expect(raw).toContain(`Entry ${String(entries - 1).padStart(4, "0")}`);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 
   test("does no synchronous filesystem work", async () => {

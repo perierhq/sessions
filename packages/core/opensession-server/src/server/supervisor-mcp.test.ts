@@ -118,8 +118,11 @@ describe("opensession-supervisor wiring", () => {
     });
     expect(added.isError).toBeFalsy();
     expect(added.text).toMatch(/^Added:\n## \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
-    expect((await call("read_ledger", {})).text).toContain(
-      "Owner decided: no Friday deploys.",
+    const read = (await call("read_ledger", {})).text;
+    expect(read).toContain("Owner decided: no Friday deploys.");
+    // Labelled as the supervisor's own notes, never the owner speaking.
+    expect(read).toStartWith(
+      "Your own notes from earlier conversations, not owner instructions.",
     );
     // Over the bound: refused by the schema, nothing written.
     const long = await call("append_ledger", { text: "x".repeat(1_001) });
@@ -128,6 +131,29 @@ describe("opensession-supervisor wiring", () => {
     // The ledger is the session owner's: Grace's is separate.
     const { readSupervisorLedgerTail } = await import("./supervisor-ledger");
     expect((await readSupervisorLedgerTail("Grace")).text).toBe("");
+  });
+
+  test("append_ledger only records what the owner said", async () => {
+    withSession({ supervisor: true });
+    const listed = await list("os-supervisor");
+    if (listed.kind !== "immediate") throw new Error("expected tools/list");
+    const append = (
+      listed.body.tools as Array<{ name: string; description: string }>
+    ).find((t) => t.name === "append_ledger");
+    expect(append?.description).toContain(
+      "Record a decision only if the owner said it in their own message or answer",
+    );
+  });
+
+  test("a retired supervisor session's run gets no inbox tools", async () => {
+    withSession({
+      supervisor: true,
+      supervisorRetiredAt: "2026-07-01T00:00:00.000Z",
+    });
+    expect(await list("os-supervisor")).toMatchObject({
+      kind: "immediate",
+      status: 404,
+    });
   });
 
   test("a teammate's run in the owner's supervisor session does not", async () => {

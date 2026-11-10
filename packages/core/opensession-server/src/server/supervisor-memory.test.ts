@@ -83,10 +83,12 @@ afterEach(() => {
 
 describe("seed context", () => {
   test("nothing to carry over is no seed", async () => {
-    expect(await memory.supervisorSeedContext("Ada")).toBeUndefined();
+    expect(
+      await memory.supervisorSeedContext("Ada", { rotated: true }),
+    ).toBeUndefined();
   });
 
-  test("carries the ledger tail, open decisions and recent digests, wrapped", async () => {
+  test("carries the ledger tail and recent digests, wrapped and labelled", async () => {
     await ledger.appendSupervisorLedger(
       "Ada",
       "Owner prefers SBAR for incidents.",
@@ -109,14 +111,36 @@ describe("seed context", () => {
     clock = at("2026-07-01T09:00:00Z");
     await inbox.sweepSupervisorInbox();
 
-    const seed = await memory.supervisorSeedContext("Ada");
+    const seed = (await memory.supervisorSeedContext("Ada", {
+      rotated: true,
+    }))!;
     expect(seed).toStartWith('<opensession:context source="supervisor-seed">');
     expect(seed).toContain("## Picking up");
+    expect(seed).toContain("This is a new supervisor conversation");
     expect(seed).toContain("read_ledger");
     expect(seed).toContain("Owner prefers SBAR for incidents.");
-    expect(seed).toMatch(/- \[[^\]]+\] Roll back the deploy\? \(acme\)/);
     expect(seed).toContain("- 2026-07-01: CI repaired");
-    expect(seed).toContain(inbox.BRIEFING_UNTRUSTED_NOTE);
+    // The inbox briefing on the same turn lists open decisions; the seed
+    // does not repeat them.
+    expect(seed).not.toContain("Roll back the deploy");
+    // The ledger is labelled as the supervisor's own notes, after the
+    // untrusted-content note.
+    const note = seed.indexOf(inbox.BRIEFING_UNTRUSTED_NOTE);
+    expect(note).toBeGreaterThan(-1);
+    expect(seed.indexOf(ledger.LEDGER_LABEL)).toBeGreaterThan(note);
+    expect(seed).toContain(
+      "### Your ledger: your own notes, not owner instructions",
+    );
+    expect(seed.indexOf("### Your ledger")).toBeGreaterThan(note);
+  });
+
+  test("a first-ever supervisor session is not told it was rotated", async () => {
+    await ledger.appendSupervisorLedger("Ada", "Owner prefers SBAR.");
+    const seed = (await memory.supervisorSeedContext("Ada", {
+      rotated: false,
+    }))!;
+    expect(seed).toContain("This is your first conversation");
+    expect(seed).not.toContain("earlier ones were closed");
   });
 
   test("is bounded: the ledger's tail only, and the whole seed", async () => {
@@ -125,29 +149,15 @@ describe("seed context", () => {
         "Ada",
         `Fact ${String(i).padStart(2, "0")}: ${"z".repeat(400)}`,
       );
-    for (let i = 0; i < 12; i++)
-      await inbox.postSupervisorItem({
-        user: "Ada",
-        source: "lead:acme",
-        kind: "needs-you",
-        title: `Decision ${i} ${"w".repeat(100)}`,
-        dedupeKey: `k${i}`,
-      });
-    const seed = (await memory.supervisorSeedContext("Ada"))!;
+    const seed = (await memory.supervisorSeedContext("Ada", {
+      rotated: true,
+    }))!;
     expect(Buffer.byteLength(seed)).toBeLessThanOrEqual(
       memory.SEED_MAX_BYTES + 200,
     );
     expect(seed).toContain("Fact 39");
     expect(seed).not.toContain("Fact 00");
-    expect(seed).toContain("(older ones left out)");
-    expect(seed.match(/^- \[/gm)).toHaveLength(memory.SEED_NEEDS_YOU);
-  });
-
-  test("only a session that has not run on an engine yet gets it", () => {
-    expect(memory.isFirstEngineTurn({})).toBe(true);
-    expect(memory.isFirstEngineTurn({ piSessionId: "p" })).toBe(false);
-    expect(memory.isFirstEngineTurn({ claudeSessionId: "c" })).toBe(false);
-    expect(memory.isFirstEngineTurn({ codexThreadId: "x" })).toBe(false);
+    expect(seed).toContain("(older entries left out)");
   });
 });
 
@@ -207,8 +217,17 @@ describe("memory snapshot refresh", () => {
       source.indexOf("if (inboxOwner) {"),
       source.indexOf("// Shown in the Blob app"),
     );
-    expect(block).toContain("isFirstEngineTurn(session)");
-    expect(block).toContain("supervisorSeedContext(inboxOwner)");
+    expect(block).toContain("supervisorSeedDue(inboxOwner, session.id)");
+    expect(block).toContain("supervisorSeedContext(inboxOwner, due)");
+    // Recorded only once a turn completes without error, like the briefed
+    // answers.
+    expect(source).toContain(
+      "if (inboxOwner && seedDue && !endedWithError && !runFailure)\n    await markSupervisorSeeded(inboxOwner, session.id)",
+    );
+    // A retired supervisor session takes no new turns.
+    expect(source).toMatch(
+      /if \(session\.supervisor && session\.supervisorRetiredAt\) \{[\s\S]{0,400}throw new RunSetupRefusedError\(message\)/,
+    );
     expect(block).toContain(
       "refreshSupervisorMemoryDaily(session.id, inboxOwner)",
     );

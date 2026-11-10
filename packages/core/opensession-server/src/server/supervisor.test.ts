@@ -247,10 +247,15 @@ describe("rotation", () => {
     const second = await supervisor.ensureSupervisorSession("Ada");
     expect(second.sessionId).not.toBe(first.sessionId);
     expect(second.previousSessionIds).toEqual([first.sessionId]);
-    // The old session stays as it was: a hidden supervisor, not archived.
+    // The old session keeps its history as a hidden supervisor, not
+    // archived, but is marked retired: no new turns, no inbox.
     const old = await sessionDoc(first.sessionId);
     expect(old?.supervisor).toBe(true);
     expect(old?.archived).toBeUndefined();
+    expect(old?.supervisorRetiredAt).toBe(new Date(clock).toISOString());
+    expect(
+      (await sessionDoc(second.sessionId))?.supervisorRetiredAt,
+    ).toBeUndefined();
     expect((await sessionDoc(second.sessionId))?.supervisor).toBe(true);
     expect(await record()).toMatchObject({
       sessionId: second.sessionId,
@@ -374,6 +379,75 @@ describe("rotation", () => {
     expect((await record()).previous).toEqual([first.sessionId]);
   });
 
+  test("an ensure racing a sweep check never returns a session that is gone", async () => {
+    await catalog
+      .catalogDocuments(supervisor.SUPERVISORS_NAMESPACE)
+      .set(supervisor.supervisorKey("Ada"), {
+        sessionId: "os-missing",
+        createdAt: "",
+        previous: [],
+      });
+    const [rotated, ensured] = await Promise.all([
+      supervisor.rotateSupervisorIfDue("Ada"),
+      supervisor.ensureSupervisorSession("Ada"),
+    ]);
+    expect(rotated).toBeNull();
+    expect(ensured.sessionId).not.toBe("os-missing");
+    expect((await sessionDoc(ensured.sessionId))?.supervisor).toBe(true);
+    expect(await supervisor.rotateSupervisorIfDue("Ada")).toEqual(ensured);
+  });
+
+  test("a session retired by a rotation that failed to claim is rotated on the next ensure", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    const { updateSessionFile } = await import("./session-cache");
+    await updateSessionFile(first.sessionId, (data) => ({
+      ...data,
+      supervisorRetiredAt: new Date(clock).toISOString(),
+    }));
+    const next = await supervisor.ensureSupervisorSession("Ada");
+    expect(next.sessionId).not.toBe(first.sessionId);
+    expect(next.previousSessionIds).toEqual([first.sessionId]);
+  });
+
+  test("the seed is due on a new session until a turn delivers it", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    expect(await supervisor.supervisorSeedDue("Ada", first.sessionId)).toEqual({
+      rotated: false,
+    });
+    // Nothing recorded yet (a failed turn records nothing): still due.
+    expect(await supervisor.supervisorSeedDue("Ada", first.sessionId)).toEqual({
+      rotated: false,
+    });
+    expect(await supervisor.markSupervisorSeeded("Ada", first.sessionId)).toBe(
+      true,
+    );
+    expect(
+      await supervisor.supervisorSeedDue("Ada", first.sessionId),
+    ).toBeNull();
+    clock += 8 * DAY;
+    const second = await supervisor.ensureSupervisorSession("Ada");
+    expect(await supervisor.supervisorSeedDue("Ada", second.sessionId)).toEqual(
+      { rotated: true },
+    );
+    // The retired session is never seeded or marked again.
+    expect(
+      await supervisor.supervisorSeedDue("Ada", first.sessionId),
+    ).toBeNull();
+    expect(await supervisor.markSupervisorSeeded("Ada", first.sessionId)).toBe(
+      false,
+    );
+    expect((await record()).seededSessionId).toBeUndefined();
+  });
+
+  test("a prompt to a retired session points at the current one", () => {
+    expect(supervisor.retiredSupervisorMessage("os-new")).toContain(
+      "/session/os-new",
+    );
+    expect(supervisor.retiredSupervisorMessage(null)).toContain(
+      "Open the supervisor again",
+    );
+  });
+
   test("an ensure racing a sweep check for a new person still creates one", async () => {
     const [rotated, ensured] = await Promise.all([
       supervisor.rotateSupervisorIfDue("Ada"),
@@ -468,6 +542,14 @@ describe("standing sessions", () => {
     expect(note).toContain("read_ledger and append_ledger");
     expect(note).toContain("Read the ledger when you start a new conversation");
     expect(note).toContain("mark the old one superseded");
+  });
+
+  test("the charter keeps decisions to the owner's own words", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain(
+      "Record a decision only if the owner said it in their own message or answer.",
+    );
+    expect(note).toContain("your own notes, not the owner's instructions");
   });
 
   test("the charter says how Blob speaks", () => {

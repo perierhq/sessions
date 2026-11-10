@@ -297,12 +297,17 @@ import {
 } from "./supervisor-inbox";
 import { supervisorInboxOwner, supervisorMcpFor } from "./supervisor-mcp";
 import {
-  isFirstEngineTurn,
   refreshSupervisorMemoryAfterCompaction,
   refreshSupervisorMemoryDaily,
   supervisorSeedContext,
 } from "./supervisor-memory";
-import { recordSupervisorCompaction } from "./supervisor";
+import {
+  currentSupervisorSessionId,
+  markSupervisorSeeded,
+  recordSupervisorCompaction,
+  retiredSupervisorMessage,
+  supervisorSeedDue,
+} from "./supervisor";
 import {
   automationSessionMcp,
   interactiveMcpServers,
@@ -2955,6 +2960,20 @@ async function runSessionPromptInner(
     });
     throw new RunSetupRefusedError(repoBlocker);
   }
+  // A retired supervisor session (supervisor.ts rotation) takes no new
+  // turns: a push or an old tab may still point at it. Point at the
+  // current one instead.
+  if (session.supervisor && session.supervisorRetiredAt) {
+    const owner = session.createdBy?.trim();
+    const current = owner
+      ? await currentSupervisorSessionId(owner).catch(() => null)
+      : null;
+    const message = retiredSupervisorMessage(
+      current && current !== session.id ? current : null,
+    );
+    broadcastToSession(sessionId, { type: "notice", sessionId, message });
+    throw new RunSetupRefusedError(message);
+  }
   if (autoRetry) {
     broadcastToSession(sessionId, {
       type: "model_changed",
@@ -3325,6 +3344,7 @@ async function runSessionPromptInner(
     ? undefined
     : supervisorInboxOwner(session, user);
   let briefedAnswers: string[] = [];
+  let seedDue = false;
   if (inboxOwner) {
     const [inbox, style] = await Promise.all([
       supervisorInboxContext(inboxOwner).catch(() => undefined),
@@ -3337,12 +3357,16 @@ async function runSessionPromptInner(
       briefedAnswers = inbox.answered;
     }
     if (style) prompt = `${style}\n\n${prompt}`;
-    // A supervisor session's first engine turn (a rotation or a new person)
-    // starts from the ledger, the open decisions and the last week's
-    // digests (supervisor-memory.ts). A failed first turn sets no engine
-    // id, so the next one carries the seed again.
-    if (isFirstEngineTurn(session)) {
-      const seed = await supervisorSeedContext(inboxOwner).catch(
+    // A new supervisor session (a rotation or a new person) starts from
+    // the ledger and the last week's digests (supervisor-memory.ts). Every
+    // turn carries it until one completes without error; that turn records
+    // it on the supervisor's record (below).
+    const due = await supervisorSeedDue(inboxOwner, session.id).catch(
+      () => null,
+    );
+    if (due) {
+      seedDue = true;
+      const seed = await supervisorSeedContext(inboxOwner, due).catch(
         () => undefined,
       );
       if (seed) prompt = `${seed}\n\n${prompt}`;
@@ -4255,6 +4279,15 @@ async function runSessionPromptInner(
           "[supervisor-inbox] could not mark answers briefed:",
           error instanceof Error ? error.message : error,
         ),
+    );
+  // Likewise the seed: once a turn that carried it completed, later turns of
+  // this session leave it out. A failed turn carries it again.
+  if (inboxOwner && seedDue && !endedWithError && !runFailure)
+    await markSupervisorSeeded(inboxOwner, session.id).catch((error) =>
+      console.warn(
+        "[supervisor] could not mark the seed delivered:",
+        error instanceof Error ? error.message : error,
+      ),
     );
 
   // Persist activity on our own session store. Slack/linear stores stay the

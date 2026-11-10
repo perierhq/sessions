@@ -39,6 +39,7 @@ import {
   catalogDocuments,
   legacyCatalogDirectory,
 } from "../catalog-documents";
+import { copySupervisorLedger } from "../supervisor-ledger";
 
 export interface UserStore<T> {
   /** The store's directory, resolved per call. */
@@ -163,6 +164,9 @@ export async function renameUserState(
       break;
     }
   }
+  // The supervisor's ledger (supervisor-ledger.ts) is a file next to the
+  // supervisors map, keyed the same way, so it travels with the map.
+  if (await copySupervisorLedger(a, b)) carried.push("supervisor-ledger");
   return carried;
 }
 
