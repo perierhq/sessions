@@ -3,7 +3,7 @@ import Observation
 
 /// Talking to Blob when the server has no voice key: you speak, Apple's
 /// on-device recognizer (`BlobListener`) turns it into text, the text goes to
-/// the Desk like a typed message, and Blob shows the answer and reads it aloud
+/// the supervisor like a typed message, and Blob shows the answer and reads it aloud
 /// with a Premium or Enhanced voice (`BlobSpeaker`) when one fits.
 ///
 /// The live voice call needs an OpenAI key on the server
@@ -32,7 +32,7 @@ final class BlobTextTalk {
     /// The answer that was last read aloud, so it is read once.
     private var spokenAnswer: String?
 
-    /// Blob's answer so far: streaming text while the Desk writes, then the
+    /// Blob's answer so far: streaming text while the supervisor writes, then the
     /// finished reply.
     var answer: String? {
         guard let desk, phase == .waiting else { return nil }
@@ -47,10 +47,10 @@ final class BlobTextTalk {
         return desk.entries.dropFirst(sentAt).last { $0.type == "assistant" && $0.isReasoning != true }
     }
 
-    /// The Desk's quick-reply relay, so `choices` chips in a reply send.
+    /// The supervisor's quick-reply relay, so `choices` chips in a reply send.
     var relay: QuickReplyRelay? { desk?.quickReplies }
 
-    /// True while the Desk is still working on the answer.
+    /// True while the supervisor is still working on the answer.
     var thinking: Bool { phase == .waiting && (desk?.isRunning ?? true) && answer == nil }
 
     /// Tap: start listening, or send what was heard, or put Blob back to sleep.
@@ -122,7 +122,7 @@ final class BlobTextTalk {
         heard = text
         guard !text.isEmpty else { reset(); return }
         do {
-            let model = try await deskModel()
+            let model = try await supervisorModel()
             sentAt = model.entries.count
             model.sendQuickReply(text)
         } catch {
@@ -140,10 +140,11 @@ final class BlobTextTalk {
         desk.sendQuickReply(text)
     }
 
-    /// The Desk session, connected once and kept for the life of the screen.
-    private func deskModel() async throws -> SessionViewModel {
+    /// The supervisor session, connected once and kept for the life of the
+    /// screen (adrs/supervisor-and-leads.md).
+    private func supervisorModel() async throws -> SessionViewModel {
         if let desk { return desk }
-        let ensure = try await OS1API.ensureDesk()
+        let ensure = try await OS1API.ensureSupervisor()
         let model = SessionViewModel(session: Session(id: ensure.sessionId))
         // A chip in a reply is the next thing you say: send it and wait for
         // the answer to that, not the one already on screen.

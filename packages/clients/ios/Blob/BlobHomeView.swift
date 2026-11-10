@@ -1,13 +1,13 @@
 import SwiftUI
 
 /// Blob's home: an empty screen with Blob asleep in its slot. Tap it to talk;
-/// it moves to the middle, listens and answers through the Desk's live voice
+/// it moves to the middle, listens and answers through the supervisor's live voice
 /// call, then goes back to its slot when you tap it again.
 ///
 /// Talking is a tap, not hold-to-talk: the live call takes a few seconds to
 /// connect, and holding would cut off the first words of every sentence.
 struct BlobHomeView: View {
-    private let engine = DeskVoiceEngine.desk
+    private let engine = DeskVoiceEngine.supervisor
     /// Used instead of the voice call when the server has no voice key.
     @State private var text = BlobTextTalk()
     /// Nil until the server answers; voice stays the default when it can't say.

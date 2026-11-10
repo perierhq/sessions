@@ -2379,6 +2379,27 @@ enum OS1API {
         try await post("/api/desk/ensure", body: ["user": ServerConfig.shared.userName])
     }
 
+    /// Which standing session a voice call or message is for: the Desk behind
+    /// the OS apps, or the supervisor that Blob talks to (server: supervisor.ts,
+    /// adrs/supervisor-and-leads.md). The voice routes default to the Desk.
+    enum StandingSession: String, Sendable {
+        case desk
+        case supervisor
+    }
+
+    struct SupervisorEnsure: Decodable, Sendable {
+        let sessionId: String
+    }
+
+    /// Get-or-create the user's standing supervisor session.
+    static func ensureSupervisor() async throws -> SupervisorEnsure {
+        try await post("/api/supervisor/ensure", body: ["user": ServerConfig.shared.userName])
+    }
+
+    private static func standingBody(_ standing: StandingSession, _ body: inout [String: Any]) {
+        if standing != .desk { body["standing"] = standing.rawValue }
+    }
+
     struct DeskVoiceSecret: Decodable, Sendable {
         let clientSecret: String
         let expiresAt: Double?
@@ -2388,8 +2409,10 @@ enum OS1API {
 
     /// Mint a short-lived Realtime client secret for a Desk voice call — the
     /// real OpenAI key stays on the server (desk-voice.ts).
-    static func deskVoiceSecret() async throws -> DeskVoiceSecret {
-        try await post("/api/desk/voice/secret", body: ["user": ServerConfig.shared.userName])
+    static func deskVoiceSecret(standing: StandingSession = .desk) async throws -> DeskVoiceSecret {
+        var body: [String: Any] = ["user": ServerConfig.shared.userName]
+        standingBody(standing, &body)
+        return try await post("/api/desk/voice/secret", body: body)
     }
 
     struct SessionVoiceSecret: Decodable, Sendable {
@@ -2449,9 +2472,11 @@ enum OS1API {
     static func deskVoiceTool(
         callId: String,
         name: String,
-        args: [String: Any]
+        args: [String: Any],
+        standing: StandingSession = .desk
     ) async throws -> String {
         var body: [String: Any] = ["callId": callId, "name": name, "args": args]
+        standingBody(standing, &body)
         let user = ServerConfig.shared.userName
         if !user.isEmpty { body["user"] = user }
         let data = try await mutateData("/api/desk/voice/tool", method: "POST", body: body)
@@ -2470,12 +2495,14 @@ enum OS1API {
     /// Mirror finalized voice-call turns into the Desk transcript (and the
     /// next text turn's handoff note, server-side).
     static func deskVoiceTranscript(
-        entries: [(id: String, role: String, text: String)]
+        entries: [(id: String, role: String, text: String)],
+        standing: StandingSession = .desk
     ) async throws {
         struct OkResponse: Decodable, Sendable { let ok: Bool? }
         var body: [String: Any] = [
             "entries": entries.map { ["id": $0.id, "role": $0.role, "text": $0.text] }
         ]
+        standingBody(standing, &body)
         let user = ServerConfig.shared.userName
         if !user.isEmpty { body["user"] = user }
         let _: OkResponse = try await post("/api/desk/voice/transcript", body: body)
@@ -2485,9 +2512,10 @@ enum OS1API {
     /// audio, no transcript). A call that fails does so on the user's device
     /// with nothing to inspect; this is what makes the next report of one
     /// answerable. Best effort by design: the caller ignores failures.
-    static func deskVoiceDiag(_ report: [String: Any]) async throws {
+    static func deskVoiceDiag(_ report: [String: Any], standing: StandingSession = .desk) async throws {
         struct OkResponse: Decodable, Sendable { let ok: Bool? }
         var body = report
+        standingBody(standing, &body)
         let user = ServerConfig.shared.userName
         if !user.isEmpty { body["user"] = user }
         let _: OkResponse = try await post("/api/desk/voice/diag", body: body)
