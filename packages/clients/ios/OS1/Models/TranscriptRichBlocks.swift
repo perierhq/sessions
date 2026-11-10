@@ -25,6 +25,8 @@ enum TranscriptRichBlock {
     case slides([String])
     case figure(MediaFigure)
     case callout(Callout)
+    /// Blob's spoken script (`SayBlock`): a quiet "Said aloud" line.
+    case say(String)
 }
 
 /// A GitHub admonition: a blockquote whose first line is `[!NOTE]`, `[!TIP]`,
@@ -55,10 +57,12 @@ enum TranscriptRichBlocks {
     static let claimedLangs: Set<String> = Set([
         "mermaid", "vega-lite", "vegalite", "chart", "compare", "choices", "tree", "palette",
         "csv", "tsv", "table", "json", "ansi", "terminal", "diff", "math", "metrics",
-        "artifact", "svg", "slides",
+        "artifact", "svg", "slides", "say",
     ]).union(AnsiBlock.escapeClaimLangs)
 
     static func blocks(of text: String) -> [TranscriptRichBlock] {
+        // Cue anchors point Blob's speech at what it shows; never drawn.
+        let text = CueMarkers.stripAnchors(text)
         var out: [TranscriptRichBlock] = []
         func markdown(_ value: String) {
             if case .markdown(let previous)? = out.last {
@@ -117,6 +121,8 @@ enum TranscriptRichBlocks {
             return source.contains(where: { !$0.isWhitespace }) ? .diff(source) : nil
         case "math":
             return MathTypesetter.typeset(source).map { .math(lines: $0, source: source) }
+        case "say":
+            return SayBlock.parse(source).map(TranscriptRichBlock.say)
         case "metrics":
             return MetricsBlock.parse(source).map(TranscriptRichBlock.metrics)
         case "artifact", "svg":

@@ -1,0 +1,16 @@
+/* ── ```say: what Blob said aloud (lib/say-block.ts) ───────────────────
+   The spoken script of a Blob reply, shown in a transcript as one quiet
+   line above what the reply shows: meta size, dim ink, a fainter label. */
+.md-say {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font-size: var(--type-meta);
+  line-height: 1.45;
+}
+.md-say-label {
+  color: var(--text-faint);
+  font-weight: 600;
+}

@@ -630,8 +630,22 @@ describe("standing sessions", () => {
     expect(note).toContain('Never say "as an AI"');
     expect(note).toContain("Never claim something you didn't do");
     expect(note).toContain('say "I don\'t know" plainly');
-    expect(note).toContain("One or two sentences, then stop.");
+    expect(note).toContain("One to three sentences, then stop.");
+    expect(note).toContain("a reply opens with a ```say fence");
+    expect(note).toContain(
+      "It talks about what is shown and never repeats it.",
+    );
+    expect(note).toContain("What is shown is a view, not a recap");
     expect(note).toContain("never cute. No em dashes.");
+  });
+
+  test("Blob greets once a day and leaves the time of day out", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain(
+      "Greet only in the first conversation of the day or after more than three hours apart",
+    );
+    expect(note).toContain("otherwise go straight to the point");
+    expect(note).toContain("Never mention the time of day unless it matters.");
   });
 
   test("Blob names the persona when delegating and never posts publicly", () => {

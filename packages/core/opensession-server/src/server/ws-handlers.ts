@@ -107,6 +107,7 @@ import {
   maybePersistSpeed,
 } from "./session-cache";
 import { maybePersistBlobSurface } from "./blob-surface";
+import { maybeRecordOwnerMessage } from "./supervisor-clock";
 import {
   mergedSessionTranscript,
   mergedSessionTranscriptAsync,
@@ -1428,6 +1429,7 @@ export const websocketHandlers: WebSocketHandler<WSClientData> = {
           maybePersistEffort(session, msg.effort);
           maybePersistSpeed(session, msg.speed, msg.fastMode);
           maybePersistBlobSurface(session, msg.surface);
+          maybeRecordOwnerMessage(session, user);
 
           // Slash commands are handled by opensession itself
           const notice = await handleSlashCommand(

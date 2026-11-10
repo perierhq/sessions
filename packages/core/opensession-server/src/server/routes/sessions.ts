@@ -57,6 +57,7 @@ import {
   type SessionRuntimeSnapshot,
 } from "../session-cache";
 import { maybePersistBlobSurface } from "../blob-surface";
+import { maybeRecordOwnerMessage } from "../supervisor-clock";
 import {
   asDataUrlList,
   countImageRefs,
@@ -1444,6 +1445,7 @@ export async function handleSessionsRoutes(
         );
         maybePersistSpeed(session, body?.speed, body?.fastMode);
         maybePersistBlobSurface(session, body?.surface);
+        maybeRecordOwnerMessage(session, user);
       }
       let result: Awaited<
         ReturnType<ReturnType<typeof getSessionControl>["deliverToSession"]>

@@ -9,9 +9,10 @@ import os
 /// or the server's Fish Audio, else Apple's own text stands. The recording
 /// goes to Fish only when you picked Fish, or turned on Fish until Parakeet
 /// is ready. The text goes to the supervisor like a typed message, and Blob
-/// shows the answer and reads its first paragraph aloud (`BlobReply`,
-/// `BlobSpeaker`), sentence by sentence as the reply streams in
-/// (`BlobSentenceStreamer`): with the server's Fish
+/// shows the answer and reads its spoken script aloud (`BlobReply`,
+/// `BlobSpeaker`), segment by segment as the reply streams in
+/// (`BlobSentenceStreamer`), focusing what each cue points at (`focus`):
+/// with the server's Fish
 /// Audio voice when it has one, else with a Premium or Enhanced Apple voice
 /// when one fits.
 ///
@@ -69,6 +70,22 @@ final class BlobTextTalk {
 
     init() {
         listener.onEnd = { [weak self] decision in self?.listeningEnded(decision) }
+        speaker.onCue = { [weak self] id in self?.cueStarted(id) }
+    }
+
+    /// The shown element the words being spoken point at (`BlobCues`): set
+    /// when a segment with a cue starts playing, kept through segments
+    /// without one, cleared with the reply. `tick` changes on every cue, so
+    /// the same element pulses again when pointed at again.
+    struct Focus: Equatable {
+        var id: String
+        var tick: Int
+    }
+
+    private(set) var focus: Focus?
+
+    private func cueStarted(_ id: String) {
+        focus = Focus(id: id, tick: (focus?.tick ?? 0) + 1)
     }
 
     var active: Bool { phase != .idle }
@@ -78,7 +95,7 @@ final class BlobTextTalk {
     }
     /// The answer that was last read aloud, so it is read once.
     private var spokenAnswer: String?
-    /// The Say sentences of the reply being written, read as each completes.
+    /// The Say segments of the reply being written, read as each completes.
     private var sentences = BlobSentenceStreamer()
     /// Reading was cut off (Esc); the rest of this reply stays silent.
     private(set) var hushed = false
@@ -292,7 +309,7 @@ final class BlobTextTalk {
     func askCameUp(_ ask: BlobAsk, callActive: Bool) {
         guard ask.id != spokenAsk, phase != .listening, !callActive else { return }
         spokenAsk = ask.id
-        let say = ask.reply.say
+        let say = ask.reply.spoken
         if !say.isEmpty { speaker.speak(say) }
     }
 
@@ -399,8 +416,8 @@ final class BlobTextTalk {
         return !desk.isRunning && !desk.isStreaming && answer != nil
     }
 
-    /// Reads what is left of the finished answer's first paragraph: the
-    /// sentences that did not stream, or were rewritten when it landed. The
+    /// Reads what is left of the finished answer's spoken script: the
+    /// segments that did not stream, or were rewritten when it landed. The
     /// rest is only shown (`BlobReply`). Called when `settled` turns true.
     func answerSettled() {
         guard let answer else { return }
@@ -421,6 +438,7 @@ final class BlobTextTalk {
     private func stopReading() {
         speaker.stop()
         spokenAnswer = nil
+        focus = nil
         sentences = BlobSentenceStreamer()
         hushed = false
     }

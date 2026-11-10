@@ -1183,6 +1183,16 @@ describe("renderMarkdown commit references", () => {
   });
 });
 
+describe("renderMarkdown cue anchors", () => {
+  it("drops the {#id} anchors Blob's speech points at", () => {
+    const html = renderMarkdown(
+      "[PR #12](https://example.test/pull/12){#pr-12} merged\n\nCheckout flapped {#inc-4}\n\n```metrics {#stats}\nUsers: 12\n```",
+    );
+    expect(html).not.toContain("{#");
+    expect(html).toContain('class="language-metrics"');
+  });
+});
+
 describe("renderMarkdown strikethrough (double-tilde only)", () => {
   it("does not strike through single tildes in code-ish content", () => {
     // ReScript labeled args, approximate numbers, home paths — all bare tildes.

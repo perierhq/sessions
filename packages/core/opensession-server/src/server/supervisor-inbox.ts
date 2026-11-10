@@ -43,6 +43,7 @@ import {
   type SupervisorPrefsPatch,
 } from "./supervisor-quiet-hours";
 import { reportStyleInstruction } from "./supervisor-report-style";
+import { supervisorClockLine } from "./supervisor-clock";
 import { CATALOG_DOCUMENT_MAX_VALUE_BYTES } from "./session-kernel/catalog-document-protocol";
 
 export const SUPERVISOR_ITEMS_NAMESPACE = "supervisor-items";
@@ -1229,6 +1230,25 @@ export async function supervisorStyleContext(
   return wrapContext(
     reportStyleInstruction(prefs.reportStyle),
     "supervisor-report-style",
+  );
+}
+
+/**
+ * The owner's clock as one line of this turn's context: local time in their
+ * supervisor time zone, minutes since their previous message, and whether
+ * this is their first conversation today (supervisor-clock.ts). Per turn, so
+ * the clock moving keeps the prompt cache.
+ */
+export async function supervisorClockContext(
+  user: string | null | undefined,
+  previousAt: string | undefined,
+  now: Date = new Date(),
+): Promise<string | undefined> {
+  if (!validUser(user)) return undefined;
+  const { timeZone } = prefsAndZone(await readDocument(user), user);
+  return wrapContext(
+    supervisorClockLine({ now, timeZone, previousAt }),
+    "supervisor-clock",
   );
 }
 

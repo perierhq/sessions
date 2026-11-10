@@ -35,6 +35,7 @@ struct BlobHomeView: View {
     @State private var latestTaps = 0
     @FocusState private var fieldFocused: Bool
     @AppStorage("blob.hasTalked") private var hasTalked = false
+    @AppStorage(BlobSpeaker.readAloudKey) private var readAloud = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
@@ -150,7 +151,7 @@ struct BlobHomeView: View {
             guard !text.replyHasVoice else { return }
             if old != nil, old != new { text.hush() }
             if let decision, decisions.shouldSpeak(decision) {
-                let say = BlobReply(decision.body).say
+                let say = BlobReply(decision.body).spoken
                 if !say.isEmpty { text.speaker.speak(say) }
             }
         }
@@ -377,15 +378,17 @@ struct BlobHomeView: View {
             return "On it. I'll start the wallet pass review now and tell you when it's done.\n\n```choices\nThanks\nSkip the tests\n```"
         }
         return """
-        **Mostly refunds, after the payout delay.** 21 of 23 answered; two need you.
+        ```say
+        [warm, unhurried] It was mostly refunds after the payout delay. {#stats} Nearly all of them are answered, {#topics} and two still need you.
+        ```
 
-        ```metrics
+        ```metrics {#stats}
         Tickets: 23 (+9)
         Answered: 21
         Median reply: 4 min (−2 min)
         ```
 
-        ```csv
+        ```csv {#topics}
         Topic,Tickets
         Refunds,9
         Wallet pass,6
@@ -516,6 +519,7 @@ struct BlobHomeView: View {
         let visuals = settledReply.map { BlobReplySplit($0).visuals } ?? []
         return BlobSidePane(
             visuals: visuals,
+            focus: text.focus,
             margins: EdgeInsets(
                 top: max(insets.top, 20) + 16,
                 leading: 0,
@@ -648,6 +652,7 @@ struct BlobHomeView: View {
                     }
                 }
             }
+            .onChange(of: text.focus) { _, focus in follow(focus, in: pageReply(split: panes != nil), with: proxy) }
             .onChange(of: latestTaps) { _, _ in
                 withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35)) {
                     if hasContent {
@@ -927,16 +932,21 @@ struct BlobHomeView: View {
             if let ask {
                 // The run stopped to ask you something; its reply comes after.
                 askView(ask)
-            } else if let content = settledReply {
-                // The finished reply, drawn with the block catalog as in the OS app.
+            } else if settledReply != nil, let reply = pageReply(split: split) {
+                // The finished reply, drawn with the block catalog as in the
+                // OS app; its spoken script only as a caption while it plays.
+                spokenCaption(reply)
                 BlobReplyView(
-                    reply: BlobReply(split ? BlobReplySplit(content).conversation : content),
+                    reply: reply,
                     entryId: text.replyEntry?.id,
-                    relay: text.relay
+                    relay: text.relay,
+                    focus: text.focus,
+                    scrollIds: true
                 )
-            } else if let answer = text.answer {
+            } else if let reply = pageReply(split: split) {
                 // Still being written: plain text until the reply settles.
-                BlobReplyView(reply: BlobReply(answer), streaming: true)
+                spokenCaption(reply)
+                BlobReplyView(reply: reply, streaming: true, focus: text.focus, scrollIds: true)
             } else if let said = decisionSaid {
                 BlobSayLine(text: said)
                     .transition(.opacity)
@@ -955,6 +965,48 @@ struct BlobHomeView: View {
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// The spoken script, as a quiet subtitle while Blob says it; it fades
+    /// once Blob is done. It stays when reading aloud is off, since nothing
+    /// else carries it. A reply without a script shows its Say line instead.
+    @ViewBuilder
+    private func spokenCaption(_ reply: BlobReply) -> some View {
+        if reply.scripted, !reply.say.isEmpty, text.reading || !readAloud {
+            Text(reply.say)
+                .font(.footnote)
+                .foregroundStyle(OS1VisualStyle.textDim)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity.animation(.easeOut(duration: 0.6)))
+                .accessibilityLabel("Blob says: \(reply.say)")
+        }
+    }
+
+    /// The reply as the page draws it: the settled one (only its
+    /// conversation beside a second pane) or the one still streaming. Nil
+    /// while a question is up or there is none.
+    private func pageReply(split: Bool) -> BlobReply? {
+        if let content = settledReply {
+            return BlobReply(split ? BlobReplySplit(content).conversation : content)
+        }
+        guard ask == nil, let answer = text.answer else { return nil }
+        return BlobReply(answer)
+    }
+
+    /// Brings the element the spoken words point at into view on the page:
+    /// smoothly, or at once with Reduce Motion. An id the page doesn't carry
+    /// is ignored here; beside a second pane, that pane follows its own
+    /// (`BlobSidePane`).
+    private func follow(_ focus: BlobTextTalk.Focus?, in reply: BlobReply?, with proxy: ScrollViewProxy) {
+        guard let focus, let reply, let index = reply.parts.firstIndex(where: { $0.ids.contains(focus.id) })
+        else { return }
+        let id = BlobReplyView.partId(index)
+        if reduceMotion {
+            proxy.scrollTo(id, anchor: .center)
+        } else {
+            withAnimation(.smooth(duration: 0.45)) { proxy.scrollTo(id, anchor: .center) }
+        }
     }
 }
 

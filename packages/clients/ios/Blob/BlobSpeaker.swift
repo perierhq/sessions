@@ -3,8 +3,12 @@ import Foundation
 import NaturalLanguage
 import Observation
 
-/// Reads aloud what Blob says in text mode: the first paragraph of an answer
-/// or a decision (`BlobReply.say`), never the blocks after it. When the server has a Fish Audio
+/// Reads aloud what Blob says in text mode: an answer's spoken script, or the
+/// first paragraph of a decision (`BlobReply.spoken`), never what is shown.
+/// A reply is read segment by segment (`BlobSegment`), one request and one
+/// playback item each; when a segment with a cue starts playing, `onCue`
+/// says which shown element to focus. A delivery hint (`[warm]`) goes to the
+/// server voice as direction and is left out for an Apple voice. When the server has a Fish Audio
 /// key (`GET /api/blob/speech/status`), the server voice reads every answer,
 /// Polish included. Otherwise, or when a request fails, Apple's Premium or
 /// Enhanced voices read it. Apps can't use the current Siri voices, and the
@@ -57,8 +61,12 @@ final class BlobSpeaker: NSObject {
 
     private struct Queued {
         let text: String
+        let cue: String?
         var audio: Task<Data, Error>?
     }
+
+    /// Called when a segment with a cue starts playing, with the cue's id.
+    @ObservationIgnored var onCue: ((String) -> Void)?
 
     override init() {
         super.init()
@@ -117,22 +125,22 @@ final class BlobSpeaker: NSObject {
         return speakWithApple(plain)
     }
 
-    /// Adds sentences of a streaming answer to what Blob reads, if reading
-    /// aloud is on. They play in order, each right after the last; their
-    /// server audio is requested at once, up to `queueAhead` at a time.
-    /// Sentences that come together are joined by the `pieces` rules: the
-    /// first alone when nothing is reading yet, then up to
-    /// `serverPieceChars`. Once a request fails, the rest of the reply is
+    /// Adds segments of a streaming answer to what Blob reads, if reading
+    /// aloud is on. They play in order, each right after the last, one
+    /// request and one playback item per segment, so a cue fires exactly
+    /// when its words start; their server audio is requested at once, up to
+    /// `queueAhead` at a time. Once a request fails, the rest of the reply is
     /// read with an Apple voice. Only a reply calls this, so it cuts off
     /// anything `speak` was reading (a decision); `stop` clears the queue.
-    func enqueue(_ sentences: [String]) {
+    func enqueue(_ segments: [BlobSegment]) {
         guard UserDefaults.standard.object(forKey: Self.readAloudKey) as? Bool ?? true else { return }
-        let plain = sentences.map(Self.plain).filter { !$0.isEmpty }
-        guard !plain.isEmpty else { return }
-        if queueTask == nil { cutOff() }
-        for piece in Self.pieces(sentences: plain, firstAlone: queueTask == nil) {
-            queue.append(Queued(text: piece))
+        let items = segments.compactMap { segment -> Queued? in
+            let text = Self.plain(segment.text)
+            return text.isEmpty ? nil : Queued(text: text, cue: segment.cue)
         }
+        guard !items.isEmpty else { return }
+        if queueTask == nil { cutOff() }
+        queue.append(contentsOf: items)
         speaking = true
         if usesServerVoice, !appleForReply { requestAhead() }
         if queueTask == nil { queueTask = Task { await readQueue() } }
@@ -176,6 +184,8 @@ final class BlobSpeaker: NSObject {
             }
             let item = queue.removeFirst()
             if useServer { requestAhead() } else { item.audio?.cancel() }
+            // Its words start now: focus what they point at.
+            if let cue = item.cue { onCue?(cue) }
             // Audio that won't play is read with an Apple voice too.
             var played = false
             if let data { played = await play(data) }
@@ -200,7 +210,8 @@ final class BlobSpeaker: NSObject {
             return false
         }
         try? BlobListener.activateSession(record: false)
-        let utterance = AVSpeechUtterance(string: plain)
+        // A delivery hint directs the server voice; an Apple voice would read it.
+        let utterance = AVSpeechUtterance(string: CueMarkers.withoutDirections(plain))
         utterance.voice = voice
         synthesizer.stopSpeaking(at: .immediate)
         utteranceId = ObjectIdentifier(utterance)
@@ -377,7 +388,7 @@ final class BlobSpeaker: NSObject {
 
     /// Markdown read aloud sounds like punctuation; speak the words only.
     static func plain(_ markdown: String) -> String {
-        var s = markdown
+        var s = markdown.replacingOccurrences(of: "[ \t]*" + CueMarkers.pattern, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: #"```[\s\S]*?```"#, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression)
         s = s.replacingOccurrences(of: #"(?m)^\s*([#>]+|[-*+]|\d+\.)\s+"#, with: "", options: .regularExpression)

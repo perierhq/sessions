@@ -21,13 +21,17 @@ export function isReportStyle(value: unknown): value is ReportStyle {
 }
 
 const INSTRUCTIONS: Record<ReportStyle, string> = {
-  bluf: "BLUF: the bottom line or the ask first, then what supports it.",
-  sbar: "SBAR: in the shown part, four short labelled parts: Situation, Background, Assessment, Recommendation. The spoken first paragraph states the situation and the recommendation.",
-  plain: "plain: no fixed shape; write what fits.",
+  bluf: "BLUF: what is shown leads with the bottom line or the ask, then what supports it.",
+  sbar: "SBAR: what is shown is four short labelled parts: Situation, Background, Assessment, Recommendation.",
+  plain: "plain: no fixed shape; show what fits.",
 };
 
-/** One line: how to shape a report in this style. Anything unknown is the
- *  default. */
+/** Whatever the style, what Blob says aloud is talk, not a report. */
+const SPOKEN =
+  "What Blob says aloud stays conversational in every style: one to three sentences about what is shown, never the report read out.";
+
+/** One line: how to shape a report in this style, and how Blob says it.
+ *  Anything unknown is the default. */
 export function reportStyleInstruction(style: unknown): string {
-  return `The owner's report style is ${INSTRUCTIONS[isReportStyle(style) ? style : DEFAULT_REPORT_STYLE]}`;
+  return `The owner's report style is ${INSTRUCTIONS[isReportStyle(style) ? style : DEFAULT_REPORT_STYLE]} ${SPOKEN}`;
 }
