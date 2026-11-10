@@ -221,6 +221,9 @@ export interface WatchRunPlan {
   fields: LeadGoalFields;
   prompt: string;
   maxTokens: number;
+  /** The model and effort every wake runs on, pinned by the server. */
+  model: string;
+  effort: string;
   /** Run once the wake ended, whatever way; resolves the next scheduled
    *  wake (ISO8601). The watch owns its schedule: the run sets none. */
   afterWake(ok: boolean): Promise<string>;
@@ -251,6 +254,11 @@ export function registerWatchGoalHooks(hooks: WatchGoalHooks): () => void {
 
 function watchHooks(): WatchGoalHooks | undefined {
   return g.__watchGoalHooks as WatchGoalHooks | undefined;
+}
+
+/** Whether a watch goal can wake: the watch registered its hooks. */
+export function watchGoalHooksRegistered(): boolean {
+  return !!watchHooks();
 }
 
 /** The watch's plan for this wake; fails closed like the lead's. */
@@ -375,7 +383,7 @@ export async function runGoal(stored: Goal): Promise<void> {
         return;
       }
       watch = plan;
-      goal = { ...stored, ...plan.fields };
+      goal = { ...stored, ...plan.fields, model: plan.model };
     }
     // Code goals keep ONE persistent worktree so the engine session (keyed on
     // cwd) resumes cleanly across wakes; ask goals read the main checkout,
@@ -501,6 +509,7 @@ export async function runGoal(stored: Goal): Promise<void> {
       cwd,
       mode: goal.mode,
       model: goal.model,
+      ...(watch ? { effort: watch.effort } : {}),
       // A lead never falls back to every connector: its list comes from its
       // settings, and is empty while it watches.
       // A watch's neither: it reads through opensession-watch only.
@@ -514,12 +523,16 @@ export async function runGoal(stored: Goal): Promise<void> {
       // A lead reads its project through opensession-lead; it gets no
       // cloud credentials.
       aws: !goal.leadProject && !goal.watchOwner,
+      // A watch reads through opensession-watch only: no shell, files,
+      // grep or web search, where untrusted text could lead it.
+      ...(goal.watchOwner ? { disableLocalWorkspaceTools: true } : {}),
       startToken: runToken,
       author: gitIdentityFor(goal.name),
       // A goal runs on behalf of its creator; gate per-user MCP servers to them.
       user: createdBy,
-      fallbackModel:
-        goal.fallbackModel === "none"
+      fallbackModel: watch
+        ? automaticFallbackModel(goal.model)
+        : goal.fallbackModel === "none"
           ? undefined
           : goal.fallbackModel || automaticFallbackModel(goal.model),
       journal: { osSessionId: bksId, kind: "goal" },
@@ -581,7 +594,9 @@ export async function runGoal(stored: Goal): Promise<void> {
       }
     }
     await persistSession(engineSessionId);
-    const watchNext = await settleWatch(!errorMsg);
+    // A wake stopped at its tokens did its work: its events are done, not
+    // replayed.
+    const watchNext = await settleWatch(!errorMsg || stopped);
 
     // The run, the UI or an operator may have rescheduled, paused or
     // finished the goal meanwhile (opensession-goal-self, the goals API).

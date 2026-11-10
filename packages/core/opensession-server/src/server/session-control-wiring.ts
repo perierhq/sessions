@@ -367,7 +367,9 @@ registerSessionControl({
       // The supervisor's conversation talks only with its owner: a worker's
       // report, a wait's wake or a check-back goes to the owner's watch
       // (supervisor-watch.ts), which follows it up through the inbox. When
-      // the watch can't take it (off, or failing), it lands here as before.
+      // the watch can't take it (off, paused, its hooks not registered) or
+      // a worker asks a question, nothing is recorded there and it lands
+      // here as before.
       if (session.supervisor) {
         const { routeSupervisorDelivery } = await import("./supervisor-watch");
         const routed = await routeSupervisorDelivery(

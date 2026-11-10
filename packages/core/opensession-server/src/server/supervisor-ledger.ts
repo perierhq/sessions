@@ -128,12 +128,15 @@ export async function appendSupervisorLedger(
   user: string,
   text: string,
   now: number = Date.now(),
+  /** Marks the entry's heading, as in `## 2026-11-10 12:00 UTC · observation`. */
+  tag?: string,
 ): Promise<AppendLedgerResult> {
   const body = text.trim();
   if (!body) return { ok: false, error: "empty" };
   if (body.length > LEDGER_ENTRY_MAX) return { ok: false, error: "too-long" };
   const path = await supervisorLedgerPath(user);
-  const entry = `${ENTRY_HEADING}${stamp(now)}\n\n${escapeLedgerBody(body)}\n`;
+  const mark = tag?.replace(/\s+/g, " ").trim();
+  const entry = `${ENTRY_HEADING}${stamp(now)}${mark ? ` · ${mark}` : ""}\n\n${escapeLedgerBody(body)}\n`;
   await serialized(path, async () => {
     await mkdir(dirname(path), { recursive: true });
     try {

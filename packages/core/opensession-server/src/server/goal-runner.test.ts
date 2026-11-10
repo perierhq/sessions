@@ -55,6 +55,9 @@ interface RunOpts {
   mcpServers: unknown;
   aws?: boolean;
   startToken?: string;
+  disableLocalWorkspaceTools?: boolean;
+  model?: string;
+  effort?: string;
 }
 /** What the last wake handed the engine. */
 let lastRun: RunOpts | null = null;
@@ -881,6 +884,8 @@ describe("a person's watch goal", () => {
       fields,
       prompt: "The watch's own prompt for this wake.",
       maxTokens: 1_000,
+      model: "pi/anthropic/claude-sonnet-5-5",
+      effort: "medium",
       afterWake: async (ok) => {
         settled.push(ok);
         return NEXT;
@@ -909,13 +914,21 @@ describe("a person's watch goal", () => {
     return (await mutateGoal(created.id, (g) => ({ ...g, ...extra })))!;
   }
 
-  test("runs with only its own tools, its own prompt, no connectors and no cloud credentials", async () => {
-    const goal = await watchGoal({ mcpServers: ["github"] });
+  test("runs with only its own tools, its own prompt, no connectors, no shell or web, no cloud credentials, on the pinned model", async () => {
+    const goal = await watchGoal({
+      mcpServers: ["github"],
+      model: "pi/anthropic/claude-opus-5-5",
+      fallbackModel: "none",
+    });
     await runGoal(goal);
     expect(Object.keys(lastRun!.inProcessMcp!)).toEqual(["opensession-watch"]);
     expect(lastRun!.prompt).toBe("The watch's own prompt for this wake.");
     expect(lastRun!.mcpServers).toEqual([]);
     expect(lastRun!.aws).toBe(false);
+    // read, grep, find, ls, bash, web_search and web_fetch are stripped.
+    expect(lastRun!.disableLocalWorkspaceTools).toBe(true);
+    expect(lastRun!.model).toBe("pi/anthropic/claude-sonnet-5-5");
+    expect(lastRun!.effort).toBe("medium");
     expect(settled).toEqual([true]);
     // The server's schedule, not the 24h default.
     expect(await getGoal(goal.id)).toMatchObject({
@@ -988,6 +1001,25 @@ describe("a person's watch goal", () => {
     expect((await getGoal(goal.id))!.lastRunError).toBe(
       "Stopped: it reached its budget",
     );
+  });
+
+  test("a wake stopped at its tokens settles as done, so its events aren't replayed", async () => {
+    const usage = (tokens: number) => ({
+      costUsd: 0.01,
+      inputTokens: tokens,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      contextTokens: 1,
+    });
+    script = async function* () {
+      yield { type: "usage_snapshot", usage: usage(1_100) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(1_600) } as StreamEvent;
+      yield { type: "error", content: "Cancelled" } as StreamEvent;
+    };
+    const goal = await watchGoal();
+    await runGoal(goal);
+    expect(cancels).toHaveLength(1);
+    expect(settled).toEqual([true]);
   });
 
   test("a wake that throws still settles and goes back on its schedule", async () => {

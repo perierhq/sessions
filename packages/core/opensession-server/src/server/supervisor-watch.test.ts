@@ -67,6 +67,7 @@ let incidents: Array<{
   updatedAt: string;
 }> = [];
 let statuses: Record<string, string> = {};
+let runnerReady = true;
 let restoreInbox: () => void = () => {};
 
 beforeEach(() => {
@@ -77,6 +78,7 @@ beforeEach(() => {
   headroom = true;
   incidents = [];
   statuses = {};
+  runnerReady = true;
   restoreInbox = inbox.__setSupervisorInboxDepsForTest({
     now: () => clock,
     notify: async () => ({}),
@@ -86,14 +88,20 @@ beforeEach(() => {
     ensureWatch: async () => {},
     timeZone: () => "UTC",
   });
-  watch.__setWatchDepsForTest({
+  watch.__setWatchDepsForTest(baseDeps());
+});
+
+function baseDeps(): Partial<import("./supervisor-watch").WatchDeps> {
+  return {
     now: () => clock,
     hasSupervisor: async () => supervisor,
     openIncidents: async () => incidents,
     sessionStatus: async (id) => statuses[id] ?? "gone",
     headroomOk: async () => headroom,
-  });
-});
+    runnerReady: async () => runnerReady,
+    random: () => 0,
+  };
+}
 
 afterEach(() => {
   watch.__setWatchDepsForTest(undefined);
@@ -644,7 +652,7 @@ describe("the digest and the headroom rule", () => {
       state: "open" as const,
       source: "watch",
     };
-    const base = { incidents: [], events: [], tasks: [] };
+    const base = { incidents: [], tasks: [] };
     expect(watch.watchDigest({ ...base, items: [a, b] })).toBe(
       watch.watchDigest({ ...base, items: [b, own, a] }),
     );
@@ -725,9 +733,10 @@ describe("opensession-watch", () => {
     expect((await t.project_overview!.handler({})).content[0]!.text).toBe(
       "Projects: acme",
     );
-    expect(
-      (await t.project_overview!.handler({ project: "acme" })).content[0]!.text,
-    ).toBe("overview of acme");
+    const overview = (await t.project_overview!.handler({ project: "acme" }))
+      .content[0]!.text;
+    expect(overview).toStartWith(watchMcp.WATCH_UNTRUSTED_LABEL);
+    expect(overview).toEndWith("overview of acme");
     const refused = await t.project_overview!.handler({ project: "other" });
     expect(refused.isError).toBe(true);
   });
@@ -750,6 +759,330 @@ describe("opensession-watch", () => {
     ).toBe("Resolved: Review #10");
     expect((await t.list_watch_tasks!.handler({})).content[0]!.text).toBe(
       "No open follow-ups.",
+    );
+  });
+});
+
+describe("the next decision after a wake", () => {
+  test("an event that arrives mid-wake runs the next wake, never skips it", async () => {
+    const goal = await watchGoal();
+    await watch.recordWatchEvent(USER, { kind: "item", title: "seen" });
+    const plan = run(await watch.watchWakeCheck(goal));
+    await watch.recordWatchEvent(USER, {
+      kind: "worker-report",
+      title: "late",
+    });
+    expect(await plan.afterWake(true)).toBe(
+      new Date(NOON + watch.WATCH_EVENT_GAP_MS).toISOString(),
+    );
+    clock += watch.WATCH_EVENT_GAP_MS;
+    const next = run(await watch.watchWakeCheck(goal));
+    expect(next.prompt).toContain("late");
+    expect(next.prompt).not.toContain("seen");
+  });
+
+  test("an item that changes mid-wake runs the next wake; what the wake did itself doesn't", async () => {
+    const goal = await watchGoal();
+    const plan = run(await watch.watchWakeCheck(goal));
+    // The wake posts its own item and resolves nothing; a lead posts one
+    // while it runs (no listener here, so no event: only the digest sees it).
+    await inbox.postSupervisorItem({
+      user: USER,
+      source: watch.WATCH_SOURCE,
+      kind: "fyi",
+      title: "The watch's own",
+    });
+    await leadItem("Posted mid-wake");
+    await plan.afterWake(true);
+    clock += 30 * 60_000;
+    expect(run(await watch.watchWakeCheck(goal)).prompt).toContain(
+      "Posted mid-wake",
+    );
+  });
+
+  test("a follow-up the wake resolved doesn't wake it again", async () => {
+    const goal = await watchGoal();
+    const added = await watch.addWatchTask(USER, { what: "Review #10" });
+    if (!added.ok) throw new Error(added.message);
+    const plan = run(await watch.watchWakeCheck(goal));
+    await watch.resolveWatchTask(USER, added.task.id, "Merged");
+    await plan.afterWake(true);
+    clock += 30 * 60_000;
+    expect(await watch.watchWakeCheck(goal)).toMatchObject({
+      skip: "nothing changed",
+    });
+  });
+
+  test("a wake that keeps failing drops its events after 3 tries, says so once, and pauses the watch", async () => {
+    const goal = await watchGoal();
+    await watch.recordWatchEvent(USER, { kind: "item", title: "stuck" });
+    for (let i = 0; i < watch.WATCH_MAX_EVENT_ATTEMPTS; i++) {
+      const plan = run(await watch.watchWakeCheck(goal));
+      expect(plan.prompt).toContain("stuck");
+      await plan.afterWake(false);
+      clock += watch.WATCH_EVENT_GAP_MS;
+    }
+    expect((await watch.readWatchState(USER)).events).toEqual([]);
+    const open = await inbox.listSupervisorItems(USER, { state: "open" });
+    expect(
+      open.filter((i) => i.title.startsWith("The watch gave up")),
+    ).toHaveLength(1);
+    const breaker = open.find((i) => i.kind === "needs-you");
+    expect(breaker?.title).toBe("The watch stopped: its last wakes failed");
+    expect(await goals.getGoal(goal.id)).toMatchObject({
+      status: "paused",
+      pauseReason: watch.WATCH_FAILING_REASON,
+    });
+    // Only the owner lifts it: ensure leaves it paused, and a worker's
+    // report goes to the conversation meanwhile.
+    await watch.ensureWatchGoal(USER);
+    expect((await goals.getGoal(goal.id))!.status).toBe("paused");
+    expect(
+      await watch.routeSupervisorDelivery(
+        { supervisor: true, createdBy: USER },
+        "<!--os:worker-report-->\nDone.",
+        "worker os-abc123",
+        "d-paused",
+      ),
+    ).toBeNull();
+    await watch.onWatchAnswer(breaker!, "Resume the watch", "owner");
+    expect((await goals.getGoal(goal.id))!.status).toBe("active");
+    expect((await watch.readWatchState(USER)).events).toEqual([]);
+  });
+
+  test("a success in between resets the count of failed wakes", async () => {
+    const goal = await watchGoal();
+    for (const ok of [false, false, true, false, false]) {
+      await watch.recordWatchEvent(USER, { kind: "item", title: `${ok}` });
+      await run(await watch.watchWakeCheck(goal)).afterWake(ok);
+      clock += watch.WATCH_EVENT_GAP_MS;
+    }
+    expect((await goals.getGoal(goal.id))!.status).toBe("active");
+  });
+
+  test("too many events drop items and incidents first, and the prompt says how many", async () => {
+    const goal = await watchGoal();
+    await watch.recordWatchEvent(USER, { kind: "item", title: "old item" });
+    for (let i = 0; i < watch.MAX_EVENTS; i++)
+      await watch.recordWatchEvent(USER, {
+        kind: "worker-report",
+        title: `report ${i}`,
+      });
+    const state = await watch.readWatchState(USER);
+    expect(state.events).toHaveLength(watch.MAX_EVENTS);
+    expect(state.events.every((e) => e.kind === "worker-report")).toBe(true);
+    const plan = run(await watch.watchWakeCheck(goal));
+    expect(plan.prompt).toContain("1 older events dropped");
+    await plan.afterWake(true);
+    await watch.recordWatchEvent(USER, { kind: "item", title: "new" });
+    clock += watch.WATCH_EVENT_GAP_MS;
+    expect(run(await watch.watchWakeCheck(goal)).prompt).not.toContain(
+      "dropped",
+    );
+  });
+
+  test("an urgent event wakes it with more thought, on the pinned model", async () => {
+    const goal = await watchGoal();
+    const routine = run(await watch.watchWakeCheck(goal));
+    expect([routine.model, routine.effort]).toEqual([
+      "pi/anthropic/claude-sonnet-5-5",
+      "medium",
+    ]);
+    await routine.afterWake(true);
+    await watch.recordWatchEvent(USER, {
+      kind: "incident",
+      title: "Down",
+      urgent: true,
+    });
+    expect(run(await watch.watchWakeCheck(goal)).effort).toBe("high");
+  });
+});
+
+describe("taking a delivery", () => {
+  const session = { supervisor: true, createdBy: USER };
+  const report = "<!--os:worker-report-->\nDone: PR #10 is green.";
+
+  test("a watch the owner paused leaves it with the conversation, recording nothing", async () => {
+    const goal = await watchGoal();
+    await goals.mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: "Paused from the goals page",
+    }));
+    expect(
+      await watch.routeSupervisorDelivery(
+        session,
+        report,
+        "worker os-abc123",
+        "d1",
+      ),
+    ).toBeNull();
+    expect(
+      await watch.recordWatchEvent(USER, { kind: "item", title: "x" }),
+    ).toBe(false);
+    expect(
+      await watch.addWatchTask(USER, { what: "Review #10" }),
+    ).toMatchObject({ ok: false });
+    expect(await watch.readWatchState(USER)).toMatchObject({
+      events: [],
+      tasks: [],
+    });
+  });
+
+  test("so does a server whose goal runner has no watch hooks", async () => {
+    await watchGoal();
+    runnerReady = false;
+    expect(
+      await watch.routeSupervisorDelivery(
+        session,
+        report,
+        "worker os-abc123",
+        "d1",
+      ),
+    ).toBeNull();
+    expect((await watch.readWatchState(USER)).events).toEqual([]);
+  });
+
+  test("the same delivery twice is one event, before and after a wake took it", async () => {
+    const goal = await watchGoal();
+    for (let i = 0; i < 2; i++)
+      expect(
+        await watch.routeSupervisorDelivery(
+          session,
+          report,
+          "worker os-abc123",
+          "d1",
+        ),
+      ).toBeTruthy();
+    expect((await watch.readWatchState(USER)).events).toHaveLength(1);
+    await run(await watch.watchWakeCheck(goal)).afterWake(true);
+    expect(
+      await watch.routeSupervisorDelivery(
+        session,
+        report,
+        "worker os-abc123",
+        "d1",
+      ),
+    ).toBeTruthy();
+    expect((await watch.readWatchState(USER)).events).toEqual([]);
+  });
+
+  test("once recorded, a failure to bring the wake forward still counts as taken", async () => {
+    await watchGoal();
+    await watch.recordWatchEvent(USER, { kind: "item", title: "warm" });
+    watch.__setWatchDepsForTest({
+      ...baseDeps(),
+      mutateGoal: async () => {
+        throw new Error("catalog down");
+      },
+    });
+    expect(
+      await watch.routeSupervisorDelivery(
+        session,
+        report,
+        "worker os-abc123",
+        "d2",
+      ),
+    ).toBeTruthy();
+    expect(
+      (await watch.readWatchState(USER)).events.map((e) => e.kind),
+    ).toEqual(["item", "worker-report"]);
+  });
+
+  test("a worker's question stays in the conversation, which can answer it", async () => {
+    await watchGoal();
+    expect(
+      await watch.routeSupervisorDelivery(
+        session,
+        "<!--os:worker-report-->\nTests pass. Should I merge #10 now or wait for Pat?",
+        "worker os-abc123",
+        "d1",
+      ),
+    ).toBeNull();
+    expect(
+      await watch.routeSupervisorDelivery(
+        session,
+        "Which branch did you mean?",
+        "agent os-abc123",
+        "d2",
+      ),
+    ).toBeNull();
+    expect((await watch.readWatchState(USER)).events).toEqual([]);
+    // A quoted or coded question isn't the worker asking.
+    expect(
+      await watch.routeSupervisorDelivery(
+        session,
+        "<!--os:worker-report-->\nDone. The issue asked:\n> Can we ship today?\n```\nif (ok?) run()\n```",
+        "worker os-abc123",
+        "d3",
+      ),
+    ).toBeTruthy();
+  });
+
+  test("a new watch's first wake is spread over half an hour", async () => {
+    watch.__setWatchDepsForTest({ ...baseDeps(), random: () => 0.5 });
+    const goal = await watchGoal();
+    expect(goal.nextWakeAt).toBe(
+      new Date(NOON + watch.WATCH_FIRST_WAKE_SPREAD_MS / 2).toISOString(),
+    );
+  });
+});
+
+describe("opensession-watch guards", () => {
+  async function tools() {
+    const server = watchMcp.createWatchMcpServer({ user: USER });
+    return (
+      server as unknown as {
+        instance: {
+          _registeredTools: Record<
+            string,
+            {
+              handler: (args: Record<string, unknown>) => Promise<{
+                content: Array<{ text: string }>;
+              }>;
+            }
+          >;
+        };
+      }
+    ).instance._registeredTools;
+  }
+
+  test("posts down only while an urgent event is pending", async () => {
+    await watchGoal();
+    const t = await tools();
+    const refused = await t.post_item!.handler({
+      kind: "needs-you",
+      title: "Checkout is down",
+      urgency: "down",
+      dedupe_key: "checkout",
+    });
+    expect(refused.content[0]!.text).toContain("Posted as normal urgency");
+    let [item] = await inbox.listSupervisorItems(USER, { state: "open" });
+    expect(item!.urgency ?? "normal").toBe("normal");
+    await watch.recordWatchEvent(USER, {
+      kind: "incident",
+      title: "Checkout down",
+      urgent: true,
+    });
+    await t.post_item!.handler({
+      kind: "needs-you",
+      title: "Checkout is down",
+      urgency: "down",
+      dedupe_key: "checkout",
+    });
+    [item] = await inbox.listSupervisorItems(USER, { state: "open" });
+    expect(item!.urgency).toBe("down");
+  });
+
+  test("its ledger entries are marked as observations, its item lists as untrusted", async () => {
+    const t = await tools();
+    expect(
+      (await t.append_ledger!.handler({ text: "Checkout recovered" }))
+        .content[0]!.text,
+    ).toMatch(/\n## .* UTC · observation\n\nCheckout recovered$/);
+    await leadItem();
+    expect((await t.list_items!.handler({})).content[0]!.text).toStartWith(
+      watchMcp.WATCH_UNTRUSTED_LABEL,
     );
   });
 });

@@ -22,15 +22,22 @@
  * - its schedule, from the person's prefs: every `everyMinutes` inside the
  *   active hours and outside quiet hours, never at night.
  *
- * Before the model wakes, a server-side digest of what it would look at
- * (open inbox items, open incidents, pending events, open follow-ups and
- * their sessions) is compared with the last one; unchanged, the wake is
- * skipped and rescheduled. The digest reads the inbox document, the
+ * Before the model wakes with no event pending, a server-side digest of
+ * what it would look at (open inbox items, open incidents, open follow-ups
+ * and their sessions) is compared with the one the last wake started
+ * from; unchanged, the wake is skipped and rescheduled. A pending event
+ * always runs it. The digest reads the inbox document, the
  * incidents catalog and the few sessions follow-ups name, never a scan of
  * per-session databases.
  *
  * Loop guards: wakes per local day, tokens per wake (goal-runner holds the
- * run to them), and the Claude pool's headroom.
+ * run to them), the Claude pool's headroom, at most three failed wakes per
+ * event, and a breaker that pauses the watch after three failed wakes in
+ * a row until the owner resumes it.
+ *
+ * Deliveries reach the watch only while its goal is active and the goal
+ * runner has its hooks; otherwise nothing is recorded and they stay in
+ * the conversation, as does a worker asking a question.
  *
  * State lives in one catalog document per person (`supervisor-watch`):
  * the goal's id, pending events, follow-ups, the last digest and the day's
@@ -92,6 +99,24 @@ export const WATCH_HEADROOM_RETRY_MS = 15 * 60_000;
 export const WATCH_OFF_REASON = "The watch is off in the supervisor settings";
 export const WATCH_STARTING_REASON =
   "Starting: the watch is recording its goal";
+/** The watch's own circuit breaker: only the owner lifts it. */
+export const WATCH_FAILING_REASON = "Stopped after 3 failed wakes in a row";
+/** Failed wakes in a row that pause the watch. */
+export const WATCH_MAX_FAILED_WAKES = 3;
+/** Failed wakes one event may be in before it is dropped. */
+export const WATCH_MAX_EVENT_ATTEMPTS = 3;
+/** The model of every wake, pinned: routine reading and triage. */
+export const WATCH_MODEL = "pi/anthropic/claude-sonnet-5-5";
+export const WATCH_EFFORT = "medium";
+/** An urgent event pending gets more thought. */
+export const WATCH_URGENT_EFFORT = "high";
+/** A new watch's first wake lands somewhere in this window, so the
+ *  watches existing people get at deploy don't all wake at once. */
+export const WATCH_FIRST_WAKE_SPREAD_MS = 30 * 60_000;
+const FAILING_KEY = `${WATCH_SOURCE}:failing`;
+const GAVE_UP_KEY = `${WATCH_SOURCE}:gave-up`;
+/** Delivery ids the watch already took, kept to drop a redelivery. */
+const RECENT_KEPT = 200;
 const NOT_THE_WATCH_REASON = "Another goal is this person's watch";
 const NO_SUPERVISOR_REASON = "This person has no supervisor";
 /** Pending events kept per person; the oldest drop first. */
@@ -129,6 +154,8 @@ export interface WatchEvent {
   sessionId?: string;
   /** Something fully down or critical: may wake the watch in quiet hours. */
   urgent?: boolean;
+  /** Failed wakes it was in. */
+  attempts?: number;
 }
 
 export type WatchTaskState = "open" | "resolved" | "expired";
@@ -145,7 +172,7 @@ export interface WatchTask {
   outcome?: string;
 }
 
-interface WatchDocument {
+export interface WatchDocument {
   user: string;
   goalId?: string;
   events: WatchEvent[];
@@ -155,6 +182,12 @@ interface WatchDocument {
   lastWakeAt?: number;
   /** Model wakes on one local day. */
   wakes?: { day: string; count: number };
+  /** Events dropped for room since the last wake that ran. */
+  dropped?: number;
+  /** Wakes that failed in a row. */
+  failedWakes?: number;
+  /** Ids of events from deliveries the watch already took. */
+  recent?: string[];
 }
 
 /** An open incident, as the digest and the prompt see it. */
@@ -178,6 +211,10 @@ export interface WatchDeps {
   sessionStatus(id: string): Promise<string>;
   /** Whether the Claude pool has room for background work. */
   headroomOk(): Promise<boolean>;
+  /** Whether the goal runner has the watch's hooks, so its goal can wake. */
+  runnerReady(): Promise<boolean>;
+  /** In [0, 1): spreads first wakes. */
+  random(): number;
   getGoal: (typeof import("./goals"))["getGoal"];
   listGoals: (typeof import("./goals"))["listGoals"];
   createGoal: (typeof import("./goals"))["createGoal"];
@@ -258,6 +295,9 @@ const liveDeps: WatchDeps = {
   },
   headroomOk: async () =>
     watchHeadroomOk((await import("./claude-accounts")).listAccountsPublic()),
+  runnerReady: async () =>
+    (await import("./goal-runner")).watchGoalHooksRegistered(),
+  random: () => Math.random(),
   getGoal: async (id) => (await import("./goals")).getGoal(id),
   listGoals: async () => (await import("./goals")).listGoals(),
   createGoal: async (...args) => (await import("./goals")).createGoal(...args),
@@ -327,7 +367,29 @@ function cleanEvent(value: unknown): WatchEvent | null {
   const sessionId = str(value.sessionId, 80);
   if (sessionId) event.sessionId = sessionId;
   if (value.urgent === true) event.urgent = true;
+  const attempts = num(value.attempts);
+  if (attempts) event.attempts = attempts;
   return event;
+}
+
+/** Kinds the inbox and the incidents catalog still show when their event
+ *  is dropped, so they go first when there are too many. */
+const DROPPABLE: ReadonlySet<WatchEventKind> = new Set(["item", "incident"]);
+
+/** At most MAX_EVENTS: the oldest item and incident events drop first,
+ *  then the oldest of any kind. */
+export function capEvents(events: WatchEvent[]): {
+  events: WatchEvent[];
+  dropped: number;
+} {
+  const kept = [...events];
+  let dropped = 0;
+  while (kept.length > MAX_EVENTS) {
+    const index = kept.findIndex((e) => DROPPABLE.has(e.kind));
+    kept.splice(Math.max(index, 0), 1);
+    dropped += 1;
+  }
+  return { events: kept, dropped };
 }
 
 function cleanTask(value: unknown): WatchTask | null {
@@ -353,10 +415,11 @@ function cleanDocument(value: unknown, user: string): WatchDocument {
   const raw = isRecord(value) ? value : {};
   const doc: WatchDocument = {
     user: str(raw.user, 120) || user,
-    events: (Array.isArray(raw.events) ? raw.events : [])
-      .map(cleanEvent)
-      .filter((e): e is WatchEvent => !!e)
-      .slice(-MAX_EVENTS),
+    events: capEvents(
+      (Array.isArray(raw.events) ? raw.events : [])
+        .map(cleanEvent)
+        .filter((e): e is WatchEvent => !!e),
+    ).events,
     tasks: (Array.isArray(raw.tasks) ? raw.tasks : [])
       .map(cleanTask)
       .filter((t): t is WatchTask => !!t)
@@ -373,6 +436,15 @@ function cleanDocument(value: unknown, user: string): WatchDocument {
     const count = num(raw.wakes.count);
     if (day && count !== undefined) doc.wakes = { day, count };
   }
+  const dropped = num(raw.dropped);
+  if (dropped) doc.dropped = dropped;
+  const failedWakes = num(raw.failedWakes);
+  if (failedWakes) doc.failedWakes = failedWakes;
+  if (Array.isArray(raw.recent))
+    doc.recent = raw.recent
+      .map((id) => str(id, 80))
+      .filter(Boolean)
+      .slice(-RECENT_KEPT);
   return doc;
 }
 
@@ -399,14 +471,9 @@ async function updateWatch(
 }
 
 /** The person's watch state, for tests and the watch's tools. */
-export async function readWatchState(user: string): Promise<{
-  goalId?: string;
-  events: WatchEvent[];
-  tasks: WatchTask[];
-  lastDigest?: string;
-  lastWakeAt?: number;
-  wakes?: { day: string; count: number };
-}> {
+export async function readWatchState(
+  user: string,
+): Promise<Readonly<WatchDocument>> {
   return readWatch(user);
 }
 
@@ -587,9 +654,14 @@ async function ensureNow(user: string): Promise<EnsureWatchResult> {
       await d.deleteGoal(created.id).catch(() => false);
       throw error;
     }
+    // Spread over a window: every existing person gets a watch on the
+    // deploy that brings it. An event still wakes it sooner.
+    const first = new Date(
+      d.now() + Math.floor(d.random() * WATCH_FIRST_WAKE_SPREAD_MS),
+    ).toISOString();
     await d.mutateGoal(created.id, (g) =>
       g.status === "paused" && g.pauseReason === WATCH_STARTING_REASON
-        ? { ...g, status: "active", pauseReason: undefined, nextWakeAt: now }
+        ? { ...g, status: "active", pauseReason: undefined, nextWakeAt: first }
         : g,
     );
     return { action: "created", goalId: created.id };
@@ -614,13 +686,40 @@ export interface WatchEventInput {
   text?: string;
   sessionId?: string;
   urgent?: boolean;
+  /** A delivery's id: the same delivery twice is one event. */
+  key?: string;
+}
+
+/** Why the person's watch can't take work now, or null when it can: its
+ *  goal is active and the goal runner can wake it. */
+export async function watchUnavailable(
+  user: string,
+  d: WatchDeps = deps(),
+): Promise<string | null> {
+  const prefs = await d.prefs(user);
+  if (!prefs.watch.enabled) return WATCH_OFF_REASON;
+  await ensureWatchGoalOnce(user);
+  const doc = await readWatch(user);
+  const goal = doc.goalId ? await d.getGoal(doc.goalId) : null;
+  if (!goal?.watchOwner || watchKey(goal.watchOwner) !== watchKey(user))
+    return "The watch has no goal";
+  if (goal.status !== "active")
+    return `The watch is paused${goal.pauseReason ? ` (${goal.pauseReason})` : ""}`;
+  if (!(await d.runnerReady())) return WATCH_UNAVAILABLE_REASON;
+  return null;
+}
+
+function eventId(key: string | undefined): string {
+  if (!key) return `we-${randomUUID()}`;
+  return `we-${new Bun.CryptoHasher("sha256").update(key).digest("hex").slice(0, 32)}`;
 }
 
 /**
  * Hand the person's watch an event and wake it early: soon after its last
  * wake at the earliest (WATCH_EVENT_GAP_MS), never past its schedule.
- * False when the watch can't take it (off, no supervisor, no goal), so a
- * caller can fall back.
+ * False, with nothing recorded, when the watch can't take it (off, paused,
+ * no goal, or the goal runner without its hooks), so a caller can fall
+ * back. True once the event is recorded, or was already (the same `key`).
  */
 export async function recordWatchEvent(
   user: string,
@@ -629,12 +728,10 @@ export async function recordWatchEvent(
   const owner = user?.trim();
   if (!owner) return false;
   const d = deps();
-  const prefs = await d.prefs(owner);
-  if (!prefs.watch.enabled) return false;
-  await ensureWatchGoalOnce(owner);
+  if (await watchUnavailable(owner, d)) return false;
   const now = d.now();
   const event: WatchEvent = {
-    id: `we-${randomUUID()}`,
+    id: eventId(input.key),
     kind: input.kind,
     at: now,
     title: input.title.trim().slice(0, EVENT_TITLE_LEN) || input.kind,
@@ -643,20 +740,41 @@ export async function recordWatchEvent(
   if (text) event.text = text;
   if (input.sessionId) event.sessionId = input.sessionId.slice(0, 80);
   if (input.urgent) event.urgent = true;
-  const doc = await updateWatch(owner, (current) => ({
-    ...current,
-    events: [...current.events, event].slice(-MAX_EVENTS),
-  }));
-  if (!doc.goalId) return false;
-  const wakeAt = new Date(
-    Math.max(now, (doc.lastWakeAt ?? 0) + WATCH_EVENT_GAP_MS),
-  ).toISOString();
-  const goal = await d.mutateGoal(doc.goalId, (g) =>
-    g.status === "active" && g.nextWakeAt > wakeAt
-      ? { ...g, nextWakeAt: wakeAt }
-      : g,
-  );
-  return !!goal;
+  const doc = await updateWatch(owner, (current) => {
+    if (
+      current.events.some((e) => e.id === event.id) ||
+      current.recent?.includes(event.id)
+    )
+      return current;
+    const capped = capEvents([...current.events, event]);
+    return {
+      ...current,
+      events: capped.events,
+      ...(capped.dropped
+        ? { dropped: (current.dropped ?? 0) + capped.dropped }
+        : {}),
+    };
+  });
+  // Recorded: from here a failure only delays the wake, and the caller
+  // must not deliver it elsewhere too.
+  if (doc.goalId) {
+    const wakeAt = new Date(
+      Math.max(now, (doc.lastWakeAt ?? 0) + WATCH_EVENT_GAP_MS),
+    ).toISOString();
+    await d
+      .mutateGoal(doc.goalId, (g) =>
+        g.status === "active" && g.nextWakeAt > wakeAt
+          ? { ...g, nextWakeAt: wakeAt }
+          : g,
+      )
+      .catch((error: unknown) =>
+        console.warn(
+          `[watch] ${owner}: could not bring the wake forward:`,
+          error instanceof Error ? error.message : error,
+        ),
+      );
+  }
+  return true;
 }
 
 /** What kind of background delivery this is, or null for one the
@@ -692,6 +810,23 @@ function strippedDelivery(content: string): string {
   return content.replace(/^\s*<!--os:[a-z-]+(?::[^\s>]+)?-->\s*/i, "").trim();
 }
 
+/** Whether a session's message asks something: a line of its own words
+ *  (not quoted, not code) ending in a question mark. Only the
+ *  conversation can answer it and send the answer back. */
+export function asksAQuestion(text: string): boolean {
+  let fenced = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("```")) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced || line.startsWith(">")) continue;
+    if (/\?[*_)\]"']*$/.test(line)) return true;
+  }
+  return false;
+}
+
 /**
  * Route a delivery to a supervisor session that isn't the owner speaking
  * (a worker's report, a wait's wake, a check-back, another session's
@@ -709,6 +844,14 @@ export async function routeSupervisorDelivery(
   if (!session.supervisor || !owner) return null;
   const kind = backgroundDeliveryKind(content, user, deliveryId);
   if (!kind) return null;
+  const text = strippedDelivery(content);
+  // A worker or session asking something waits for an answer only the
+  // owner can give; the conversation has it and can send the answer back.
+  if (
+    (kind === "worker-report" || kind === "session-notice") &&
+    asksAQuestion(text)
+  )
+    return null;
   const sentinel = /^\s*<!--os:worker-report:([^\s>]+)-->/.exec(content);
   const sessionId = sentinel?.[1] ?? delegatedActorParent(user) ?? undefined;
   const ok = await recordWatchEvent(owner, {
@@ -716,8 +859,9 @@ export async function routeSupervisorDelivery(
     title: sessionId
       ? `${DELIVERY_TITLES[kind]} (${sessionId})`
       : DELIVERY_TITLES[kind],
-    text: strippedDelivery(content),
+    text,
     ...(sessionId ? { sessionId } : {}),
+    ...(deliveryId ? { key: `delivery:${deliveryId}` } : {}),
   });
   return ok
     ? `Handed to ${owner}'s watch, which follows it up in the background.`
@@ -748,12 +892,11 @@ export async function addWatchTask(
     if (at <= now) return { ok: false, message: "That time has passed." };
     until = Math.min(at, now + TASK_MAX_MS);
   }
-  const prefs = await d.prefs(owner);
-  if (!prefs.watch.enabled)
+  const unavailable = await watchUnavailable(owner, d);
+  if (unavailable)
     return {
       ok: false,
-      message:
-        "The watch is off in the supervisor settings, so nothing would follow this up. Tell the owner.",
+      message: `${unavailable}, so nothing would follow this up. Tell the owner, or follow it up in this conversation when they ask.`,
     };
   const sessionId = input.sessionId?.trim().slice(0, 80) || undefined;
   const task: WatchTask = {
@@ -776,15 +919,16 @@ export async function addWatchTask(
       ok: false,
       message: `The watch already follows ${MAX_OPEN_TASKS} things up. Nothing was added.`,
     };
-  const woken = await recordWatchEvent(owner, {
+  await recordWatchEvent(owner, {
     kind: "task",
     title: `New follow-up: ${what}`,
     ...(sessionId ? { sessionId } : {}),
-  });
+    key: `task:${task.id}`,
+  }).catch(() => false);
   return {
     ok: true,
     task,
-    message: `Watching for it (${task.id}, until ${new Date(until).toISOString()}). ${woken ? "The watch picks it up in the background" : "The watch picks it up on its next wake"} and reports through the inbox.`,
+    message: `Watching for it (${task.id}, until ${new Date(until).toISOString()}). The watch picks it up in the background and reports through the inbox.`,
   };
 }
 
@@ -853,12 +997,12 @@ export interface WatchDigestInput {
   incidents: Array<
     Pick<WatchIncident, "id" | "state" | "severity" | "updatedAt">
   >;
-  events: Array<Pick<WatchEvent, "id">>;
   tasks: Array<{ id: string; overdue: boolean; sessionStatus?: string }>;
 }
 
-/** A hash of what the watch looks at. Its own items are left out, so
- *  what it posted never wakes it again. Order doesn't matter. */
+/** A hash of the state the watch looks at. Its own items are left out, so
+ *  what it posted never wakes it again. Order doesn't matter. Pending
+ *  events aren't in it: any pending event runs the wake. */
 export function watchDigest(input: WatchDigestInput): string {
   const parts = [
     ...input.items
@@ -867,7 +1011,6 @@ export function watchDigest(input: WatchDigestInput): string {
     ...input.incidents.map(
       (i) => `incident:${i.id}:${i.state}:${i.severity}:${i.updatedAt}`,
     ),
-    ...input.events.map((e) => `event:${e.id}`),
     ...input.tasks.map(
       (t) =>
         `task:${t.id}:${t.overdue ? "overdue" : "open"}:${t.sessionStatus ?? ""}`,
@@ -885,9 +1028,20 @@ interface Looked {
   digest: string;
 }
 
+function lookedDigest(looked: Omit<Looked, "digest">, now: number): string {
+  return watchDigest({
+    items: looked.items,
+    incidents: looked.incidents,
+    tasks: looked.tasks.map((t) => ({
+      id: t.id,
+      overdue: now > t.until,
+      sessionStatus: t.sessionStatus,
+    })),
+  });
+}
+
 async function lookAround(
   user: string,
-  doc: WatchDocument,
   now: number,
   d: WatchDeps,
 ): Promise<Looked> {
@@ -900,16 +1054,7 @@ async function lookAround(
     items,
     incidents,
     tasks,
-    digest: watchDigest({
-      items,
-      incidents,
-      events: doc.events,
-      tasks: tasks.map((t) => ({
-        id: t.id,
-        overdue: now > t.until,
-        sessionStatus: t.sessionStatus,
-      })),
-    }),
+    digest: lookedDigest({ items, incidents, tasks }, now),
   };
 }
 
@@ -934,16 +1079,22 @@ export function watchWakePrompt(input: {
   tasks: Array<WatchTask & { sessionStatus?: string }>;
   now: number;
   maxTokens: number;
+  /** Older events dropped for room. */
+  dropped?: number;
 }): string {
   const at = (ms: number) => new Date(ms).toISOString().slice(0, 16) + "Z";
-  const events = input.events.length
-    ? input.events
-        .map(
-          (e) =>
-            `- ${at(e.at)} ${e.kind}${e.urgent ? " (urgent)" : ""}: ${e.title}${e.text ? `\n${quote(e.text)}` : ""}`,
-        )
-        .join("\n")
-    : "- Nothing new: this is a scheduled look around.";
+  const dropped = input.dropped
+    ? `\n- ${input.dropped} older events dropped for room (new items and incidents first): the inbox and incidents below still show them.`
+    : "";
+  const events =
+    (input.events.length
+      ? input.events
+          .map(
+            (e) =>
+              `- ${at(e.at)} ${e.kind}${e.urgent ? " (urgent)" : ""}: ${e.title}${e.text ? `\n${quote(e.text)}` : ""}`,
+          )
+          .join("\n")
+      : "- Nothing new: this is a scheduled look around.") + dropped;
   const items = input.items
     .filter((i) => i.source !== WATCH_SOURCE)
     .slice(0, 15)
@@ -996,9 +1147,10 @@ async function noteDailyCap(
  *   active hours with nothing pending (no wakes at night);
  * - the day's wakes are used up;
  * - the Claude pool is low;
- * - nothing changed since the last wake (the digest).
- * Else it runs, on the charter's fields (goal-runner mounts the watch's
- * own tools, opensession-watch).
+ * - no event is pending and nothing changed since the last wake (the
+ *   digest).
+ * Else it runs, on the charter's fields and the pinned model
+ * (goal-runner mounts the watch's own tools, opensession-watch).
  */
 export async function watchWakeCheck(goal: Goal): Promise<WatchWakePlan> {
   const user = goal.watchOwner?.trim();
@@ -1040,11 +1192,12 @@ export async function watchWakeCheck(goal: Goal): Promise<WatchWakePlan> {
       ...current,
       tasks: expireTasks(current.tasks, now),
     }));
-  const looked = await lookAround(user, doc, now, d);
-  if (looked.digest === doc.lastDigest)
+  const looked = await lookAround(user, now, d);
+  if (!pending.length && looked.digest === doc.lastDigest)
     return { skip: "nothing changed", nextWakeAt: scheduled };
 
   const taken = new Set(pending.map((e) => e.id));
+  const shownDropped = doc.dropped ?? 0;
   await updateWatch(user, (current) => ({
     ...current,
     lastWakeAt: now,
@@ -1064,36 +1217,103 @@ export async function watchWakeCheck(goal: Goal): Promise<WatchWakePlan> {
       tasks: looked.tasks,
       now,
       maxTokens: WATCH_MAX_TOKENS_PER_WAKE,
+      dropped: shownDropped,
     }),
     maxTokens: WATCH_MAX_TOKENS_PER_WAKE,
-    afterWake: (ok) => afterWatchWake(user, taken, ok),
+    model: WATCH_MODEL,
+    effort: pending.some((e) => e.urgent) ? WATCH_URGENT_EFFORT : WATCH_EFFORT,
+    afterWake: (ok) =>
+      afterWatchWake(user, goal.id, { taken, looked, now, shownDropped }, ok),
   };
   return plan;
 }
 
-/** After a wake: the events it saw are done (kept for the next wake when
- *  it failed), the digest is taken again so what the watch itself did
- *  doesn't wake it, and the next wake is the schedule's. */
+/** What one wake started from. */
+interface WakeStart {
+  /** The events it was shown. */
+  taken: Set<string>;
+  looked: Looked;
+  now: number;
+  shownDropped: number;
+}
+
+/**
+ * After a wake.
+ * - It ran (or stopped at its tokens): the events it was shown are done,
+ *   and the digest kept is the one it started from, less the follow-ups
+ *   it resolved, so anything that changed while it ran wakes it again
+ *   and what it did itself doesn't.
+ * - It failed: each event it was shown counts the attempt and is dropped
+ *   after WATCH_MAX_EVENT_ATTEMPTS, with one fyi; WATCH_MAX_FAILED_WAKES
+ *   failed wakes in a row pause the watch and ask the owner.
+ * Resolves the next wake: soon while events are pending, else the
+ * schedule's.
+ */
 async function afterWatchWake(
   user: string,
-  taken: Set<string>,
+  goalId: string,
+  start: WakeStart,
   ok: boolean,
 ): Promise<string> {
   const d = deps();
   const now = d.now();
   const prefs = await d.prefs(user);
   const zone = prefs.effectiveTimezone;
-  let doc = await readWatch(user);
+  let doc: WatchDocument;
   if (ok) {
-    doc = await updateWatch(user, (current) => ({
-      ...current,
-      events: current.events.filter((e) => !taken.has(e.id)),
-    }));
-    const looked = await lookAround(user, doc, now, d);
-    doc = await updateWatch(user, (current) => ({
-      ...current,
-      lastDigest: looked.digest,
-    }));
+    doc = await updateWatch(user, (current) => {
+      const open = new Set(
+        current.tasks.filter((t) => t.state === "open").map((t) => t.id),
+      );
+      const consumed = current.events.filter((e) => start.taken.has(e.id));
+      return {
+        ...current,
+        events: current.events.filter((e) => !start.taken.has(e.id)),
+        recent: [...(current.recent ?? []), ...consumed.map((e) => e.id)].slice(
+          -RECENT_KEPT,
+        ),
+        lastDigest: lookedDigest(
+          {
+            ...start.looked,
+            tasks: start.looked.tasks.filter((t) => open.has(t.id)),
+          },
+          start.now,
+        ),
+        dropped: Math.max(0, (current.dropped ?? 0) - start.shownDropped),
+        failedWakes: 0,
+      };
+    });
+  } else {
+    let gaveUp: WatchEvent[] = [];
+    doc = await updateWatch(user, (current) => {
+      const events: WatchEvent[] = [];
+      gaveUp = [];
+      for (const event of current.events) {
+        if (!start.taken.has(event.id)) {
+          events.push(event);
+          continue;
+        }
+        const attempts = (event.attempts ?? 0) + 1;
+        if (attempts >= WATCH_MAX_EVENT_ATTEMPTS) gaveUp.push(event);
+        else events.push({ ...event, attempts });
+      }
+      return {
+        ...current,
+        events,
+        recent: [...(current.recent ?? []), ...gaveUp.map((e) => e.id)].slice(
+          -RECENT_KEPT,
+        ),
+        failedWakes: (current.failedWakes ?? 0) + 1,
+      };
+    });
+    if (gaveUp.length) await noteGaveUp(user, gaveUp, d);
+    if ((doc.failedWakes ?? 0) >= WATCH_MAX_FAILED_WAKES) {
+      await tripBreaker(user, goalId, d);
+      doc = await updateWatch(user, (current) => ({
+        ...current,
+        failedWakes: 0,
+      }));
+    }
   }
   // Events still pending (they came during the wake, or it failed) bring
   // the next one forward; the wake check still holds it to its rules.
@@ -1101,6 +1321,67 @@ async function afterWatchWake(
     ? now + WATCH_EVENT_GAP_MS
     : nextWatchWake(prefs, zone, now);
   return new Date(next).toISOString();
+}
+
+/** One fyi for the events failed wakes gave up on. */
+async function noteGaveUp(
+  user: string,
+  events: WatchEvent[],
+  d: WatchDeps,
+): Promise<void> {
+  await d
+    .postSupervisorItem({
+      user,
+      source: WATCH_SOURCE,
+      kind: "fyi",
+      title: "The watch gave up on what it couldn't follow up",
+      body: `Its wakes failed ${WATCH_MAX_EVENT_ATTEMPTS} times while these were pending, so it dropped them:\n\n${events
+        .map((e) => `- ${e.title.replace(/\s+/g, " ")}`)
+        .join("\n")}`,
+      dedupeKey: GAVE_UP_KEY,
+    })
+    .catch(() => {});
+}
+
+const RESUME_OPTION = "Resume the watch";
+
+/** Pause the watch after failed wakes in a row and ask the owner. Only
+ *  they lift it (an answer here, or the goals page). */
+async function tripBreaker(
+  user: string,
+  goalId: string,
+  d: WatchDeps,
+): Promise<void> {
+  await d.mutateGoal(goalId, (g) =>
+    g.status === "active"
+      ? { ...g, status: "paused", pauseReason: WATCH_FAILING_REASON }
+      : g,
+  );
+  await d
+    .postSupervisorItem({
+      user,
+      source: WATCH_SOURCE,
+      kind: "needs-you",
+      title: "The watch stopped: its last wakes failed",
+      body: `Its last ${WATCH_MAX_FAILED_WAKES} wakes failed, so it is paused. Workers' reports come to your conversation with Blob until it runs again.`,
+      options: [RESUME_OPTION, "Leave it paused"],
+      dedupeKey: FAILING_KEY,
+    })
+    .catch(() => {});
+}
+
+/** The owner's answer to the breaker's item: resume, or leave it. */
+async function answerBreaker(user: string, answer: string): Promise<void> {
+  if (answer.trim().toLowerCase() !== RESUME_OPTION.toLowerCase()) return;
+  const d = deps();
+  const doc = await readWatch(user);
+  if (!doc.goalId) return;
+  const now = new Date(d.now()).toISOString();
+  await d.mutateGoal(doc.goalId, (g) =>
+    g.status === "paused" && g.pauseReason === WATCH_FAILING_REASON
+      ? { ...g, status: "active", pauseReason: undefined, nextWakeAt: now }
+      : g,
+  );
 }
 
 const idleRetries = new Map<string, number>();
@@ -1167,6 +1448,7 @@ export async function onWatchAnswer(
   answeredBy: SupervisorAnswerer,
 ): Promise<void> {
   if (item.source !== WATCH_SOURCE) return;
+  if (item.dedupeKey === FAILING_KEY) return answerBreaker(item.user, answer);
   await recordWatchEvent(item.user, {
     kind: "answer",
     title:
@@ -1177,12 +1459,41 @@ export async function onWatchAnswer(
   });
 }
 
+const START_RETRY_MS = 60_000;
+
 /** Register the watch's listeners and the goal runner's watch hooks.
- *  Idempotent; called from boot. */
+ *  Idempotent; called from boot. Marked started only once everything is
+ *  registered; a failure is retried after a minute, and until then
+ *  recordWatchEvent finds no hooks and deliveries stay in the
+ *  conversation. */
 export async function startSupervisorWatch(): Promise<void> {
-  const g = globalThis as { __supervisorWatchStarted?: boolean };
+  const g = globalThis as {
+    __supervisorWatchStarted?: boolean;
+    __supervisorWatchStarting?: Promise<void>;
+  };
   if (g.__supervisorWatchStarted) return;
-  g.__supervisorWatchStarted = true;
+  if (g.__supervisorWatchStarting) return g.__supervisorWatchStarting;
+  const starting = registerWatch()
+    .then(() => {
+      g.__supervisorWatchStarted = true;
+    })
+    .catch((error: unknown) => {
+      console.error(
+        "[watch] start failed; trying again in a minute:",
+        error instanceof Error ? error.message : error,
+      );
+      setTimeout(() => {
+        void startSupervisorWatch();
+      }, START_RETRY_MS).unref?.();
+    })
+    .finally(() => {
+      g.__supervisorWatchStarting = undefined;
+    });
+  g.__supervisorWatchStarting = starting;
+  return starting;
+}
+
+async function registerWatch(): Promise<void> {
   const [inbox, incidents, supervisor, runner] = await Promise.all([
     import("./supervisor-inbox"),
     import("./incidents/incident-store"),

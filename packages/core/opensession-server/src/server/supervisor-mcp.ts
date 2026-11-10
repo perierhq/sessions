@@ -79,8 +79,9 @@ function closed(result: CloseResult, verb: string): string {
   return "The answer is empty.";
 }
 
-/** list_items, for the conversation and the watch. */
-export function listItemsTool(user: string) {
+/** list_items, for the conversation and the watch. `label` heads what it
+ *  returns (the watch's says the items are untrusted). */
+export function listItemsTool(user: string, label?: string) {
   return tool(
     "list_items",
     "List the owner's supervisor inbox: decisions leads raised (needs-you) and what ran alone (fyi). Newest first.",
@@ -98,16 +99,23 @@ export function listItemsTool(user: string) {
         kind: args.kind,
         limit: args.limit ?? 20,
       });
-      return text(
-        items.length ? items.map(format).join("\n") : "Nothing here.",
-      );
+      const list = items.length
+        ? items.map(format).join("\n")
+        : "Nothing here.";
+      return text(label && items.length ? `${label}\n\n${list}` : list);
     },
   );
 }
 
 /** post_item, raising items as `source`: `supervisor` from the
- *  conversation, `watch` from the watch. */
-export function postItemTool(user: string, source: string) {
+ *  conversation, `watch` from the watch. `allowDown`, when given, decides
+ *  whether urgency down (which ignores quiet hours) is allowed now; when
+ *  it isn't, the item goes out as normal. */
+export function postItemTool(
+  user: string,
+  source: string,
+  allowDown?: () => Promise<boolean>,
+) {
   return tool(
     "post_item",
     "Raise something to the owner. kind needs-you pushes their phone (held during their quiet hours unless urgency is down); fyi waits for the daily digest. Use needs-you only for a decision only they can make: two short lines and the options, recommended option first. The same dedupe_key updates an open item instead of adding another.",
@@ -128,6 +136,10 @@ export function postItemTool(user: string, source: string) {
         .describe("down: something is fully down. Ignores quiet hours."),
     },
     async (args) => {
+      const downRefused =
+        args.urgency === "down" &&
+        !!allowDown &&
+        !(await allowDown().catch(() => false));
       const { item, created, delivery } = await postSupervisorItem({
         user,
         source,
@@ -137,10 +149,10 @@ export function postItemTool(user: string, source: string) {
         options: args.options,
         project: args.project,
         dedupeKey: args.dedupe_key,
-        urgency: args.urgency,
+        urgency: downRefused ? "normal" : args.urgency,
       });
       return text(
-        `${created ? "Posted" : "Updated"} (${delivery}): ${format(item)}`,
+        `${created ? "Posted" : "Updated"} (${delivery}): ${format(item)}${downRefused ? "\nPosted as normal urgency: down is only for an urgent event pending in this wake." : ""}`,
       );
     },
   );
@@ -162,8 +174,13 @@ export function readLedgerTool(user: string) {
   );
 }
 
-/** append_ledger, with the description its reader gets. */
-export function appendLedgerTool(user: string, description: string) {
+/** append_ledger, with the description its reader gets. `tag` marks
+ *  each entry's heading (the watch's are observations). */
+export function appendLedgerTool(
+  user: string,
+  description: string,
+  tag?: string,
+) {
   return tool(
     "append_ledger",
     description,
@@ -175,7 +192,12 @@ export function appendLedgerTool(user: string, description: string) {
         .describe("The entry, in markdown."),
     },
     async (args) => {
-      const result = await appendSupervisorLedger(user, args.text);
+      const result = await appendSupervisorLedger(
+        user,
+        args.text,
+        Date.now(),
+        tag,
+      );
       if (result.ok) return text(`Added:\n${result.entry}`);
       return {
         ...text(
