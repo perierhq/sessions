@@ -2283,6 +2283,10 @@ enum OS1API {
         if let effort, !effort.isEmpty { body["effort"] = effort }
         if let fastMode { body["fastMode"] = fastMode }
         if let speed { body["speed"] = speed }
+        #if BLOB
+        // Where Blob will show the reply, so the Desk can fit it (adrs/blob-views.md).
+        if let surface = BlobSurfaceReport.current { body["surface"] = surface }
+        #endif
         return body
     }
 

@@ -49,8 +49,14 @@ struct BlobHomeView: View {
                 if hit(location) { toggleTalk() }
             }
             .onLongPressGesture { showSettings = true }
-            .onAppear { replyHeight = max(240, geo.size.height - insets.top - insets.bottom - 220) }
-            .onChange(of: geo.size) { _, size in replyHeight = max(240, size.height - insets.top - insets.bottom - 220) }
+            .onAppear {
+                replyHeight = max(240, geo.size.height - insets.top - insets.bottom - 220)
+                BlobSurfaceReport.update(size: geo.size)
+            }
+            .onChange(of: geo.size) { _, size in
+                replyHeight = max(240, size.height - insets.top - insets.bottom - 220)
+                BlobSurfaceReport.update(size: size)
+            }
             }
             .ignoresSafeArea()
         }
