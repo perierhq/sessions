@@ -149,6 +149,7 @@ private struct RootSceneLifecycle: View {
         // Reports from a launch that had no server yet go up once there is one.
         await CrashReporter.shared.flush()
         await NativePreferences.hydrate()
+        await AccentStore.shared.hydrate()
         await HideStore.shared.hydrate()
         await RowColorStore.shared.hydrate()
         await PinStore.shared.hydrate()

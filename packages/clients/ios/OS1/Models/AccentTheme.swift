@@ -247,33 +247,67 @@ final class AccentStore {
 
     @ObservationIgnored private let defaults: UserDefaults
 
+    /// The accent. Setting it is a choice made on this device: it is saved
+    /// here and published to the server, the cross-device source of truth the
+    /// web app reads too. `hydrate()` takes the server's value without
+    /// publishing it back.
     var theme: AccentTheme {
         didSet {
             guard theme != oldValue else { return }
             defaults.set(theme.rawValue, forKey: Self.defaultsKey)
-            Self.publish(theme)
+            if !applyingServerValue {
+                writeStamp += 1
+                Self.publish(theme)
+            }
         }
     }
+
+    @ObservationIgnored private var applyingServerValue = false
+    @ObservationIgnored private var writeStamp = 0
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let stored = defaults.string(forKey: Self.defaultsKey) ?? ""
         // Preserve selections across palette replacements rather than silently
         // resetting someone to the default accent.
-        let normalized = switch stored {
+        let normalized = Self.normalized(stored)
+        theme = AccentTheme(rawValue: normalized) ?? .default
+        if normalized != stored, !stored.isEmpty {
+            defaults.set(normalized, forKey: Self.defaultsKey)
+        }
+        // No publish here: a fresh install would otherwise push its default
+        // over the choice made on another device (the web app learned the
+        // same lesson; see frontend/lib/accent-theme.ts hydrateAccentTheme).
+    }
+
+    private static func normalized(_ raw: String) -> String {
+        switch raw {
         case "blue": AccentTheme.sky.rawValue
         case "gold": AccentTheme.lime.rawValue
         case "purple": AccentTheme.coral.rawValue
         case "pink": AccentTheme.coral.rawValue
         case "brown": AccentTheme.orange.rawValue
         case "teal": AccentTheme.sky.rawValue
-        default: stored
+        default: raw
         }
-        theme = AccentTheme(rawValue: normalized) ?? .default
-        if normalized != stored {
-            defaults.set(normalized, forKey: Self.defaultsKey)
-        }
-        Self.publish(theme)
+    }
+
+    /// Takes the person's accent from the server. Call on launch and when the
+    /// app comes back; a choice made on this device while the request was in
+    /// flight wins.
+    @MainActor
+    func hydrate() async {
+        let user = ServerConfig.shared.userName
+        guard ServerConfig.shared.isConfigured, !user.isEmpty else { return }
+        let stamp = writeStamp
+        guard let prefs = try? await SettingsAPI.uiPrefs(user: user),
+              let raw = prefs[Self.prefKey],
+              let server = AccentTheme(rawValue: Self.normalized(raw)),
+              stamp == writeStamp, server != theme
+        else { return }
+        applyingServerValue = true
+        theme = server
+        applyingServerValue = false
     }
 
     private static func publish(_ theme: AccentTheme) {

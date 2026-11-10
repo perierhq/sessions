@@ -136,6 +136,18 @@ final class BlobPhysics {
 
     // MARK: Drawing
 
+    /// Blob's awake colours, from the person's accent (set in Sessions, read
+    /// by `AccentStore.hydrate`): a lifted highlight, the fill, and a shade.
+    static func accentStops(dark: Bool) -> [(Double, Double, Double)] {
+        let fills = AccentStore.shared.theme.fills
+        let hex = dark ? fills.dark : fills.light
+        let rgb = (Double((hex >> 16) & 0xFF), Double((hex >> 8) & 0xFF), Double(hex & 0xFF))
+        func mix(_ c: (Double, Double, Double), _ t: Double, _ by: Double) -> (Double, Double, Double) {
+            (c.0 + (t - c.0) * by, c.1 + (t - c.1) * by, c.2 + (t - c.2) * by)
+        }
+        return [mix(rgb, 255, 0.3), rgb, mix(rgb, 0, 0.18)]
+    }
+
     func draw(in context: inout GraphicsContext, dark: Bool, reduceMotion: Bool) {
         let s0 = size.x
         let vx = reduceMotion ? 0 : x.vel, vy = reduceMotion ? 0 : y.vel
@@ -149,7 +161,8 @@ final class BlobPhysics {
         if haloOpacity > 0.01 {
             let d = s0 * (1.45 + (reduceMotion || mode != .listen ? 0 : 0.25 * envelope))
             let ring = Path(ellipseIn: CGRect(x: x.x - d / 2, y: y.x - d / 2, width: d, height: d))
-            let color: Color = sky.x > 0.5 ? Color(red: 29 / 255, green: 130 / 255, blue: 188 / 255).opacity(0.14)
+            let tint = Self.accentStops(dark: dark)[1]
+            let color: Color = sky.x > 0.5 ? Color(red: tint.0 / 255, green: tint.1 / 255, blue: tint.2 / 255).opacity(0.14)
                 : (dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05))
             context.fill(ring, with: .color(color.opacity(haloOpacity)))
         }
@@ -168,7 +181,7 @@ final class BlobPhysics {
         let base: [(Double, Double, Double)] = dark
             ? [(255, 255, 255), (218, 218, 218), (189, 189, 189)]
             : [(90, 90, 90), (35, 35, 35), (20, 20, 20)]
-        let skyStops: [(Double, Double, Double)] = [(93, 178, 227), (29, 130, 188), (21, 106, 156)]
+        let skyStops = Self.accentStops(dark: dark)
         let stops = zip(base, skyStops).map { a, b in
             Color(red: (a.0 + (b.0 - a.0) * k) / 255, green: (a.1 + (b.1 - a.1) * k) / 255, blue: (a.2 + (b.2 - a.2) * k) / 255)
         }

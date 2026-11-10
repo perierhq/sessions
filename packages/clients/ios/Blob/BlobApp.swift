@@ -67,6 +67,14 @@ struct BlobRoot: View {
             .task(id: config.activeId) {
                 // Crash reports from a launch with no server go up once there is one.
                 if config.isConfigured { await CrashReporter.shared.flush() }
+                // The accent is the person's, set in Sessions; Blob follows it,
+                // and again whenever it comes back to the front.
+                await AccentStore.shared.hydrate()
+                for await _ in NotificationCenter.default.notifications(
+                    named: AppLifecycle.didBecomeActiveNotification
+                ) {
+                    await AccentStore.shared.hydrate()
+                }
             }
     }
 }
