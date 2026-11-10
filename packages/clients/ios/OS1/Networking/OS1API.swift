@@ -2396,6 +2396,116 @@ enum OS1API {
         try await post("/api/supervisor/ensure", body: ["user": ServerConfig.shared.userName])
     }
 
+    /// Something the supervisor raised for its owner (server:
+    /// supervisor-inbox.ts). `needs-you` items wait for an answer; `fyi` ones
+    /// go into the daily digest. Decoded tolerantly: a field the server adds
+    /// or drops never loses the item, and an item without an id or a title is
+    /// skipped by `SupervisorItemList`.
+    struct SupervisorItem: Decodable, Sendable, Identifiable, Equatable {
+        let id: String
+        /// `needs-you` or `fyi`.
+        let kind: String
+        let title: String
+        /// Markdown; may hold the fenced blocks of docs/blocks.md.
+        let body: String
+        /// Numbered choices; the first is the recommended one.
+        let options: [String]
+        let project: String?
+        /// Who raised it, e.g. `lead:betterbahn` or `supervisor`.
+        let source: String?
+        /// `down` when something is fully down; otherwise `normal` or nil.
+        let urgency: String?
+        /// `open`, `answered`, `dismissed` or `expired`.
+        let state: String
+        /// Milliseconds since the epoch.
+        let createdAt: Double?
+
+        var needsYou: Bool { kind == "needs-you" }
+        var isOpen: Bool { state == "open" }
+        var created: Date? { createdAt.map { Date(timeIntervalSince1970: $0 / 1000) } }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, kind, title, body, options, project, source, urgency, state, createdAt
+        }
+
+        init(
+            id: String, kind: String, title: String, body: String = "", options: [String] = [],
+            project: String? = nil, source: String? = nil, urgency: String? = nil,
+            state: String = "open", createdAt: Double? = nil
+        ) {
+            self.id = id; self.kind = kind; self.title = title; self.body = body
+            self.options = options; self.project = project; self.source = source
+            self.urgency = urgency; self.state = state; self.createdAt = createdAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            title = try c.decode(String.self, forKey: .title)
+            kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "fyi"
+            body = ((try? c.decodeIfPresent(String.self, forKey: .body)) ?? nil) ?? ""
+            options = (((try? c.decodeIfPresent([String?].self, forKey: .options)) ?? nil) ?? [])
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            project = (try? c.decodeIfPresent(String.self, forKey: .project)) ?? nil
+            source = (try? c.decodeIfPresent(String.self, forKey: .source)) ?? nil
+            urgency = (try? c.decodeIfPresent(String.self, forKey: .urgency)) ?? nil
+            state = ((try? c.decodeIfPresent(String.self, forKey: .state)) ?? nil) ?? "open"
+            createdAt = (try? c.decodeIfPresent(Double.self, forKey: .createdAt)) ?? nil
+        }
+    }
+
+    struct SupervisorItemList: Decodable, Sendable {
+        let items: [SupervisorItem]
+
+        private enum CodingKeys: String, CodingKey { case items }
+        private struct Lossy: Decodable {
+            let item: SupervisorItem?
+            init(from decoder: Decoder) throws { item = try? SupervisorItem(from: decoder) }
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            items = (((try? c.decodeIfPresent([Lossy].self, forKey: .items)) ?? nil) ?? [])
+                .compactMap(\.item)
+        }
+    }
+
+    private struct SupervisorItemResponse: Decodable, Sendable {
+        let item: SupervisorItem?
+    }
+
+    /// The owner's open items, newest first. `kind` narrows to `needs-you`
+    /// or `fyi`.
+    static func supervisorItems(kind: String? = nil) async throws -> [SupervisorItem] {
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "state", value: "open"),
+            URLQueryItem(name: "user", value: ServerConfig.shared.userName),
+        ] + (kind.map { [URLQueryItem(name: "kind", value: $0)] } ?? [])
+        let response: SupervisorItemList = try await get(
+            "/api/supervisor/items?\(components.percentEncodedQuery ?? "")"
+        )
+        return response.items
+    }
+
+    /// Answer an item with one of its options (or any text). The server
+    /// answers 409 when it was already closed somewhere else.
+    static func answerSupervisorItem(id: String, answer: String) async throws {
+        let _: SupervisorItemResponse = try await post(
+            "/api/supervisor/items/\(pathComponent(id))/answer",
+            body: ["user": ServerConfig.shared.userName, "answer": answer]
+        )
+    }
+
+    /// Close an item without answering it.
+    static func dismissSupervisorItem(id: String) async throws {
+        let _: SupervisorItemResponse = try await post(
+            "/api/supervisor/items/\(pathComponent(id))/dismiss",
+            body: ["user": ServerConfig.shared.userName]
+        )
+    }
+
     private static func standingBody(_ standing: StandingSession, _ body: inout [String: Any]) {
         if standing != .desk { body["standing"] = standing.rawValue }
     }

@@ -21,7 +21,16 @@ private struct BlobRoot: View {
     @AppStorage("os1.appearance") private var appearance = "system"
     @State private var config = ServerConfig.shared
     @State private var authGate = AuthGate.shared
-    @State private var connecting = !ServerConfig.shared.isConfigured
+    @State private var connecting = !ServerConfig.shared.isConfigured && !Self.demoHome
+
+    /// Demo decisions need no server, so they go straight to the home.
+    private static var demoHome: Bool {
+        #if DEBUG
+        BlobDecisions.demoEnabled
+        #else
+        false
+        #endif
+    }
 
     var body: some View {
         Group {

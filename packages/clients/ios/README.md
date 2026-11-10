@@ -702,10 +702,19 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   drawn with the block catalog. Pull down past the oldest, or tap Blob, to
   go back. Blob connects to the supervisor on launch so it is there before
   the first message.
+- Decisions (`Blob/BlobDecisions.swift`, `Blob/BlobDecisionView.swift`): the
+  supervisor's open `needs-you` items (`GET /api/supervisor/items`), read on
+  launch, when the app comes back and every minute while it is in front.
+  While Blob is idle it wakes and shows one at a time where replies render:
+  title, body with the block catalog, then the options as buttons, the first
+  (recommended) one filled. "Not now" hides it until the next launch;
+  long-press for "Dismiss", which closes it on the server. `fyi` items never
+  show on the home.
 - Debug builds launched with `BLOB_DEMO=1` play a scripted conversation with
   no server or microphone, and `BLOB_DEMO_AT=<seconds>` freezes one moment,
   for screenshots and motion checks. `BLOB_DEMO_HISTORY=1` fills history
   with canned exchanges; `BLOB_DEMO_HISTORY=open` also opens it.
+  `BLOB_DEMO_DECISIONS=1` shows two canned decisions.
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 

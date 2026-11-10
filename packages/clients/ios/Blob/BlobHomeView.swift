@@ -13,6 +13,8 @@ struct BlobHomeView: View {
     /// Nil until the server answers; voice stays the default when it can't say.
     @State private var voiceConfigured: Bool?
     @State private var physics = BlobPhysics()
+    /// What the supervisor is waiting on you for, shown while Blob is idle.
+    @State private var decisions = BlobDecisions()
     /// Room a reply may take: the screen below Blob, minus what you said.
     @State private var replyHeight: CGFloat = 420
     @State private var showSettings = false
@@ -63,7 +65,7 @@ struct BlobHomeView: View {
                 .allowsHitTesting(false)
                 .accessibilityElement()
                 .accessibilityLabel("Blob")
-                .accessibilityValue(historyOpen ? "History" : talking ? statusLabel : "Asleep")
+                .accessibilityValue(historyOpen ? "History" : talking ? statusLabel : showingDecision ? "Needs you" : "Asleep")
                 .accessibilityHint(historyOpen ? "Closes history" : talking ? "Ends the conversation" : "Starts a conversation")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { historyOpen ? closeHistory() : toggleTalk() }
@@ -116,6 +118,17 @@ struct BlobHomeView: View {
             text.connect()
             voiceConfigured = await BlobTextTalk.voiceConfigured()
         }
+        // Open decisions: on appear, when the app comes back, and every
+        // minute while it is in front.
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await decisions.refresh()
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
+        .haptic(.commit, trigger: decisions.answered)
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: decisionKey)
         #if DEBUG
         .onAppear {
             if ProcessInfo.processInfo.environment["BLOB_DEMO_TYPING"] != nil {
@@ -139,6 +152,26 @@ struct BlobHomeView: View {
     /// Typed messages, and speech without a voice key, go through `text`.
     private var talking: Bool { engine.active || text.active }
     private var textConversation: Bool { text.active || !usesVoice }
+
+    /// Nothing else going on: no conversation, no typing, no history, no
+    /// reply on screen. Only then does a decision come up.
+    private var idle: Bool {
+        !talking && !typing && !historyOpen && !replyOnScreen && !Self.demoRunning
+    }
+
+    /// The decision on screen, if Blob is idle and one is waiting.
+    private var decision: OS1API.SupervisorItem? {
+        idle && decisions.said == nil ? decisions.current : nil
+    }
+
+    /// What Blob says after an answer, while idle.
+    private var decisionSaid: String? { idle ? decisions.said : nil }
+
+    /// Blob is awake for a decision: showing one, or just confirming one.
+    private var showingDecision: Bool { decision != nil || decisionSaid != nil }
+
+    /// Changes whenever the decision surface does, for its animation.
+    private var decisionKey: String { decisionSaid ?? decision?.id ?? "" }
 
     private var statusLabel: String {
         if !textConversation { return engine.state.label }
@@ -185,6 +218,16 @@ struct BlobHomeView: View {
         let top = CGPoint(x: center.x, y: max(insets.top, 20) + 56)
         // History gets the screen; Blob waits in its slot, small.
         if historyOpen { talking = false }
+        // Something needs you: Blob wakes and moves up, as for a reply.
+        if !talking && showingDecision {
+            return BlobTargets(
+                mode: decisionSaid != nil ? .speak : .you,
+                position: top,
+                size: 72,
+                look: nil,
+                level: 0
+            )
+        }
         return BlobTargets(
             mode: mode,
             position: talking ? (showingReply ? top : center) : slot,
@@ -335,6 +378,25 @@ struct BlobHomeView: View {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textDim)
+            } else if let said = decisionSaid {
+                Text(said)
+                    .font(.body)
+                    .foregroundStyle(OS1VisualStyle.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
+            } else if let decision {
+                BlobDecisionView(
+                    item: decision,
+                    position: decisions.position,
+                    count: decisions.count,
+                    sending: decisions.sending == decision.id,
+                    maxHeight: max(160, replyHeight - 160),
+                    answer: { option in Task { await decisions.answer(decision, with: option) } },
+                    notNow: { decisions.skip(decision) },
+                    dismiss: { Task { await decisions.dismiss(decision) } }
+                )
+                .id(decision.id)
+                .transition(reduceMotion ? .opacity : .offset(y: 16).combined(with: .opacity))
             } else if !hasTalked && !talking && !typing && !Self.demoRunning {
                 Text("Tap me to talk")
                     .font(.footnote)
@@ -346,7 +408,7 @@ struct BlobHomeView: View {
         .padding(.trailing, insets.trailing + 24)
         .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : talking ? 28 : 60))
         .animation(.easeOut(duration: 0.24), value: engine.caption?.text)
-        .allowsHitTesting(text.answer != nil)
+        .allowsHitTesting(text.answer != nil || decision != nil)
     }
 
     /// Writing instead of speaking: a small keyboard button while Blob is
