@@ -56,6 +56,7 @@ import {
   sessionRuntimeSnapshot,
   type SessionRuntimeSnapshot,
 } from "../session-cache";
+import { maybePersistBlobSurface } from "../blob-surface";
 import {
   asDataUrlList,
   countImageRefs,
@@ -1364,6 +1365,7 @@ export async function handleSessionsRoutes(
         effort?: unknown;
         fastMode?: unknown;
         speed?: unknown;
+        surface?: unknown;
         busyMode?: unknown;
         files?: unknown;
         pastedTexts?: unknown;
@@ -1436,6 +1438,7 @@ export async function handleSessionsRoutes(
           typeof body?.effort === "string" ? body.effort : undefined,
         );
         maybePersistSpeed(session, body?.speed, body?.fastMode);
+        maybePersistBlobSurface(session, body?.surface);
       }
       let result: Awaited<
         ReturnType<ReturnType<typeof getSessionControl>["deliverToSession"]>
