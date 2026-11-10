@@ -79,7 +79,7 @@ struct BlobSettingsView: View {
                 }
             }
             .navigationTitle("Blob")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineTitleBarCompat()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button {

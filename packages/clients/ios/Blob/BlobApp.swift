@@ -6,18 +6,26 @@ import SwiftUI
 /// app entry point and the root view.
 @main
 struct BlobApp: App {
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(BlobMacAppDelegate.self) private var delegate
+    #endif
+
     init() {
         CrashReporter.shared.install()
     }
 
     var body: some Scene {
+        #if os(macOS)
+        BlobMacScenes()
+        #else
         WindowGroup {
             BlobRoot()
         }
+        #endif
     }
 }
 
-private struct BlobRoot: View {
+struct BlobRoot: View {
     @AppStorage("os1.appearance") private var appearance = "system"
     @State private var config = ServerConfig.shared
     @State private var authGate = AuthGate.shared

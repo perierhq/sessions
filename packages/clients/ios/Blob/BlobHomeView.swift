@@ -108,7 +108,12 @@ struct BlobHomeView: View {
         // Outside the full-bleed layer so it rides above the keyboard.
         .overlay(alignment: .bottom) { writeBar }
         .background(OS1VisualStyle.background.ignoresSafeArea())
-        .sheet(isPresented: $showSettings) { BlobSettingsView(speaker: text.speaker) }
+        .sheet(isPresented: $showSettings) {
+            BlobSettingsView(speaker: text.speaker)
+                #if os(macOS)
+                .frame(minWidth: 380, idealWidth: 400, minHeight: 440, idealHeight: 520)
+                #endif
+        }
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
         .onChange(of: text.settled) { _, settled in if settled { text.answerSettled() } }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: typing)
@@ -158,6 +163,21 @@ struct BlobHomeView: View {
             if BlobExchange.demoOpen { historyOpen = true }
         }
         #endif
+        #if os(macOS)
+        .modifier(BlobMacKeys(space: spaceKey, escape: escapeKey))
+        .onChange(of: mode, initial: true) { _, mode in BlobMacState.shared.mode = mode }
+        .onChange(of: menuStatus, initial: true) { _, status in BlobMacState.shared.status = status }
+        .onChange(of: decisions.waiting, initial: true) { _, count in BlobMacState.shared.waiting = count }
+        .onChange(of: BlobMacState.shared.request) { _, request in
+            guard let request else { return }
+            BlobMacState.shared.request = nil
+            switch request {
+            case .write: startWriting()
+            case .history: historyOpen ? closeHistory() : openHistory()
+            case .settings: showSettings = true
+            }
+        }
+        #endif
         .onChange(of: scenePhase) { _, phase in
             // A backgrounded app must never hold the mic open.
             if phase == .background {
@@ -165,6 +185,48 @@ struct BlobHomeView: View {
                 text.reset()
             }
         }
+    }
+
+    #if os(macOS)
+    /// One line for the menu bar item.
+    private var menuStatus: String {
+        if talking { return statusLabel.isEmpty ? "Talking" : statusLabel }
+        return showingDecision ? "Needs you" : "Asleep"
+    }
+
+    /// Space talks, or stops talking. Not while history is open.
+    private func spaceKey() -> Bool {
+        guard !historyOpen else { return false }
+        toggleTalk()
+        return true
+    }
+
+    /// Esc stops Blob reading, then closes history, then the write bar.
+    private func escapeKey() -> Bool {
+        if text.speaker.speaking {
+            text.speaker.stop()
+        } else if historyOpen {
+            closeHistory()
+        } else if typing && draft.isEmpty {
+            typing = false
+            fieldFocused = false
+        } else {
+            return false
+        }
+        return true
+    }
+    #endif
+
+    #if os(macOS)
+    private static let talkHint = "Click me or press Space to talk"
+    #else
+    private static let talkHint = "Tap me to talk"
+    #endif
+
+    private func startWriting() {
+        if historyOpen { closeHistory() }
+        typing = true
+        fieldFocused = true
     }
 
     /// The live voice call: only when turned on in settings and the server
@@ -422,7 +484,7 @@ struct BlobHomeView: View {
                 .id(decision.id)
                 .transition(reduceMotion ? .opacity : .offset(y: 16).combined(with: .opacity))
             } else if !hasTalked && !talking && !typing && !Self.demoRunning {
-                Text("Tap me to talk")
+                Text(Self.talkHint)
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textFaint)
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -442,6 +504,7 @@ struct BlobHomeView: View {
         if typing {
             HStack(spacing: 8) {
                 TextField("Write to Blob", text: $draft, axis: .vertical)
+                    .textFieldStyle(.plain)
                     .lineLimit(1...4)
                     .focused($fieldFocused)
                     .submitLabel(.send)
@@ -465,10 +528,7 @@ struct BlobHomeView: View {
             .transition(.move(edge: .bottom).combined(with: .opacity))
         } else if !engine.active && text.phase != .listening && !historyOpen {
             HStack {
-                Button {
-                    typing = true
-                    fieldFocused = true
-                } label: {
+                Button(action: startWriting) {
                     Image(systemName: "keyboard")
                         .font(.system(size: 17, weight: .regular))
                         .foregroundStyle(OS1VisualStyle.textDim)

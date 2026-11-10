@@ -49,6 +49,8 @@ final class BlobDecisions {
     /// The current item's place in this round, 1-based.
     var position: Int { handledInRound + 1 }
     var count: Int { handledInRound + pending.count }
+    /// Open on the server and not answered here, skipped ones included.
+    var waiting: Int { items.filter { !closed.contains($0.id) }.count }
 
     private func handled() {
         handledInRound += 1

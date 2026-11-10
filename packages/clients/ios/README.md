@@ -732,6 +732,31 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 
+### Blob for Mac
+
+`BlobMac` builds the same `OS1/` and `Blob/` sources for macOS as `Blob.app`
+(bundle id `pl.sessions.blob.mac`): one small window with the home, and a
+menu bar item with Blob's face that says how many decisions are waiting and
+opens the window. `Blob/BlobMac.swift` holds the Mac scenes, the menu bar
+face and the keys; iOS-only code elsewhere in `Blob/` sits behind
+`#if os(iOS)`. Return sends what you wrote, Cmd+L writes, Cmd+Y shows
+history, Space talks while you aren't typing, Esc stops Blob reading or
+closes history. Settings are Cmd+, or a long click on Blob.
+
+Build and run with Development signing (a free personal team works for a
+local run):
+
+```sh
+APPLE_TEAM_ID=<team id> xcodegen generate
+xcodebuild build -skipMacroValidation -allowProvisioningUpdates \
+  -project OS1.xcodeproj -scheme BlobMac -configuration Debug \
+  -derivedDataPath /tmp/blobmac
+open /tmp/blobmac/Build/Products/Debug/Blob.app
+```
+
+The `BLOB_DEMO*` variables work here too; pass them with
+`open --env BLOB_DEMO_DECISIONS=1 …`.
+
 ## Architecture
 
 ````

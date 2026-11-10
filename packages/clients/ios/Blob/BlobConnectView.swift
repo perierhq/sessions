@@ -139,10 +139,9 @@ struct BlobConnectView: View {
         VStack(spacing: 12) {
             HStack(spacing: 10) {
                 TextField("sessions.example.com", text: $host)
+                    .textFieldStyle(.plain)
                     .font(.body)
-                    .textContentType(.URL)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
+                    .urlFieldCompat()
                     .autocorrectionDisabled()
                     .submitLabel(.go)
                     .focused($fieldFocused)
@@ -165,6 +164,7 @@ struct BlobConnectView: View {
             }
 
             Button("More options") { showOptions = true }
+                .buttonStyle(.borderless)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(OS1VisualStyle.textDim)
                 .padding(.vertical, 6)
@@ -252,9 +252,7 @@ struct BlobConnectView: View {
     }
 
     private func copy(_ code: String) {
-        #if os(iOS)
-        UIPasteboard.general.string = code
-        #endif
+        copyToPasteboard(code)
         copied = true
     }
 

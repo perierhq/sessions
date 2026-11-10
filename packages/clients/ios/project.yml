@@ -169,6 +169,57 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 0.1.0
+  # Blob for Mac: the same Blob sources on macOS, as one small window and a
+  # menu bar item (Blob/BlobMac.swift). Like OS1Mac it compiles all of OS1/;
+  # iOS-only code in Blob/ sits behind #if os(iOS). Its own bundle id, so it
+  # runs next to OS on the Mac. Development signing only for now.
+  BlobMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: OS1
+        excludes:
+          - OS1App.swift
+          - Assets.xcassets
+      - path: Resources/mermaid
+        buildPhase: resources
+        excludes:
+          - README.md
+      - path: Blob
+        excludes:
+          - Blob-Info.plist
+    dependencies:
+      - package: SwiftStreamingMarkdown
+        product: SwiftStreamingMarkdown
+      - package: HighlightSwift
+        product: HighlightSwift
+    entitlements:
+      path: BlobMac.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        # Talking to Blob, and the shared composer's image picker.
+        com.apple.security.device.audio-input: true
+        com.apple.security.files.user-selected.read-only: true
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        INFOPLIST_KEY_CFBundleDisplayName: Blob
+        INFOPLIST_KEY_OS1DefaultServerURL: http://127.0.0.1:3850
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Talk to Blob.
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: Turn what you say into text.
+        PRODUCT_NAME: Blob
+        PRODUCT_MODULE_NAME: Blob
+        PRODUCT_BUNDLE_IDENTIFIER: pl.sessions.blob.mac
+        DEVELOPMENT_TEAM: ${APPLE_TEAM_ID}
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconMac
+        SWIFT_VERSION: "5.9"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) BLOB
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
   # Widget extension: the Home Screen / Lock Screen widget and the Control
   # Center control. iOS only — a macOS widget would need its own target, and
   # the Mac app has no Action Button or Control Center to put one in.
