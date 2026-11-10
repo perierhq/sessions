@@ -14,7 +14,7 @@
  * document per person in `supervisor-items`, keyed like the notification
  * inbox (canonicalName of the lowercased name),
  * holding a bounded list of items, the person's quiet hours and digest time,
- * and when the last digest ran. Listing one person's items is one read, and
+ * their Bark settings (bark.ts), and when the last digest ran. Listing one person's items is one read, and
  * every change is one compare-and-set on that document, so dedupe, answer
  * and digest marks never race each other.
  *
@@ -88,6 +88,8 @@ interface InboxDocument {
   user: string;
   items: SupervisorItem[];
   prefs?: Partial<SupervisorPrefs>;
+  /** Bark push settings, owned and cleaned by bark.ts. */
+  bark?: Record<string, unknown>;
   lastDigestAt?: number;
   /** The local day (`YYYY-MM-DD`) the last digest was for. */
   lastDigestDay?: string;
@@ -269,6 +271,7 @@ function cleanDocument(value: unknown, user: string): InboxDocument {
     : [];
   const doc: InboxDocument = { user: text(value.user, 120) || user, items };
   if (isRecord(value.prefs)) doc.prefs = value.prefs as InboxDocument["prefs"];
+  if (isRecord(value.bark)) doc.bark = value.bark;
   const lastDigestAt = num(value.lastDigestAt);
   if (lastDigestAt !== undefined) doc.lastDigestAt = lastDigestAt;
   if (typeof value.lastDigestDay === "string")
@@ -866,6 +869,32 @@ export async function setSupervisorPrefs(
   }));
   const { prefs, timeZone } = prefsAndZone(doc, user);
   return { ...prefs, effectiveTimezone: timeZone };
+}
+
+/** The person's raw Bark settings record (bark.ts cleans it). */
+export async function readSupervisorBark(
+  user: string,
+): Promise<Record<string, unknown> | undefined> {
+  if (!validUser(user)) return undefined;
+  return (await readDocument(user)).bark;
+}
+
+/** Compare-and-set the person's Bark settings record. `mutate` may run more
+ *  than once; its last run committed. Returning undefined removes it. */
+export async function updateSupervisorBark(
+  user: string,
+  mutate: (
+    current: Record<string, unknown> | undefined,
+  ) => Record<string, unknown> | undefined,
+): Promise<void> {
+  if (!validUser(user)) throw new Error("missing user");
+  await updateDocument(user, (doc) => {
+    const next = { ...doc };
+    const bark = mutate(doc.bark);
+    if (bark) next.bark = bark;
+    else delete next.bark;
+    return next;
+  });
 }
 
 // ── Sweep: held pushes, retries, digest ─────────────────────────────────────
