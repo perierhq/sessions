@@ -18,7 +18,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigAsync } from "./config";
 import type { Goal } from "./goals";
-import type { LeadGoalFields, LeadWakePlan } from "./goal-runner";
+import type {
+  LeadGoalFields,
+  LeadWakePlan,
+  WatchWakePlan,
+} from "./goal-runner";
 import type { StreamEvent } from "./run-events";
 
 const root = mkdtempSync(join(tmpdir(), "goal-runner-test-"));
@@ -51,6 +55,9 @@ interface RunOpts {
   mcpServers: unknown;
   aws?: boolean;
   startToken?: string;
+  disableLocalWorkspaceTools?: boolean;
+  model?: string;
+  effort?: string;
 }
 /** What the last wake handed the engine. */
 let lastRun: RunOpts | null = null;
@@ -106,7 +113,9 @@ mock.module("./goals", () => ({
 const {
   INTERRUPTED_WAKE_ERROR,
   goalRecoveryMcpServers,
+  goalRecoveryPlan,
   registerLeadGoalHooks,
+  registerWatchGoalHooks,
   runGoal,
   runningGoals,
   settleInterruptedGoalRun,
@@ -850,6 +859,187 @@ describe("a project lead's goal", () => {
     await runGoal(other);
     expect(cancels).toHaveLength(3);
     expect((await getGoal(other.id))?.lastRunError).toBeUndefined();
+  });
+});
+
+describe("a person's watch goal", () => {
+  const fields: LeadGoalFields = {
+    name: "Watch: Ada",
+    mission: "Watch for Ada, from the charter.",
+    mode: "ask",
+    repo: undefined,
+    minWakeMinutes: 10,
+    mcpServers: [],
+  };
+  const NEXT = "2030-01-01T08:30:00.000Z";
+  let plan: WatchWakePlan;
+  let settled: boolean[];
+  let idles: string[];
+  let offHooks: () => void = () => {};
+
+  beforeEach(() => {
+    settled = [];
+    idles = [];
+    plan = {
+      fields,
+      prompt: "The watch's own prompt for this wake.",
+      maxTokens: 1_000,
+      model: "pi/anthropic/claude-sonnet-5-5",
+      effort: "medium",
+      afterWake: async (ok) => {
+        settled.push(ok);
+        return NEXT;
+      },
+    };
+    offHooks = registerWatchGoalHooks({
+      wake: async () => plan,
+      idle: async (goal) => {
+        idles.push(goal.id);
+      },
+    });
+  });
+  afterEach(() => offHooks());
+
+  async function watchGoal(extra: Partial<Goal> = {}): Promise<Goal> {
+    const created = await createGoal(
+      {
+        name: "Watch: Ada",
+        mission: "Watch.",
+        createdBy: "Supervisor watch",
+        firstWakeAt: PAST,
+      },
+      { watchOwner: "Ada" },
+    );
+    if ("error" in created) throw new Error(created.error);
+    return (await mutateGoal(created.id, (g) => ({ ...g, ...extra })))!;
+  }
+
+  test("runs with only its own tools, its own prompt, no connectors, no shell or web, no cloud credentials, on the pinned model", async () => {
+    const goal = await watchGoal({
+      mcpServers: ["github"],
+      model: "pi/anthropic/claude-opus-5-5",
+      fallbackModel: "none",
+    });
+    await runGoal(goal);
+    expect(Object.keys(lastRun!.inProcessMcp!)).toEqual(["opensession-watch"]);
+    expect(lastRun!.prompt).toBe("The watch's own prompt for this wake.");
+    expect(lastRun!.mcpServers).toEqual([]);
+    expect(lastRun!.aws).toBe(false);
+    // read, grep, find, ls, bash, web_search and web_fetch are stripped.
+    expect(lastRun!.disableLocalWorkspaceTools).toBe(true);
+    expect(lastRun!.model).toBe("pi/anthropic/claude-sonnet-5-5");
+    expect(lastRun!.effort).toBe("medium");
+    expect(settled).toEqual([true]);
+    // The server's schedule, not the 24h default.
+    expect(await getGoal(goal.id)).toMatchObject({
+      mission: fields.mission,
+      nextWakeAt: NEXT,
+      lastRunStatus: "ok",
+    });
+  });
+
+  test("a skip reschedules without running; a block pauses", async () => {
+    const goal = await watchGoal();
+    plan = { skip: "nothing changed", nextWakeAt: NEXT };
+    await runGoal(goal);
+    expect(runs).toBe(0);
+    expect(await getGoal(goal.id)).toMatchObject({
+      status: "active",
+      nextWakeAt: NEXT,
+    });
+    plan = { block: "The watch is off" };
+    await runGoal((await getGoal(goal.id))!);
+    expect(runs).toBe(0);
+    expect(await getGoal(goal.id)).toMatchObject({
+      status: "paused",
+      pauseReason: "The watch is off",
+    });
+  });
+
+  test("fails closed: no watch on the server, or a check that throws", async () => {
+    offHooks();
+    const goal = await watchGoal();
+    await runGoal(goal);
+    expect(runs).toBe(0);
+    expect((await getGoal(goal.id))!.pauseReason).toBe(
+      "The supervisor's watch isn't running on this server",
+    );
+    offHooks = registerWatchGoalHooks({
+      wake: async () => {
+        throw new Error("catalog down");
+      },
+      idle: async () => {},
+    });
+    const other = await watchGoal();
+    await runGoal(other);
+    expect(runs).toBe(0);
+    expect((await getGoal(other.id))!.pauseReason).toBe(
+      "Its wake check failed: catalog down",
+    );
+  });
+
+  test("held to its tokens: asked to wrap up, then stopped", async () => {
+    const usage = (tokens: number) => ({
+      costUsd: 0.01,
+      inputTokens: tokens,
+      outputTokens: 0,
+      cacheReadTokens: 50_000,
+      cacheCreationTokens: 0,
+      contextTokens: 1,
+    });
+    script = async function* () {
+      yield { type: "usage_snapshot", usage: usage(500) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(1_100) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(1_600) } as StreamEvent;
+    };
+    const goal = await watchGoal();
+    await runGoal(goal);
+    expect(steers).toHaveLength(1);
+    expect(steers[0]!.text).toContain("You reached what this wake may use.");
+    expect(steers[0]!.text).not.toContain("set_next_wake");
+    expect(cancels).toEqual([lastRun!.startToken!]);
+    expect((await getGoal(goal.id))!.lastRunError).toBe(
+      "Stopped: it reached its limit",
+    );
+  });
+
+  test("a wake stopped at its tokens settles as done, so its events aren't replayed", async () => {
+    const usage = (tokens: number) => ({
+      costUsd: 0.01,
+      inputTokens: tokens,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      contextTokens: 1,
+    });
+    script = async function* () {
+      yield { type: "usage_snapshot", usage: usage(1_100) } as StreamEvent;
+      yield { type: "usage_snapshot", usage: usage(1_600) } as StreamEvent;
+      yield { type: "error", content: "Cancelled" } as StreamEvent;
+    };
+    const goal = await watchGoal();
+    await runGoal(goal);
+    expect(cancels).toHaveLength(1);
+    expect(settled).toEqual([true]);
+  });
+
+  test("a wake that throws still settles and goes back on its schedule", async () => {
+    script = async function* () {
+      throw new Error("engine crashed");
+    };
+    const goal = await watchGoal();
+    await runGoal(goal);
+    expect(settled).toEqual([false]);
+    expect(await getGoal(goal.id)).toMatchObject({
+      lastRunStatus: "error",
+      nextWakeAt: NEXT,
+    });
+  });
+
+  test("the ticker hands an idle watch goal to the watch; a restart rewakes it", async () => {
+    const goal = await watchGoal({ status: "paused", pauseReason: "x" });
+    await tickGoals();
+    expect(idles).toEqual([goal.id]);
+    expect(goalRecoveryPlan(goal)).toBe("rewake");
   });
 });
 

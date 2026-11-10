@@ -7,8 +7,11 @@ import {
   cleanPrefs,
   DEFAULT_SUPERVISOR_PREFS,
   digestDayDue,
+  inActiveHours,
   inQuietHours,
   localClock,
+  nextLocalMidnight,
+  nextWatchWake,
   previousDay,
   quietHoursEnd,
   validatePrefsPatch,
@@ -194,5 +197,101 @@ describe("prefs", () => {
       expect(validatePrefsPatch({ reportStyle })).toEqual({
         error: "reportStyle must be one of bluf, sbar, plain",
       });
+  });
+});
+
+describe("the watch's schedule", () => {
+  const watch = (patch: Partial<SupervisorPrefs["watch"]> = {}) =>
+    prefs({ watch: { ...DEFAULT_SUPERVISOR_PREFS.watch, ...patch } });
+
+  test("defaults: on, every 30 minutes from 08:00 to 22:00", () => {
+    expect(cleanPrefs({}).watch).toEqual({
+      enabled: true,
+      everyMinutes: 30,
+      activeStart: "08:00",
+      activeEnd: "22:00",
+    });
+    expect(
+      cleanPrefs({
+        watch: { enabled: "yes", everyMinutes: 3, activeStart: "8am" },
+      }).watch,
+    ).toEqual(DEFAULT_SUPERVISOR_PREFS.watch);
+  });
+
+  test("a watch patch is validated", () => {
+    expect(
+      validatePrefsPatch({ watch: { enabled: false, everyMinutes: 60 } }),
+    ).toEqual({ watch: { enabled: false, everyMinutes: 60 } });
+    expect(validatePrefsPatch({ watch: "on" })).toEqual({
+      error: "watch must be an object",
+    });
+    expect(validatePrefsPatch({ watch: { enabled: 1 } })).toEqual({
+      error: "watch.enabled must be true or false",
+    });
+    expect(validatePrefsPatch({ watch: { everyMinutes: 5 } })).toEqual({
+      error: "watch.everyMinutes must be a whole number from 10 to 240",
+    });
+    expect(validatePrefsPatch({ watch: { activeEnd: "25:00" } })).toEqual({
+      error: "watch.activeEnd must be HH:MM",
+    });
+  });
+
+  test("active hours are half-open; equal ends mean all day", () => {
+    const p = watch();
+    expect(inActiveHours(p.watch, "UTC", at("2026-11-10T07:59:00Z"))).toBe(
+      false,
+    );
+    expect(inActiveHours(p.watch, "UTC", at("2026-11-10T08:00:00Z"))).toBe(
+      true,
+    );
+    expect(inActiveHours(p.watch, "UTC", at("2026-11-10T22:00:00Z"))).toBe(
+      false,
+    );
+    const all = watch({ activeStart: "00:00", activeEnd: "00:00" }).watch;
+    expect(inActiveHours(all, "UTC", at("2026-11-10T03:00:00Z"))).toBe(true);
+  });
+
+  test("every step inside the window, none at night", () => {
+    const p = watch();
+    expect(nextWatchWake(p, "UTC", at("2026-11-10T12:00:20Z"))).toBe(
+      at("2026-11-10T12:30:00Z"),
+    );
+    // Past the end: the next morning's start.
+    expect(nextWatchWake(p, "UTC", at("2026-11-10T21:45:00Z"))).toBe(
+      at("2026-11-11T08:00:00Z"),
+    );
+    // In the owner's zone: 08:00 in Warsaw is 07:00 UTC in winter.
+    expect(nextWatchWake(p, "Europe/Warsaw", at("2026-11-10T22:00:00Z"))).toBe(
+      at("2026-11-11T07:00:00Z"),
+    );
+  });
+
+  test("quiet hours inside the active hours hold it until they end", () => {
+    const p = prefs({
+      quietStart: "12:00",
+      quietEnd: "13:00",
+      watch: DEFAULT_SUPERVISOR_PREFS.watch,
+    });
+    expect(nextWatchWake(p, "UTC", at("2026-11-10T11:45:00Z"))).toBe(
+      at("2026-11-10T13:00:00Z"),
+    );
+    // Quiet hours covering the whole window: a day later, still looking.
+    const never = prefs({
+      quietStart: "07:00",
+      quietEnd: "23:00",
+      watch: DEFAULT_SUPERVISOR_PREFS.watch,
+    });
+    expect(nextWatchWake(never, "UTC", at("2026-11-10T12:00:00Z"))).toBe(
+      at("2026-11-11T12:00:00Z"),
+    );
+  });
+
+  test("the next local midnight", () => {
+    expect(nextLocalMidnight("UTC", at("2026-11-10T12:00:30Z"))).toBe(
+      at("2026-11-11T00:00:00Z"),
+    );
+    expect(nextLocalMidnight("Europe/Warsaw", at("2026-11-10T12:00:00Z"))).toBe(
+      at("2026-11-10T23:00:00Z"),
+    );
   });
 });

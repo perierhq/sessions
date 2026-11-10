@@ -69,6 +69,7 @@ beforeEach(() => {
     markDone: async () => {},
     supervisorSessionId: async () => "os-sup-ada",
     rotateSupervisor: async () => {},
+    ensureWatch: async () => {},
     timeZone: () => "UTC",
   });
   memory.__resetSupervisorMemoryForTest();

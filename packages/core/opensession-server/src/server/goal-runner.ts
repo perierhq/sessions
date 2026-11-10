@@ -21,6 +21,7 @@ import { isDevInstance } from "./dev-mode";
 import {
   LEAD_UNAVAILABLE_REASON,
   WAKE_CHECK_FAILED_REASON,
+  WATCH_UNAVAILABLE_REASON,
   addGoalSpend,
   getGoal,
   goalGuardFor,
@@ -29,6 +30,7 @@ import {
   type Goal,
 } from "./goals";
 import { createLeadMcpServer } from "./leads/mcp";
+import { createWatchMcpServer } from "./supervisor-watch-mcp";
 import { automaticFallbackModel, providerFor, routeModel } from "./models";
 import { engineSessionPatch } from "./sessions";
 import { STRIPE_CONFIRM_TOOLS } from "./runner-shared";
@@ -70,10 +72,17 @@ export const runningGoals: Set<string> = (g.__runningGoals ??= new Set());
  *  (opensession-lead's propose), so it gets no ask_human. */
 function goalMcpServers(
   osSessionId: string,
-  goal: Pick<Goal, "id" | "leadProject">,
+  goal: Pick<Goal, "id" | "leadProject" | "watchOwner">,
   createdBy: string,
   lead: LeadRunPlan | undefined,
 ): Record<string, unknown> {
+  // A person's watch reports only through the supervisor inbox and the
+  // ledger it shares with the conversation: no ask_human, no goal-self
+  // status or cadence tools (the server owns its schedule), no web.
+  if (goal.watchOwner)
+    return {
+      "opensession-watch": createWatchMcpServer({ user: goal.watchOwner }),
+    };
   if (goal.leadProject)
     return {
       // TODO(coordinate/act stages): spawning fix workers
@@ -165,7 +174,7 @@ async function leadWakePlan(goal: Goal): Promise<LeadWakePlan> {
 
 /** A lead's run past its token limit or dollar cap is asked once to
  *  finish, and stopped at this many times it (the incident post-release
- *  check's rule). */
+ *  check's rule). A watch's run is held to its tokens the same way. */
 const LEAD_WRAP_UP_FACTOR = 1.5;
 
 /**
@@ -202,6 +211,67 @@ function goalRoute(goal: Pick<Goal, "model">): string {
 }
 const LEAD_WRAP_UP =
   "You reached what this wake may spend. Stop reading and proposing now: append what you have to the ledger with append_ledger, set your next wake with set_next_wake, and end the wake.";
+const WATCH_WRAP_UP =
+  "You reached what this wake may use. Stop reading now: post what the owner must hear with post_item, append what you saw to the ledger with append_ledger, and end the wake.";
+
+/** A person's watch goal may wake (supervisor-watch.ts): its fields from
+ *  the charter, the prompt of this wake, the tokens it may use, and what
+ *  to do once it ended. */
+export interface WatchRunPlan {
+  fields: LeadGoalFields;
+  prompt: string;
+  maxTokens: number;
+  /** The model and effort every wake runs on, pinned by the server. */
+  model: string;
+  effort: string;
+  /** Run once the wake ended, whatever way; resolves the next scheduled
+   *  wake (ISO8601). The watch owns its schedule: the run sets none. */
+  afterWake(ok: boolean): Promise<string>;
+}
+
+/** What the watch says about one wake of its goal: why it must not run
+ *  (paused), that nothing needs the model now (rescheduled, unrun), or how
+ *  it runs. */
+export type WatchWakePlan =
+  | { block: string }
+  | { skip: string; nextWakeAt: string }
+  | WatchRunPlan;
+
+export interface WatchGoalHooks {
+  /** Run at the start of every wake of a watch goal. */
+  wake(goal: Goal): Promise<WatchWakePlan>;
+  /** Run on each tick for a watch goal that isn't active. */
+  idle(goal: Goal, now: number): Promise<void>;
+}
+
+/** Set by startSupervisorWatch. A watch goal never runs without it. */
+export function registerWatchGoalHooks(hooks: WatchGoalHooks): () => void {
+  g.__watchGoalHooks = hooks;
+  return () => {
+    if (g.__watchGoalHooks === hooks) g.__watchGoalHooks = undefined;
+  };
+}
+
+function watchHooks(): WatchGoalHooks | undefined {
+  return g.__watchGoalHooks as WatchGoalHooks | undefined;
+}
+
+/** Whether a watch goal can wake: the watch registered its hooks. */
+export function watchGoalHooksRegistered(): boolean {
+  return !!watchHooks();
+}
+
+/** The watch's plan for this wake; fails closed like the lead's. */
+async function watchWakePlan(goal: Goal): Promise<WatchWakePlan> {
+  const hooks = watchHooks();
+  if (!hooks) return { block: WATCH_UNAVAILABLE_REASON };
+  try {
+    return await hooks.wake(goal);
+  } catch (error) {
+    console.error(`[goals] watch wake check for "${goal.name}" failed:`, error);
+    return { block: `${WAKE_CHECK_FAILED_REASON}: ${errorText(error)}` };
+  }
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -273,9 +343,26 @@ export async function runGoal(stored: Goal): Promise<void> {
   let runCostUsd = 0;
   let runTokens = 0;
   let spendRecorded = false;
+  let watch: WatchRunPlan | undefined;
+  let watchSettled = false;
+  // The watch's own bookkeeping after a wake, once, whatever way it ended.
+  const settleWatch = async (ok: boolean): Promise<string | undefined> => {
+    if (!watch || watchSettled) return undefined;
+    watchSettled = true;
+    try {
+      return await watch.afterWake(ok);
+    } catch (error) {
+      console.error(
+        `[goals] "${stored.name}" watch bookkeeping failed:`,
+        error,
+      );
+      return undefined;
+    }
+  };
   try {
     // A lead's goal runs on what its settings say now, never on what a
-    // patch or an older record left in it.
+    // patch or an older record left in it. A watch's the same, from its
+    // charter and its owner's prefs.
     let lead: LeadRunPlan | undefined;
     if (stored.leadProject) {
       const plan = await leadWakePlan(stored);
@@ -285,6 +372,18 @@ export async function runGoal(stored: Goal): Promise<void> {
       }
       lead = plan;
       goal = { ...stored, ...plan.fields };
+    } else if (stored.watchOwner) {
+      const plan = await watchWakePlan(stored);
+      if ("block" in plan) {
+        await pauseBeforeWake(stored, plan.block);
+        return;
+      }
+      if ("skip" in plan) {
+        await skipWake(stored, plan.skip, plan.nextWakeAt);
+        return;
+      }
+      watch = plan;
+      goal = { ...stored, ...plan.fields, model: plan.model };
     }
     // Code goals keep ONE persistent worktree so the engine session (keyed on
     // cwd) resumes cleanly across wakes; ask goals read the main checkout,
@@ -312,6 +411,7 @@ export async function runGoal(stored: Goal): Promise<void> {
     const started = await mutateGoal(goal.id, (current) => ({
       ...current,
       ...lead?.fields,
+      ...watch?.fields,
       osSessionId: bksId,
       branch: branch || undefined,
       worktreePath: goal.mode === "code" ? cwd : undefined,
@@ -380,17 +480,19 @@ export async function runGoal(stored: Goal): Promise<void> {
     const runToken = randomUUID();
     let wrappedUp = false;
     let stopped = false;
-    // A lead's wake past its token limit or dollar cap: asked once to wrap
-    // up, stopped if it keeps going.
+    // A lead's wake past its token limit or dollar cap, or a watch's past
+    // its tokens: asked once to wrap up, stopped if it keeps going.
     const over = (factor: number) =>
-      !!lead &&
-      (runTokens >= lead.wakeTokens * factor ||
-        (lead.budgetUsd !== null && runCostUsd >= lead.budgetUsd * factor));
+      lead
+        ? runTokens >= lead.wakeTokens * factor ||
+          (lead.budgetUsd !== null && runCostUsd >= lead.budgetUsd * factor)
+        : !!watch && runTokens >= watch.maxTokens * factor;
+    const wrapUp = lead ? LEAD_WRAP_UP : WATCH_WRAP_UP;
     const holdToBudget = async () => {
-      if (!lead || stopped || !over(1)) return;
+      if ((!lead && !watch) || stopped || !over(1)) return;
       if (!wrappedUp) {
         wrappedUp = true;
-        if (steerAgentRunToken(runToken, LEAD_WRAP_UP)) {
+        if (steerAgentRunToken(runToken, wrapUp)) {
           console.log(`[goals] "${goal.name}" reached its limit; wrapping up`);
           return;
         }
@@ -402,27 +504,35 @@ export async function runGoal(stored: Goal): Promise<void> {
       console.log(`[goals] "${goal.name}" is past its limit; stopped it`);
     };
     for await (const event of runAgent({
-      prompt: buildGoalWakePrompt(goal, wake, cwd, lead),
+      prompt: watch ? watch.prompt : buildGoalWakePrompt(goal, wake, cwd, lead),
       sessionId: goal.engineSessionId || undefined,
       cwd,
       mode: goal.mode,
       model: goal.model,
+      ...(watch ? { effort: watch.effort } : {}),
       // A lead never falls back to every connector: its list comes from its
       // settings, and is empty while it watches.
+      // A watch's neither: it reads through opensession-watch only.
       mcpServers: goal.leadProject
         ? (lead?.fields.mcpServers ?? [])
-        : (goal.mcpServers ?? "all"),
+        : goal.watchOwner
+          ? (watch?.fields.mcpServers ?? [])
+          : (goal.mcpServers ?? "all"),
       inProcessMcp: goalMcpServers(bksId, goal, createdBy, lead),
       confirmTools: STRIPE_CONFIRM_TOOLS,
       // A lead reads its project through opensession-lead; it gets no
       // cloud credentials.
-      aws: !goal.leadProject,
+      aws: !goal.leadProject && !goal.watchOwner,
+      // A watch reads through opensession-watch only: no shell, files,
+      // grep or web search, where untrusted text could lead it.
+      ...(goal.watchOwner ? { disableLocalWorkspaceTools: true } : {}),
       startToken: runToken,
       author: gitIdentityFor(goal.name),
       // A goal runs on behalf of its creator; gate per-user MCP servers to them.
       user: createdBy,
-      fallbackModel:
-        goal.fallbackModel === "none"
+      fallbackModel: watch
+        ? automaticFallbackModel(goal.model)
+        : goal.fallbackModel === "none"
           ? undefined
           : goal.fallbackModel || automaticFallbackModel(goal.model),
       journal: { osSessionId: bksId, kind: "goal" },
@@ -484,6 +594,9 @@ export async function runGoal(stored: Goal): Promise<void> {
       }
     }
     await persistSession(engineSessionId);
+    // A wake stopped at its tokens did its work: its events are done, not
+    // replayed.
+    const watchNext = await settleWatch(!errorMsg || stopped);
 
     // The run, the UI or an operator may have rescheduled, paused or
     // finished the goal meanwhile (opensession-goal-self, the goals API).
@@ -507,6 +620,11 @@ export async function runGoal(stored: Goal): Promise<void> {
       if (stopped && !errorMsg)
         merged.lastRunError = "Stopped: it reached its limit";
       if (!merged.spend) delete merged.spend;
+      // The watch's schedule is the server's, never the run's.
+      if (watchNext && merged.status === "active") {
+        merged.nextWakeAt = watchNext;
+        return merged;
+      }
       // A wake that went past its token limit trips the lead's guard. The
       // next wake's check pauses the lead and asks again, under a new key,
       // even if the owner lifted the guard earlier today. The next wake
@@ -538,6 +656,8 @@ export async function runGoal(stored: Goal): Promise<void> {
   } catch (e: any) {
     console.error(`[goals] "${goal.name}" wake failed:`, e);
     try {
+      // A watch goes back on its schedule; its daily wake cap stops a loop.
+      const watchNext = await settleWatch(false);
       await mutateGoal(goal.id, (fresh) => ({
         ...fresh,
         lastRunAt: startedAt.toISOString(),
@@ -547,7 +667,7 @@ export async function runGoal(stored: Goal): Promise<void> {
         nextWakeAt:
           fresh.status === "active" &&
           Date.parse(fresh.nextWakeAt) <= startedAt.getTime()
-            ? dayAfter(startedAt)
+            ? (watchNext ?? dayAfter(startedAt))
             : fresh.nextWakeAt,
       }));
     } catch (saveError) {
@@ -572,6 +692,18 @@ export async function runGoal(stored: Goal): Promise<void> {
   }
 }
 
+/** Put a watch goal that has nothing to do off to its next wake, unrun. */
+async function skipWake(
+  goal: Goal,
+  reason: string,
+  nextWakeAt: string,
+): Promise<void> {
+  await mutateGoal(goal.id, (current) =>
+    current.status === "active" ? { ...current, nextWakeAt } : current,
+  );
+  console.log(`[goals] "${goal.name}" skipped its wake: ${reason}`);
+}
+
 /** Pause a goal that must not wake now, with the reason. */
 async function pauseBeforeWake(goal: Goal, reason: string): Promise<void> {
   await mutateGoal(goal.id, (current) =>
@@ -594,9 +726,9 @@ async function pauseBeforeWake(goal: Goal, reason: string): Promise<void> {
  *  settled and the goal woken afresh. An unreadable goal is rewoken too,
  *  since it may be a lead's. */
 export function goalRecoveryPlan(
-  goal: Pick<Goal, "leadProject"> | null | undefined,
+  goal: Pick<Goal, "leadProject" | "watchOwner"> | null | undefined,
 ): "resume" | "rewake" {
-  return goal && !goal.leadProject ? "resume" : "rewake";
+  return goal && !goal.leadProject && !goal.watchOwner ? "resume" : "rewake";
 }
 
 /** The in-process servers a goal session's resumed run gets: the
@@ -718,6 +850,7 @@ async function tickGoal(
   if (goal.status !== "active") {
     // A lead's pause may lapse on its own (a new month under the budget).
     if (goal.leadProject) await leadHooks()?.idle(goal, now);
+    if (goal.watchOwner) await watchHooks()?.idle(goal, now);
     return;
   }
   if (Date.parse(goal.nextWakeAt) > now) return;

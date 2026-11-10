@@ -37,6 +37,7 @@ import {
   createGoalsMcpServer,
 } from "../agents/slack/goal-tools";
 import { createSupervisorMcpServer } from "./supervisor-mcp";
+import { createWatchMcpServer } from "./supervisor-watch-mcp";
 import { createHumansMcpServer } from "../agents/slack/humans-tools";
 import { createKeychainMcpServer } from "../agents/slack/keychain-tools";
 import { createMemoryMcpServer } from "../agents/slack/memory-tools";
@@ -687,8 +688,19 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     ],
     runClasses: ["interactive"],
     condition: "Only on a supervisor session (session.supervisor).",
-    note: "Acts on the inbox of the session's owner only (supervisor-inbox.ts). ask_pat starts the GitHub agent's existing PR flows (agents/github/trigger.ts) as the owner, on registered repos only, with no free text.",
+    note: "Acts on the inbox of the session's owner only (supervisor-inbox.ts). ask_pat starts the GitHub agent's existing PR flows (agents/github/trigger.ts) as the owner, on registered repos only, with no free text. watch_for records a follow-up for the owner's watch (supervisor-watch.ts). A supervisor session gets no opensession-schedule.",
     build: () => createSupervisorMcpServer({ user: USER }),
+  },
+  {
+    name: "opensession-watch",
+    summary: INTERNAL_MCP_CAPABILITIES["opensession-watch"].summary,
+    source:
+      "packages/core/opensession-server/src/server/supervisor-watch-mcp.ts",
+    wiring: ["packages/core/opensession-server/src/server/goal-runner.ts"],
+    runClasses: ["goal"],
+    condition: "Only on a person's watch goal (goal.watchOwner).",
+    note: "The watch's only server: no opensession-sessions, no goal-self status tools, no connectors, no cloud credentials. It reaches the owner only through the supervisor inbox and the shared ledger.",
+    build: () => createWatchMcpServer({ user: USER }),
   },
   {
     name: "opensession-lead",

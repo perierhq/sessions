@@ -15,7 +15,10 @@ import {
   unregisterRunToken,
 } from "./run-rpc";
 import { interactiveMcpServers } from "./interactive-mcp";
-import { SUPERVISOR_MCP_SERVER } from "./supervisor-mcp";
+import {
+  SUPERVISOR_MCP_SERVER,
+  withoutSupervisorWithheld,
+} from "./supervisor-mcp";
 
 // The ledger tools write under the state dir: a scratch one.
 const root = mkdtempSync(join(tmpdir(), "supervisor-mcp-test-"));
@@ -107,6 +110,7 @@ describe("opensession-supervisor wiring", () => {
       "list_items",
       "post_item",
       "read_ledger",
+      "watch_for",
     ]);
   });
 
@@ -170,6 +174,40 @@ describe("opensession-supervisor wiring", () => {
       kind: "immediate",
       status: 404,
     });
+  });
+
+  test("a supervisor session's turn keeps no timers of its own", async () => {
+    withSession({ supervisor: true });
+    const listed = await dispatchRunRpc("/mcp/list", {
+      token: (() => {
+        const token = `supervisor-mcp-${crypto.randomUUID()}`;
+        registerRunToken(token, { sessionId: "os-supervisor", user: "Ada" });
+        return token;
+      })(),
+      server: "opensession-schedule",
+    });
+    expect(listed).toMatchObject({ kind: "immediate", status: 404 });
+    // The rest of the interactive set is still there.
+    expect((await list("os-supervisor")).kind).toBe("immediate");
+    const todos = await dispatchRunRpc("/mcp/list", {
+      token: (() => {
+        const token = `supervisor-mcp-${crypto.randomUUID()}`;
+        registerRunToken(token, { sessionId: "os-supervisor", user: "Ada" });
+        return token;
+      })(),
+      server: "opensession-todos",
+    });
+    expect(todos).toMatchObject({ kind: "immediate" });
+    expect((todos as { status?: number }).status ?? 200).toBe(200);
+    // Any other session keeps its schedule tools.
+    const plain = interactiveMcpServers("Ada", "os-plain");
+    expect(Object.keys(plain)).toContain("opensession-schedule");
+    expect(
+      Object.keys(withoutSupervisorWithheld({ supervisor: false }, plain)),
+    ).toContain("opensession-schedule");
+    expect(
+      Object.keys(withoutSupervisorWithheld({ supervisor: true }, plain)),
+    ).not.toContain("opensession-schedule");
   });
 
   test("the plain interactive set never carries it", () => {

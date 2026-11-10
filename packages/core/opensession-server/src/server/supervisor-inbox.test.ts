@@ -78,6 +78,7 @@ beforeEach(() => {
       if (failRotate) throw new Error("catalog down");
       rotated.push(user);
     },
+    ensureWatch: async () => {},
     timeZone: () => "UTC",
   });
 });
@@ -919,6 +920,12 @@ describe("routes", () => {
       digestAt: "08:15",
       timezone: "Europe/Warsaw",
       reportStyle: "bluf",
+      watch: {
+        enabled: true,
+        everyMinutes: 30,
+        activeStart: "08:00",
+        activeEnd: "22:00",
+      },
       effectiveTimezone: "Europe/Warsaw",
     });
     const sbar = await call("PUT", "/api/supervisor/prefs", {
@@ -940,6 +947,37 @@ describe("routes", () => {
         )?.status,
       ).toBe(400);
     expect((await inbox.getSupervisorPrefs("Ada")).reportStyle).toBe("sbar");
+    const watched = await call("PUT", "/api/supervisor/prefs", {
+      user: "Ada",
+      watch: { everyMinutes: 45, activeStart: "07:00" },
+    });
+    expect(watched?.status).toBe(200);
+    expect(
+      ((await watched!.json()) as { prefs: { watch: unknown } }).prefs.watch,
+    ).toEqual({
+      enabled: true,
+      everyMinutes: 45,
+      activeStart: "07:00",
+      activeEnd: "22:00",
+    });
+    // A partial watch patch keeps the rest.
+    await call("PUT", "/api/supervisor/prefs", {
+      user: "Ada",
+      watch: { enabled: false },
+    });
+    expect((await inbox.getSupervisorPrefs("Ada")).watch).toEqual({
+      enabled: false,
+      everyMinutes: 45,
+      activeStart: "07:00",
+      activeEnd: "22:00",
+    });
+    for (const watch of [{ everyMinutes: 1 }, { enabled: "no" }, "on"])
+      expect(
+        (await call("PUT", "/api/supervisor/prefs", { user: "Ada", watch }))
+          ?.status,
+      ).toBe(400);
+    // The watch's own ensure runs after the response; let it settle.
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(
       (
         await call("PUT", "/api/supervisor/prefs", {
@@ -1022,6 +1060,7 @@ describe("opensession-supervisor", () => {
       "list_items",
       "post_item",
       "read_ledger",
+      "watch_for",
     ]);
     const posted = await tools.post_item!.handler(
       {

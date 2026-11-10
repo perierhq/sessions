@@ -363,6 +363,10 @@ export async function handleSlashCommand(
     return "Loop stopped.";
   }
   if (text.startsWith("/loop ")) {
+    // The supervisor's conversation keeps no timers: its watch follows
+    // things up (supervisor-watch.ts).
+    if (session.supervisor)
+      return "The supervisor keeps no loops. Ask it to watch for something instead; its watch follows it up and reports through the inbox.";
     const parsed = parseLoopCommand(text.slice("/loop ".length));
     if (!parsed)
       return "Usage: /loop <interval> [for <duration>] <prompt> — e.g. /loop 15m for 2h check CI and fix failures";

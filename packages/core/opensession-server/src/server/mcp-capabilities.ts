@@ -247,7 +247,13 @@ export const INTERNAL_MCP_CAPABILITIES = {
   "opensession-supervisor": {
     summary: "The supervisor's inbox: decisions leads raised for the owner.",
     guidance:
-      "Your inbox from leads: list_items; answer_item when the owner answers in chat; dismiss_item; post_item: a needs-you push or a digest fyi. ask_pat hands off PR work.",
+      "Your inbox from leads: list_items; answer_item when the owner answers in chat; dismiss_item; post_item: a needs-you push or a digest fyi. ask_pat hands off PR work. watch_for hands follow-ups to the watch.",
+  },
+  "opensession-watch": {
+    summary:
+      "A person's background watch: the supervisor's inbox and ledger, its follow-ups and project overviews.",
+    guidance:
+      "You report only through post_item (needs-you only for a decision the owner must make, else fyi) and the ledger (read_ledger, append_ledger). list_watch_tasks shows the follow-ups Blob handed you; resolve_watch_task closes one. project_overview reads a project the owner leads. Post nothing when nothing needs the owner.",
   },
   "opensession-lead": {
     summary:

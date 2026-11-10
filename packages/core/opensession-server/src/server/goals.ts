@@ -85,6 +85,10 @@ export interface Goal {
   /** The project this goal leads (server/leads/goal.ts). Server-owned: set
    *  at creation by the lead, never by a patch or the goals API. */
   leadProject?: string;
+  /** The person whose background watch this goal is
+   *  (supervisor-watch.ts). Server-owned like `leadProject`: set at
+   *  creation by the watch, never by a patch or the goals API. */
+  watchOwner?: string;
   /** What this goal's runs cost in one UTC month (`YYYY-MM`), as their
    *  terminal usage reported it. Runner-owned. */
   spend?: { month: string; usd: number };
@@ -139,6 +143,10 @@ export function goalGuardFor(
 export const LEAD_UNAVAILABLE_REASON =
   "The project lead isn't running on this server";
 export const WAKE_CHECK_FAILED_REASON = "Its wake check failed";
+/** Why the runner paused a person's watch goal without running it: no
+ *  watch on this server to ask (supervisor-watch.ts lifts it). */
+export const WATCH_UNAVAILABLE_REASON =
+  "The supervisor's watch isn't running on this server";
 
 // ── Store ────────────────────────────────────────────────────
 
@@ -267,7 +275,11 @@ export async function createGoal(
   /** Server-owned fields, never taken from an API body. `pauseReason`
    *  creates the goal paused, so it can't wake before its owner has
    *  recorded it (a project lead stores the id in its settings first). */
-  owned: { leadProject?: string; pauseReason?: string } = {},
+  owned: {
+    leadProject?: string;
+    watchOwner?: string;
+    pauseReason?: string;
+  } = {},
 ): Promise<Goal | { error: string }> {
   if (!input.name?.trim()) return { error: "Name is required" };
   if (!input.mission?.trim()) return { error: "Mission is required" };
@@ -309,6 +321,7 @@ export async function createGoal(
     fallbackModel: input.fallbackModel?.trim() || undefined,
     mcpServers: sanitizeMcpList(input.mcpServers),
     ...(owned.leadProject ? { leadProject: owned.leadProject } : {}),
+    ...(owned.watchOwner ? { watchOwner: owned.watchOwner } : {}),
     createdBy: input.createdBy || "Anonymous",
     createdAt: new Date().toISOString(),
   };
@@ -329,8 +342,9 @@ export async function createGoal(
 
 /** Fields an operator (via opensession-goals or the goals API) may patch.
  *  Runtime/scheduling fields (engineSessionId, wakeCount, lastRun*,
- *  worktreePath, spend, guard, waiting) are owned by the runner, `leadProject` by the
- *  project lead, and `id` and `stateFile` are fixed
+ *  worktreePath, spend, guard, waiting) are owned by the runner,
+ *  `leadProject` by the project lead, `watchOwner` by the supervisor's
+ *  watch, and `id` and `stateFile` are fixed
  *  at creation: the ledger tools read and write `stateFile` by path. */
 const PATCHABLE_GOAL_FIELDS = [
   "name",
@@ -364,8 +378,9 @@ function patchableFields(patch: unknown): GoalPatch {
   return out;
 }
 
-/** Fields a project lead's settings decide (server/leads/goal.ts): a patch
- *  may not change them on a lead's goal, and each wake rebuilds them. */
+/** Fields a project lead's settings decide (server/leads/goal.ts), or a
+ *  watch's charter (supervisor-watch.ts): a patch may not change them on
+ *  such a goal, and each wake rebuilds them. */
 export const LEAD_OWNED_GOAL_FIELDS = [
   "mission",
   "mode",
@@ -375,7 +390,10 @@ export const LEAD_OWNED_GOAL_FIELDS = [
 ] as const satisfies readonly (keyof Goal)[];
 
 class LeadOwnedField extends Error {
-  constructor(readonly fields: string[]) {
+  constructor(
+    readonly fields: string[],
+    readonly watch: boolean,
+  ) {
     super(fields.join(", "));
   }
 }
@@ -383,7 +401,7 @@ class LeadOwnedField extends Error {
 /** The lead-owned fields `fields` would change on `goal`. Sending a
  *  value it already has (a form that posts every field) changes nothing. */
 function leadOwnedChanges(goal: Goal, fields: GoalPatch): string[] {
-  if (!goal.leadProject) return [];
+  if (!goal.leadProject && !goal.watchOwner) return [];
   return LEAD_OWNED_GOAL_FIELDS.filter(
     (key) =>
       key in fields &&
@@ -401,7 +419,7 @@ export async function updateGoal(
   try {
     const next = await mutateGoal(id, (g) => {
       const locked = leadOwnedChanges(g, fields);
-      if (locked.length) throw new LeadOwnedField(locked);
+      if (locked.length) throw new LeadOwnedField(locked, !!g.watchOwner);
       const merged: Goal = { ...g, ...fields };
       if (typeof merged.minWakeMinutes === "number")
         merged.minWakeMinutes = Math.max(MIN_WAKE_FLOOR, merged.minWakeMinutes);
@@ -411,7 +429,9 @@ export async function updateGoal(
   } catch (error) {
     if (!(error instanceof LeadOwnedField)) throw error;
     return {
-      error: `This goal is a project lead's: its ${error.fields.join(", ")} come from the project's lead settings`,
+      error: error.watch
+        ? `This goal is a supervisor's watch: its ${error.fields.join(", ")} come from the watch's charter`
+        : `This goal is a project lead's: its ${error.fields.join(", ")} come from the project's lead settings`,
     };
   }
 }
