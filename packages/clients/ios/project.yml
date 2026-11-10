@@ -22,6 +22,13 @@ packages:
     url: https://github.com/appstefan/highlightswift
     # Keep the direct product on the revision SwiftStreamingMarkdown resolves.
     revision: 99c431b38a1444a5fd6a4978307fbbefe3a7af53
+  # Blob only: Parakeet speech to text and Silero voice activity on the
+  # device. No traits: the TTS, diarizer and NeMo text-processing parts
+  # (a prebuilt Rust library) stay out of the app.
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    exactVersion: 0.18.3
+    traits: []
 targets:
   OS1:
     type: application
@@ -158,6 +165,8 @@ targets:
         product: SwiftStreamingMarkdown
       - package: HighlightSwift
         product: HighlightSwift
+      - package: FluidAudio
+        product: FluidAudio
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: pl.sessions.blob
@@ -193,6 +202,8 @@ targets:
         product: SwiftStreamingMarkdown
       - package: HighlightSwift
         product: HighlightSwift
+      - package: FluidAudio
+        product: FluidAudio
     entitlements:
       path: BlobMac.entitlements
       properties:

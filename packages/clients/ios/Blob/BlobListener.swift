@@ -1,4 +1,5 @@
 import AVFoundation
+import FluidAudio
 import Foundation
 import Observation
 import Speech
@@ -6,7 +7,13 @@ import Speech
 /// Hears you for Blob's text mode. Uses Apple's on-device `SpeechAnalyzer`
 /// with `SpeechTranscriber` (iOS 26), which mishears far less than the old
 /// `SFSpeechRecognizer`, and falls back to the OS app's `Dictation` for a
-/// language the new model doesn't cover. Nothing leaves the phone.
+/// language the new model doesn't cover.
+///
+/// Apple's text is the live caption. The same microphone audio is also kept
+/// in memory as 16 kHz mono samples, so `BlobTextTalk` can have Parakeet
+/// (`BlobParakeet`) or the server's Fish Audio write the final text. The
+/// samples feed `BlobEndpointer` too, through FluidAudio's voice activity
+/// model, so listening ends by itself once you stop talking (`onEnd`).
 @MainActor
 @Observable
 final class BlobListener {
@@ -23,6 +30,22 @@ final class BlobListener {
     private(set) var level: Double = 0
     /// First use downloads the speech model for your language.
     private(set) var preparing = false
+    /// Listening ends by itself when you stop talking. False on the
+    /// `Dictation` fallback, which has no recording to judge by: tap to send.
+    var endsByItself: Bool { fallback == nil }
+    /// Called once when the endpointer decides: `.send` after you stop
+    /// talking, `.giveUp` when nothing was said.
+    var onEnd: ((BlobEndpointer.Decision) -> Void)?
+
+    /// What `stop()` hands back: Apple's text and the recording behind it.
+    struct Heard {
+        let text: String
+        /// 16 kHz mono Float32; empty on the `Dictation` fallback.
+        let samples: [Float]
+        /// False when the model missed `stop`'s deadline and `text` is what
+        /// it had shown by then.
+        var finished = true
+    }
 
     private var finalized = ""
     private var engine: AVAudioEngine?
@@ -30,9 +53,21 @@ final class BlobListener {
     private var input: AsyncStream<AnalyzerInput>.Continuation?
     private var results: Task<Void, Never>?
     private var fallback: Dictation?
+    private var capture: BlobCapture?
+    private var endpointer = BlobEndpointer()
+    private var ended = false
+    private var voiceActivity: Task<Void, Never>?
+    /// Off the main actor's level path once the VAD is deciding.
+    private var usesVoiceActivity = false
+    private var wasSpeaking = false
+
+    /// Input level above which a buffer counts as speech when the VAD isn't
+    /// loaded. An assumption tuned by ear against `level`'s 0…1 scale.
+    static let speechLevel = 0.15
 
     func start() async throws {
         text = ""; finalized = ""; level = 0
+        endpointer = BlobEndpointer(); ended = false; wasSpeaking = false
         guard await AVAudioApplication.requestRecordPermission() else { throw ListenError.microphoneOff }
         guard SpeechTranscriber.isAvailable,
               let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current)
@@ -45,6 +80,7 @@ final class BlobListener {
             try await install.downloadAndInstall()
         }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
+        usesVoiceActivity = false
         let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.analyzer = analyzer
@@ -56,28 +92,69 @@ final class BlobListener {
         }
         try Self.activateSession(record: true)
         try await analyzer.start(inputSequence: stream)
-        try startEngine(feeding: continuation, as: format)
+        let vadState = await BlobVoiceActivity.shared.makeStreamState()
+        if vadState == nil { Task.detached { _ = await BlobVoiceActivity.shared.load() } }
+        let capture = BlobCapture(framing: vadState == nil ? nil : BlobVoiceActivity.frame)
+        self.capture = capture
+        if let vadState { startVoiceActivity(capture, state: vadState) }
+        try startEngine(feeding: continuation, as: format, capture: capture)
     }
 
     /// Stops listening and returns everything heard, once the model has
-    /// finished its last phrase.
-    func stop() async -> String {
+    /// finished its last phrase, or after `seconds` with the text shown so
+    /// far: the model can stall (a first Parakeet compile competing for the
+    /// Neural Engine), and what you said must still go.
+    func stop(within seconds: Double) async -> Heard {
+        ended = true
         if let fallback {
             fallback.stop()
             self.fallback = nil
-            return text
+            return Heard(text: text, samples: [])
         }
         engine?.stop()
         engine?.inputNode.removeTap(onBus: 0)
         engine = nil
         input?.finish()
         input = nil
-        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
-        await results?.value
-        analyzer = nil
-        results = nil
+        let samples = capture?.finish() ?? []
+        capture = nil
+        voiceActivity?.cancel(); voiceActivity = nil
+        // Taken before waiting: a new `start()` meanwhile owns the fields.
+        let analyzer = self.analyzer, results = self.results
+        self.analyzer = nil
+        self.results = nil
         level = 0
-        return text
+        let finished = await Self.finishes(within: seconds) {
+            try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+            await results?.value
+        }
+        if !finished {
+            results?.cancel()
+            if let analyzer { Task { await analyzer.cancelAndFinishNow() } }
+        }
+        return Heard(text: text, samples: samples, finished: finished)
+    }
+
+    /// Whether `work` ends within `seconds`. Returns at the deadline even
+    /// when `work` never does.
+    private static func finishes(within seconds: Double, _ work: @escaping @MainActor () async -> Void) async -> Bool {
+        final class Once {
+            var continuation: CheckedContinuation<Bool, Never>?
+            func resume(_ value: Bool) { continuation?.resume(returning: value); continuation = nil }
+        }
+        let once = Once()
+        return await withCheckedContinuation { continuation in
+            once.continuation = continuation
+            let timer = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(seconds))
+                once.resume(false)
+            }
+            Task { @MainActor in
+                await work()
+                timer.cancel()
+                once.resume(true)
+            }
+        }
     }
 
     /// Drops everything without waiting for the model.
@@ -85,6 +162,9 @@ final class BlobListener {
         fallback?.stop(); fallback = nil
         engine?.stop(); engine?.inputNode.removeTap(onBus: 0); engine = nil
         input?.finish(); input = nil
+        _ = capture?.finish(); capture = nil
+        voiceActivity?.cancel(); voiceActivity = nil
+        ended = true
         results?.cancel(); results = nil
         if let analyzer { Task { await analyzer.cancelAndFinishNow() } }
         analyzer = nil
@@ -101,25 +181,70 @@ final class BlobListener {
         }
     }
 
+    /// One endpointer frame; acts on its decision once.
+    private func endpoint(speaking: Bool, seconds: TimeInterval) {
+        guard !ended else { return }
+        let decision = endpointer.feed(speaking: speaking, seconds: seconds)
+        guard decision != .listen else { return }
+        ended = true
+        onEnd?(decision)
+    }
+
+    /// Runs the VAD over the recording, one 256 ms frame at a time.
+    private func startVoiceActivity(_ capture: BlobCapture, state: VadStreamState) {
+        usesVoiceActivity = true
+        let frames = capture.frames
+        voiceActivity = Task { [weak self] in
+            var state = state
+            let seconds = Double(BlobVoiceActivity.frame) / BlobCapture.sampleRate
+            for await frame in frames {
+                guard let (probability, next) = await BlobVoiceActivity.shared.probability(frame, state: state) else {
+                    // The model failed: the input level decides from here.
+                    self?.usesVoiceActivity = false
+                    return
+                }
+                state = next
+                guard let self else { return }
+                // Silero's own hysteresis: 0.5 to start speech, 0.35 to end it.
+                let speaking = probability >= 0.5 || (self.wasSpeaking && probability >= 0.35)
+                self.wasSpeaking = speaking
+                self.endpoint(speaking: speaking, seconds: seconds)
+            }
+        }
+    }
+
     private func startFallback() async {
         let dictation = Dictation()
         fallback = dictation
         await dictation.start(base: "") { [weak self] heard in self?.text = heard }
     }
 
-    private func startEngine(feeding continuation: AsyncStream<AnalyzerInput>.Continuation, as target: AVAudioFormat?) throws {
+    private func startEngine(
+        feeding continuation: AsyncStream<AnalyzerInput>.Continuation,
+        as target: AVAudioFormat?,
+        capture: BlobCapture
+    ) throws {
         let engine = AVAudioEngine()
         let node = engine.inputNode
         let natural = node.outputFormat(forBus: 0)
         let converter = target.flatMap { $0 == natural ? nil : AVAudioConverter(from: natural, to: $0) }
+        let recorder = AVAudioConverter(from: natural, to: BlobCapture.format)
         node.installTap(onBus: 0, bufferSize: 2048, format: natural) { [weak self] buffer, _ in
             let peak = Self.peak(of: buffer)
+            let seconds = Double(buffer.frameLength) / natural.sampleRate
             if let converter, let target, let converted = Self.convert(buffer, with: converter, to: target) {
                 continuation.yield(AnalyzerInput(buffer: converted))
             } else {
                 continuation.yield(AnalyzerInput(buffer: buffer))
             }
-            Task { @MainActor in self?.level = min(1, Double(peak) * 4) }
+            if let recorder, let recorded = Self.convert(buffer, with: recorder, to: BlobCapture.format) {
+                capture.append(recorded)
+            }
+            Task { @MainActor in
+                guard let self else { return }
+                self.level = min(1, Double(peak) * 4)
+                if !self.usesVoiceActivity { self.endpoint(speaking: self.level > Self.speechLevel, seconds: seconds) }
+            }
         }
         engine.prepare()
         try engine.start()
@@ -159,5 +284,57 @@ final class BlobListener {
         }
         try session.setActive(true)
         #endif
+    }
+}
+
+/// The recording `BlobListener` keeps while you talk: 16 kHz mono Float32,
+/// the format Parakeet and the VAD take. Appended from the audio thread.
+/// With `framing`, every full frame of that many samples also goes to
+/// `frames` for the VAD.
+final class BlobCapture: @unchecked Sendable {
+    static let sampleRate: Double = 16_000
+    static let format = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
+    )!
+    /// A minute and a bit: the endpointer ends at 60 s.
+    static let maxSamples = Int(sampleRate * 62)
+
+    let frames: AsyncStream<[Float]>
+    private let framing: Int?
+    private let continuation: AsyncStream<[Float]>.Continuation
+    private let lock = NSLock()
+    private var samples: [Float] = []
+    private var framed = 0
+
+    init(framing: Int?) {
+        self.framing = framing
+        (frames, continuation) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(16))
+        samples.reserveCapacity(Int(Self.sampleRate * 10))
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        guard let data = buffer.floatChannelData?[0] else { return }
+        let count = Int(buffer.frameLength)
+        var ready: [[Float]] = []
+        lock.lock()
+        if samples.count + count <= Self.maxSamples {
+            samples.append(contentsOf: UnsafeBufferPointer(start: data, count: count))
+        }
+        if let framing {
+            while samples.count - framed >= framing {
+                ready.append(Array(samples[framed..<(framed + framing)]))
+                framed += framing
+            }
+        }
+        lock.unlock()
+        for frame in ready { continuation.yield(frame) }
+    }
+
+    /// Ends the frame stream and hands back the whole recording.
+    func finish() -> [Float] {
+        continuation.finish()
+        lock.lock()
+        defer { lock.unlock() }
+        return samples
     }
 }

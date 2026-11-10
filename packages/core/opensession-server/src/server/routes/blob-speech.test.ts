@@ -108,6 +108,7 @@ describe("Blob speech settings", () => {
     const status = await (await call("/api/blob/speech/status", "GET")).json();
     expect(status).toEqual({
       configured: false,
+      transcribe: false,
       model: "s2.1-pro",
       models: ["s2.1-pro", "s2.1-pro-free", "drama-3"],
     });
@@ -140,6 +141,7 @@ describe("Blob speech settings", () => {
     process.env.FISH_AUDIO_API_KEY = "env-key-9876";
     const status = await (await call("/api/blob/speech/status", "GET")).json();
     expect(status.configured).toBe(true);
+    expect(status.transcribe).toBe(true);
     expect(status.keyMasked).toBe("…9876");
   });
 
