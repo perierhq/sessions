@@ -74,6 +74,7 @@ import { handleInstanceSkillsRoutes } from "./instance-skills";
 import { handleTodosRoutes } from "./todos";
 import { handleSupervisorRoutes } from "./supervisor";
 import { handleDeskVoiceRoutes } from "./desk-voice";
+import { handleBlobSpeechRoutes } from "./blob-speech";
 import { handleDeskNavigationRoutes } from "./desk-navigation";
 import { handleWorkflowsRoutes } from "./workflows";
 import { handleReportsRoutes } from "./reports";
@@ -167,6 +168,7 @@ export const routeHandlers: RouteHandler[] = [
   handleTodosRoutes,
   handleSupervisorRoutes,
   handleDeskVoiceRoutes,
+  handleBlobSpeechRoutes,
   handleClientDiagnosticsRoutes,
   handleDeskNavigationRoutes,
   handleWorkflowsRoutes,
