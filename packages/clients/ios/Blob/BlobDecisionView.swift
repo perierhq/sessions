@@ -117,30 +117,70 @@ struct BlobDecisionView: View {
     }
 
     private func optionButton(_ option: String, number: Int) -> some View {
-        let primary = number == 1
-        return Button { answer(option) } label: {
+        BlobOptionButton(label: option, number: number, role: number == 1 ? .recommended : .plain) {
+            answer(option)
+        }
+    }
+}
+
+/// What an option is to the one answering: the recommended one, filled; one
+/// that can't be taken back, in red; or a plain one, soft.
+enum BlobOptionRole: Equatable { case recommended, destructive, plain }
+
+/// One numbered option as a button, for decisions and questions alike.
+struct BlobOptionButton: View {
+    let label: String
+    var detail: String?
+    let number: Int
+    let role: BlobOptionRole
+    let action: () -> Void
+
+    private var primary: Bool { role == .recommended }
+
+    private var ink: Color {
+        switch role {
+        case .recommended: OS1VisualStyle.onAccent
+        case .destructive: OS1VisualStyle.redInk
+        case .plain: OS1VisualStyle.text
+        }
+    }
+
+    private var fill: Color {
+        switch role {
+        case .recommended: OS1VisualStyle.accent
+        case .destructive: OS1VisualStyle.red.opacity(0.12)
+        case .plain: OS1VisualStyle.hover
+        }
+    }
+
+    var body: some View {
+        Button(action: action) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(verbatim: "\(number)")
                     .font(.body.monospacedDigit())
                     .opacity(0.6)
-                Text(option)
-                    .font(.body.weight(primary ? .semibold : .regular))
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.body.weight(role == .plain ? .regular : .semibold))
+                    if let detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.footnote)
+                            .opacity(0.75)
+                    }
+                }
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(primary ? OS1VisualStyle.onAccent : OS1VisualStyle.text)
+            .foregroundStyle(ink)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-            .background(
-                primary ? AnyShapeStyle(OS1VisualStyle.accent) : AnyShapeStyle(OS1VisualStyle.hover),
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-            )
+            .background(fill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(BlobPressStyle())
-        .accessibilityLabel("\(number). \(option)")
+        .accessibilityLabel("\(number). \(label)")
         .accessibilityHint(primary ? "Recommended" : "")
     }
 }

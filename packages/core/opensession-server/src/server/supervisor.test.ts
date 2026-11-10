@@ -544,6 +544,18 @@ describe("standing sessions", () => {
     expect(note).toContain("mark the old one superseded");
   });
 
+  test("the charter merges through the owner's confirm card, only on request", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain(
+      "When the owner asks to merge a pull request, use opensession-repos force_merge_pull_request.",
+    );
+    expect(note).toContain("puts a confirm card in front of the owner");
+    expect(note).toContain("merges with the owner's account");
+    expect(note).toContain("Never merge on your own initiative.");
+    expect(note).not.toContain("send_to_session). Use force_merge");
+    expect(note).not.toMatch(/merge it \(send_to_session\)/);
+  });
+
   test("the charter keeps decisions to the owner's own words", () => {
     const note = supervisor.supervisorNote("Pat");
     expect(note).toContain(

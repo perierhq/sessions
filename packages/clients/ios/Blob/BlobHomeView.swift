@@ -46,7 +46,6 @@ struct BlobHomeView: View {
                 if historyOpen {
                     BlobHistoryView(
                         exchanges: text.history,
-                        relay: text.relay,
                         canLoadEarlier: text.canLoadEarlier,
                         loadingEarlier: text.loadingEarlier,
                         loadEarlier: { text.loadEarlier() },
@@ -68,7 +67,7 @@ struct BlobHomeView: View {
                 .allowsHitTesting(false)
                 .accessibilityElement()
                 .accessibilityLabel("Blob")
-                .accessibilityValue(historyOpen ? "History" : talking ? statusLabel : showingDecision ? "Needs you" : "Asleep")
+                .accessibilityValue(historyOpen ? "History" : talking ? statusLabel : needsYou ? "Needs you" : "Asleep")
                 .accessibilityHint(historyOpen ? "Closes history" : talking ? "Ends the conversation" : "Starts a conversation")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { historyOpen ? closeHistory() : toggleTalk() }
@@ -117,11 +116,6 @@ struct BlobHomeView: View {
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
         .onChange(of: text.settled) { _, settled in if settled { text.answerSettled() } }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: typing)
-        .onChange(of: text.phase) { _, phase in
-            // A chip tapped in history is the next thing you say: its answer
-            // comes on the home.
-            if phase == .waiting, historyOpen { closeHistory() }
-        }
         .task {
             text.connect()
             voiceConfigured = await BlobTextTalk.voiceConfigured()
@@ -144,6 +138,14 @@ struct BlobHomeView: View {
                 if !say.isEmpty { text.speaker.speak(say) }
             }
         }
+        // Blob reads what the run asks you when it comes up, once; during
+        // the live voice call it waits until the call ends.
+        .onChange(of: ask?.id, initial: true) { _, _ in
+            if let ask { text.askCameUp(ask, callActive: engine.active) }
+        }
+        .onChange(of: engine.active) { _, active in
+            if !active, let ask { text.askCameUp(ask, callActive: false) }
+        }
         // A Bark notification's link: `blob://item/<id>` shows that item as
         // the current decision; `blob://` alone just opens Blob.
         .onOpenURL { url in
@@ -154,6 +156,7 @@ struct BlobHomeView: View {
             Task { await decisions.focus(id: id) }
         }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: decisionKey)
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: ask?.id)
         #if DEBUG
         .onAppear {
             if ProcessInfo.processInfo.environment["BLOB_DEMO_TYPING"] != nil {
@@ -191,7 +194,7 @@ struct BlobHomeView: View {
     /// One line for the menu bar item.
     private var menuStatus: String {
         if talking { return statusLabel.isEmpty ? "Talking" : statusLabel }
-        return showingDecision ? "Needs you" : "Asleep"
+        return needsYou ? "Needs you" : "Asleep"
     }
 
     /// Space talks, or stops talking. Not while history is open.
@@ -239,8 +242,16 @@ struct BlobHomeView: View {
     /// Nothing else going on: no conversation, no typing, no history, no
     /// reply on screen. Only then does a decision come up.
     private var idle: Bool {
-        !talking && !typing && !historyOpen && !replyOnScreen && !Self.demoRunning
+        !talking && !typing && !historyOpen && !replyOnScreen && ask == nil && !Self.demoRunning
     }
+
+    /// What the supervisor's run is waiting on you for, shown where replies
+    /// render. It comes before decisions and replies: until it is answered
+    /// the run does nothing else.
+    private var ask: BlobAsk? { historyOpen ? nil : text.ask }
+
+    /// Blob is awake because something needs you.
+    private var needsYou: Bool { showingDecision || ask != nil }
 
     /// The decision on screen, if Blob is idle and one is waiting.
     private var decision: OS1API.SupervisorItem? {
@@ -260,7 +271,7 @@ struct BlobHomeView: View {
         if !textConversation { return engine.state.label }
         switch text.phase {
         case .listening: return "Listening"
-        case .waiting: return text.thinking ? "Thinking" : "Answering"
+        case .waiting: return ask != nil ? "Needs you" : text.thinking ? "Thinking" : "Answering"
         default: return ""
         }
     }
@@ -276,7 +287,7 @@ struct BlobHomeView: View {
             switch text.phase {
             case .idle, .failed: return .quiet
             case .listening: return .listen
-            case .waiting: return text.thinking ? .think : .speak
+            case .waiting: return ask != nil ? .you : text.thinking ? .think : .speak
             }
         }
         return switch engine.state {
@@ -297,12 +308,12 @@ struct BlobHomeView: View {
         if let demo = BlobDemo.at(date) { talking = demo.talking; mode = demo.mode; level = demo.level }
         #endif
         // A reply on screen gets the room: Blob moves up and keeps talking from there.
-        let showingReply = text.answer != nil || Self.demoReply != nil
+        let showingReply = text.answer != nil || ask != nil || Self.demoReply != nil
         let top = CGPoint(x: center.x, y: max(insets.top, 20) + 56)
         // History gets the screen; Blob waits in its slot, small.
         if historyOpen { talking = false }
         // Something needs you: Blob wakes and moves up, as for a reply.
-        if !talking && showingDecision {
+        if !talking && needsYou {
             let reading = text.speaker.speaking
             return BlobTargets(
                 mode: decisionSaid != nil || reading ? .speak : .you,
@@ -444,6 +455,8 @@ struct BlobHomeView: View {
         VStack(alignment: .leading, spacing: 8) {
             if text.active || Self.demoReply != nil {
                 textCaptions
+            } else if let ask {
+                askView(ask)
             } else if engine.active, let caption = engine.caption, !caption.text.isEmpty {
                 Text(caption.text)
                     .font(caption.role == .assistant ? .title3 : .callout)
@@ -495,16 +508,20 @@ struct BlobHomeView: View {
         .padding(.trailing, insets.trailing + 24)
         .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : talking ? 28 : 60))
         .animation(.easeOut(duration: 0.24), value: engine.caption?.text)
-        .allowsHitTesting(text.answer != nil || decision != nil)
+        .allowsHitTesting(text.answer != nil || decision != nil || ask != nil)
     }
 
     /// Writing instead of speaking: a small keyboard button while Blob is
     /// quiet, a one-line field while you type. Return sends.
+    /// Nothing while history is open, so no bar comes and goes over it; a
+    /// draft waits for when it closes.
     @ViewBuilder
     private var writeBar: some View {
-        if typing {
+        if historyOpen {
+            EmptyView()
+        } else if typing {
             HStack(spacing: 8) {
-                TextField("Write to Blob", text: $draft, axis: .vertical)
+                TextField(ask?.takesText == true ? "Answer Blob" : "Write to Blob", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...4)
                     .focused($fieldFocused)
@@ -527,7 +544,7 @@ struct BlobHomeView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 10)
             .transition(.move(edge: .bottom).combined(with: .opacity))
-        } else if !engine.active && text.phase != .listening && !historyOpen {
+        } else if !engine.active && text.phase != .listening {
             HStack {
                 Button(action: startWriting) {
                     Image(systemName: "keyboard")
@@ -551,7 +568,25 @@ struct BlobHomeView: View {
         draft = ""
         hasTalked = true
         // The field stays open, so the next line is one tap away.
-        text.send(typed: message)
+        if let ask, ask.takesText {
+            // A question is waiting: what you write answers it.
+            Task { try? await text.answer(ask, with: .answer(message.trimmingCharacters(in: .whitespacesAndNewlines))) }
+        } else {
+            text.send(typed: message)
+        }
+    }
+
+    /// What the run asks, where replies render.
+    private func askView(_ ask: BlobAsk) -> some View {
+        BlobAskView(
+            ask: ask,
+            // What the options and the quiet buttons take; the question gets the rest.
+            maxHeight: max(160, replyHeight - CGFloat(ask.options.count) * 56 - 44),
+            answer: { action in try await text.answer(ask, with: action) },
+            write: startWriting
+        )
+        .id(ask.id)
+        .transition(reduceMotion ? .opacity : .offset(y: 16).combined(with: .opacity))
     }
 
     /// Text mode: what you said, then Blob's answer. A long answer scrolls.
@@ -575,7 +610,24 @@ struct BlobHomeView: View {
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        if let content = Self.demoReply ?? text.replyEntry?.content, !content.isEmpty {
+        if let notice = text.notice {
+            // An answered ask that didn't go through, like a refused merge.
+            Text(notice)
+                .font(.footnote)
+                .foregroundStyle(OS1VisualStyle.textDim)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let ask {
+            // The run stopped to ask you something; its reply comes after.
+            askView(ask)
+        } else if text.thinking {
+            Text("Working on it\u{2026}")
+                .font(.footnote)
+                .foregroundStyle(OS1VisualStyle.textFaint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.opacity)
+        } else if let content = Self.demoReply ?? text.replyEntry?.content, !content.isEmpty {
             // The finished reply: what Blob says, then what it shows, drawn
             // with the block catalog as in the OS app.
             ScrollView {

@@ -9,9 +9,6 @@ struct BlobExchange: Identifiable, Equatable {
     /// rest drawn with the block catalog (`BlobReply`). Nil while there is
     /// no answer yet.
     var reply: String?
-    /// The entry the reply came from, so its `choices` know whether they are
-    /// still current.
-    var replyId: String?
     var date: Date?
 
     /// Groups a supervisor transcript into exchanges, oldest first.
@@ -57,7 +54,6 @@ struct BlobExchange: Identifiable, Equatable {
                 guard current != nil, entry.isReasoning != true, entry.notice == nil, !text.isEmpty else { continue }
                 if afterTool { run = []; afterTool = false }
                 run.append(text)
-                current?.replyId = entry.id
             } else if entry.isTool {
                 afterTool = true
             }
@@ -71,7 +67,6 @@ struct BlobExchange: Identifiable, Equatable {
 /// on the home; pulling down past the oldest one, or tapping Blob, goes back.
 struct BlobHistoryView: View {
     let exchanges: [BlobExchange]
-    let relay: QuickReplyRelay?
     let canLoadEarlier: Bool
     let loadingEarlier: Bool
     let loadEarlier: () -> Void
@@ -80,6 +75,9 @@ struct BlobHistoryView: View {
     let margins: EdgeInsets
 
     @State private var dismissed = false
+    /// The exchange at the bottom of the screen. Older pages arrive above
+    /// it, and the scroll view keeps it where it was.
+    @State private var position: String?
 
     var body: some View {
         ScrollView {
@@ -90,28 +88,34 @@ struct BlobHistoryView: View {
                         .padding(.bottom, 24)
                 }
                 ForEach(Array(exchanges.enumerated()), id: \.element.id) { index, exchange in
-                    let day = Self.day(exchange.date)
-                    if let day, index == 0 || Self.day(exchanges[index - 1].date) != day {
-                        Text(day)
-                            .font(.caption2)
-                            .foregroundStyle(OS1VisualStyle.textDim)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, index == 0 ? 0 : 12)
-                            .padding(.bottom, 20)
-                            .accessibilityAddTraits(.isHeader)
-                    }
-                    row(exchange)
-                        .padding(.bottom, 32)
-                        .onAppear {
-                            if index == 0, canLoadEarlier, !loadingEarlier { loadEarlier() }
+                    // The day header and the exchange are one row, so each
+                    // scroll target has one id and one height.
+                    VStack(alignment: .leading, spacing: 0) {
+                        let day = Self.day(exchange.date)
+                        if let day, index == 0 || Self.day(exchanges[index - 1].date) != day {
+                            Text(day)
+                                .font(.caption2)
+                                .foregroundStyle(OS1VisualStyle.textDim)
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, index == 0 ? 0 : 12)
+                                .padding(.bottom, 20)
+                                .accessibilityAddTraits(.isHeader)
                         }
+                        row(exchange)
+                    }
+                    .padding(.bottom, 32)
+                    .onAppear {
+                        if index == 0, canLoadEarlier, !loadingEarlier { loadEarlier() }
+                    }
                 }
             }
+            .scrollTargetLayout()
             .padding(.leading, margins.leading)
             .padding(.trailing, margins.trailing)
             .padding(.top, margins.top)
             .padding(.bottom, margins.bottom)
         }
+        .scrollPosition(id: $position, anchor: .bottom)
         .defaultScrollAnchor(.bottom)
         // Older pages arrive at the top; keep what you're reading in place.
         .defaultScrollAnchor(.bottom, for: .sizeChanges)
@@ -154,10 +158,36 @@ struct BlobHistoryView: View {
                 .multilineTextAlignment(.trailing)
                 .accessibilityLabel("You: \(exchange.said)")
             if let reply = exchange.reply {
-                BlobReplyView(reply: BlobReply(reply), entryId: exchange.replyId, relay: relay)
+                // Past replies are read, not answered: their quick replies
+                // are left out, so no chip changes state or height as the
+                // conversation moves on.
+                BlobReplyView(reply: BlobReply(Self.withoutChoices(reply)))
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// The reply without its ```choices fences.
+    static func withoutChoices(_ markdown: String) -> String {
+        var kept: [Substring] = []
+        var closing: String?
+        for line in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if let fence = closing {
+                if trimmed.hasPrefix(fence), trimmed.allSatisfy({ $0 == fence.first }) {
+                    closing = nil
+                }
+                continue
+            }
+            let marker = trimmed.prefix(while: { $0 == "`" || $0 == "~" })
+            if marker.count >= 3, Set(marker).count == 1,
+               trimmed.dropFirst(marker.count).trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("choices") {
+                closing = String(marker)
+                continue
+            }
+            kept.append(line)
+        }
+        return kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// "Today", "Yesterday", or the date; nil without a timestamp.

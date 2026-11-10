@@ -706,8 +706,9 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   the cases to check with a scratch `swiftc` run when the rule changes.
 - Swipe up on the home for history (`Blob/BlobHistoryView.swift`): earlier
   exchanges from the supervisor transcript, newest at the bottom, replies
-  split into the Say line and the rest drawn with the block catalog. Pull down past the oldest, or tap Blob, to
-  go back. Blob connects to the supervisor on launch so it is there before
+  split into the Say line and the rest drawn with the block catalog. Past
+  quick replies (`choices`) are left out, and no bar shows over history.
+  Pull down past the oldest, or tap Blob, to go back. Blob connects to the supervisor on launch so it is there before
   the first message.
 - Decisions (`Blob/BlobDecisions.swift`, `Blob/BlobDecisionView.swift`): the
   supervisor's open `needs-you` items (`GET /api/supervisor/items`), read on
@@ -718,6 +719,15 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   long-press for "Dismiss", which closes it on the server. `fyi` items never
   show on the home unless a link opens one. Blob reads each decision's first
   paragraph aloud once, when it comes up.
+- Asks (`Blob/BlobAsk.swift`): when the supervisor's run stops on a
+  question (`ask_question`) or a force merge to confirm
+  (`force_merge_pull_request`), Blob shows it where replies render, before
+  any decision, styled like one. The question is the Say line and is read
+  aloud once. A question takes an option, a written answer through the
+  write bar, or Skip; a force merge takes Merge anyway or Cancel. Answers go
+  through the same calls as the OS app's cards, then Blob waits for the
+  run's reply. While a run works with nothing written yet, Blob says
+  "Working on it".
 - Links (`blob` URL scheme): `blob://item/<id>`, as Bark notifications open
   it, shows that item as the current decision, even after "Not now";
   `blob://` alone just opens Blob.
