@@ -4,7 +4,8 @@ import Observation
 /// Talking to Blob when the server has no voice key: you speak, Apple's
 /// on-device recognizer (`BlobListener`) turns it into text, the text goes to
 /// the supervisor like a typed message, and Blob shows the answer and reads its
-/// first paragraph aloud (`BlobReply`, `BlobSpeaker`): with the server's Fish
+/// first paragraph aloud (`BlobReply`, `BlobSpeaker`), sentence by sentence
+/// as the reply streams in (`BlobSentenceStreamer`): with the server's Fish
 /// Audio voice when it has one, else with a Premium or Enhanced Apple voice
 /// when one fits.
 ///
@@ -36,6 +37,24 @@ final class BlobTextTalk {
     }
     /// The answer that was last read aloud, so it is read once.
     private var spokenAnswer: String?
+    /// The Say sentences of the reply being written, read as each completes.
+    private var sentences = BlobSentenceStreamer()
+    /// Reading was cut off (Esc); the rest of this reply stays silent.
+    private var hushed = false
+
+    /// The reply text while the supervisor is still writing it; nil otherwise.
+    var streamingText: String? {
+        guard let desk, phase == .waiting, desk.isStreaming, !desk.liveText.isEmpty else { return nil }
+        return desk.liveText
+    }
+
+    /// Reads each Say sentence as soon as it is complete, so Blob starts
+    /// talking before the reply is finished. Called when `streamingText`
+    /// changes.
+    func answerStreamed() {
+        guard !hushed, let text = streamingText else { return }
+        for sentence in sentences.feed(text) { speaker.enqueue(sentence) }
+    }
 
     /// Blob's answer so far: streaming text while the supervisor writes, then the
     /// finished reply.
@@ -106,8 +125,7 @@ final class BlobTextTalk {
 
     func reset() {
         listener.cancel()
-        speaker.stop()
-        spokenAnswer = nil
+        stopReading()
         heard = ""
         phase = .idle
     }
@@ -118,18 +136,32 @@ final class BlobTextTalk {
         return !desk.isRunning && !desk.isStreaming && answer != nil
     }
 
-    /// Reads the finished answer's first paragraph aloud, once; the rest is
-    /// only shown (`BlobReply`). Called when `settled` turns true.
+    /// Reads what is left of the finished answer's first paragraph: the
+    /// sentences that did not stream, or were rewritten when it landed. The
+    /// rest is only shown (`BlobReply`). Called when `settled` turns true.
     func answerSettled() {
-        guard let answer, answer != spokenAnswer else { return }
+        guard !hushed, let answer, answer != spokenAnswer else { return }
         spokenAnswer = answer
-        let say = BlobReply(answer).say
-        if !say.isEmpty { speaker.speak(say) }
+        for sentence in sentences.finish(say: BlobReply(answer).say) { speaker.enqueue(sentence) }
+    }
+
+    /// Stops reading and forgets what was read: the next reply starts fresh.
+    private func stopReading() {
+        speaker.stop()
+        spokenAnswer = nil
+        sentences = BlobSentenceStreamer()
+        hushed = false
+    }
+
+    /// Stops reading the current reply, including sentences still to stream.
+    func hush() {
+        speaker.stop()
+        if phase == .waiting { hushed = true }
     }
 
     private func listen() {
         // Blob may be reading a decision; the mic must not hear it.
-        speaker.stop()
+        stopReading()
         heard = ""
         phase = .listening
         Task {
@@ -158,8 +190,7 @@ final class BlobTextTalk {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         listener.cancel()
-        speaker.stop()
-        spokenAnswer = nil
+        stopReading()
         phase = .waiting
         Task { await deliver(text) }
     }
@@ -178,8 +209,7 @@ final class BlobTextTalk {
 
     private func follow(up text: String) {
         guard let desk else { return }
-        speaker.stop()
-        spokenAnswer = nil
+        stopReading()
         heard = text
         phase = .waiting
         sentAfter = desk.entries.last?.id

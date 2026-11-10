@@ -115,6 +115,7 @@ struct BlobHomeView: View {
                 #endif
         }
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
+        .onChange(of: text.streamingText) { _, _ in text.answerStreamed() }
         .onChange(of: text.settled) { _, settled in if settled { text.answerSettled() } }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: typing)
         .onChange(of: text.phase) { _, phase in
@@ -204,7 +205,7 @@ struct BlobHomeView: View {
     /// Esc stops Blob reading, then closes history, then the write bar.
     private func escapeKey() -> Bool {
         if text.speaker.speaking {
-            text.speaker.stop()
+            text.hush()
         } else if historyOpen {
             closeHistory()
         } else if typing && draft.isEmpty {

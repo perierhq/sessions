@@ -39,6 +39,20 @@ final class BlobSpeaker: NSObject {
     /// The utterance being spoken, so a late callback from a stopped one
     /// can't end a newer answer.
     private var utteranceId: ObjectIdentifier?
+    private var utteranceDone: CheckedContinuation<Void, Never>?
+
+    /// Sentences of a streaming answer waiting to be read, in order. Each
+    /// one's server audio is requested ahead (`queueAhead`), so the next is
+    /// ready when the current one ends.
+    private var queue: [Queued] = []
+    private var queueTask: Task<Void, Never>?
+    /// Audio requests kept in flight ahead of playback.
+    static let queueAhead = 2
+
+    private struct Queued {
+        let text: String
+        var audio: Task<Data, Error>?
+    }
 
     override init() {
         super.init()
@@ -97,9 +111,74 @@ final class BlobSpeaker: NSObject {
         return speakWithApple(plain)
     }
 
+    /// Adds one sentence of a streaming answer to what Blob reads, if reading
+    /// aloud is on. Sentences play in order, each right after the last; its
+    /// server audio is requested at once, up to `queueAhead` at a time. A
+    /// sentence whose request fails is read with an Apple voice. Cuts off
+    /// anything `speak` was reading; `stop` clears the queue.
+    func enqueue(_ sentence: String) {
+        guard UserDefaults.standard.object(forKey: Self.readAloudKey) as? Bool ?? true else { return }
+        let plain = Self.plain(sentence)
+        guard !plain.isEmpty else { return }
+        if queueTask == nil { stop() }
+        queue.append(Queued(text: plain))
+        speaking = true
+        if usesServerVoice { requestAhead() }
+        if queueTask == nil { queueTask = Task { await readQueue() } }
+    }
+
+    /// Starts the server requests for the next `queueAhead` sentences.
+    private func requestAhead() {
+        for index in queue.indices.prefix(Self.queueAhead) where queue[index].audio == nil {
+            queue[index].audio = Self.fetch(queue[index].text)
+        }
+    }
+
+    /// Reads the queue until it is empty. Returns at once when stopped: a
+    /// newer queue may already be running.
+    private func readQueue() async {
+        var useServer = false
+        if server?.configured != false, ServerConfig.shared.isConfigured {
+            useServer = await refreshServerVoice()?.configured == true
+            if Task.isCancelled { return }
+        }
+        try? BlobListener.activateSession(record: false)
+        while let next = queue.first {
+            var data: Data?
+            if useServer {
+                requestAhead()
+                if let pending = queue[0].audio {
+                    data = try? await withTaskCancellationHandler {
+                        try await pending.value
+                    } onCancel: {
+                        pending.cancel()
+                    }
+                }
+                if Task.isCancelled { return }
+            }
+            queue.removeFirst()
+            if useServer { requestAhead() }
+            // Audio that won't play is read with an Apple voice too.
+            var played = false
+            if let data { played = await play(data) }
+            if Task.isCancelled { return }
+            if !played { await sayWithApple(next.text) }
+            if Task.isCancelled { return }
+        }
+        queueTask = nil
+        speaking = false
+    }
+
+    /// Reads one sentence with an Apple voice and returns when it ends; at
+    /// once when no good voice fits.
+    private func sayWithApple(_ plain: String) async {
+        guard speakWithApple(plain) else { return }
+        await withCheckedContinuation { utteranceDone = $0 }
+    }
+
     private func speakWithApple(_ plain: String) -> Bool {
         guard let voice = Self.voice(for: plain) else {
-            speaking = false
+            if queueTask == nil { speaking = false }
             return false
         }
         try? BlobListener.activateSession(record: false)
@@ -142,7 +221,7 @@ final class BlobSpeaker: NSObject {
             }
             if Task.isCancelled { next?.cancel(); return }
             next = Self.fetch(index + 1 < pieces.count ? pieces[index + 1] : nil)
-            await play(data)
+            _ = await play(data)
             if Task.isCancelled { next?.cancel(); return }
         }
         speaking = false
@@ -153,16 +232,19 @@ final class BlobSpeaker: NSObject {
         return Task { try await OS1API.blobSpeech(piece) }
     }
 
-    /// Plays one mp3 and returns when it ends or is stopped.
-    private func play(_ data: Data) async {
-        guard let player = try? AVAudioPlayer(data: data) else { return }
+    /// Plays one mp3 and returns when it ends or is stopped; false when it
+    /// could not start.
+    private func play(_ data: Data) async -> Bool {
+        guard let player = try? AVAudioPlayer(data: data) else { return false }
         player.delegate = self
         player.isMeteringEnabled = true
         self.player = player
+        var started = true
         await withCheckedContinuation { continuation in
             finished = continuation
-            if !player.play() { endPlayback() }
+            if !player.play() { started = false; endPlayback() }
         }
+        return started
     }
 
     private func endPlayback() {
@@ -186,8 +268,14 @@ final class BlobSpeaker: NSObject {
     func stop() {
         serverTask?.cancel()
         serverTask = nil
+        queueTask?.cancel()
+        queueTask = nil
+        for item in queue { item.audio?.cancel() }
+        queue = []
         endPlayback()
         utteranceId = nil
+        utteranceDone?.resume()
+        utteranceDone = nil
         synthesizer.stopSpeaking(at: .immediate)
         speaking = false
     }
@@ -275,7 +363,12 @@ extension BlobSpeaker: AVSpeechSynthesizerDelegate {
     private func utteranceEnded(_ id: ObjectIdentifier) {
         guard id == utteranceId else { return }
         utteranceId = nil
-        speaking = false
+        if let done = utteranceDone {
+            utteranceDone = nil
+            done.resume()
+        } else {
+            speaking = false
+        }
     }
 }
 

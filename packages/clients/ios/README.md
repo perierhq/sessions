@@ -704,6 +704,14 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   says nothing aloud. Decisions split their body the same way. No test
   target compiles `Blob/`; the examples in `BlobReply`'s doc comment are
   the cases to check with a scratch `swiftc` run when the rule changes.
+- Streaming speech (`Blob/BlobSentenceStreamer.swift`): Blob reads the Say
+  part sentence by sentence while the reply streams, each one as soon as it
+  is complete, and reads whatever is left when the reply settles. A
+  sentence already read is never read again, even when the finished reply
+  rewrites it. `BlobSpeaker.enqueue` requests each sentence's server audio
+  at once (two ahead) and plays them back to back; a failed request falls
+  back to an Apple voice for that sentence. Its doc comment lists the cases
+  to check with a scratch `swiftc` run.
 - Swipe up on the home for history (`Blob/BlobHistoryView.swift`): earlier
   exchanges from the supervisor transcript, newest at the bottom, replies
   split into the Say line and the rest drawn with the block catalog. Pull down past the oldest, or tap Blob, to
