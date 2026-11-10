@@ -46,6 +46,8 @@ let clock = Date.parse("2026-07-01T12:00:00Z");
 let sent: Array<{ user: string; event: NotificationEvent }> = [];
 let done: Array<{ user: string; ids: string[] }> = [];
 let failNotify = false;
+let rotated: string[] = [];
+let failRotate = false;
 let restore: () => void = () => {};
 
 beforeEach(() => {
@@ -59,6 +61,8 @@ beforeEach(() => {
   sent = [];
   done = [];
   failNotify = false;
+  rotated = [];
+  failRotate = false;
   restore = inbox.__setSupervisorInboxDepsForTest({
     now: () => clock,
     notify: async (user, event) => {
@@ -70,6 +74,10 @@ beforeEach(() => {
       done.push({ user, ids });
     },
     supervisorSessionId: async (user) => `os-sup-${user.toLowerCase()}`,
+    rotateSupervisor: async (user) => {
+      if (failRotate) throw new Error("catalog down");
+      rotated.push(user);
+    },
     timeZone: () => "UTC",
   });
 });
@@ -648,6 +656,60 @@ describe("daily digest", () => {
   });
 });
 
+describe("supervisor rotation from the sweep", () => {
+  test("each inbox's person gets a rotation check, and a failed one stops nothing", async () => {
+    clock = at("2026-07-01T08:00:00Z");
+    await fyi("CI repaired");
+    await inbox.postSupervisorItem({
+      user: "Grace",
+      source: "lead:acme",
+      kind: "fyi",
+      title: "Docs rebuilt",
+    });
+    await inbox.sweepSupervisorInbox();
+    expect(rotated.sort()).toEqual(["Ada", "Grace"]);
+
+    failRotate = true;
+    clock = at("2026-07-01T09:00:00Z");
+    expect((await inbox.sweepSupervisorInbox()).digested).toBe(2);
+  });
+});
+
+describe("recent digests", () => {
+  test("groups digested fyi by the local day they went out, newest first, bounded", async () => {
+    await inbox.setSupervisorPrefs("Ada", { timezone: "Europe/Warsaw" });
+    for (let day = 1; day <= 9; day++) {
+      const date = `2026-07-${String(day).padStart(2, "0")}`;
+      clock = at(`${date}T05:00:00Z`);
+      for (let i = 0; i < (day === 9 ? 7 : 1); i++)
+        await fyi(`Day ${day} update ${i}`, { dedupeKey: `d${day}-${i}` });
+      clock = at(`${date}T07:30:00Z`); // 09:30 in Warsaw
+      await inbox.sweepSupervisorInbox();
+    }
+    // Not digested yet: not in the history.
+    await fyi("Still pending");
+    const days = await inbox.supervisorRecentDigests("Ada");
+    expect(days.map((d) => d.day)).toEqual([
+      "2026-07-09",
+      "2026-07-08",
+      "2026-07-07",
+      "2026-07-06",
+      "2026-07-05",
+      "2026-07-04",
+      "2026-07-03",
+    ]);
+    expect(days[0]!.titles).toHaveLength(5);
+    expect(days[0]!.more).toBe(2);
+    expect(days[1]).toEqual({
+      day: "2026-07-08",
+      titles: ["Day 8 update 0"],
+      more: 0,
+    });
+    expect(JSON.stringify(days)).not.toContain("Still pending");
+    expect(await inbox.supervisorRecentDigests("Nobody")).toEqual([]);
+  });
+});
+
 describe("briefing", () => {
   test("open decisions, fyi since the digest, and each answer until a turn completes", async () => {
     expect(await inbox.supervisorInboxContext("Ada")).toBeUndefined();
@@ -954,10 +1016,12 @@ describe("opensession-supervisor", () => {
     )._registeredTools;
     expect(Object.keys(tools).sort()).toEqual([
       "answer_item",
+      "append_ledger",
       "ask_pat",
       "dismiss_item",
       "list_items",
       "post_item",
+      "read_ledger",
     ]);
     const posted = await tools.post_item!.handler(
       {

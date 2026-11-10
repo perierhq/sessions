@@ -297,6 +297,13 @@ import {
 } from "./supervisor-inbox";
 import { supervisorInboxOwner, supervisorMcpFor } from "./supervisor-mcp";
 import {
+  isFirstEngineTurn,
+  refreshSupervisorMemoryAfterCompaction,
+  refreshSupervisorMemoryDaily,
+  supervisorSeedContext,
+} from "./supervisor-memory";
+import { recordSupervisorCompaction } from "./supervisor";
+import {
   automationSessionMcp,
   interactiveMcpServers,
   plainDiscussionSessionMcp,
@@ -2402,6 +2409,7 @@ export async function maybeLaunchSandboxedRun(
       pstackMode: session.pstackMode,
       // Customer mail: the project's own skills, no instance-wide ones.
       projectSkillsOnly: isSupportSession(session) || undefined,
+      supervisor: session.supervisor || undefined,
       // A disposable automation resume carries the automation's hard pin for
       // its own turns; a person's takeover turn carries none (runAccountSpec).
       ...runAccountSpec(session, opts, owningAutomation),
@@ -3329,6 +3337,20 @@ async function runSessionPromptInner(
       briefedAnswers = inbox.answered;
     }
     if (style) prompt = `${style}\n\n${prompt}`;
+    // A supervisor session's first engine turn (a rotation or a new person)
+    // starts from the ledger, the open decisions and the last week's
+    // digests (supervisor-memory.ts). A failed first turn sets no engine
+    // id, so the next one carries the seed again.
+    if (isFirstEngineTurn(session)) {
+      const seed = await supervisorSeedContext(inboxOwner).catch(
+        () => undefined,
+      );
+      if (seed) prompt = `${seed}\n\n${prompt}`;
+    }
+    // The first turn of a new local day rebuilds the memory note below.
+    await refreshSupervisorMemoryDaily(session.id, inboxOwner).catch(
+      () => false,
+    );
   }
 
   // Shown in the Blob app: say where, so the reply fits (blob-surface.ts).
@@ -3753,6 +3775,7 @@ async function runSessionPromptInner(
           speed: session.speed,
           pstackMode: session.pstackMode,
           projectSkillsOnly: supportSession || undefined,
+          supervisor: session.supervisor || undefined,
           // Session pin, except for a person's turn in an automation-owned
           // session: they pay personal-first with the pool as backup.
           ...runAccountSpec(session, runInputs),
@@ -3812,6 +3835,7 @@ async function runSessionPromptInner(
       speed: session.speed,
       pstackMode: session.pstackMode,
       projectSkillsOnly: isSupportSession(session) || undefined,
+      supervisor: session.supervisor || undefined,
       // Pinned subscription for this session (claude-runner prefers it, pool
       // fallback on exhaustion). Ignored by Codex models. A person's turn in
       // an automation-owned session carries no pin, so their own subscription
@@ -3951,6 +3975,21 @@ async function runSessionPromptInner(
         // while a tool runs.
         const frame = streamPhaseFrame(sessionId, event);
         if (frame) broadcastToSession(sessionId, frame);
+        // A supervisor session compacting: count it for rotation and
+        // rebuild its memory note on the next turn (supervisor-memory.ts).
+        if (
+          session.supervisor &&
+          event.phase === "wait" &&
+          event.reason === "compaction"
+        ) {
+          refreshSupervisorMemoryAfterCompaction(session.id);
+          void recordSupervisorCompaction(session).catch((error) =>
+            console.warn(
+              "[supervisor] could not count a compaction:",
+              error instanceof Error ? error.message : error,
+            ),
+          );
+        }
         break;
       }
       case "tool_call_start": {

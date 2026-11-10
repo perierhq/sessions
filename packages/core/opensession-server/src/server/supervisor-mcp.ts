@@ -10,13 +10,20 @@
  * anyone else's, and is mounted only for a turn that owner drives
  * (`supervisorInboxOwner`). `ask_pat` hands GitHub work to the instance
  * persona through the GitHub agent's existing entry point
- * (supervisor-ask-pat.ts) on the owner's behalf.
+ * (supervisor-ask-pat.ts) on the owner's behalf. `read_ledger` and
+ * `append_ledger` are its memory across conversations (supervisor-ledger.ts).
  */
 import { z } from "zod";
 import { personaName } from "./config";
 import { ASK_PAT_ACTIONS, askPat } from "./supervisor-ask-pat";
 import { createSdkMcpServer, tool } from "./inprocess-mcp";
 import { humanPrompter, sessionCreationOwner } from "./session-actors";
+import {
+  appendSupervisorLedger,
+  LEDGER_ENTRY_MAX,
+  LEDGER_READ_BYTES,
+  readSupervisorLedgerTail,
+} from "./supervisor-ledger";
 import {
   answerSupervisorItem,
   dismissSupervisorItem,
@@ -155,6 +162,46 @@ export function createSupervisorMcpServer(ctx: { user: string }) {
           return text(
             `${created ? "Posted" : "Updated"} (${delivery}): ${format(item)}`,
           );
+        },
+      ),
+      tool(
+        "read_ledger",
+        "Read your ledger: the decisions the owner made, their standing preferences and the open threads, kept across conversations. Newest last; long ledgers return the latest entries.",
+        {},
+        async () => {
+          const ledger = await readSupervisorLedgerTail(
+            user,
+            LEDGER_READ_BYTES,
+          );
+          if (!ledger.text) return text("The ledger is empty.");
+          return text(
+            ledger.truncated
+              ? `(Older entries left out.)\n\n${ledger.text}`
+              : ledger.text,
+          );
+        },
+      ),
+      tool(
+        "append_ledger",
+        `Add one entry to your ledger, dated for you: a decision the owner made, a standing preference, or a thread still open. Keep it short (at most ${LEDGER_ENTRY_MAX} characters). When it replaces an older fact, say so ("used to X, now Y").`,
+        {
+          text: z
+            .string()
+            .min(1)
+            .max(LEDGER_ENTRY_MAX)
+            .describe("The entry, in markdown."),
+        },
+        async (args) => {
+          const result = await appendSupervisorLedger(user, args.text);
+          if (result.ok) return text(`Added:\n${result.entry}`);
+          return {
+            ...text(
+              result.error === "empty"
+                ? "Nothing to add."
+                : `Too long: keep it under ${LEDGER_ENTRY_MAX} characters.`,
+            ),
+            isError: true,
+          };
         },
       ),
       tool(

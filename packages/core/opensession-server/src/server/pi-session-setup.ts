@@ -137,6 +137,36 @@ export interface PiResourcesInput {
   boundary: PiSteerBoundary;
 }
 
+/** How much recent conversation a supervisor session keeps verbatim when pi
+ *  compacts it (pi's default is 20000). */
+export const SUPERVISOR_KEEP_RECENT_TOKENS = 40_000;
+
+/**
+ * The in-memory pi settings for one turn. Pi's prompt-cache warming (on by
+ * default since 0.86) replays the last request with a one-token cap during
+ * long tool runs; it stays off, since subscription accounts would spend
+ * quota on every replay. ChatGPT OAuth turns use SSE (see the caller).
+ *
+ * The supervisor (supervisor.ts) lives in one session for days, so its
+ * compaction keeps twice the recent context. Pi 1.3's automatic compaction
+ * takes no custom summary instruction (it passes none to the summariser,
+ * and the only hook, an extension's session_before_compact, must replace
+ * the whole compaction), so the supervisor's durable facts go in its
+ * ledger instead (supervisor-ledger.ts).
+ */
+export function piSessionSettings(input: {
+  usesOpenaiOAuth: boolean;
+  supervisor: boolean;
+}) {
+  return {
+    cacheWarming: "off" as const,
+    ...(input.usesOpenaiOAuth ? { transport: "sse" as const } : {}),
+    ...(input.supervisor
+      ? { compaction: { keepRecentTokens: SUPERVISOR_KEEP_RECENT_TOKENS } }
+      : {}),
+  };
+}
+
 /** The commit a checkout is on, or null when it is not a git checkout. */
 export async function readBaseCommit(dir: string): Promise<BaseCommit | null> {
   const format = "%h%x00%cI";
@@ -244,14 +274,13 @@ export async function preparePiResources(input: PiResourcesInput) {
   // it keeps the same session prompt-cache key without the fragile persistent
   // socket. Raw OpenAI API keys use Pi's ordinary provider and retain its
   // default transport selection.
-  //
-  // Pi's prompt-cache warming (on by default since 0.86) replays the last
-  // request with a one-token cap during long tool runs. Keep it off:
-  // subscription accounts would spend quota on every replay.
-  const settingsManager = sdk.SettingsManager.inMemory({
-    cacheWarming: "off",
-    ...(binding.usesOpenaiOAuth ? { transport: "sse" as const } : {}),
-  });
+  // Cache warming and compaction: piSessionSettings.
+  const settingsManager = sdk.SettingsManager.inMemory(
+    piSessionSettings({
+      usesOpenaiOAuth: binding.usesOpenaiOAuth,
+      supervisor: opts.supervisor === true,
+    }),
+  );
   const workspaceRoot = resolve(context.dir);
   const loader = new sdk.DefaultResourceLoader({
     cwd: context.dir,

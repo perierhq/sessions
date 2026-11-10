@@ -168,6 +168,9 @@ export interface RunHostSpec {
   /** Only the checkout's own skills, never the instance's skills directory
    *  (support sessions). */
   projectSkillsOnly?: boolean;
+  /** The supervisor's standing session: pi keeps more recent context when
+   *  it compacts. */
+  supervisor?: boolean;
   /** Pinned account in the active model provider's pool; pool fallback applies. */
   accountId?: string;
   /** Hard accountId pin — never rotate into the shared pool (cost cap). */

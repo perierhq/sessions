@@ -271,6 +271,7 @@ export interface HostedRunOpts {
   speed?: SessionSpeed; // unset falls back to fastMode; "ultrafast" needs GPT-6 Astra and a Pro $500 login
   pstackMode?: boolean;
   projectSkillsOnly?: boolean;
+  supervisor?: boolean;
   accountId?: string;
   accountStrict?: boolean;
   usageCredits?: boolean;
@@ -555,6 +556,7 @@ async function* runAgentInProcess(
       speed: opts.speed,
       pstackMode: opts.pstackMode,
       projectSkillsOnly: opts.projectSkillsOnly,
+      supervisor: opts.supervisor,
       accountId: opts.accountId,
       accountStrict: opts.accountStrict,
       usageCredits: opts.usageCredits,
@@ -701,6 +703,7 @@ export function hostedRunRecord(spec: RunHostSpec): ActiveRunRecord {
     speed: spec.speed,
     pstackMode: spec.pstackMode,
     projectSkillsOnly: spec.projectSkillsOnly,
+    supervisor: spec.supervisor,
     accountId: spec.accountId,
     accountStrict: spec.accountStrict,
     usageCredits: spec.usageCredits,
@@ -783,6 +786,7 @@ async function spawnHostRun(
     speed: opts.speed,
     pstackMode: opts.pstackMode,
     projectSkillsOnly: opts.projectSkillsOnly,
+    supervisor: opts.supervisor,
     accountId: opts.accountId,
     accountStrict: opts.accountStrict,
     usageCredits: opts.usageCredits,
