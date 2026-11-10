@@ -47,10 +47,24 @@ final class BlobTextTalk {
 
     /// The finished reply as a transcript entry, once it has landed. Blob
     /// draws it with the block catalog (`MarkdownBody`); see adrs/blob-views.md.
+    ///
+    /// Anchored on the message you sent, not only on where the transcript
+    /// ended: the first message after launch can go out before the
+    /// transcript has loaded, and the last entry can be a streamed row whose
+    /// id changes once it is saved. Either way the old anchor fell back to
+    /// the whole transcript, so Blob read the previous answer, then this one.
     var replyEntry: TranscriptEntry? {
         guard let desk, phase == .waiting, !desk.isStreaming else { return nil }
-        let start = sentAfter.flatMap { id in desk.entries.lastIndex { $0.id == id } }.map { $0 + 1 } ?? 0
-        return desk.entries[start...].last { $0.type == "assistant" && $0.isReasoning != true }
+        let entries = desk.entries
+        let floor = sentAfter.flatMap { id in entries.lastIndex { $0.id == id } }.map { $0 + 1 } ?? 0
+        guard floor < entries.count else { return nil }
+        let said = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let mine = entries[floor...].lastIndex(where: { entry in
+            entry.type == "user" && (said.isEmpty || (entry.content ?? "").contains(said))
+        }) else { return nil }
+        let after = entries.index(after: mine)
+        guard after < entries.count else { return nil }
+        return entries[after...].last { $0.type == "assistant" && $0.isReasoning != true }
     }
 
     /// Earlier exchanges with the supervisor, oldest first, read from its
