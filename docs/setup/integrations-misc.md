@@ -395,8 +395,11 @@ device's own voices. The key never reaches the device
   wav, mp3, ogg, webm or flac, by `Content-Type`, at most 10MB) and returns
   `{ text, language? }` from Fish speech to text (`transcribe-1-pro`, $0.36
   per audio hour; `src/server/blob-transcribe.ts`). `language` is an optional
-  ISO 639-1 hint. Each user may make 20 requests a minute. The app uses it
-  when its on-device Parakeet model is not ready.
+  ISO 639-1 hint; the app sends none and lets Fish detect the language. Each
+  user may make 20 requests a minute, and Fish gets 30 seconds per request.
+  The app sends a recording here only when Fish Audio is the chosen
+  transcriber in Blob's Settings, or when Parakeet is chosen and "Use Fish
+  Audio until Parakeet is ready" is on (off by default).
 
 ## AWS creds for runs (`AGENT_AWS_REGION`)
 

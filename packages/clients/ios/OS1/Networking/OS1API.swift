@@ -2417,13 +2417,12 @@ enum OS1API {
     }
 
     /// What was said in a recording, by the server's Fish Audio speech to
-    /// text. `language` is an ISO 639-1 hint (`pl`, `en`).
-    static func blobTranscribe(wav: Data, language: String?) async throws -> String {
+    /// text. No language hint: Fish detects it, which suits switching
+    /// between Polish and English.
+    static func blobTranscribe(wav: Data) async throws -> String {
         let config = ServerConfig.shared
         guard let base = config.baseURL, config.isConfigured else { throw APIError.notConfigured }
-        var components = URLComponents(string: base.absoluteString + "/api/blob/transcribe")
-        if let language { components?.queryItems = [URLQueryItem(name: "language", value: language)] }
-        guard let url = components?.url else { throw APIError.badURL }
+        guard let url = URL(string: base.absoluteString + "/api/blob/transcribe") else { throw APIError.badURL }
         var request = config.authorizedRequest(url)
         request.httpMethod = "POST"
         request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")

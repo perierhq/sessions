@@ -58,7 +58,17 @@ Copyright 2011 Daniel Müllner and Google Inc., licensed under the BSD
 2-Clause License. See `THIRD-PARTY-LICENSES/BSD-2-Clause-fastcluster.txt`.
 
 The apps download their speech models at run time and do not bundle them:
-Parakeet Ultra (`FluidInference/parakeet-ultra-coreml`, a Core ML build of
-NVIDIA's Parakeet TDT 0.6B v3 post-trained by moondream), licensed under
-CC BY 4.0, and Silero VAD (`FluidInference/silero-vad-coreml`), licensed under
-the MIT License.
+
+- Parakeet Ultra, Core ML build by FluidInference
+  (https://huggingface.co/FluidInference/parakeet-ultra-coreml) of
+  moondream's Parakeet Ultra (https://huggingface.co/moondream/parakeet-ultra),
+  a post-training by moondream of NVIDIA's Parakeet TDT 0.6B v3
+  (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), Copyright NVIDIA.
+  Licensed under the Creative Commons Attribution 4.0 International License
+  (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/). FluidInference
+  converted the model to Core ML and quantized its encoder to int8; the apps
+  use it unmodified.
+- Silero VAD, Core ML build by FluidInference
+  (https://huggingface.co/FluidInference/silero-vad-coreml) of Silero VAD
+  (https://github.com/snakers4/silero-vad), Copyright Silero Team, licensed
+  under the MIT License.

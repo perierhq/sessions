@@ -78,8 +78,13 @@ export async function handleBlobTranscribeRoutes(
   const audio = await readCapped(req, BLOB_TRANSCRIBE_MAX_BYTES).catch(
     () => null,
   );
+  if (audio === null)
+    return Response.json(
+      { error: "The recording didn't arrive in full. Try again." },
+      { status: 400 },
+    );
   if (audio === undefined) return tooLarge();
-  if (!audio?.byteLength)
+  if (!audio.byteLength)
     return Response.json({ error: "The recording is empty" }, { status: 400 });
 
   // The client hanging up cancels the upstream request too.

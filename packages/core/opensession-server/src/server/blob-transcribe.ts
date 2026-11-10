@@ -21,11 +21,14 @@ export const FISH_ASR_URL = "https://api.fish.audio/v1/asr";
  * served (and billed) as `transcribe-1`. */
 export const FISH_ASR_MODEL = "transcribe-1-pro";
 
-/** Largest recording one request may send. The app records AAC at about
- * 64 kbps, so this is well over two minutes of speech. */
+/** Largest recording one request may send. The app sends 16 kHz 16-bit mono
+ * WAV (32 kB a second), so this is over five minutes of speech. */
 export const BLOB_TRANSCRIBE_MAX_BYTES = 10 * 1024 * 1024;
 
 export const BLOB_TRANSCRIBE_PER_MINUTE = 20;
+
+/** Longest Fish may take on one recording before the request is dropped. */
+export const BLOB_TRANSCRIBE_TIMEOUT_MS = 30_000;
 
 /** Formats transcribe-1-pro accepts, by Content-Type, with the file name the
  * upload gets. Fish detects the format from the bytes, so the name only has
@@ -98,15 +101,18 @@ export async function transcribeBlobAudio(
   form.append("ignore_timestamps", "true");
   form.append("tag_audio_events", "false");
   form.append("diarize", "false");
+  const timeout = AbortSignal.timeout(BLOB_TRANSCRIBE_TIMEOUT_MS);
   let res: Response;
   try {
     res = await fetch(FISH_ASR_URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, model: FISH_ASR_MODEL },
       body: form,
-      signal,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
   } catch {
+    if (timeout.aborted)
+      return { ok: false, status: 504, error: "Fish Audio took too long" };
     return { ok: false, status: 502, error: "Fish Audio is unreachable" };
   }
   if (!res.ok) {

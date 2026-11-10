@@ -3,9 +3,11 @@ import Observation
 
 /// Talking to Blob when the server has no voice key: you speak, Apple's
 /// on-device recognizer (`BlobListener`) shows what it hears, and when you
-/// stop talking (or tap) Parakeet on the device (`BlobParakeet`) writes the
-/// final text, else the server's Fish Audio, else Apple's own text stands.
-/// The text goes to the supervisor like a typed message, and Blob shows the answer and reads its
+/// stop talking (or tap) the transcriber you picked in Settings writes the
+/// final text (`BlobTranscriber`): Parakeet on the device (`BlobParakeet`),
+/// or the server's Fish Audio, else Apple's own text stands. The recording
+/// goes to Fish only when you picked Fish, or turned on Fish until Parakeet
+/// is ready. The text goes to the supervisor like a typed message, and Blob shows the answer and reads its
 /// first paragraph aloud (`BlobReply`, `BlobSpeaker`): with the server's Fish
 /// Audio voice when it has one, else with a Premium or Enhanced Apple voice
 /// when one fits.
@@ -30,6 +32,9 @@ final class BlobTextTalk {
     /// prepends older entries.
     private var sentAfter: String?
     private var connecting: Task<SessionViewModel, Error>?
+    /// Bumped by every listen, reset and typed message, so a transcript that
+    /// finishes after you moved on is dropped instead of sent.
+    private var generation = 0
 
     init() {
         listener.onEnd = { [weak self] decision in self?.listeningEnded(decision) }
@@ -112,6 +117,7 @@ final class BlobTextTalk {
     }
 
     func reset() {
+        generation += 1
         listener.cancel()
         speaker.stop()
         spokenAnswer = nil
@@ -137,6 +143,7 @@ final class BlobTextTalk {
     private func listen() {
         // Blob may be reading a decision; the mic must not hear it.
         speaker.stop()
+        generation += 1
         heard = ""
         phase = .listening
         if BlobTranscriber.current == .parakeet {
@@ -168,42 +175,56 @@ final class BlobTextTalk {
 
     private func send() {
         phase = .waiting
+        let listen = generation
         Task {
             let said = await listener.stop()
-            // Tapped away meanwhile: nothing goes out.
-            guard phase == .waiting else { return }
+            guard isCurrent(listen) else { return }
             // Apple's text first, then the better transcript in its place.
             heard = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let text = await finalText(said)
-            guard phase == .waiting else { return }
+            guard isCurrent(listen) else { return }
             await deliver(text)
         }
     }
 
-    /// Longest wait for Parakeet or Fish before Apple's text goes as it is.
-    static let transcribeDeadline: Double = 8
+    /// Still the same listen, still waiting to send: not tapped away, not
+    /// listening again or typing since.
+    private func isCurrent(_ listen: Int) -> Bool { generation == listen && phase == .waiting }
 
-    /// Parakeet, then Fish, then Apple: the first that answers in time.
+    /// Longest wait for a Parakeet load already under way when you stop.
+    static let parakeetLoadWait: Double = 2
+    /// Longest Parakeet may take on the recording once loaded.
+    static let parakeetDeadline: Double = 6
+    /// Longest wait for Fish, on its own budget after Parakeet's.
+    static let fishDeadline: Double = 6
+
+    /// The transcriber you picked, then Apple: the first that answers in
+    /// time. Fish hears the recording only when you picked it, or picked
+    /// Parakeet with Fish until it is ready (`BlobTranscriber.fishUntilParakeetKey`).
     private func finalText(_ said: BlobListener.Heard) async -> String {
         let apple = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let choice = BlobTranscriber.current
         guard choice != .apple, said.samples.count >= Int(BlobCapture.sampleRate * 0.3) else { return apple }
         let samples = said.samples
-        let language = Self.languageHint
-        let fish = speaker.server?.transcribe == true
-        let better = await Self.within(Self.transcribeDeadline) {
+        if choice == .parakeet {
             let parakeet = BlobParakeet.shared
-            if choice == .parakeet {
-                while parakeet.state == .loading, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(100)) }
-                if let text = try? await parakeet.transcribe(samples, language: language), !text.isEmpty { return text }
+            if await parakeet.ready(within: Self.parakeetLoadWait) {
+                let language = Self.languageHint
+                if let text = await Self.within(Self.parakeetDeadline, {
+                    try? await parakeet.transcribe(samples, language: language)
+                }), !text.isEmpty {
+                    return text
+                }
             }
-            if fish, let text = try? await OS1API.blobTranscribe(wav: BlobWAV.encode(samples), language: language),
-               !text.isEmpty {
-                return text
-            }
-            return nil
+            guard BlobTranscriber.fishUntilParakeet else { return apple }
         }
-        return better ?? apple
+        guard speaker.server?.transcribe == true else { return apple }
+        // No language hint: Fish detects the language itself.
+        let text = await Self.within(Self.fishDeadline) {
+            let wav = await Task.detached(priority: .userInitiated) { BlobWAV.encode(samples) }.value
+            return try? await OS1API.blobTranscribe(wav: wav)
+        }
+        return text.flatMap { $0.isEmpty ? nil : $0 } ?? apple
     }
 
     /// `pl` or `en` from the preferred languages; no hint for anything else.
@@ -241,6 +262,7 @@ final class BlobTextTalk {
         guard !text.isEmpty else { return }
         listener.cancel()
         speaker.stop()
+        generation += 1
         spokenAnswer = nil
         phase = .waiting
         Task { await deliver(text) }
@@ -261,6 +283,7 @@ final class BlobTextTalk {
     private func follow(up text: String) {
         guard let desk else { return }
         speaker.stop()
+        generation += 1
         spokenAnswer = nil
         heard = text
         phase = .waiting
@@ -312,7 +335,8 @@ final class BlobTextTalk {
 /// Who writes the final text of what you said (Settings, "Transcription").
 /// Apple's recognizer draws the live captions whichever it is.
 enum BlobTranscriber: String, CaseIterable {
-    /// Parakeet on the device; Fish, then Apple, until it has downloaded.
+    /// Parakeet on the device; until it is ready, Apple's text, or Fish when
+    /// `fishUntilParakeet` is on.
     case parakeet
     /// The server's Fish Audio speech to text.
     case fish
@@ -323,21 +347,28 @@ enum BlobTranscriber: String, CaseIterable {
     static var current: BlobTranscriber {
         UserDefaults.standard.string(forKey: key).flatMap(BlobTranscriber.init(rawValue:)) ?? .parakeet
     }
+
+    /// Opt-in, off by default: with Parakeet picked, send the recording to
+    /// Fish while Parakeet isn't downloaded or loaded.
+    static let fishUntilParakeetKey = "blob.fishUntilParakeet"
+    static var fishUntilParakeet: Bool { UserDefaults.standard.bool(forKey: fishUntilParakeetKey) }
 }
 
 /// 16-bit PCM WAV, the plainest format Fish takes. A minute at 16 kHz is
 /// under 2 MB, well inside the server's 10 MB cap.
+/// Pure work on a copy of the samples; run it off the main actor.
 enum BlobWAV {
-    static func encode(_ samples: [Float], sampleRate: Int = Int(BlobCapture.sampleRate)) -> Data {
-        var data = Data(capacity: 44 + samples.count * 2)
+    nonisolated static func encode(_ samples: [Float], sampleRate: Int = Int(BlobCapture.sampleRate)) -> Data {
+        let pcm = samples.map { Int16(max(-1, min(1, $0)) * Float(Int16.max)).littleEndian }
+        var data = Data(capacity: 44 + pcm.count * 2)
         func put<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
-        let bytes = UInt32(samples.count * 2)
+        let bytes = UInt32(pcm.count * 2)
         data.append(contentsOf: Array("RIFF".utf8)); put(36 + bytes)
         data.append(contentsOf: Array("WAVE".utf8))
         data.append(contentsOf: Array("fmt ".utf8)); put(UInt32(16)); put(UInt16(1)); put(UInt16(1))
         put(UInt32(sampleRate)); put(UInt32(sampleRate * 2)); put(UInt16(2)); put(UInt16(16))
         data.append(contentsOf: Array("data".utf8)); put(bytes)
-        for sample in samples { put(Int16(max(-1, min(1, sample)) * Float(Int16.max))) }
+        pcm.withUnsafeBytes { data.append(contentsOf: $0) }
         return data
     }
 }

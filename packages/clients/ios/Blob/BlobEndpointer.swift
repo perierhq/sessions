@@ -10,6 +10,25 @@ import Foundation
 /// - It ends at `maxListen` whatever happens.
 /// - With nothing said for `idleGiveUp` it gives up, and Blob goes back to
 ///   sleep without sending anything.
+///
+/// Pure value logic with no audio or clock, so a test can feed it frames.
+/// With the normal 1.2 s wait and 0.25 s frames:
+///
+/// ```swift
+/// var end = BlobEndpointer(wait: 1.2)
+/// end.feed(speaking: true, seconds: 0.25)   // .listen: speech has started
+/// end.feed(speaking: true, seconds: 0.5)    // .listen: 0.75 s said, past minSpeech
+/// end.feed(speaking: false, seconds: 1.0)   // .listen: 1 s of silence
+/// end.feed(speaking: false, seconds: 0.25)  // .send: 1.25 s of silence
+///
+/// var idle = BlobEndpointer(wait: 1.2)
+/// idle.feed(speaking: false, seconds: 8)    // .giveUp: nothing said in 8 s
+///
+/// var cough = BlobEndpointer(wait: 1.2)
+/// cough.feed(speaking: true, seconds: 0.3)  // .listen: heard, too short to send
+/// cough.feed(speaking: false, seconds: 2)   // .listen: still waiting for words
+/// cough.feed(speaking: false, seconds: 6)   // .giveUp: 8 s of silence after it
+/// ```
 struct BlobEndpointer {
     enum Decision: Equatable { case listen, send, giveUp }
 

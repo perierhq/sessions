@@ -22,6 +22,7 @@ interface Captured {
   url: string;
   headers: Headers;
   form: FormData;
+  signal?: AbortSignal | null;
 }
 let calls: Captured[] = [];
 
@@ -89,6 +90,7 @@ function mockFish(
       url: String(input),
       headers: new Headers(init?.headers),
       form: init?.body as FormData,
+      signal: init?.signal,
     });
     return respond();
   }) as typeof fetch;
@@ -139,6 +141,9 @@ describe("Blob transcription", () => {
     expect(sent.form.get("tag_audio_events")).toBe("false");
     expect(sent.form.get("diarize")).toBe("false");
     expect(sent.form.get("ignore_timestamps")).toBe("true");
+    // Bounded by its own timeout, not only by the client hanging up.
+    expect(sent.signal).toBeInstanceOf(AbortSignal);
+    expect(sent.signal?.aborted).toBe(false);
   });
 
   test("a malformed language hint is dropped", async () => {
@@ -165,6 +170,17 @@ describe("Blob transcription", () => {
       },
     });
     expect((await call("", stream)).status).toBe(413);
+    // A body that breaks off while it streams is a bad request, not "empty".
+    const broken = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("connection reset"));
+      },
+    });
+    const res = await call("", broken);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "The recording didn't arrive in full. Try again.",
+    );
     expect(calls).toHaveLength(0);
   });
 

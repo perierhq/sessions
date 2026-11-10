@@ -573,7 +573,7 @@ struct BlobHomeView: View {
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         } else if text.phase == .listening {
-            Text("Listening\u{2026}")
+            Text(text.listener.endsByItself ? "Listening\u{2026}" : "Listening\u{2026} tap when you\u{2019}re done")
                 .font(.footnote)
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)

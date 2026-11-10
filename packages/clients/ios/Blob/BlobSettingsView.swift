@@ -10,6 +10,8 @@ struct BlobSettingsView: View {
     @AppStorage(BlobSpeaker.liveCallKey) private var liveCall = false
     @AppStorage(BlobTranscriber.key) private var transcriber = BlobTranscriber.parakeet.rawValue
     @AppStorage(BlobEndpointer.Wait.key) private var endWait = BlobEndpointer.Wait.normal.rawValue
+    @AppStorage(BlobTranscriber.fishUntilParakeetKey) private var fishUntilParakeet = false
+    @State private var askCellular = false
     @State private var voices: [AVSpeechSynthesisVoice] = []
     @State private var modelError: String?
     /// How Blob reports, from the server's supervisor prefs. Nil hides the
@@ -117,31 +119,89 @@ struct BlobSettingsView: View {
         return Section {
             transcriberRow(.parakeet, name: "Parakeet on this phone", detail: parakeetDetail(parakeet.state))
             if fishAvailable {
-                transcriberRow(.fish, name: "Fish Audio", detail: "On your server, $0.36 per hour of audio")
+                transcriberRow(
+                    .fish, name: "Fish Audio", detail: "Sent from your server to Fish Audio, $0.36 per audio hour"
+                )
             }
             transcriberRow(.apple, name: "Apple", detail: nil)
-            if transcriber == BlobTranscriber.parakeet.rawValue {
-                switch parakeet.state {
-                case .absent, .failed:
-                    Button("Download Parakeet (\(BlobParakeet.sizeLabel))") { parakeet.download() }
-                case .downloading(let fraction):
-                    ProgressView(value: fraction) {
-                        Text("Downloading\u{2026} \(Int(fraction * 100))%")
-                            .font(.footnote)
-                            .foregroundStyle(OS1VisualStyle.textDim)
-                    }
-                default:
-                    EmptyView()
-                }
+            if transcriber == BlobTranscriber.parakeet.rawValue, fishAvailable {
+                Toggle("Use Fish Audio until Parakeet is ready", isOn: $fishUntilParakeet)
             }
+            modelRows(parakeet)
         } header: {
             Text("Transcription")
         } footer: {
-            if case .failed(let message) = parakeet.state {
-                Text(message)
-            } else {
-                Text("Parakeet hears Polish and English on this phone. Until it has downloaded, Blob uses \(fishAvailable ? "Fish Audio" : "Apple"). Live captions always come from Apple.")
+            VStack(alignment: .leading, spacing: 4) {
+                if case .failed(let message) = parakeet.state { Text(message) }
+                Text(transcriptionFooter(fishAvailable: fishAvailable))
             }
+        }
+        .confirmationDialog(
+            "Download Parakeet over cellular?", isPresented: $askCellular, titleVisibility: .visible
+        ) {
+            Button("Download \(BlobParakeet.sizeLabel)") { parakeet.download(overCellular: true) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You\u{2019}re on cellular or in Low Data Mode. On Wi-Fi, Blob downloads it by itself.")
+        }
+    }
+
+    /// Download, cancel or delete the Parakeet model.
+    @ViewBuilder
+    private func modelRows(_ parakeet: BlobParakeet) -> some View {
+        switch parakeet.state {
+        case .absent, .paused, .failed:
+            if transcriber == BlobTranscriber.parakeet.rawValue {
+                Button(downloadLabel(parakeet.state)) { startDownload() }
+            }
+            if parakeet.state.isFailed {
+                Button("Delete Parakeet", role: .destructive) { parakeet.delete() }
+            }
+        case .downloading(let fraction):
+            ProgressView(value: fraction) {
+                Text("Downloading\u{2026} \(Int(fraction * 100))%")
+                    .font(.footnote)
+                    .foregroundStyle(OS1VisualStyle.textDim)
+            }
+            Button("Cancel download", role: .destructive) { parakeet.cancelDownload() }
+        case .downloaded, .ready:
+            Button("Delete Parakeet (frees \(BlobParakeet.sizeLabel))", role: .destructive) { parakeet.delete() }
+        case .loading:
+            EmptyView()
+        }
+    }
+
+    private func downloadLabel(_ state: BlobParakeet.State) -> String {
+        switch state {
+        case .paused: "Resume download"
+        case .failed: "Download again (\(BlobParakeet.sizeLabel))"
+        default: "Download Parakeet (\(BlobParakeet.sizeLabel))"
+        }
+    }
+
+    /// Asks first when the download would go over cellular or Low Data Mode.
+    private func startDownload() {
+        Task {
+            if await BlobParakeet.unmeteredNetwork() {
+                BlobParakeet.shared.download()
+            } else {
+                askCellular = true
+            }
+        }
+    }
+
+    /// When the recording leaves the phone, for the current choice.
+    private func transcriptionFooter(fishAvailable: Bool) -> String {
+        let captions = "Live captions come from Apple on this phone."
+        switch BlobTranscriber(rawValue: transcriber) ?? .parakeet {
+        case .parakeet where fishAvailable && fishUntilParakeet:
+            return "Parakeet hears Polish and English on this phone. Until it\u{2019}s ready, your recording goes to your server and on to Fish Audio. \(captions)"
+        case .parakeet:
+            return "Parakeet hears Polish and English on this phone. Until it\u{2019}s ready, Apple\u{2019}s text is sent. Your recording stays on this phone. \(captions)"
+        case .fish where fishAvailable:
+            return "Every recording goes to your server and on to Fish Audio. \(captions)"
+        case .fish, .apple:
+            return "Your recording stays on this phone. \(captions)"
         }
     }
 
@@ -149,6 +209,7 @@ struct BlobSettingsView: View {
         switch state {
         case .absent, .failed: "Not downloaded, \(BlobParakeet.sizeLabel)"
         case .downloading: "Downloading"
+        case .paused: "Paused until you\u{2019}re on Wi-Fi"
         case .downloaded, .loading, .ready: "Downloaded"
         }
     }

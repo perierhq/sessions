@@ -30,6 +30,9 @@ final class BlobListener {
     private(set) var level: Double = 0
     /// First use downloads the speech model for your language.
     private(set) var preparing = false
+    /// Listening ends by itself when you stop talking. False on the
+    /// `Dictation` fallback, which has no recording to judge by: tap to send.
+    var endsByItself: Bool { fallback == nil }
     /// Called once when the endpointer decides: `.send` after you stop
     /// talking, `.giveUp` when nothing was said.
     var onEnd: ((BlobEndpointer.Decision) -> Void)?
@@ -111,11 +114,13 @@ final class BlobListener {
         let samples = capture?.finish() ?? []
         capture = nil
         voiceActivity?.cancel(); voiceActivity = nil
+        // Taken before waiting: a new `start()` meanwhile owns the fields.
+        let analyzer = self.analyzer, results = self.results
+        self.analyzer = nil
+        self.results = nil
+        level = 0
         try? await analyzer?.finalizeAndFinishThroughEndOfInput()
         await results?.value
-        analyzer = nil
-        results = nil
-        level = 0
         return Heard(text: text, samples: samples)
     }
 
