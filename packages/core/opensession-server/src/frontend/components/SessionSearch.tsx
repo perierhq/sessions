@@ -38,6 +38,7 @@ import {
   canonicalNames,
   sessionHasOwner,
   sessionOwners,
+  startedByLabel,
 } from "../lib/session-owner";
 
 export interface CommandPaletteAction {
@@ -1239,7 +1240,7 @@ export function SessionSearch({
                           {s.automation}
                         </span>
                       ) : (
-                        s.startedBy && <span>{s.startedBy}</span>
+                        s.startedBy && <span>{startedByLabel(s)}</span>
                       )}
                       {s.workspaceName && s.workspaceName !== s.title && (
                         <span className="max-w-[220px] truncate text-dim">

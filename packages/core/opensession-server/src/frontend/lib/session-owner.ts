@@ -90,6 +90,20 @@ export function ownerKeyOf(
   return ownerKey(session.startedBy, canonical);
 }
 
+/**
+ * Who started a session, as a row or card says it. Blob starts sessions for
+ * a person; those read "Blob for Kacper", so Blob never passes for the
+ * person, while every filter above still keys on `startedBy`.
+ */
+export function startedByLabel(session: {
+  startedBy?: string | null;
+  actedBy?: "Blob";
+}): string {
+  const owner = (session.startedBy || "").trim();
+  if (session.actedBy !== "Blob") return owner;
+  return owner ? `Blob for ${owner}` : "Blob";
+}
+
 export function sessionHasOwner(
   session: UnifiedSession,
   owner: string,

@@ -7,7 +7,9 @@ import {
   ownerKeyOf,
   sessionHasOwner,
   sessionOwners,
+  startedByLabel,
 } from "./session-owner";
+import { agentStartedLabel } from "./sidebar-placement";
 import type { Person } from "./people";
 import type { UnifiedSession } from "./types";
 
@@ -115,5 +117,17 @@ describe("session owner lens", () => {
       ),
     ).toBe(false);
     expect(sessionHasOwner(session({}), "kent", canonical)).toBe(false);
+  });
+});
+
+describe("sessions Blob started", () => {
+  test("say Blob started them for the person, who still owns them", () => {
+    const s = session({ startedBy: "Kent", actedBy: "Blob" });
+    expect(startedByLabel(s)).toBe("Blob for Kent");
+    expect(agentStartedLabel(s)).toBe("Started by Blob for Kent");
+    // The owner lens still files it under Kent.
+    expect(ownerKeyOf(s, canonical)).toBe("kent");
+    expect(sessionHasOwner(s, "kent", canonical)).toBe(true);
+    expect(startedByLabel(session({ startedBy: "Kent" }))).toBe("Kent");
   });
 });

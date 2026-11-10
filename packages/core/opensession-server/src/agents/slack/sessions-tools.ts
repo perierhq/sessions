@@ -55,6 +55,7 @@ import {
 import { OPENSESSION_SESSIONS_DIR } from "../../server/paths";
 import {
   agentActor,
+  BLOB_ACTOR,
   isWorkerActor,
   workerActor,
 } from "../../server/session-actors";
@@ -107,6 +108,32 @@ export interface SessionsToolContext {
    * `sessionCreationOwner`. Defaults to `createdBy`.
    */
   creationOwner?: () => Promise<string>;
+  /**
+   * Whether this session is Blob (a supervisor session), resolved at call
+   * time. Blob's sends arrive from `BLOB_ACTOR`, not `agent <id>`, and the
+   * sessions it creates record `actedBy: "Blob"` while the person stays their
+   * owner (`createdBy`), so permissions never follow Blob.
+   */
+  actsAsBlob?: () => Promise<boolean>;
+}
+
+/** Whether this context speaks as Blob. A failed lookup is not Blob. */
+async function actsAsBlob(
+  ctx: Pick<SessionsToolContext, "actsAsBlob">,
+): Promise<boolean> {
+  if (!ctx.actsAsBlob) return false;
+  try {
+    return (await ctx.actsAsBlob()) === true;
+  } catch {
+    return false;
+  }
+}
+
+/** The create fields that credit Blob for a session it starts. */
+async function blobCredit(
+  ctx: Pick<SessionsToolContext, "actsAsBlob">,
+): Promise<{ actedBy?: "Blob" }> {
+  return (await actsAsBlob(ctx)) ? { actedBy: BLOB_ACTOR } : {};
 }
 
 /** Owner of a session created from this context (create_session, spawn_task). */
@@ -326,7 +353,10 @@ export function sessionMessagePayload(message: string): string {
 export async function workerReportPayload(
   targetId: string,
   message: string,
-  ctx: Pick<SessionsToolContext, "createdBy" | "currentSessionId">,
+  ctx: Pick<
+    SessionsToolContext,
+    "createdBy" | "currentSessionId" | "actsAsBlob"
+  >,
   deps?: {
     parentOf?: (id: string) => string | undefined;
     evidence?: (id: string) => Promise<string | null>;
@@ -337,9 +367,15 @@ export async function workerReportPayload(
   // Provenance is part of the transport contract: a message emitted by an
   // agent must never arrive looking like a human instruction merely because
   // the session inherited that human's display name.
+  // Blob speaks as itself: a machine actor, never the owner it works for.
   const fallback = {
     content: message,
-    user: me && me !== targetId ? agentActor(me) : ctx.createdBy,
+    user:
+      me && me !== targetId
+        ? (await actsAsBlob(ctx))
+          ? BLOB_ACTOR
+          : agentActor(me)
+        : ctx.createdBy,
   };
   if (!me || me === targetId) return fallback;
   try {
@@ -616,6 +652,7 @@ export async function spawnTaskImpl(
     invokingSessionId: ctx.currentSessionId || undefined,
     reportBack: Boolean(caller),
     user: await creationOwnerOf(ctx),
+    ...(await blobCredit(ctx)),
     sandbox: args.sandbox,
     ...(args.sandboxGpu ? { sandboxGpu: args.sandboxGpu } : {}),
   });
@@ -1221,6 +1258,7 @@ export function createSessionsMcpServer(
             target_session_id: args.id,
             outcome: res.status,
             user: ctx.createdBy,
+            ...(payload.user === BLOB_ACTOR ? { actor: "blob" } : {}),
           });
           return text(
             `Delivery \`${res.deliveryId || deliveryId}\` status=${res.status}: ${res.message}`,
@@ -1339,6 +1377,7 @@ export function createSessionsMcpServer(
               source: "sessions_mcp",
               user: ctx.createdBy,
               cancelled_from: ctx.currentSessionId,
+              ...((await actsAsBlob(ctx)) ? { actor: "blob" } : {}),
             });
           }
           return text(
@@ -1377,6 +1416,7 @@ export function createSessionsMcpServer(
             changed: result.changed,
             user: ctx.createdBy,
             source_session_id: ctx.currentSessionId,
+            ...((await actsAsBlob(ctx)) ? { actor: "blob" } : {}),
           });
           if (!result.changed) {
             return text(
@@ -1557,6 +1597,7 @@ export function createSessionsMcpServer(
               parentSessionId,
               reportBack: shouldReportBack,
               user: await creationOwnerOf(ctx),
+              ...(await blobCredit(ctx)),
               sandbox: args.sandbox,
               ...(args.sandboxGpu ? { sandboxGpu: args.sandboxGpu } : {}),
               accountId: args.accountId,

@@ -50,11 +50,8 @@ export async function forceMergeForSession(
   },
   signal?: AbortSignal,
 ): Promise<ForceMergeOutcome> {
-  const refusal = forceMergeRefusal(
-    findSession(sessionId),
-    user,
-    webAuthRequired(),
-  );
+  const session = findSession(sessionId);
+  const refusal = forceMergeRefusal(session, user, webAuthRequired());
   if (refusal) throw new ForceMergeError(refusal, 403);
   const target = await resolvePrReadinessTarget(sessionId, input);
   return requestForceMerge(
@@ -64,6 +61,8 @@ export async function forceMergeForSession(
       reason: input.reason,
       ...(input.method ? { method: input.method } : {}),
       driver: trustedGithubTeammate(user)!,
+      // A supervisor session is Blob asking; the driver still confirms.
+      ...(session?.supervisor ? { requestedBy: "Blob" as const } : {}),
     },
     signal,
   );

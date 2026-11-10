@@ -9,9 +9,13 @@
  */
 
 import { configuredIdentity, type ReviewTeam } from "./config";
+import { BLOB_ACTOR, BLOB_ICON_PATH } from "./session-actors";
 import { profileImagesByMemberName } from "./user-profiles";
 
 export interface DirectoryPerson {
+  /** A teammate, or a first-party bot (Blob). Bots are drawn with their
+   *  picture and a bot badge, and never offered where a person is picked. */
+  kind: "person" | "bot";
   /** Picker/display first name — the value presence viewers,
    *  push-subscription keys and `startedBy` use. */
   name: string;
@@ -35,12 +39,30 @@ export function teamDirectory(): DirectoryPerson[] {
   return configuredIdentity()
     .team.filter((m) => m.directory !== false)
     .map((m) => ({
+      kind: "person" as const,
       name: m.name.split(" ")[0],
       fullName: m.name,
       ...(m.github ? { github: m.github } : {}),
       ...(m.timezone ? { timezone: m.timezone } : {}),
       ...(images[m.name] ? { image: images[m.name] } : {}),
     }));
+}
+
+/**
+ * The first-party bots that work alongside the team: Blob, the supervisor.
+ * Listed apart from `teamDirectory()` on GET /api/people (`bots`), so every
+ * people picker, reviewer list, mention roster and push key, on clients old
+ * and new, keeps offering only people.
+ */
+export function botDirectory(): DirectoryPerson[] {
+  return [
+    {
+      kind: "bot",
+      name: BLOB_ACTOR,
+      fullName: BLOB_ACTOR,
+      image: BLOB_ICON_PATH,
+    },
+  ];
 }
 
 /** Picker first names — the mention-matching + push-key roster. */

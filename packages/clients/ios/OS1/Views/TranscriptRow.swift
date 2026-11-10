@@ -239,7 +239,21 @@ struct UserBubble: View {
         HStack(alignment: .bottom, spacing: 8) {
             Spacer(minLength: 40)
             VStack(alignment: .trailing, spacing: 6) {
-                if let attribution {
+                if let attribution, attribution.isBot {
+                    // Blob speaks as a bot, with its picture and label, so
+                    // its words never pass for a teammate's.
+                    HStack(spacing: 4) {
+                        UserAvatar(person: attribution.name, size: 16)
+                        Text(attribution.name)
+                        Text("Bot")
+                            .padding(.horizontal, 4)
+                            .background(Capsule().fill(OS1VisualStyle.border))
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(OS1VisualStyle.textFaint)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(attribution.name), bot")
+                } else if let attribution {
                     Text(
                         attribution.viaSlack
                             ? "💬 \(attribution.name) · via Slack"

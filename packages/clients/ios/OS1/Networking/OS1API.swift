@@ -1840,6 +1840,9 @@ enum OS1API {
     /// viewers, `startedBy`, @-mentions — and `github` is where the face
     /// comes from.
     struct Person: Decodable, Sendable {
+        /// "person", or "bot" for a first-party bot (Blob). Absent from older
+        /// servers, which list only people.
+        let kind: String?
         let name: String
         let fullName: String?
         let github: String?
@@ -1865,6 +1868,8 @@ enum OS1API {
 
     struct Roster: Decodable, Sendable {
         let people: [Person]?
+        /// First-party bots (Blob), listed apart so no picker offers them.
+        let bots: [Person]?
         let reviewTeams: [ReviewTeam]?
     }
 

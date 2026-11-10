@@ -186,6 +186,9 @@ export interface PushPayload {
   body?: string;
   /** In-app path to open on tap, e.g. /session/<id>. */
   url?: string;
+  /** In-app path of the picture of who it is from (Blob's), when not the
+   *  instance icon. */
+  icon?: string;
   tag?: string;
   /** Notification thread id, so a tap can mark the right row read. */
   id?: string;

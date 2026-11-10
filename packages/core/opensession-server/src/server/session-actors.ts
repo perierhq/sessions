@@ -36,6 +36,30 @@ export const GITHUB_ACTOR = "GitHub";
  *  not unlock what a present person unlocks, nor bill a subscription. */
 export const PLAIN_ACTOR = "Plain";
 
+/** Blob, the supervisor: a first-party bot teammate, never a person and
+ *  never the instance persona. It is the sender of what a supervisor session
+ *  sends other sessions, and the `actedBy` of sessions it starts for its
+ *  owner (who stays `createdBy`, so permissions follow the person). The name
+ *  is fixed: it is the product's, not an instance setting. */
+export const BLOB_ACTOR = "Blob";
+
+/** Where Blob's square picture is served (routes/static-assets.ts serves
+ *  `src/frontend/blob-icon.png` at this path). */
+export const BLOB_ICON_PATH = "/repo-icon/blob.png";
+
+/** `createdBy` of a project lead's goal record (leads/goal.ts). The lead is
+ *  Blob working on one project, so it is a machine actor like Blob. */
+export const PROJECT_LEAD_ACTOR = "Project lead";
+
+/** What a supervisor inbox item says it is from: Blob itself, or Blob as the
+ *  lead of one project (`source` `lead:<project>`). */
+export function blobItemActor(source: string, project?: string): string {
+  const lead = source.match(/^lead:(.+)$/);
+  if (!lead) return BLOB_ACTOR;
+  const name = (project || lead[1]).trim();
+  return name ? `${BLOB_ACTOR} · ${name} lead` : BLOB_ACTOR;
+}
+
 /** Suffix an automation's own ticks carry as `createdBy`/sender:
  *  `"<automation name> (automation)"` (automations.ts). */
 export const AUTOMATION_ACTOR_SUFFIX = " (automation)";
@@ -161,6 +185,19 @@ export function delegatedActorParent(actor?: string | null): string | null {
 }
 
 /**
+ * True for any message another agent sent into a session: a `worker <id>` /
+ * `agent <id>` sender, or Blob. Such a message drives the target's next turn
+ * but nobody typed it, so it drains alone and is never editable as a draft.
+ */
+export function isAgentSender(actor?: string | null): boolean {
+  const name = (actor || "").trim();
+  return (
+    delegatedActorParent(name) !== null ||
+    name.toLowerCase() === BLOB_ACTOR.toLowerCase()
+  );
+}
+
+/**
  * True only for the `worker <id>` form. The two senders are not
  * interchangeable: a worker reporting to its own parent carries the report
  * verbatim, while any other cross-session message is wrapped as a notice.
@@ -196,6 +233,8 @@ export function isMachineActor(createdBy?: string | null): boolean {
     lower === AUTOMATION_MACHINE_USER.toLowerCase() ||
     lower === GITHUB_ACTOR.toLowerCase() ||
     lower === PLAIN_ACTOR.toLowerCase() ||
+    lower === BLOB_ACTOR.toLowerCase() ||
+    lower === PROJECT_LEAD_ACTOR.toLowerCase() ||
     lower.endsWith(AUTOMATION_ACTOR_SUFFIX) ||
     // The agent's own name: a session it started with no person to credit.
     sameBrand(name, personaName()) ||

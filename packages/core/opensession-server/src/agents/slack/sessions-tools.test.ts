@@ -213,6 +213,27 @@ describe("spawnTaskImpl", () => {
     expect(res.createdAt).toBe("2026-08-06T10:00:00.000Z");
   });
 
+  it("credits Blob for a child a supervisor starts, owned by the person", async () => {
+    const h = makeHarness();
+    const parent = `bks-test-parent-${++uniq}`;
+    h.files.set(parent, { id: parent });
+    const res = await spawnTaskImpl(
+      { prompt: "Look at the flaky deploy.", mode: "ask" },
+      { ...ctx(parent), actsAsBlob: async () => true },
+      h.deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(h.created[0].user).toBe("Alex");
+    expect(h.created[0].actedBy).toBe("Blob");
+    // An ordinary session's child carries no Blob credit.
+    await spawnTaskImpl(
+      { prompt: "Do a thing.", mode: "ask" },
+      ctx(parent),
+      h.deps,
+    );
+    expect(h.created[1].actedBy).toBeUndefined();
+  });
+
   it("tags the child with spawnDepth = parent depth + 1", async () => {
     const h = makeHarness();
     const parent = `bks-test-parent-${++uniq}`;
@@ -959,6 +980,34 @@ describe("workerReportPayload", () => {
       deps,
     );
     expect(out).toEqual({ content: "ping", user: "agent bks-root" });
+  });
+
+  it("a supervisor session sends as Blob, never as its owner", async () => {
+    const out = await workerReportPayload(
+      "bks-someone-else",
+      "Check the deploy.",
+      {
+        createdBy: "Alex",
+        currentSessionId: "bks-root",
+        actsAsBlob: async () => true,
+      },
+      deps,
+    );
+    expect(out).toEqual({ content: "Check the deploy.", user: "Blob" });
+    // A lookup that fails is not Blob: provenance stays the session's.
+    const failed = await workerReportPayload(
+      "bks-someone-else",
+      "ping",
+      {
+        createdBy: "Alex",
+        currentSessionId: "bks-root",
+        actsAsBlob: async () => {
+          throw new Error("catalog down");
+        },
+      },
+      deps,
+    );
+    expect(failed.user).toBe("agent bks-root");
   });
 
   it("still delivers the prose when evidence can't be computed", async () => {

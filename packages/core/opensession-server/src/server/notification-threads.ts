@@ -510,14 +510,21 @@ export function hasFixedPush(type: NotificationSubjectType): boolean {
  * title ("A support reply is ready"), never the rule that is the row's
  * reason. A supervisor row says its fixed reason ("Needs you") over a body
  * that already names the project (supervisor-inbox.ts `supervisorPushCopy`):
- * its subject is an agent's title, which may quote customer mail. Every
- * other row keeps "<subject>: <body>".
+ * its subject is an agent's title, which may quote customer mail. When the
+ * row names who it is from (Blob, or "Blob · acme lead"), that is the title
+ * and the reason leads the body, the way a message from a person reads.
+ * Every other row keeps "<subject>: <body>".
  */
 export function bannerText(
-  thread: Pick<NotificationThread, "subject" | "reason" | "body">,
+  thread: Pick<NotificationThread, "subject" | "reason" | "body" | "actor">,
 ): { title: string; body: string } {
   if (thread.subject.type === "supervisor")
-    return { title: thread.reason, body: thread.body };
+    return thread.actor
+      ? {
+          title: thread.actor,
+          body: [thread.reason, thread.body].filter(Boolean).join(" · "),
+        }
+      : { title: thread.reason, body: thread.body };
   const title =
     thread.subject.type === "support"
       ? thread.subject.title

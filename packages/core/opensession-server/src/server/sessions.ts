@@ -1115,6 +1115,7 @@ export function nativeSessionRow(data: NativeSessionFile): UnifiedSession {
     workspaceId: data.workspaceId ?? null,
     parentSessionId: data.parentSessionId,
     agentStarted: data.agentStarted,
+    ...(data.actedBy === "Blob" ? { actedBy: data.actedBy } : {}),
     spawnedBy: data.spawnedBy,
     desk: data.desk,
     supervisor: data.supervisor,

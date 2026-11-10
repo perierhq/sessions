@@ -9,6 +9,7 @@ type PushData = {
   title?: string;
   body?: string;
   url?: string;
+  icon?: string;
   tag?: string;
   id?: string;
   actions?: PushAction[];
@@ -428,6 +429,24 @@ const veto: PushData = {
     { action: "open", title: "Open", url: "/incidents/inc-1" },
   ],
 };
+
+describe("push icon", () => {
+  test("shows who it is from with an in-app picture, never another host", async () => {
+    const blob = { title: "Blob", body: "Needs you", url: "/session/os-1" };
+    const h = workerHarness("/opensession/");
+    expect(
+      (await push(h, { ...blob, icon: "/repo-icon/blob.png" })).options.icon,
+    ).toBe("/opensession/repo-icon/blob.png");
+    for (const icon of [
+      "//evil.example.test/x.png",
+      "https://evil.example.test/x.png",
+      undefined,
+    ])
+      expect((await push(h, { ...blob, icon })).options.icon).toBe(
+        "/opensession/icon-192.png",
+      );
+  });
+});
 
 describe("incident push actions", () => {
   test("shows as many buttons as the platform allows, Stop first", async () => {

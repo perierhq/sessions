@@ -107,8 +107,10 @@ export function __setLeadAuditForTest(
   return previous;
 }
 
+/** Audit one lead event. A lead is Blob working on one project, so every
+ *  entry names Blob as the actor; the owner it answers to stays `user`. */
 export async function leadAudit(event: Record<string, unknown>): Promise<void> {
-  await (sink ?? auditDurable)(event);
+  await (sink ?? auditDurable)({ actor: "blob", ...event });
 }
 
 /** Who the lead answers to: its owner, else the instance owner; "" when

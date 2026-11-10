@@ -100,8 +100,10 @@ export async function askPat(input: {
   pr: number;
 }): Promise<AskPatResult> {
   const persona = deps.persona();
+  // Blob asks on the owner's behalf: the owner is `user`, Blob the actor.
   const base = {
     kind: "supervisor_ask_pat",
+    actor: "blob",
     user: input.owner,
     action: input.action,
     repo: input.repo,

@@ -173,6 +173,10 @@ export interface UnifiedSession {
   parentSessionId?: string;
   /** Started by a server-side agent action rather than a person's composer. */
   agentStarted?: boolean;
+  /** Blob (session-actors.ts BLOB_ACTOR) started this for `startedBy`: the
+   *  supervisor, or a project lead. Credit only; ownership and permissions
+   *  stay with `startedBy`. */
+  actedBy?: "Blob";
   /** The session whose agent created this as an internal helper. Visible
    *  create_session results omit this and stay in the user's workspaces. */
   spawnedBy?: string;
@@ -693,6 +697,8 @@ export interface NativeSessionFile {
   parentSessionId?: string;
   /** Started by a server-side agent action rather than a person's composer. */
   agentStarted?: boolean;
+  /** Blob started this for `createdBy` (see UnifiedSession.actedBy). */
+  actedBy?: "Blob";
   /** The session whose agent created this as an internal helper (see
    *  UnifiedSession.spawnedBy). Visible create_session results omit it. */
   spawnedBy?: string;

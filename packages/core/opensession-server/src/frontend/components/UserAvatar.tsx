@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Badge } from "../ui/badge";
 import { cn } from "../ui/cn";
 
 /**
@@ -15,6 +16,25 @@ const GITHUB_LOGIN: Record<string, string> = {};
  * (server: user-profiles.ts, published on GET /api/people).
  */
 const PROFILE_IMAGE: Record<string, string> = {};
+
+/**
+ * First-party bots, same keying, mapped to their picture: Blob, the
+ * supervisor. Seeded so Blob is drawn as itself before GET /api/people
+ * lands; the directory's `bots` list (lib/people.ts) replaces it.
+ */
+const BOT_IMAGE = new Map([["blob", "/repo-icon/blob.png"]]);
+
+/** Replace the bot roster from the directory (lib/people.ts). */
+export function registerBots(entries: Record<string, string>) {
+  BOT_IMAGE.clear();
+  for (const [key, image] of Object.entries(entries)) BOT_IMAGE.set(key, image);
+}
+
+/** True when `name` is a first-party bot (Blob), never a person. */
+export function isBotName(name?: string | null): boolean {
+  if (!name) return false;
+  return BOT_IMAGE.has(name.trim().toLowerCase());
+}
 
 /** Merge directory-fetched logins into the map (lib/people.ts). */
 export function registerGithubLogins(entries: Record<string, string>) {
@@ -36,8 +56,16 @@ export function githubLoginFor(name?: string | null): string | null {
 
 export function profileImageFor(name?: string | null): string | null {
   if (!name) return null;
+  const bot = BOT_IMAGE.get(name.trim().toLowerCase());
+  if (bot) return bot;
   const first = name.trim().split(/\s+/)[0]?.toLowerCase();
   return (first && PROFILE_IMAGE[first]) || null;
+}
+
+/** The small "Bot" label that sits after a bot's name, so a reader never
+ *  takes Blob for a teammate. */
+export function BotBadge({ className }: { className?: string }) {
+  return <Badge className={className}>Bot</Badge>;
 }
 
 /**
@@ -79,7 +107,10 @@ export function UserAvatar({
   style?: React.CSSProperties;
   children?: React.ReactNode;
 }) {
-  const login = loginProp?.trim() || githubLoginFor(name);
+  // A bot is drawn with its own picture, never a GitHub face that shares
+  // its first name.
+  const bot = isBotName(name);
+  const login = bot ? null : loginProp?.trim() || githubLoginFor(name);
   // An uploaded picture is the person's own choice, so it outranks the
   // GitHub avatar, which is only ever a stand-in for one.
   const uploaded = imageProp?.trim() || profileImageFor(name);
@@ -112,7 +143,7 @@ export function UserAvatar({
           : undefined,
         ...style,
       }}
-      title={title}
+      title={title ?? (bot ? `${name} (bot)` : undefined)}
     >
       {picture ? (
         <img

@@ -1,4 +1,5 @@
 import { loopScheduleLabel } from "../SessionBanners";
+import { startedByLabel } from "../../lib/session-owner";
 import type { WorkspaceOverview } from "../../lib/api";
 import { providerFromUrl } from "../../lib/provider";
 import { sessionPrMerged, sessionPrRefs } from "../../lib/session-prs";
@@ -97,7 +98,7 @@ export function SessionCardBody({ session: s }: { session: UnifiedSession }) {
   const hasHead =
     (s.prAdditions != null && s.prDeletions != null) || !!s.prOsReview;
 
-  const owner = s.automation || s.startedBy;
+  const owner = s.automation || startedByLabel(s);
   if (owner) rows.push([s.automation ? "Automation" : "Started by", owner]);
 
   if (s.linearIssue)

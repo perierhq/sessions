@@ -1,4 +1,5 @@
 import { useIsPhone } from "../../hooks/useIsPhone";
+import { startedByLabel } from "../../lib/session-owner";
 import { useShortcutKeys } from "../../hooks/useShortcutBindings";
 import { hasDraft } from "../../lib/drafts";
 import { markRead, markUnread } from "../../lib/reads";
@@ -351,7 +352,10 @@ export function SidebarItem({
   // In "My sessions" and under a person's own heading, the owner is already
   // stated by the surrounding list, so repeating it makes every row two lines.
   if (showOwner && session.startedBy && !session.automation) {
-    metaParts.push(<span key="u">{session.startedBy}</span>);
+    metaParts.push(<span key="u">{startedByLabel(session)}</span>);
+  } else if (session.actedBy === "Blob" && !session.automation) {
+    // Your own row still says Blob started it, not you.
+    metaParts.push(<span key="u">Blob</span>);
   }
   const compactMeta = mine || !showOwner;
   // No idle "time since" here: times only appear while a run is live. The

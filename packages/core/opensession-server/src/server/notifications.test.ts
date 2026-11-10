@@ -416,9 +416,11 @@ describe("supervisor delivery", () => {
     const { item, delivery } = await post();
     expect(delivery).toBe("pushed");
     expect(pushes).toHaveLength(1);
+    // From Blob as the project's lead, with Blob's picture.
     expect(pushes[0]!.payload).toMatchObject({
-      title: "Needs you",
-      body: "acme: a decision is waiting",
+      title: "Blob · acme lead",
+      body: "Needs you · acme: a decision is waiting",
+      icon: "/repo-icon/blob.png",
       tag: `os-notification-supervisor:${item.id}`,
     });
     expect(JSON.stringify(pushes[0])).not.toContain("example.test");
@@ -428,15 +430,16 @@ describe("supervisor delivery", () => {
     expect(row).toMatchObject({
       subject: { title: item.title, context: "acme" },
       body: "1. Refund jane@example.test  2. Decline",
+      actor: "Blob · acme lead",
     });
   });
 
   test("something down reaches the push service as high priority", async () => {
-    await post({ urgency: "down", project: undefined });
+    await post({ urgency: "down", project: undefined, source: "supervisor" });
     expect(pushes).toHaveLength(1);
     expect(pushes[0]!.payload).toMatchObject({
-      title: "Something is down",
-      body: "It needs you now",
+      title: "Blob",
+      body: "Something is down · It needs you now",
     });
     expect(pushes[0]!.options).toMatchObject({ urgency: "high" });
   });

@@ -134,6 +134,9 @@ type Pending = {
   timer: ReturnType<typeof setTimeout>;
   /** Set while a confirmed merge is running: cancel and expiry wait. */
   merging: boolean;
+  /** Blob asked for this merge from a supervisor session; the driver still
+   *  confirms it with their own token. Audit only. */
+  requestedBy?: "Blob";
   deps: ForceMergeDeps;
 };
 
@@ -284,6 +287,11 @@ function auditEvent(
     driver: r.driver,
     reason: r.reason,
     bypassed: r.bypass.map(describeBypass),
+    // Blob asked; the driver decides. Both are on the record.
+    ...(entry.requestedBy ? { actor: "blob" } : {}),
+    ...(entry.requestedBy && typeof extra.confirmed_by === "string"
+      ? { attribution: `Blob asked, ${r.driver} approved` }
+      : {}),
     ...extra,
   });
 }
@@ -319,6 +327,7 @@ export async function requestForceMerge(
     reason: unknown;
     method?: MergeMethod;
     driver: { name: string; login: string };
+    requestedBy?: "Blob";
   },
   signal?: AbortSignal,
   deps: ForceMergeDeps = defaultForceMergeDeps(),
@@ -378,6 +387,7 @@ export async function requestForceMerge(
       target: input.target,
       login: input.driver.login.toLowerCase(),
       merging: false,
+      ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
       deps,
       resolve: (result) => {
         signal?.removeEventListener("abort", onAbort);

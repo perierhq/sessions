@@ -27,6 +27,7 @@ import {
 import { Button } from "../../ui/button";
 import { cn } from "../../ui/cn";
 import { Tooltip } from "../../ui/tooltip";
+import { UserAvatar } from "../UserAvatar";
 import {
   IconAtSign,
   IconCheck,
@@ -101,7 +102,21 @@ export function NotificationRow({
   const toggleDone = () =>
     markNotifications([thread.id], { done: !thread.done });
   const { title, line } = notificationRowText(thread);
-  const context = thread.subject.context;
+  // A supervisor row is from Blob, or Blob as one project's lead ("Blob ·
+  // acme lead"): its picture stands in for the kind icon, and the context
+  // line says who it is from.
+  const from =
+    thread.subject.type === "supervisor" && thread.actor ? thread.actor : null;
+  const context = from
+    ? [
+        from,
+        thread.subject.context && !from.includes(thread.subject.context)
+          ? thread.subject.context
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : thread.subject.context;
 
   // Phone swipe: right reveals read/unread, left reveals done. A full swipe
   // does it; a partial one leaves the action standing, to tap.
@@ -227,7 +242,11 @@ export function NotificationRow({
           }}
         >
           <span className={cn(INBOX_KIND_ICON, ink)} aria-hidden="true">
-            {icon}
+            {from ? (
+              <UserAvatar name={from.split(" ")[0]} size={24} edge={false} />
+            ) : (
+              icon
+            )}
           </span>
           <button
             type="button"

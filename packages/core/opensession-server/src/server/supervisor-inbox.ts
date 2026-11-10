@@ -29,6 +29,7 @@ import { randomUUID } from "node:crypto";
 import { catalogDocuments } from "./catalog-documents";
 import { pushSafeText, type NotificationEvent } from "./notification-threads";
 import { wrapContext } from "./prompt-context";
+import { blobItemActor, BLOB_ACTOR } from "./session-actors";
 import { isShuttingDown } from "./shutdown-state";
 import { timezoneForUser } from "./shared/user-mappings";
 import { canonicalName } from "./shared/user-store-key";
@@ -440,6 +441,8 @@ function needsYouEvent(
     },
     reason: copy.title,
     body: optionsLine(item.options) || firstLine(item.body),
+    // From Blob, or Blob as one project's lead: never the owner, never Pat.
+    actor: blobItemActor(item.source, item.project),
     url: itemUrl(sessionId, item.id),
     // One push per version of the item: a retry after a crash between the
     // push and its mark is a replay, never a second banner.
@@ -974,6 +977,7 @@ function digestEvent(
     // One row per day, so each digest arrives unread.
     subject: { type: "supervisor", id: `digest-${day}`, title: "Daily digest" },
     reason: "Daily digest",
+    actor: BLOB_ACTOR,
     body: `${count} ${count === 1 ? "update" : "updates"}: ${fyi
       .slice(0, 3)
       .map((item) => item.title)

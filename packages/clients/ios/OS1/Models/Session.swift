@@ -123,6 +123,9 @@ struct Session: Identifiable, Decodable, Equatable, Hashable {
     var parentSessionId: String?
     /// The opening turn came from a server-side action, not a person's composer.
     var agentStarted: Bool?
+    /// "Blob" when Blob (the supervisor, or a project lead) started this for
+    /// `startedBy`. Credit only: the owner is still `startedBy`.
+    var actedBy: String?
     /// The session id of the run that started this one from inside itself
     /// (`create_session` in an agent's own turn). Set only for those: work the
     /// Desk delegates on a person's behalf is deliberately unmarked
@@ -171,6 +174,7 @@ struct Session: Identifiable, Decodable, Equatable, Hashable {
     /// The branch/id fallbacks preserve this mark on older PR and report runs.
     var wasAgentStarted: Bool {
         agentStarted == true
+            || actedBy?.isEmpty == false
             || isAutomation
             || parentSessionId?.isEmpty == false
             || spawnedBy?.isEmpty == false

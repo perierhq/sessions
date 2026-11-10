@@ -10,6 +10,7 @@ import { fuzzyMatch } from "../../shared/fuzzy-match";
 import { z } from "zod";
 import { BASE_PATH } from "./base";
 import {
+  registerBots,
   registerGithubLogins,
   registerProfileImages,
 } from "../components/UserAvatar";
@@ -17,6 +18,8 @@ import { setKnownPeople } from "./markdown";
 import type { FileMention } from "./api";
 
 export interface Person {
+  /** A teammate, or a first-party bot. Pickers only ever list people. */
+  kind?: "person" | "bot";
   /** Picker/display first name. */
   name: string;
   fullName: string;
@@ -33,6 +36,7 @@ export interface ReviewTeam {
 }
 
 const personSchema = z.object({
+  kind: z.enum(["person", "bot"]).optional(),
   name: z.string(),
   fullName: z.string(),
   github: z.string().optional(),
@@ -48,6 +52,8 @@ const reviewTeamSchema = z.object({
 
 const peopleResponseSchema = z.object({
   people: z.array(personSchema).optional(),
+  /** First-party bots (Blob), listed apart so no picker offers them. */
+  bots: z.array(personSchema).optional(),
   reviewTeams: z.array(reviewTeamSchema).optional(),
 });
 
@@ -89,7 +95,13 @@ export function ensurePeople(): Promise<void> {
       return peopleResponseSchema.parse(payload);
     })
     .then((body) => {
-      const list = body?.people ?? [];
+      // A bot never joins the people roster, even if a server listed one
+      // there: pickers, mentions and the owner lens read `people`.
+      const list = (body?.people ?? []).filter((p) => p.kind !== "bot");
+      const bots = [
+        ...(body?.people ?? []).filter((p) => p.kind === "bot"),
+        ...(body?.bots ?? []),
+      ];
       people = list;
       reviewTeams = body?.reviewTeams ?? [];
       fetched = true;
@@ -110,6 +122,16 @@ export function ensurePeople(): Promise<void> {
           ),
         ),
       );
+      // An old server lists no bots: keep the built-in Blob then.
+      if (body?.bots)
+        registerBots(
+          Object.fromEntries(
+            bots.map((bot): [string, string] => [
+              bot.name.toLowerCase(),
+              bot.image ?? "",
+            ]),
+          ),
+        );
       window.dispatchEvent(new Event(CHANGE_EVENT));
     })
     .catch(() => {})

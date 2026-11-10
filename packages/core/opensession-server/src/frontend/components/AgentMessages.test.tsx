@@ -382,3 +382,25 @@ test("delivery marks distinguish queue, send, handling, failure and missing evid
     expect(html).not.toContain("Read");
   }
 });
+
+test("Blob's messages say they are from Blob, a bot, never the owner", () => {
+  const html = renderToStaticMarkup(
+    <MessageBubble
+      entry={{
+        id: "blob",
+        type: "user",
+        timestamp,
+        content: "[Blob] <!--os:session-notice-->\nCheck the deploy.",
+      }}
+      sessionId="os-self"
+      owner="Alex"
+    />,
+  );
+  expect(html).toContain('data-agent-message="incoming"');
+  expect(html).toContain("From");
+  expect(html).toContain("Blob");
+  expect(html).toContain(">Bot<");
+  expect(html).toContain("/repo-icon/blob.png");
+  expect(html).not.toContain("From agent");
+  expect(html).not.toContain("Alex");
+});

@@ -201,6 +201,11 @@ export function interactiveMcpServers(
           ? async () =>
               sessionCreationOwner(createdBy, await findSessionAsync(sessionId))
           : undefined,
+        // A supervisor session is Blob: what it sends and starts is credited
+        // to Blob, never to the owner it works for.
+        actsAsBlob: sessionId
+          ? async () => (await findSessionAsync(sessionId))?.supervisor === true
+          : undefined,
       }),
     "opensession-admin": () =>
       createAdminMcpServer({

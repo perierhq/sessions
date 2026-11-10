@@ -158,6 +158,7 @@ describe("opensession-lead", () => {
     );
     expect(pushes).toEqual(["Ada"]);
     expect(audits[0]).toMatchObject({
+      actor: "blob",
       kind: "lead_proposal",
       delivered: true,
       owner: "Ada",

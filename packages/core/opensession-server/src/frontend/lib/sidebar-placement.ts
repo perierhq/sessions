@@ -3,6 +3,7 @@ import {
   AUTOMATION_MACHINE_IDENTITY,
 } from "./automation-audience";
 import { AGENT_NAME } from "./brand";
+import { startedByLabel } from "./session-owner";
 import {
   personKey,
   prReviewCompletion,
@@ -61,11 +62,13 @@ export function sessionWasAgentStarted(session: {
   parentSessionId?: string;
   spawnedBy?: string;
   agentStarted?: boolean;
+  actedBy?: "Blob";
   createdBy?: string | null;
   startedBy?: string | null;
 }): boolean {
   return Boolean(
     session.agentStarted ||
+    session.actedBy ||
     session.automation ||
     session.parentSessionId ||
     session.spawnedBy ||
@@ -80,11 +83,15 @@ export function sessionWasAgentStarted(session: {
 /**
  * What the robot beside an agent-started session says. A session the agent
  * started under its own name with no person to credit (a support session)
- * is the agent's, so it says whose; other agent starts keep the generic line.
+ * is the agent's, so it says whose; one Blob started for a person says both
+ * ("Started by Blob for Kacper"); other agent starts keep the generic line.
  */
 export function agentStartedLabel(session: {
   startedBy?: string | null;
+  actedBy?: "Blob";
 }): string {
+  if (session.actedBy === "Blob")
+    return `Started by ${startedByLabel(session)}`;
   return session.startedBy?.trim().toLowerCase() === AGENT_PERSON_KEY
     ? `Started by ${AGENT_NAME}`
     : "Started by an agent";
