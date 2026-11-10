@@ -2400,6 +2400,8 @@ enum OS1API {
     /// with the key kept on the server (server: blob-speech.ts).
     struct BlobSpeechStatus: Decodable, Sendable, Equatable {
         let configured: Bool
+        /// The same key also runs `POST /api/blob/transcribe`. Nil on older servers.
+        let transcribe: Bool?
         /// `s2.1-pro` (best quality) or `s2.1-pro-free`.
         let model: String?
         let voiceId: String?
@@ -2412,6 +2414,29 @@ enum OS1API {
     /// Picks the Fish model and keeps the voice as it is.
     static func setBlobSpeechModel(_ model: String) async throws -> BlobSpeechStatus {
         try await put("/api/blob/speech/settings", body: ["model": model])
+    }
+
+    /// What was said in a recording, by the server's Fish Audio speech to
+    /// text. No language hint: Fish detects it, which suits switching
+    /// between Polish and English.
+    static func blobTranscribe(wav: Data) async throws -> String {
+        let config = ServerConfig.shared
+        guard let base = config.baseURL, config.isConfigured else { throw APIError.notConfigured }
+        guard let url = URL(string: base.absoluteString + "/api/blob/transcribe") else { throw APIError.badURL }
+        var request = config.authorizedRequest(url)
+        request.httpMethod = "POST"
+        request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.upload(for: request, from: wav)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            noteStatus(http.statusCode)
+            if let serverError = try? JSONDecoder().decode(ServerErrorBody.self, from: data),
+               let message = serverError.error {
+                throw APIError.server(message)
+            }
+            throw APIError.http(http.statusCode)
+        }
+        struct Transcript: Decodable { let text: String }
+        return try JSONDecoder().decode(Transcript.self, from: data).text
     }
 
     /// One piece of an answer as mp3, synthesized by the server.

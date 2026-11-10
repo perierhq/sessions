@@ -704,6 +704,14 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   says nothing aloud. Decisions split their body the same way. No test
   target compiles `Blob/`; the examples in `BlobReply`'s doc comment are
   the cases to check with a scratch `swiftc` run when the rule changes.
+- Streaming speech (`Blob/BlobSentenceStreamer.swift`): Blob reads the Say
+  part sentence by sentence while the reply streams, each one as soon as it
+  is complete, and reads whatever is left when the reply settles. A
+  sentence already read is never read again, even when the finished reply
+  rewrites it. `BlobSpeaker.enqueue` requests each sentence's server audio
+  at once (two ahead) and plays them back to back; a failed request falls
+  back to an Apple voice for that sentence. Its doc comment lists the cases
+  to check with a scratch `swiftc` run.
 - Swipe up on the home for history (`Blob/BlobHistoryView.swift`): earlier
   exchanges from the supervisor transcript, newest at the bottom, replies
   split into the Say line and the rest drawn with the block catalog. Past
@@ -728,6 +736,15 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   through the same calls as the OS app's cards, then Blob waits for the
   run's reply. While a run works with nothing written yet, Blob says
   "Working on it".
+- Thinking steps (`Blob/BlobSteps.swift`, `Blob/BlobThinkingView.swift`):
+  while the supervisor works on your message, one line above Blob says what
+  it is doing ("Reading my notes", "Reading PR #212 · 12s"), read from the
+  transcript entries after your message. Tap it for the turn's steps with
+  their times. If nothing has been said 4 s after the message went out and
+  reading aloud is on, Blob says a short filler once (`Blob/BlobFiller.swift`):
+  the server voice's three fillers are fetched once per voice and model into
+  `Caches/BlobFiller/<voiceId>/` and played from there; until then an Apple
+  voice says it.
 - Links (`blob` URL scheme): `blob://item/<id>`, as Bark notifications open
   it, shows that item as the current decision, even after "Not now";
   `blob://` alone just opens Blob.
@@ -739,6 +756,8 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   for screenshots and motion checks. `BLOB_DEMO_HISTORY=1` fills history
   with canned exchanges; `BLOB_DEMO_HISTORY=open` also opens it.
   `BLOB_DEMO_DECISIONS=1` shows two canned decisions.
+  `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
+  `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking.
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 

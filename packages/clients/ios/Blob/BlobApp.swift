@@ -12,6 +12,7 @@ struct BlobApp: App {
 
     init() {
         CrashReporter.shared.install()
+        Task.detached(priority: .utility) { BlobParakeet.excludeFromBackup() }
     }
 
     var body: some Scene {

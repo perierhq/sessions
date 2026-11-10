@@ -48,3 +48,27 @@ Open Session reads the text of uploaded PDFs with unpdf (MIT, Copyright Johann
 Schopplich), which bundles Mozilla's PDF.js. PDF.js is Copyright Mozilla and
 its contributors, licensed under the Apache License 2.0. See
 `THIRD-PARTY-LICENSES/Apache-2.0.txt`.
+
+## FluidAudio
+
+The Blob apps (iOS and macOS) hear speech on the device with FluidAudio
+0.18.3, Copyright FluidInference, licensed under the Apache License 2.0. See
+`THIRD-PARTY-LICENSES/Apache-2.0.txt`. FluidAudio includes fastcluster,
+Copyright 2011 Daniel Müllner and Google Inc., licensed under the BSD
+2-Clause License. See `THIRD-PARTY-LICENSES/BSD-2-Clause-fastcluster.txt`.
+
+The apps download their speech models at run time and do not bundle them:
+
+- Parakeet Ultra, Core ML build by FluidInference
+  (https://huggingface.co/FluidInference/parakeet-ultra-coreml) of
+  moondream's Parakeet Ultra (https://huggingface.co/moondream/parakeet-ultra),
+  a post-training by moondream of NVIDIA's Parakeet TDT 0.6B v3
+  (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), Copyright NVIDIA.
+  Licensed under the Creative Commons Attribution 4.0 International License
+  (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/). FluidInference
+  converted the model to Core ML and quantized its encoder to int8; the apps
+  use it unmodified.
+- Silero VAD, Core ML build by FluidInference
+  (https://huggingface.co/FluidInference/silero-vad-coreml) of Silero VAD
+  (https://github.com/snakers4/silero-vad), Copyright Silero Team, licensed
+  under the MIT License.

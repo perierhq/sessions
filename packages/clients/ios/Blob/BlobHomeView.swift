@@ -75,6 +75,14 @@ struct BlobHomeView: View {
                     historyOpen ? closeHistory() : openHistory()
                 }
 
+                // What the supervisor is doing, just above Blob while it thinks.
+                BlobThinkingLayer(
+                    talk: text,
+                    blobCenter: CGPoint(x: insets.leading + (geo.size.width - insets.leading - insets.trailing) / 2, y: geo.size.height * 0.4),
+                    blobRadius: 66,
+                    hidden: historyOpen
+                )
+
                 if !historyOpen {
                     captions(insets: insets)
                         .transition(.opacity)
@@ -114,6 +122,7 @@ struct BlobHomeView: View {
                 #endif
         }
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
+        .onChange(of: text.streamingText) { _, _ in text.answerStreamed() }
         .onChange(of: text.settled) { _, settled in if settled { text.answerSettled() } }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: typing)
         .task {
@@ -131,8 +140,11 @@ struct BlobHomeView: View {
         }
         .haptic(.commit, trigger: decisions.answered)
         // Blob reads a decision's first paragraph when it comes up, once.
+        // The reply to your message wins: while one is on its way or being
+        // read, decisions stay silent.
         .onChange(of: decision?.id, initial: true) { old, new in
-            if old != nil, old != new { text.speaker.stop() }
+            guard !text.replyHasVoice else { return }
+            if old != nil, old != new { text.hush() }
             if let decision, decisions.shouldSpeak(decision) {
                 let say = BlobReply(decision.body).say
                 if !say.isEmpty { text.speaker.speak(say) }
@@ -186,6 +198,9 @@ struct BlobHomeView: View {
             if phase == .background {
                 if !engine.shownOutsideApp { engine.stop() }
                 text.reset()
+                BlobParakeet.shared.unload()
+            } else if phase == .active, BlobTranscriber.current == .parakeet {
+                BlobParakeet.shared.warm()
             }
         }
     }
@@ -206,8 +221,8 @@ struct BlobHomeView: View {
 
     /// Esc stops Blob reading, then closes history, then the write bar.
     private func escapeKey() -> Bool {
-        if text.speaker.speaking {
-            text.speaker.stop()
+        if text.reading {
+            text.hush()
         } else if historyOpen {
             closeHistory()
         } else if typing && draft.isEmpty {
@@ -605,7 +620,7 @@ struct BlobHomeView: View {
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         } else if text.phase == .listening {
-            Text("Listening\u{2026} tap me when you\u{2019}re done")
+            Text(text.listener.endsByItself ? "Listening\u{2026}" : "Listening\u{2026} tap when you\u{2019}re done")
                 .font(.footnote)
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)
