@@ -16,6 +16,33 @@ import { toast } from "../ui/toast";
 import { IconPencil, IconPlay } from "./icons";
 import { getCurrentUser } from "./UserPicker";
 
+function suggestedTaskPrefill(task: SuggestedTask) {
+  return {
+    prompt: task.instructions,
+    repo: task.repo,
+    branch: task.branch,
+    mode: task.mode ?? "code",
+  } as const;
+}
+
+/**
+ * Start's create request. The instructions are the agent's words, not the
+ * person's, so it is marked `suggested-task` and an @Blob in them never
+ * reaches the person's supervisor.
+ */
+export function suggestedTaskCreateInput(
+  task: SuggestedTask,
+  user: string,
+  requestId: string,
+): Parameters<typeof createSessionApi>[0] {
+  return {
+    ...suggestedTaskPrefill(task),
+    user,
+    requestId,
+    origin: "suggested-task",
+  };
+}
+
 /**
  * A follow-up the agent proposed with `suggest_task`: work it judged worth
  * doing but out of scope for what it was asked. The agent proposes, the person
@@ -47,23 +74,16 @@ export function SuggestedTaskCard({
   // retry after a network error, lands on the same session.
   const requestIdRef = useRef<string | null>(null);
   const href = `${BASE_PATH}${suggestedTaskLink(task)}`;
-  const prefill = {
-    prompt: task.instructions,
-    repo: task.repo,
-    branch: task.branch,
-    mode: task.mode ?? "code",
-  } as const;
+  const prefill = suggestedTaskPrefill(task);
 
   async function start() {
     if (!navigation || starting) return;
     setStarting(true);
     if (!requestIdRef.current) requestIdRef.current = crypto.randomUUID();
     try {
-      const { id } = await createSessionApi({
-        ...prefill,
-        user: getCurrentUser(),
-        requestId: requestIdRef.current,
-      });
+      const { id } = await createSessionApi(
+        suggestedTaskCreateInput(task, getCurrentUser(), requestIdRef.current),
+      );
       // Starting work in a repo you hid restores it (lib/hides.ts).
       if (task.repo) unhideRepo(task.repo);
       onStarted?.();

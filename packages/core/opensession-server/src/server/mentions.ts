@@ -161,11 +161,16 @@ export async function notifyMentions(
      *  Only then does @Blob route: unset for an agent's, Blob's, an
      *  automation's or Slack's text and for claimed names. */
     verifiedSender?: string;
+    /** What the person typed, when `text` also carries pasted blocks
+     *  (withPastedTexts). @Blob is looked for only here: pasted text is
+     *  someone else's words. Defaults to `text`. */
+    typed?: string;
   } = {},
 ): Promise<string[]> {
-  if (where.verifiedSender && text.includes("@"))
+  const typed = where.typed ?? text;
+  if (where.verifiedSender && typed.includes("@"))
     void routeBlobMentionSafely({
-      text,
+      text: typed,
       sender,
       verifiedSender: where.verifiedSender,
       sessionId,

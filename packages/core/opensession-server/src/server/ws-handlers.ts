@@ -1484,6 +1484,8 @@ export const websocketHandlers: WebSocketHandler<WSClientData> = {
               ...(ws.data.authLogin && !ws.data.authAutomation
                 ? { verifiedSender: ws.data.authUser || undefined }
                 : {}),
+              // Only what the person typed, never their pasted blocks.
+              typed: typeof msg.content === "string" ? msg.content : "",
             },
           );
 

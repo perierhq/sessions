@@ -393,6 +393,9 @@ export async function createSessionApi(input: {
   repo?: string;
   branch?: string;
   mode?: "ask" | "code";
+  /** The prompt is an agent's suggested task, started as written: the
+   *  server never routes @Blob in it. */
+  origin?: "suggested-task";
 }): Promise<{ id: string }> {
   return request<{ id: string }>("/sessions", {
     method: "POST",

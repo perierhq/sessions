@@ -17,7 +17,8 @@
  *
  * The routing record is also what lets the supervisor answer in a thread:
  * reply_in_thread (supervisor-mcp.ts) only posts where a mention of this
- * owner was routed in the last KEEP_MS and the thread wasn't closed since.
+ * owner was routed in the last KEEP_MS and Blob hasn't resolved the thread
+ * since that mention. A new mention after Blob resolved it reopens it.
  */
 import { catalogDocuments } from "./catalog-documents";
 import { mentionsBlob, teamFirstNames } from "./people";
@@ -190,9 +191,11 @@ async function release(person: string, id: string): Promise<void> {
 }
 
 /**
- * Whether a mention by `owner` in this thread was routed to their
- * supervisor in the last KEEP_MS and the thread wasn't closed through it
- * since: the only threads reply_in_thread may answer in.
+ * Whether the newest mention by `owner` in this thread was routed to their
+ * supervisor in the last KEEP_MS and Blob hasn't resolved the thread since:
+ * the only threads reply_in_thread may answer in. Entries are appended in
+ * routing order, so the last match is the newest; a mention after Blob
+ * resolved the thread reopens it.
  */
 export async function routedThreadOpen(
   owner: string,
@@ -207,7 +210,8 @@ export async function routedThreadOpen(
       e.sessionId === sessionId &&
       e.threadId === threadId,
   );
-  return matching.length > 0 && !matching.some((e) => e.closed);
+  const newest = matching.at(-1);
+  return !!newest && !newest.closed;
 }
 
 /** Blob resolved the thread: its routed entries allow no more replies
