@@ -158,10 +158,13 @@ extension View {
     /// conversation going from the leading pane to centered as history
     /// opens. The columns it
     /// moves between have one width (`BlobColumns`), so only its position
-    /// animates and its text never re-wraps on the way.
+    /// animates and its text never re-wraps on the way. A change of width
+    /// is the surface resizing: then nothing animates, so the column keeps
+    /// up with the window instead of trailing it.
     func blobColumn(_ span: BlobColumns.Span, moving animation: Animation?) -> some View {
         frame(width: span.width, alignment: .leading)
             .offset(x: span.x)
+            .transaction(value: span.width) { $0.animation = nil }
             .animation(animation, value: span.x)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
