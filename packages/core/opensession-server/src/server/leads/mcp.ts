@@ -314,7 +314,7 @@ export function createLeadMcpServer(project: string) {
     ),
     tool(
       "lead_apply",
-      `Run the steps recorded for one of ${project}'s proposals (propose returns its id), when the lead rules or the owner's approval allow it now. The server checks the rules, the approval, its expiry and its condition every time, runs the steps it recorded in order (merging a pull request as the GitHub App at the approved head; asking the autofix agent only while the pull request is still at the proposed head; starting a worker from your session with the prompt as recorded; sending a support reply draft only while it is still the live draft; changing a signal only while it still has the proposed before values), stops at the first failure and tells the owner either way. A proposal runs at most once: whatever happens, never call it again for the same id; propose again instead.`,
+      `Run the steps recorded for one of ${project}'s proposals (propose returns its id), when the lead rules or the owner's approval allow it now. The server checks the rules, the approval, its expiry and its condition every time, runs the steps it recorded in order (merging a pull request as the GitHub App at the approved head; asking the autofix agent only while the pull request is still at the proposed head; sending a support reply draft only while it is still the live draft; changing a signal only while it still has the proposed before values), stops at the first failure and tells the owner either way. A proposal runs at most once: whatever happens, never call it again for the same id; propose again instead.`,
       {
         proposalId: z
           .string()

@@ -929,7 +929,7 @@ describe("leadApply", () => {
     expect(sends).toHaveLength(0);
   });
 
-  test("a person who stopped the draft or acted after the approval wins", async () => {
+  test("a person who stopped the draft or acted after the proposal wins", async () => {
     const base = conversation().draft!;
     const cases: Array<Partial<SupportConversation>> = [
       { draft: { ...base, state: "needs-person", rule: RULES.personStopped } },
@@ -963,7 +963,7 @@ describe("leadApply", () => {
       );
     }
     expect(sends).toHaveLength(0);
-    // A person's action before the approval doesn't stop it.
+    // A person's action before the proposal doesn't stop it.
     expect(
       personStepped(
         conversation({
@@ -979,6 +979,33 @@ describe("leadApply", () => {
         NOW,
       ),
     ).toBe(false);
+  });
+
+  test("a teammate acting after the proposal stops a rules run claimed later", async () => {
+    withLead({}, { "support-routine-reply": "alone" });
+    conversations.set(CONV, conversation());
+    const p = await propose("support-routine-reply", [supportStep()]);
+    conversations.set(
+      CONV,
+      conversation({
+        events: [
+          {
+            at: new Date(NOW + 1000).toISOString(),
+            kind: "note",
+            actor: { kind: "person", name: "Grace" },
+            detail: "Took it over",
+          },
+        ],
+      }),
+    );
+    clock = NOW + 2000;
+    const result = await leadApply("acme", p.id);
+    clock = NOW;
+    expect(result).toMatchObject({ ok: false, state: "failed" });
+    expect(result.text).toContain(
+      "A person stopped or answered the reply in support conversation",
+    );
+    expect(sends).toHaveLength(0);
   });
 
   test("samePin compares addresses case-insensitively and in order", () => {

@@ -499,6 +499,9 @@ interface RunContext {
   doc: Pick<ProjectSettingsDocument, "lead">;
   d: LeadApplyDeps;
   approval: LeadApproval;
+  /** When the lead proposed the run: a person acting on a support
+   *  conversation after this wins, approved or not. */
+  proposedAt: number;
   /** Signal names by id, for the owner's copy. */
   names: Record<string, string>;
 }
@@ -780,7 +783,7 @@ export function samePin(
 }
 
 /** Whether a person stopped the draft, or acted on the conversation after
- *  the run was allowed: they win over the lead. */
+ *  the lead proposed the run: they win over the lead. */
 export function personStepped(
   c: Pick<SupportConversation, "draft" | "events">,
   since: number,
@@ -824,11 +827,11 @@ async function supportStep(
       result: "changed",
       reason: `The recipient of ${name} changed since this was proposed`,
     };
-  if (personStepped(c, ctx.approval.at))
+  if (personStepped(c, ctx.proposedAt))
     return {
       ok: false,
       result: "refused",
-      reason: `A person stopped or answered ${name} after this was approved`,
+      reason: `A person stopped or answered ${name} after this was proposed`,
     };
   const sent = await ctx.d.sendDraft(
     step.conversationId,
@@ -1070,6 +1073,7 @@ export async function leadApply(
     doc,
     d,
     approval,
+    proposedAt: proposal.createdAt,
     names: {},
   };
   const marks: StepMark[] = [];
