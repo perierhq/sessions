@@ -54,12 +54,15 @@ const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
 const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/m;
 /** A cue right after a link's closing parenthesis. */
 const LINK_CUE = new RegExp(`(\\]\\([^()\\s]*\\))${CUE}`, "g");
+/** A cue right after the close of bold, with the space before it. */
+const STRONG_CUE = new RegExp(`(\\*\\*|__)[ \\t]*${CUE}`, "g");
 /** A cue ending a line, with the space before it. */
 const LINE_END_CUE = new RegExp(`[ \\t]*${CUE}[ \\t]*$`);
 
 /**
- * The markdown without its cue anchors: a `{#id}` right after a link, or at
- * the end of a line (a fence's opening line included). Text inside fenced
+ * The markdown without its cue anchors: a `{#id}` right after a link or a
+ * bold lead (`**Release 533** {#rel} · stuck`), or at the end of a line (a
+ * fence's opening line included), as the Blob app strips them. Text inside fenced
  * code is left alone. Cheap when there is nothing to strip.
  */
 export function stripCueAnchors(src: string): string {
@@ -85,7 +88,10 @@ export function stripCueAnchors(src: string): string {
       continue;
     }
     if (!line.includes("{#")) continue;
-    lines[index] = line.replace(LINK_CUE, "$1").replace(LINE_END_CUE, "");
+    lines[index] = line
+      .replace(LINK_CUE, "$1")
+      .replace(STRONG_CUE, "$1")
+      .replace(LINE_END_CUE, "");
   }
   return lines.join("\n");
 }

@@ -13,6 +13,7 @@ import Foundation
 ///     CueMarkers.strip("again {#inc-4} right after")                  → "again right after"
 ///     CueMarkers.stripAnchors("[PR](u){#pr-12} merged\nDone {#d}")    → "[PR](u) merged\nDone"
 ///     CueMarkers.stripAnchors("```metrics {#stats}\nA: 1\n```")       → "```metrics\nA: 1\n```"
+///     CueMarkers.stripAnchors("**Release 533** {#rel} · stuck")       → "**Release 533** · stuck"
 enum SayBlock {
     /// The words of a say fence as shown: no delivery hint, no cues,
     /// whitespace collapsed. Nil when nothing would be said.
@@ -39,6 +40,8 @@ enum CueMarkers {
     private static let typingCue = regex(#"\{#[^\s}]*$"#)
     private static let linkCue = regex(#"\]\([^()\s]*\)"# + pattern)
     private static let linkAnyCue = regex(#"(\]\([^()\s]*\))"# + loosePattern)
+    private static let strongCue = regex(#"(?:\*\*|__)[ \t]*"# + pattern)
+    private static let strongAnyCue = regex(#"(\*\*|__)[ \t]*"# + loosePattern)
     private static let lineEndCue = regex(#"[ \t]*"# + pattern + #"[ \t]*$"#)
     private static let lineEndAnyCue = regex(#"[ \t]*"# + loosePattern + #"[ \t]*$"#)
     private static let leadingHint = regex(#"^\s*\[([^\]\n]{1,80})\](?!\()\s*"#)
@@ -87,8 +90,9 @@ enum CueMarkers {
         return "[\(hint)] \(text)"
     }
 
-    /// Markdown without its cue anchors: a `{#id}` right after a link, or
-    /// ending a line (a fence's opening line too). Fenced code is left alone.
+    /// Markdown without its cue anchors: a `{#id}` right after a link or a
+    /// bold lead (`**Release 533** {#rel}`), or ending a line (a fence's
+    /// opening line too). Fenced code is left alone.
     static func stripAnchors(_ markdown: String) -> String {
         guard markdown.contains("{#") else { return markdown }
         var fence: (char: Character, length: Int)?
@@ -109,18 +113,20 @@ enum CueMarkers {
                 continue
             }
             guard line.contains("{#") else { continue }
-            lines[index] = replace(lineEndAnyCue, in: replace(linkAnyCue, in: line, with: "$1"), with: "")
+            let inline = replace(strongAnyCue, in: replace(linkAnyCue, in: line, with: "$1"), with: "$1")
+            lines[index] = replace(lineEndAnyCue, in: inline, with: "")
         }
         return lines.joined(separator: "\n")
     }
 
-    /// The anchor ids a line carries: after a link, or ending the line.
+    /// The anchor ids a line carries: after a link or a bold lead, or
+    /// ending the line.
     static func anchorIds(inLine line: String) -> [String] {
         guard line.contains("{#") else { return [] }
         var ids: [String] = []
         let range = NSRange(line.startIndex..., in: line)
-        for match in linkCue.matches(in: line, range: range) {
-            if let id = Range(match.range(at: 1), in: line) { ids.append(String(line[id])) }
+        for match in linkCue.matches(in: line, range: range) + strongCue.matches(in: line, range: range) {
+            if let id = Range(match.range(at: 1), in: line), !ids.contains(String(line[id])) { ids.append(String(line[id])) }
         }
         if let match = lineEndCue.firstMatch(in: line, range: range), let end = Range(match.range, in: line) {
             let found = Self.ids(in: String(line[end]))

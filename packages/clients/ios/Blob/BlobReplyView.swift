@@ -31,13 +31,17 @@ struct BlobSaidLine: View {
 }
 
 /// A reply split into what Blob says and what it shows (`BlobReply`): the
-/// Say line (`sayStyle`), then the rest drawn with the block catalog. While
-/// the reply is still streaming the rest stays plain text.
+/// Say line (`sayStyle`), then the rest drawn as Blob's elements
+/// (`BlobShow`, `BlobShowBody`): status rows, callouts, quotes, the block
+/// catalog's fences and prose. While the reply streams it is drawn the same
+/// way, with placeholders for what isn't complete yet, so settling changes
+/// nothing on screen.
 ///
 /// What is shown is drawn in parts cut at its cue anchors (`BlobCues.parts`),
 /// each with the scroll id `partId(index)`, so the words being spoken can
 /// bring their element into view; the part `focus` points at pulses once
-/// per cue (not under Reduce Motion).
+/// per cue (not under Reduce Motion). Rows that run on from one part into
+/// the next stay one list.
 struct BlobReplyView: View {
     enum SayStyle { case line, said, hidden }
 
@@ -68,15 +72,23 @@ struct BlobReplyView: View {
             }
             if !reply.show.isEmpty {
                 let parts = reply.parts
-                VStack(alignment: .leading, spacing: 10) {
+                let shown = parts.indices.map { index in
+                    Self.blocks(of: parts[index], open: streaming && index == parts.count - 1)
+                }
+                let strong = Self.strongCallout(in: shown)
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(parts.indices, id: \.self) { index in
+                        let runsOn = index > 0 && Self.endsInRows(shown[index - 1]) && Self.startsWithRows(shown[index])
                         BlobShownPart(
-                            part: parts[index],
-                            streaming: streaming,
+                            blocks: shown[index],
+                            live: streaming,
+                            runsOn: runsOn,
+                            strongCallout: strong?.part == index ? strong?.block : nil,
                             entryId: entryId,
                             relay: relay,
                             pulse: focus.flatMap { parts[index].ids.contains($0.id) ? $0.tick : nil }
                         )
+                        .padding(.top, index == 0 || runsOn ? 0 : BlobShowBody.gap)
                         .id(scrollIds ? Self.partId(index) : "\(index)")
                     }
                 }
@@ -84,34 +96,72 @@ struct BlobReplyView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// A part's elements. Only the part still being written is read again
+    /// on each snapshot; a finished part is read once, by its markdown.
+    @MainActor
+    private static func blocks(of part: BlobCues.Part, open: Bool) -> [BlobShow.Block] {
+        let claims = TranscriptRichBlocks.claimedLangs.contains
+        if open {
+            return BlobShow.blocks(of: part.markdown, open: true, anchored: !part.ids.isEmpty, claims: claims)
+        }
+        if let cached = finished[part.markdown] { return cached }
+        let blocks = BlobShow.blocks(of: part.markdown, open: false, claims: claims)
+        if finished.count >= 200 { finished.removeAll(keepingCapacity: true) }
+        finished[part.markdown] = blocks
+        return blocks
+    }
+
+    /// Finished parts' elements by their markdown. Bounded.
+    @MainActor private static var finished: [String: [BlobShow.Block]] = [:]
+
+    /// The reply's first warning or caution: the one callout drawn warm.
+    private static func strongCallout(in parts: [[BlobShow.Block]]) -> (part: Int, block: Int)? {
+        for (part, blocks) in parts.enumerated() {
+            for (index, block) in blocks.enumerated() {
+                if case .callout(let kind, _) = block, kind == "warning" || kind == "caution" {
+                    return (part, index)
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func endsInRows(_ blocks: [BlobShow.Block]) -> Bool {
+        if case .rows? = blocks.last { return true }
+        return false
+    }
+
+    private static func startsWithRows(_ blocks: [BlobShow.Block]) -> Bool {
+        switch blocks.first {
+        case .rows?, .placeholder(.row)?: return true
+        default: return false
+        }
+    }
 }
 
 /// One part of what a reply shows. When a cue points at it (`pulse` changes
 /// to a new tick) an accent tint comes up and fades over about a second.
+/// A part whose rows carry on the list above it opens with the list's
+/// hairline.
 private struct BlobShownPart: View {
-    let part: BlobCues.Part
-    let streaming: Bool
+    let blocks: [BlobShow.Block]
+    let live: Bool
+    let runsOn: Bool
+    let strongCallout: Int?
     var entryId: String?
     var relay: QuickReplyRelay?
     let pulse: Int?
 
     var body: some View {
-        content
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .cuePulse(pulse)
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if streaming {
-            Text(part.markdown)
-                .font(.body)
-                .foregroundStyle(OS1VisualStyle.text)
-        } else {
-            MarkdownBody(part.markdown)
+        VStack(alignment: .leading, spacing: 0) {
+            if runsOn { BlobRowRule() }
+            BlobShowBody(blocks: blocks, live: live, strongCallout: strongCallout)
                 .environment(\.quickReplyRelay, relay)
                 .environment(\.transcriptEntryId, entryId)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cuePulse(pulse)
     }
 }
 

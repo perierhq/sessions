@@ -72,6 +72,15 @@ describe("stripCueAnchors", () => {
     ).toBe("- [PR #12](https://example.test/pull/12) merged");
   });
 
+  it("drops a cue right after a bold lead", () => {
+    expect(stripCueAnchors("**Release 533** {#rel} · stuck")).toBe(
+      "**Release 533** · stuck",
+    );
+    expect(stripCueAnchors("- __Checkout__{#inc-4} · flapping")).toBe(
+      "- __Checkout__ · flapping",
+    );
+  });
+
   it("drops a cue ending a line, and on a fence's opening line", () => {
     expect(stripCueAnchors("Checkout is flapping {#inc-4}\nNext")).toBe(
       "Checkout is flapping\nNext",

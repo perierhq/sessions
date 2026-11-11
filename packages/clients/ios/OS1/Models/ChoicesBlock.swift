@@ -27,6 +27,14 @@ enum ChoicesBlock {
         return choices
     }
 
+    /// Whether Blob stacks these replies as full-width rows rather than a
+    /// row of chips: any label past three words. Blob's skeleton for a
+    /// fence still streaming asks the same of the lines it has so far, so
+    /// it never switches shape when the fence closes.
+    static func stacks(_ choices: [String]) -> Bool {
+        choices.contains { $0.split(separator: " ").count > 3 }
+    }
+
     /// The entry ids whose quick replies are still current: everything after
     /// the last user message. A block in an earlier entry has been answered,
     /// by a chip or by the composer, and goes quiet.

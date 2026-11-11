@@ -38,7 +38,7 @@ struct BlobRoot: View {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
         return BlobDecisions.demoEnabled || env["BLOB_DEMO_HISTORY"] != nil || env["BLOB_DEMO_REPLY"] != nil
-            || env["BLOB_DEMO_THINKING"] != nil
+            || env["BLOB_DEMO_REPLY_FILE"] != nil || env["BLOB_DEMO_THINKING"] != nil
         #else
         false
         #endif
@@ -56,6 +56,8 @@ struct BlobRoot: View {
         }
             .id(config.activeId)
             .tint(OS1VisualStyle.accentInk)
+            // Callouts, quick replies and links take Blob's look.
+            .environment(\.markdownLook, .blob)
             // The server is refusing this device, so there is nothing to talk
             // to until the sign-in lands. Same cover the OS app uses.
             .overlay {

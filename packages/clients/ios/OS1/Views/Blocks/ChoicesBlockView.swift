@@ -5,12 +5,18 @@ import SwiftUI
 /// the composer instead, for the reader who wants to edit it first. Chips go
 /// quiet once a later user message exists, and wherever there is no session
 /// to send into.
+///
+/// Blob (`markdownLook == .blob`) draws its Choices board: soft chips with
+/// no edge, the first (the recommended answer) filled in the accent while
+/// it can be sent; labels past three words stack as full-width rows instead
+/// (`ChoicesBlock.stacks`).
 struct ChoicesBlockView: View {
     let choices: [String]
 
     @Environment(\.quickReplyRelay) private var relay
     @Environment(\.transcriptEntryId) private var entryId
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.markdownLook) private var look
     @State private var chosen: String?
 
     private var isOpen: Bool {
@@ -18,9 +24,23 @@ struct ChoicesBlockView: View {
     }
 
     var body: some View {
-        FlowLayout(spacing: 8) {
-            ForEach(choices, id: \.self) { choice in
-                chip(choice)
+        Group {
+            if look == .blob, ChoicesBlock.stacks(choices) {
+                VStack(spacing: 8) {
+                    ForEach(choices, id: \.self) { choice in
+                        blobRow(choice)
+                    }
+                }
+            } else {
+                FlowLayout(spacing: 8) {
+                    ForEach(Array(choices.enumerated()), id: \.element) { index, choice in
+                        if look == .blob {
+                            blobChip(choice, primary: index == 0)
+                        } else {
+                            chip(choice)
+                        }
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -28,17 +48,96 @@ struct ChoicesBlockView: View {
         .accessibilityLabel("Quick replies")
     }
 
+    private func send(_ choice: String) {
+        guard isOpen, let relay else { return }
+        Haptics.play(.send)
+        if reduceMotion {
+            chosen = choice
+        } else {
+            withAnimation(.snappy(duration: 0.2, extraBounce: 0)) { chosen = choice }
+        }
+        relay.send(choice)
+    }
+
+    /// A Blob chip: soft fill, no edge; the primary one in the accent while
+    /// it can be sent. Only paint changes between states, never size.
+    private func blobChip(_ choice: String, primary: Bool) -> some View {
+        let sent = chosen == choice
+        let filled = sent || (primary && isOpen && chosen == nil)
+        return Button { send(choice) } label: {
+            HStack(spacing: 5) {
+                if sent {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.semibold))
+                }
+                Text(choice)
+                    .font(.subheadline.weight(.medium))
+                    .multilineTextAlignment(.leading)
+            }
+            .foregroundStyle(filled ? OS1VisualStyle.onAccent : isOpen ? OS1VisualStyle.text : OS1VisualStyle.textNarration)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(filled ? OS1VisualStyle.accent : OS1VisualStyle.chipFill, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(ChipButtonStyle())
+        .disabled(!isOpen)
+        .contextMenu { menu(choice) }
+        .accessibilityHint(isOpen ? "Sends this reply" : "")
+        .accessibilityValue(sent ? "Sent" : "")
+    }
+
+    /// A long Blob choice: a full-width row with a chevron.
+    private func blobRow(_ choice: String) -> some View {
+        let sent = chosen == choice
+        return Button { send(choice) } label: {
+            HStack(spacing: 10) {
+                Text(choice)
+                    .font(.subheadline)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: sent ? "checkmark" : "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(sent ? OS1VisualStyle.onAccent : OS1VisualStyle.textFaint)
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(sent ? OS1VisualStyle.onAccent : isOpen ? OS1VisualStyle.text : OS1VisualStyle.textNarration)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(minHeight: 44)
+            .background(
+                sent ? OS1VisualStyle.accent : OS1VisualStyle.chipFill,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(ChipButtonStyle())
+        .disabled(!isOpen)
+        .contextMenu { menu(choice) }
+        .accessibilityHint(isOpen ? "Sends this reply" : "")
+        .accessibilityValue(sent ? "Sent" : "")
+    }
+
+    @ViewBuilder
+    private func menu(_ choice: String) -> some View {
+        if isOpen, let relay {
+            Button {
+                relay.fill(choice)
+            } label: {
+                Label("Put in message box", systemImage: "text.insert")
+            }
+        }
+        Button {
+            copyToPasteboard(choice)
+        } label: {
+            Label("Copy", systemImage: "document.on.document")
+        }
+    }
+
     private func chip(_ choice: String) -> some View {
         let sent = chosen == choice
         return Button {
-            guard isOpen, let relay else { return }
-            Haptics.play(.send)
-            if reduceMotion {
-                chosen = choice
-            } else {
-                withAnimation(.snappy(duration: 0.2, extraBounce: 0)) { chosen = choice }
-            }
-            relay.send(choice)
+            send(choice)
         } label: {
             HStack(spacing: 5) {
                 if sent {
@@ -63,20 +162,7 @@ struct ChoicesBlockView: View {
         }
         .buttonStyle(ChipButtonStyle())
         .disabled(!isOpen)
-        .contextMenu {
-            if isOpen, let relay {
-                Button {
-                    relay.fill(choice)
-                } label: {
-                    Label("Put in message box", systemImage: "text.insert")
-                }
-            }
-            Button {
-                copyToPasteboard(choice)
-            } label: {
-                Label("Copy", systemImage: "document.on.document")
-            }
-        }
+        .contextMenu { menu(choice) }
         .accessibilityHint(isOpen ? "Sends this reply" : "")
         .accessibilityValue(sent ? "Sent" : "")
     }

@@ -123,6 +123,14 @@ final class TranscriptRichBlocksTests: XCTestCase {
         XCTAssertEqual(ChoicesBlock.openEntryIds(entries), ["b"])
     }
 
+    func testChoicesStackPastThreeWords() {
+        XCTAssertFalse(ChoicesBlock.stacks(["Roll back", "Show the fix"]))
+        XCTAssertTrue(ChoicesBlock.stacks(["Roll back", "533: close it and reopen"]))
+        // A label only gains words as it streams, so the shape never goes back.
+        XCTAssertFalse(ChoicesBlock.stacks(["533: close it"]))
+        XCTAssertTrue(ChoicesBlock.stacks(["533: close it and"]))
+    }
+
     func testTreeIndentedGrammarAndMatching() {
         let nodes = TreeBlock.parse("src/\n  app.ts\n  lib/\n    util.ts\nREADME.md")
         XCTAssertEqual(nodes?.map(\.name), ["src", "README.md"])
