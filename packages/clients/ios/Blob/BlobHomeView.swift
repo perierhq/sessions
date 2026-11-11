@@ -210,6 +210,7 @@ struct BlobHomeView: View {
                 #if os(macOS)
                 .frame(minWidth: 380, idealWidth: 400, minHeight: 440, idealHeight: 520)
                 #endif
+                .blobSheetPlacement()
         }
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
         .onChange(of: text.acceptedEntry?.id) { _, _ in text.accepted() }
@@ -285,6 +286,7 @@ struct BlobHomeView: View {
                 text.demoHeard(heard, waiting: ProcessInfo.processInfo.environment["BLOB_DEMO_THINKING"] != nil)
             }
         }
+        .blobDemoSheet(.settings, .account) { showSettings = true }
         .task {
             guard ProcessInfo.processInfo.environment["BLOB_DEMO_REPLY"] == "cycle" else { return }
             while !Task.isCancelled {

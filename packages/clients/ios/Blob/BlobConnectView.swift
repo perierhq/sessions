@@ -40,12 +40,13 @@ struct BlobConnectView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(OS1VisualStyle.background.ignoresSafeArea())
         .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: stepKey)
-        .sheet(isPresented: $showOptions) { SettingsView() }
+        .sheet(isPresented: $showOptions) { SettingsView().blobSheetPlacement() }
         .onAppear {
             host = Self.displayHost(config.baseURLString)
             if host.isEmpty { fieldFocused = true }
         }
         .task(id: host) { await check() }
+        .blobDemoSheet(.connect) { showOptions = true }
         .onChange(of: scenePhase) { _, phase in
             // You were probably just in Safari approving the code.
             if phase == .active { signIn.nudge() }
