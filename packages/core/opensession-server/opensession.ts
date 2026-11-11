@@ -160,6 +160,7 @@ import { startSupportNotifications } from "./src/server/support/notify";
 import { startSupervisorInbox } from "./src/server/supervisor-inbox";
 import { startProjectLeads } from "./src/server/leads/goal";
 import { startSupervisorWatch } from "./src/server/supervisor-watch";
+import { startSupervisorMergeQueues } from "./src/server/supervisor-merge-queue";
 import { startSupportRetention } from "./src/server/support/retention";
 import { installSupportPipeline } from "./src/server/support/routing";
 import { startSupportTick } from "./src/server/support/tick";
@@ -970,6 +971,9 @@ if (!g.__opensessionBooted) {
     startSupervisorWatch().catch((error: unknown) =>
       console.error("[watch] start failed:", error),
     );
+    // Merge cards the supervisor had queued live in memory; after a restart
+    // each owner hears once which ones were dropped.
+    startSupervisorMergeQueues();
     // Incident, signal and access changes reach open incident views.
     startIncidentBroadcasts();
     // Impact queries run once a minute for open incidents.

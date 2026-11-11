@@ -86,7 +86,12 @@ export type ForceMergeResult =
   | { status: "cancelled"; by?: string }
   | { status: "expired" }
   | { status: "head_changed"; expected: string; actual: string }
-  | { status: "refused"; error: string };
+  | {
+      status: "refused";
+      error: string;
+      /** GitHub's HTTP status when GitHub itself refused the merge. */
+      httpStatus?: number;
+    };
 
 export type ForceMergeOutcome = {
   request: ForceMergeRequest;
@@ -588,6 +593,7 @@ export async function confirmForceMerge(
       return finish({
         status: "refused",
         error: explainMergeRefusal(response, request, login),
+        ...(response.status ? { httpStatus: response.status } : {}),
       });
     }
     let commented = true;

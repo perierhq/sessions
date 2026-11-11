@@ -119,6 +119,11 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // keyed by canonicalName(user) (github-blob.ts). New, so its legacy
   // directory is missing and imports as empty.
   "blob-github-writes",
+  // The PRs each supervisor session had queued for merge cards, keyed by
+  // session id, kept only to tell the owner after a restart which merges
+  // were dropped (supervisor-merge-queue.ts). New, so its legacy directory
+  // is missing and imports as empty.
+  "supervisor-merge-queues",
 ] as const;
 
 export type ApplicationCatalogNamespace =

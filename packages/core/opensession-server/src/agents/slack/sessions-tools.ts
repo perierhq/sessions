@@ -53,6 +53,7 @@ import {
   type SessionSummary,
 } from "../../server/session-control";
 import { OPENSESSION_SESSIONS_DIR } from "../../server/paths";
+import { MERGE_CARD_DELIVERY_PREFIX } from "../../server/supervisor-merge-queue";
 import {
   agentActor,
   BLOB_ACTOR,
@@ -1243,6 +1244,12 @@ export function createSessionsMcpServer(
         ) => {
           if (!args.message?.trim())
             return text("Nothing to send (empty message).");
+          // The server's merge-card notices use this prefix; an agent's
+          // delivery may not look like one.
+          if (args.delivery_id?.trim().startsWith(MERGE_CARD_DELIVERY_PREFIX))
+            return text(
+              `delivery_id may not start with "${MERGE_CARD_DELIVERY_PREFIX}"; that prefix is reserved for the server.`,
+            );
           // Reporting to my own parent gets a worker card with server-computed
           // evidence. Every other agent-authored delivery gets a session notice.
           // Both still drive the target's next turn; neither is human prose.

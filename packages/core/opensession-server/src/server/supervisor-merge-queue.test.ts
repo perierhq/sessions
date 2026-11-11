@@ -12,12 +12,17 @@ import {
   assessPrMergeReadiness,
   type PrReadinessSource,
 } from "./pr-merge-readiness";
+import type { PostSupervisorItemInput } from "./supervisor-inbox";
 import {
   __setMergeQueueDepsForTest,
+  DROPPED_TITLE,
   MAX_PAT_ROUNDS,
+  MAX_QUEUED_PER_REPO,
   MERGE_CARD_DELIVERY_PREFIX,
   mergeQueue,
   raiseMergeCard,
+  tellDroppedMergeQueues,
+  type SavedQueue,
 } from "./supervisor-merge-queue";
 import { backgroundDeliveryKind } from "./supervisor-watch";
 
@@ -57,6 +62,8 @@ function setup(opts: { merge?: GithubMergeResponse } = {}) {
   /** PRs that conflict once the given PR merges. */
   const conflictsAfter = new Map<number, number[]>();
   const told: string[] = [];
+  const items: PostSupervisorItemInput[] = [];
+  const saved = new Map<string, SavedQueue>();
   const pat: Array<{ pr: number; finish: () => void }> = [];
   const github: ForceMergeDeps = {
     audit: () => {},
@@ -100,9 +107,19 @@ function setup(opts: { merge?: GithubMergeResponse } = {}) {
     tell: async (_sessionId, text) => {
       told.push(text);
     },
+    conflicts: async (t) => conflicting.has(t.number),
+    postItem: async (input) => {
+      items.push(input);
+    },
+    save: async (sessionId, value) => {
+      if (value) saved.set(sessionId, value);
+      else saved.delete(sessionId);
+    },
+    saved: async () =>
+      [...saved].map(([sessionId, value]) => ({ sessionId, saved: value })),
     persona: () => "Pat",
   });
-  return { conflicting, conflictsAfter, told, pat };
+  return { conflicting, conflictsAfter, told, items, saved, pat };
 }
 
 const raise = (sessionId: string, number: number) =>
@@ -144,12 +161,24 @@ describe("supervisor merge cards", () => {
   });
 
   test("a cancel or a refusal arrives as a notice too", async () => {
-    const { told } = setup({
+    const { told, items, pat } = setup({
       merge: { ok: false, status: 403, message: "Resource not accessible" },
     });
     await raise("q-fail", 7);
     await tap("q-fail");
     expect(told[0]).toStartWith("Merge card: acme/app#7 was not merged.");
+    // A permission refusal is the owner's to clear, in fixed words.
+    expect(pat).toEqual([]);
+    expect(items).toEqual([
+      {
+        user: "ada",
+        source: "merge-cards",
+        kind: "needs-you",
+        title: "Couldn't merge acme/app#7",
+        body: "Your GitHub account can't merge in acme/app, so nothing was merged. Merging needs write access to the repository.",
+        dedupeKey: "merge-cards:q-fail:acme/app#7",
+      },
+    ]);
 
     await raise("q-fail", 8);
     cancelForceMerge("q-fail", pendingForceMerge("q-fail")!.request.id, "Ada");
@@ -209,6 +238,10 @@ describe("supervisor merge cards", () => {
     pat[0]!.finish();
     await flush();
     expect(pendingForceMerge("q-pat")?.request.number).toBe(10);
+    // The card that comes back says its head carries Pat's fix.
+    expect(pendingForceMerge("q-pat")?.request.reason).toBe(
+      "New head includes Pat's conflict fix. The owner asked to merge it.",
+    );
     await tap("q-pat");
     expect(told[2]).toStartWith("Merge card: acme/app#10 was merged");
     expect(pendingForceMerge("q-pat")?.request.number).toBe(11);
@@ -232,8 +265,8 @@ describe("supervisor merge cards", () => {
     expect(mergeQueue("q-stuck")).toEqual([]);
   });
 
-  test("GitHub refusing a confirmed merge as not mergeable goes to Pat", async () => {
-    const { told, pat } = setup({
+  test("GitHub refusing a merge of a PR it reports conflicting goes to Pat", async () => {
+    const { conflicting, told, items, pat } = setup({
       merge: {
         ok: false,
         status: 405,
@@ -241,7 +274,10 @@ describe("supervisor merge cards", () => {
       },
     });
     await raise("q-405", 9);
+    // The base moved while the card was up: GitHub now reports a conflict.
+    conflicting.add(9);
     await tap("q-405");
+    expect(items).toEqual([]);
     expect(pat.map((p) => p.pr)).toEqual([9]);
     expect(told).toEqual([
       "Merge card: acme/app#9 conflicts with its base. I asked Pat to update the branch; its card comes back when Pat is done, and you'll hear how it ends.",
@@ -249,16 +285,100 @@ describe("supervisor merge cards", () => {
     expect(mergeQueue("q-405")).toEqual(["acme/app#9"]);
   });
 
-  test("the outcome notice stays in the conversation, not the watch", () => {
+  test("a branch rule refusing the merge goes to the owner, not Pat", async () => {
+    const { told, items, pat } = setup({
+      merge: {
+        ok: false,
+        status: 405,
+        message: "Pull Request is not mergeable",
+      },
+    });
+    await raise("q-rule", 9);
+    await tap("q-rule");
+    expect(pat).toEqual([]);
+    expect(told[0]).toStartWith("Merge card: acme/app#9 was not merged.");
+    expect(items.map((i) => [i.kind, i.title, i.body])).toEqual([
+      [
+        "needs-you",
+        "Couldn't merge acme/app#9",
+        "A branch rule blocks merging acme/app#9, so nothing was merged. A repository admin, or someone the rule lets bypass it, has to merge it on GitHub.",
+      ],
+    ]);
+    expect(mergeQueue("q-rule")).toEqual([]);
+  });
+
+  test(`a session queues at most ${MAX_QUEUED_PER_REPO} PRs of one repository`, async () => {
+    setup();
+    for (let n = 1; n <= MAX_QUEUED_PER_REPO; n++) await raise("q-cap", n);
+    expect(mergeQueue("q-cap")).toHaveLength(MAX_QUEUED_PER_REPO);
+    expect(await raise("q-cap", 99)).toBe(
+      `The merge queue already holds ${MAX_QUEUED_PER_REPO} PRs from acme/app, so acme/app#99 wasn't queued. Raise it again once some of them are done.`,
+    );
+    expect(mergeQueue("q-cap")).toHaveLength(MAX_QUEUED_PER_REPO);
+    // Another repository still has room.
+    expect(
+      await raiseMergeCard("q-cap", {
+        target: { repoId: "web", ghRepo: "acme/web", number: 1 },
+        reason: "The owner asked to merge it.",
+        driver,
+        owner: "ada",
+      }),
+    ).toStartWith("Queued acme/web#1 behind");
+  });
+
+  test("after a restart the owner hears once which queued merges were dropped", async () => {
+    const { saved, items } = setup();
+    await raise("q-boot", 12);
+    await raise("q-boot", 10);
+    await flush();
+    expect(saved.get("q-boot")).toEqual({
+      owner: "ada",
+      labels: ["acme/app#12", "acme/app#10"],
+    });
+
+    // A restart: the in-memory queue is gone, the saved copy is not.
+    const kept = new Map(saved);
+    const restarted = setup();
+    for (const [k, v] of kept) restarted.saved.set(k, v);
+    await tellDroppedMergeQueues();
+    expect(restarted.items).toEqual([
+      {
+        user: "ada",
+        source: "merge-cards",
+        kind: "needs-you",
+        title: DROPPED_TITLE,
+        body: "The server restarted before these merge cards were confirmed, so nothing was merged: acme/app#12, acme/app#10. Ask Blob to merge them again if you still want them.",
+        dedupeKey: "merge-cards:restart:q-boot:acme/app#12,acme/app#10",
+        once: true,
+      },
+    ]);
+    expect(restarted.saved.size).toBe(0);
+    await tellDroppedMergeQueues();
+    expect(restarted.items).toHaveLength(1);
+    expect(items).toEqual([]);
+  });
+
+  test("only the server's own notice stays in the conversation", () => {
     const notice = "<!--os:session-notice-->\nMerge card: merged";
+    // The server-only delivery option keeps it out of the watch.
+    expect(backgroundDeliveryKind(notice, undefined, "x", true)).toBeNull();
+    // A delivery id is the sender's to pick, so it decides nothing.
     expect(
       backgroundDeliveryKind(
         notice,
         undefined,
         `${MERGE_CARD_DELIVERY_PREFIX}1`,
       ),
-    ).toBeNull();
-    expect(backgroundDeliveryKind(notice, undefined, "other")).toBe(
+    ).toBe("session-notice");
+    expect(
+      backgroundDeliveryKind(
+        notice,
+        "agent bks-x",
+        `${MERGE_CARD_DELIVERY_PREFIX}1`,
+      ),
+    ).toBe("session-notice");
+    // The option alone, on an agent's or a non-notice delivery, is ignored.
+    expect(backgroundDeliveryKind(notice, "agent bks-x", "x", true)).toBe(
       "session-notice",
     );
   });
