@@ -646,6 +646,205 @@ describe("reply_in_thread", () => {
   });
 });
 
+describe("assigning a thread to Blob", () => {
+  async function openThread(user = "Bob") {
+    const created = await service.createThread({
+      sessionId: "os-acme",
+      user,
+      text: "The acme deploy keeps failing, can someone dig in?",
+      verified: true,
+    });
+    if (!created.ok) throw new Error("no thread");
+    return created.thread;
+  }
+
+  function assignment(
+    overrides: Partial<Parameters<typeof blob.routeBlobAssignment>[0]> = {},
+  ): Parameters<typeof blob.routeBlobAssignment>[0] {
+    return {
+      sessionId: "os-acme",
+      threadId: "th-1",
+      assigner: "Ada",
+      verifiedAssigner: "Ada",
+      assignedAt: 1,
+      text: "Fix it",
+      ...overrides,
+    };
+  }
+
+  test("skips the Desk todo and routes to the assigner's supervisor", async () => {
+    const { listTodos } = await import("./todos");
+    const thread = await openThread("Bob");
+    const result = await service.updateThread(
+      "os-acme",
+      thread.id,
+      { assignee: "Blob" },
+      "Ada",
+      { verified: true },
+    );
+    if (!result.ok) throw new Error("not assigned");
+    await __settleBlobRoutesForTest();
+    expect(result.thread.assignee).toBe("Blob");
+    expect(result.thread.assignedBy).toBe("Ada");
+    expect(result.thread.assigneeTodoId).toBeUndefined();
+    expect(listTodos({ user: "Blob", status: "all" })).toEqual([]);
+
+    expect(enqueued).toHaveLength(1);
+    const item = enqueued[0]!;
+    expect(item.sessionId).toBe("os-sup-ada");
+    expect(item.user).toBe("Ada");
+    expect(item.id).toBe(
+      `blob-assign:os-acme:${thread.id}:${result.thread.updatedAt}`,
+    );
+    expect(item.content).toStartWith(
+      `Ada assigned you [Fix the acme login](/session/os-acme?thread=${thread.id}).`,
+    );
+    expect(item.content).toContain('source="blob-mention"');
+    expect(item.content).toContain(blob.BLOB_MENTION_UNTRUSTED_NOTE);
+    expect(item.content).toContain("> The acme deploy keeps failing");
+    expect(item.content).toContain(
+      `reply_in_thread (session_id os-acme, thread_id ${thread.id})`,
+    );
+
+    // The routed pair lets Blob report and resolve there.
+    expect(
+      await replyInThread("Ada", {
+        sessionId: "os-acme",
+        threadId: thread.id,
+        text: "Started a worker on it.",
+      }),
+    ).toEqual({ ok: true, message: "Replied." });
+    expect(
+      await replyInThread("Ada", {
+        sessionId: "os-acme",
+        threadId: thread.id,
+        text: "Fixed in #12.",
+        resolve: true,
+      }),
+    ).toEqual({ ok: true, message: "Replied and resolved." });
+    expect((await threads.getThread("os-acme", thread.id))!.status).toBe(
+      "resolved",
+    );
+  });
+
+  test("a person still gets the Desk todo", async () => {
+    const thread = await openThread("Ada");
+    const result = await service.updateThread(
+      "os-acme",
+      thread.id,
+      { assignee: "Bob" },
+      "Ada",
+      { verified: true },
+    );
+    if (!result.ok) throw new Error("not assigned");
+    await __settleBlobRoutesForTest();
+    expect(result.thread.assigneeTodoId).toStartWith("todo-");
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("assigning Blob when creating a thread routes too", async () => {
+    const created = await service.createThread({
+      sessionId: "os-acme",
+      user: "Ada",
+      text: "Rotate the deploy key",
+      assignee: "Blob",
+      verified: true,
+    });
+    if (!created.ok) throw new Error("no thread");
+    await __settleBlobRoutesForTest();
+    expect(created.thread.assigneeTodoId).toBeUndefined();
+    expect(enqueued.map((e) => e.sessionId)).toEqual(["os-sup-ada"]);
+  });
+
+  test("an unverified assigner routes nothing", async () => {
+    const thread = await openThread();
+    await service.updateThread(
+      "os-acme",
+      thread.id,
+      { assignee: "Blob" },
+      "Ada",
+    );
+    await __settleBlobRoutesForTest();
+    expect(enqueued).toHaveLength(0);
+    expect(
+      await blob.routeBlobAssignment(
+        assignment({ verifiedAssigner: undefined }),
+      ),
+    ).toBe("not-a-person");
+    expect(
+      await blob.routeBlobAssignment(assignment({ verifiedAssigner: "Bob" })),
+    ).toBe("not-a-person");
+  });
+
+  test.each(["Nightly triage (automation)", "Blob", "Pat", "Mallory"])(
+    "%s assigning Blob routes nothing",
+    async (assigner) => {
+      expect(
+        await blob.routeBlobAssignment(
+          assignment({ assigner, verifiedAssigner: assigner }),
+        ),
+      ).toBe("not-a-person");
+      expect(enqueued).toHaveLength(0);
+    },
+  );
+
+  test("the same assignment routes once; a later one routes again", async () => {
+    expect(await blob.routeBlobAssignment(assignment())).toBe("routed");
+    expect(await blob.routeBlobAssignment(assignment())).toBe("duplicate");
+    expect(await blob.routeBlobAssignment(assignment({ assignedAt: 2 }))).toBe(
+      "routed",
+    );
+    expect(enqueued.map((e) => e.id)).toEqual([
+      "blob-assign:os-acme:th-1:1",
+      "blob-assign:os-acme:th-1:2",
+    ]);
+  });
+
+  test("assignments share the hourly cap with mentions", async () => {
+    for (let i = 0; i < blob.MAX_PER_HOUR; i++)
+      await blob.routeBlobMention(
+        mention({ text: `@Blob task ${i}`, ref: `req-${i}` }),
+      );
+    expect(await blob.routeBlobAssignment(assignment())).toBe("capped");
+    expect(enqueued).toHaveLength(blob.MAX_PER_HOUR);
+  });
+
+  test("unassigning Blob ends its replies there", async () => {
+    const thread = await openThread();
+    await service.updateThread(
+      "os-acme",
+      thread.id,
+      { assignee: "Blob" },
+      "Ada",
+      { verified: true },
+    );
+    await __settleBlobRoutesForTest();
+    expect(await blob.routedThreadOpen("Ada", "os-acme", thread.id)).toBe(true);
+    // Someone else takes Blob off: the record is the assigner's.
+    const result = await service.updateThread(
+      "os-acme",
+      thread.id,
+      { assignee: null },
+      "Bob",
+      { verified: true },
+    );
+    if (!result.ok) throw new Error("not unassigned");
+    expect(result.thread.assignee).toBeUndefined();
+    expect(result.thread.assignedBy).toBeUndefined();
+    expect(await blob.routedThreadOpen("Ada", "os-acme", thread.id)).toBe(
+      false,
+    );
+    expect(
+      await replyInThread("Ada", {
+        sessionId: "os-acme",
+        threadId: thread.id,
+        text: "Still on it.",
+      }),
+    ).toMatchObject({ ok: false });
+    expect(enqueued).toHaveLength(1);
+  });
+});
+
 describe("blob-mentions module", () => {
   test("does no synchronous I/O", async () => {
     const source = await Bun.file(

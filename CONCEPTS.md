@@ -294,7 +294,9 @@ People can mention Blob with `@Blob` and assign it work, like a teammate. On
 GitHub, Blob has its own machine user, for example `acme-blob`. It may comment
 and review there, but it never pushes or merges. Code work goes to Pat, the
 code worker persona. See "Current policy" in `docs/github-authority.md`.
-Mentions, assignment and the GitHub account are decided but not built yet.
+In the app, `@Blob` and assigning Blob a comment thread reach your own
+supervisor, which answers in the thread. The GitHub account is decided but not
+built yet.
 
 ## Workflows
 

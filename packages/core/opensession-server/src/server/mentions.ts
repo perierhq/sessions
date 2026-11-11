@@ -214,18 +214,28 @@ export async function __settleBlobRoutesForTest(): Promise<void> {
   await Promise.all([...pendingBlobRoutes]);
 }
 
-/** Runs in the background so a send never waits on it; a failed route
- *  is logged and never fails the mention's other effects. */
 function routeBlobMentionSafely(
   mention: Parameters<typeof import("./blob-mentions").routeBlobMention>[0],
 ): Promise<void> {
+  return runBlobRoute("@Blob routing", async () => {
+    const { routeBlobMention } = await import("./blob-mentions");
+    await routeBlobMention(mention);
+  });
+}
+
+/** Runs a route to Blob (a mention, or an assignment from
+ *  comment-thread-service.ts) in the background so a send never waits on
+ *  it; a failure is logged and never fails the write's other effects. */
+export function runBlobRoute(
+  label: string,
+  route: () => Promise<void>,
+): Promise<void> {
   const run = (async () => {
     try {
-      const { routeBlobMention } = await import("./blob-mentions");
-      await routeBlobMention(mention);
+      await route();
     } catch (error) {
       console.warn(
-        "[mentions] @Blob routing failed:",
+        `[mentions] ${label} failed:`,
         error instanceof Error ? error.message : error,
       );
     }

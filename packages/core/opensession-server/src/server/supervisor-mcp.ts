@@ -14,8 +14,8 @@
  * `append_ledger` are its memory across conversations (supervisor-ledger.ts).
  * `watch_for` hands a background follow-up to the owner's watch
  * (supervisor-watch.ts): the conversation keeps no timers of its own.
- * `reply_in_thread` answers an @Blob mention (blob-mentions.ts) in the
- * comment thread it came from, as Blob.
+ * `reply_in_thread` answers an @Blob mention or an assignment to Blob
+ * (blob-mentions.ts) in the comment thread it came from, as Blob.
  *
  * The inbox and ledger tools are built here once and shared with the
  * watch's own server (supervisor-watch-mcp.ts).
@@ -294,7 +294,7 @@ export function createSupervisorMcpServer(ctx: { user: string }) {
       ),
       tool(
         "reply_in_thread",
-        "Answer in a comment thread on a session, as Blob: where the owner mentioned you (@Blob) in a thread, the turn names its session_id and thread_id. Only those threads, for 7 days, until you resolve one. resolve also resolves the thread, when the reply settles it. The people in the thread are notified. For a mention in a session itself, answer with send_to_session instead.",
+        "Answer in a comment thread on a session, as Blob: where the owner mentioned you (@Blob) in a thread or assigned it to you, the turn names its session_id and thread_id. Only those threads, for 7 days, until you resolve one or the owner unassigns you. resolve also resolves the thread, when the reply settles it. The people in the thread are notified. For a mention in a session itself, answer with send_to_session instead.",
         {
           session_id: z.string().min(1).max(80),
           thread_id: z.string().min(1).max(80),
@@ -357,9 +357,9 @@ export function ownerSeesSession(
 /**
  * Blob's answer in a comment thread: a comment as Blob through the thread
  * service (comment-thread-service.ts), so the thread's people are told, and
- * a resolve when asked. Only where a mention by this owner was routed to
- * their supervisor (blob-mentions.ts routedThreadOpen): within 7 days and
- * not resolved by Blob since. Anything else is refused, so text pasted
+ * a resolve when asked. Only where a mention or an assignment by this
+ * owner was routed to their supervisor (blob-mentions.ts routedThreadOpen):
+ * within 7 days and not resolved by Blob or unassigned since. Anything else is refused, so text pasted
  * into the supervisor can't make Blob post in other threads. Each post is
  * audited as Blob, with the text as a digest. Blob's comment never routes
  * back to Blob (`mentionsBlob` drops Blob as a sender, and an agent
@@ -394,7 +394,7 @@ export async function replyInThread(
     return {
       ok: false,
       message:
-        "You can answer only in a thread where the owner mentioned @Blob in the last 7 days and you haven't resolved it since.",
+        "You can answer only in a thread where the owner mentioned @Blob or assigned it to you in the last 7 days, and you haven't resolved it or been unassigned since.",
     };
   const result = await service.addComment(input.sessionId, input.threadId, {
     user: BLOB_ACTOR,
