@@ -9,15 +9,15 @@
 //      anything still standing for the proposal is voided
 //   3. the watch stage: refused
 //   4. the rules say act: at the act stage the proposal runs without an
-//      approval; at coordinate only workers and pull requests would, and
-//      those steps are not available yet
+//      approval; at coordinate only a fix or CI repair
+//      (COORDINATE_CATEGORIES) whose steps all start workers or ask the
+//      autofix agent (COORDINATE_STEPS)
 //   5. otherwise an approval of exactly this proposal: ready (or waiting
 //      with its condition met now), not expired, and only at the act stage
 //      (APPROVED_RUNS_ONLY_AT_ACT)
 //
 // A condition is re-checked now, whoever allowed the run: unknown or not
-// met refuses, and a waiting approval keeps waiting. Steps of a kind this
-// file can't run are refused before anything is claimed. The settings and
+// met refuses, and a waiting approval keeps waiting. The settings and
 // the record are read again and checks 1 to 5 re-run right before one
 // compare-and-set claims the record (claimApply, or claimAlone for a run by
 // the rules), so a change made while the condition was checked refuses.
@@ -30,11 +30,28 @@
 // the signal store or a condition check is logged on the server and
 // audited as a digest.
 //
-// A merge goes through mergePinnedPr as the GitHub App, pinned to the
-// approved head, so branch protection applies; a signal change through
-// updateSignal, written only while the stored fields equal the proposal's
-// `before`. No step uses the owner's token. The owner hears the outcome in
-// their supervisor inbox, in fixed copy. Nothing runs at import.
+// Each step kind goes through the mechanism that already does the job:
+//
+//   - merge-pr: mergePinnedPr as the GitHub App, pinned to the approved
+//     head, so branch protection applies
+//   - autofix-pr: fireAutoFix, called directly since the webhook ignores
+//     labels the App applies; only while the PR is open, from this
+//     repository and still at the approved head; the loop commits as the
+//     App's fallback identity, never a person's
+//   - spawn-worker: spawn_task's spawnTaskImpl as a child of the lead's
+//     goal session, with its depth guard, created for the owner and
+//     credited to Blob; the request id is fixed per proposal and step, so
+//     the worker exists once
+//   - signal-patch: updateSignal, written only while the stored fields
+//     equal the proposal's `before`
+//   - support-send: sendDraft. An approved run sends as the approver; a run
+//     by the rules sends as Sessions, so the inbox's decideReply rules and
+//     autonomy decide as for any automatic send. A draft's text never
+//     changes under its id (a new text is a new draft), so a different live
+//     draft means it changed since the proposal.
+//
+// No step uses the owner's token. The owner hears the outcome in their
+// supervisor inbox, in fixed copy. Nothing runs at import.
 import { randomUUIDv7 } from "bun";
 import type { PrSnapshot } from "../../shared/incident-response";
 import type { Signal, SignalRule } from "../../shared/incidents";
@@ -45,6 +62,8 @@ import {
   leadDecision,
 } from "../../shared/project-lead";
 import type { ProjectSettingsDocument } from "../../shared/project-settings";
+import type { SupportActor, SupportConversation } from "../../shared/support";
+import type { PrRef } from "../../agents/github/review";
 import { digest } from "../audit";
 import type {
   PinnedMergeComment,
@@ -52,7 +71,9 @@ import type {
 } from "../incidents/response/merge";
 import type { SignalWriter } from "../incidents/signal-store";
 import type { MergeMethod } from "../pr-contract";
+import { PROJECT_LEAD_ACTOR } from "../session-actors";
 import type { postSupervisorItem } from "../supervisor-inbox";
+import type { sendDraft } from "../support/reply";
 import {
   type ClaimError,
   type LeadApproval,
@@ -91,14 +112,8 @@ import {
  */
 export const APPROVED_RUNS_ONLY_AT_ACT = true;
 
-/** The step kinds this file runs. */
-export const RUNNABLE_STEPS: readonly LeadStepKind[] = [
-  "merge-pr",
-  "signal-patch",
-];
-
 /** What the rules let run without the owner at the coordinate stage. */
-const COORDINATE_STEPS: readonly LeadStepKind[] = [
+export const COORDINATE_STEPS: readonly LeadStepKind[] = [
   "spawn-worker",
   "autofix-pr",
 ];
@@ -124,6 +139,32 @@ export interface MergeInput {
   comment?: PinnedMergeComment;
 }
 
+/** A pull request as the autofix loop needs it. */
+export interface AutofixPr {
+  state: "OPEN" | "MERGED" | "CLOSED";
+  title: string;
+  headRef: string;
+  headSha: string;
+  /** The head branch lives in another repository (a fork). */
+  fork: boolean;
+}
+
+export interface WorkerInput {
+  project: string;
+  /** The lead's goal (the project settings' lead.goalId). */
+  goalId: string | undefined;
+  /** Who the worker session is created for: the lead's owner. */
+  owner: string;
+  prompt: string;
+  /** Fixed per proposal and step: the same request makes the same
+   *  session. */
+  requestId: string;
+}
+
+export type WorkerResult =
+  | { ok: true; sessionId: string; already: boolean }
+  | { ok: false; error: string; noSession?: boolean };
+
 export interface LeadApplyDeps {
   now(): number;
   newClaimId(): string;
@@ -143,6 +184,15 @@ export interface LeadApplyDeps {
     by: string,
     writer: SignalWriter,
   ): Promise<Signal | { error: string } | null>;
+  /** Throws when GitHub can't be read. */
+  readAutofixPr(ghRepo: string, number: number): Promise<AutofixPr>;
+  /** fireAutoFix as the App, not awaited: "running" when an autofix loop
+   *  or another code action already runs on the PR. */
+  startAutofix(ref: PrRef): Promise<"started" | "running">;
+  /** spawnTaskImpl from the lead's goal session. */
+  spawnWorker(input: WorkerInput): Promise<WorkerResult>;
+  getConversation(id: string): Promise<SupportConversation | null>;
+  sendDraft: typeof sendDraft;
   postSupervisorItem: typeof postSupervisorItem;
 }
 
@@ -184,6 +234,77 @@ const liveDeps: LeadApplyDeps = {
     (await import("../incidents/signal-store")).getSignal(id),
   updateSignal: async (...args) =>
     (await import("../incidents/signal-store")).updateSignal(...args),
+  async readAutofixPr(ghRepo, number) {
+    const { githubRequest } = await import("../../agents/github/github-rest");
+    const r = await githubRequest<Record<string, any>>(
+      "GET",
+      `/repos/${ghRepo}/pulls/${number}`,
+    );
+    if (!r.ok || !r.data) throw new Error(r.error || `HTTP ${r.status}`);
+    const p = r.data;
+    const headRepo = String(p.head?.repo?.full_name || "").toLowerCase();
+    return {
+      state: p.merged_at ? "MERGED" : p.state === "open" ? "OPEN" : "CLOSED",
+      title: typeof p.title === "string" ? p.title : `PR #${number}`,
+      headRef: String(p.head?.ref || ""),
+      headSha: String(p.head?.sha || ""),
+      // A deleted head repository reads as null: outside too.
+      fork: headRepo !== ghRepo.toLowerCase(),
+    };
+  },
+  async startAutofix(ref) {
+    const { isLockHeld, readPrState } =
+      await import("../../agents/github/state");
+    if (
+      isLockHeld("code", ref.number, ref.ghRepo) ||
+      readPrState(ref.number, ref.ghRepo)?.autoFix?.active
+    )
+      return "running";
+    const { fireAutoFix } = await import("../../agents/github/webhook");
+    // A requester off the roster: the loop commits as the fallback
+    // identity and never inherits an earlier run's person.
+    void fireAutoFix(ref, PROJECT_LEAD_ACTOR);
+    return "started";
+  },
+  async spawnWorker(input) {
+    const goal = input.goalId
+      ? await (await import("../goals")).getGoal(input.goalId)
+      : null;
+    const parent =
+      goal?.leadProject === input.project ? goal.osSessionId : undefined;
+    if (!goal || !parent)
+      return { ok: false, error: "no lead session", noSession: true };
+    const { sessionIdForRequest } = await import("../session-request-id");
+    const { getSessionControl } = await import("../session-control");
+    // spawn_task's request scope is its caller, the lead's session.
+    const expected = sessionIdForRequest(parent, input.requestId);
+    if (getSessionControl().getSession(expected))
+      return { ok: true, sessionId: expected, already: true };
+    const { spawnTaskImpl } = await import("../../agents/slack/sessions-tools");
+    const spawned = await spawnTaskImpl(
+      {
+        prompt: input.prompt,
+        ...(goal.repo ? { repo: goal.repo } : {}),
+        isolatedWorktree: true,
+      },
+      {
+        createdBy: PROJECT_LEAD_ACTOR,
+        isAdmin: false,
+        currentSessionId: parent,
+        creationOwner: async () => input.owner,
+        actsAsBlob: async () => true,
+      },
+      undefined,
+      input.requestId,
+    );
+    return spawned.ok
+      ? { ok: true, sessionId: spawned.taskId, already: false }
+      : { ok: false, error: spawned.error };
+  },
+  getConversation: async (id) =>
+    (await import("../support/store")).getConversation(id),
+  sendDraft: async (...args) =>
+    (await import("../support/reply")).sendDraft(...args),
   postSupervisorItem: async (...args) =>
     (await import("../supervisor-inbox")).postSupervisorItem(...args),
 };
@@ -251,6 +372,28 @@ function settingsCheck(
   return { ok: true, decision };
 }
 
+type GateProposal = Pick<LeadRecord["proposal"], "category" | "steps">;
+
+/** Whether the rules may run `proposal` without the owner at the
+ *  coordinate stage: a coordinate category, and every step starts a
+ *  worker or asks the autofix agent. */
+export function coordinateAlone(proposal: GateProposal): boolean {
+  return (
+    (COORDINATE_CATEGORIES as readonly string[]).includes(proposal.category) &&
+    proposal.steps.every((s) => COORDINATE_STEPS.includes(s.kind))
+  );
+}
+
+/** Whether the rules may run `proposal` without the owner at `stage`. */
+function aloneAt(
+  stage: ProjectSettingsDocument["lead"]["stage"],
+  proposal: GateProposal,
+): boolean {
+  return (
+    stage === "act" || (stage === "coordinate" && coordinateAlone(proposal))
+  );
+}
+
 /**
  * Whether the settings as they are now still allow a claimed run in `mode`
  * to go on: checks 1 to 4 again, and the stage and level the mode needs.
@@ -259,15 +402,15 @@ function settingsCheck(
  */
 export function runStillAllowed(
   doc: Pick<ProjectSettingsDocument, "lead" | "incidents">,
-  category: LeadRecord["proposal"]["category"],
+  proposal: GateProposal,
   mode: ApplyMode,
 ): string | null {
-  const checked = settingsCheck(doc, category);
+  const checked = settingsCheck(doc, proposal.category);
   if (!checked.ok) return checked.reason;
   const stage = doc.lead.stage;
   if (
     mode === "alone" &&
-    (checked.decision.effective !== "act" || stage !== "act")
+    (checked.decision.effective !== "act" || !aloneAt(stage, proposal))
   )
     return "The lead's rules no longer let this run without the owner";
   if (mode === "approved" && APPROVED_RUNS_ONLY_AT_ACT && stage !== "act")
@@ -303,20 +446,10 @@ export function applyGate(
     return refuse(
       `This proposal was voided (${approval?.reason ?? proposal.voidReason ?? "voided"}). ${NOTHING_RAN} Propose it again.`,
     );
-  if (decision.effective === "act") {
-    if (stage === "coordinate") {
-      // leadDecision acts at coordinate only for COORDINATE_CATEGORIES.
-      if (
-        (COORDINATE_CATEGORIES as readonly string[]).includes(
-          proposal.category,
-        ) &&
-        proposal.steps.every((s) => COORDINATE_STEPS.includes(s.kind))
-      )
-        return refuse(
-          `Starting workers and asking the autofix agent from a proposal are not available yet. ${NOTHING_RAN}`,
-        );
-    } else if (!approval) return { ok: true, mode: "alone", decision };
-  }
+  // leadDecision acts at coordinate only for COORDINATE_CATEGORIES; a
+  // merge or another step there still needs the owner.
+  if (decision.effective === "act" && !approval && aloneAt(stage, proposal))
+    return { ok: true, mode: "alone", decision };
   if (APPROVED_RUNS_ONLY_AT_ACT && stage !== "act")
     return refuse(`Approved actions run at the act stage. ${NOTHING_RAN}`);
   if (!approval)
@@ -362,6 +495,15 @@ type StepResult =
   | "already-merged"
   | "patched"
   | "already-patched"
+  | "autofix-started"
+  | "autofix-running"
+  | "spawned"
+  | "already-spawned"
+  | "sent"
+  | "already-sent"
+  | "not-open"
+  | "fork"
+  | "refused"
   | "merged-elsewhere"
   | "head-moved"
   | "blocked"
@@ -370,7 +512,14 @@ type StepResult =
   | "error";
 
 type StepOutcome =
-  | { ok: true; result: StepResult; already: boolean; sha?: string }
+  | {
+      ok: true;
+      result: StepResult;
+      already: boolean;
+      sha?: string;
+      /** The worker session a spawn-worker step started or found. */
+      sessionId?: string;
+    }
   | {
       ok: false;
       result: StepResult;
@@ -385,6 +534,9 @@ type StepOutcome =
 
 interface RunContext {
   project: string;
+  proposalId: string;
+  /** The project's settings when the run started its step. */
+  doc: Pick<ProjectSettingsDocument, "lead">;
   d: LeadApplyDeps;
   approval: LeadApproval;
   /** Signal names by id, for the owner's copy. */
@@ -408,13 +560,8 @@ async function mergeStep(
   ctx: RunContext,
 ): Promise<StepOutcome> {
   const name = prName(step);
-  const repos = ctx.d.projectGhRepos(ctx.project);
-  if (!repos.some((r) => r.toLowerCase() === step.ghRepo.toLowerCase()))
-    return {
-      ok: false,
-      result: "error",
-      reason: `${step.ghRepo} is no longer this project's repository`,
-    };
+  const foreign = projectRepo(step, ctx);
+  if (foreign) return foreign;
   let read: ApplyPr;
   try {
     read = await ctx.d.readPr(step.ghRepo, step.number);
@@ -575,19 +722,166 @@ async function patchStep(
   return { ok: true, result: "patched", already: false };
 }
 
-function runStep(step: LeadStep, ctx: RunContext): Promise<StepOutcome> {
+function projectRepo(
+  step: { ghRepo: string },
+  ctx: RunContext,
+): StepOutcome | null {
+  const repos = ctx.d.projectGhRepos(ctx.project);
+  return repos.some((r) => r.toLowerCase() === step.ghRepo.toLowerCase())
+    ? null
+    : {
+        ok: false,
+        result: "error",
+        reason: `${step.ghRepo} is no longer this project's repository`,
+      };
+}
+
+async function autofixStep(
+  step: Extract<LeadStep, { kind: "autofix-pr" }>,
+  ctx: RunContext,
+): Promise<StepOutcome> {
+  const name = prName(step);
+  const foreign = projectRepo(step, ctx);
+  if (foreign) return foreign;
+  let pr: AutofixPr;
+  try {
+    pr = await ctx.d.readAutofixPr(step.ghRepo, step.number);
+  } catch (error) {
+    return {
+      ok: false,
+      result: "error",
+      reason: `Couldn't read ${name} from GitHub`,
+      detail: errorText(error),
+    };
+  }
+  if (pr.state !== "OPEN")
+    return {
+      ok: false,
+      result: "not-open",
+      reason: `${name} is ${pr.state === "MERGED" ? "merged" : "closed"}`,
+    };
+  if (pr.fork || !pr.headRef)
+    return {
+      ok: false,
+      result: "fork",
+      reason: `${name} comes from another repository, so the autofix agent doesn't work on it`,
+    };
+  if (pr.headSha !== step.headSha)
+    return {
+      ok: false,
+      result: "head-moved",
+      reason: `${name} has new commits since ${short(step.headSha)} was proposed`,
+    };
+  const started = await ctx.d.startAutofix({
+    number: step.number,
+    headRef: pr.headRef,
+    headSha: pr.headSha,
+    title: pr.title,
+    ghRepo: step.ghRepo,
+  });
+  return started === "running"
+    ? { ok: true, result: "autofix-running", already: true }
+    : { ok: true, result: "autofix-started", already: false };
+}
+
+async function workerStep(
+  step: Extract<LeadStep, { kind: "spawn-worker" }>,
+  index: number,
+  ctx: RunContext,
+): Promise<StepOutcome> {
+  const owner = leadOwner(ctx.doc);
+  if (!owner)
+    return {
+      ok: false,
+      result: "error",
+      reason: "The lead has no owner to start the worker for",
+    };
+  const spawned = await ctx.d.spawnWorker({
+    project: ctx.project,
+    goalId: ctx.doc.lead.goalId,
+    owner,
+    prompt: step.prompt,
+    requestId: `lead-apply:${ctx.proposalId}:${index + 1}`,
+  });
+  if (!spawned.ok)
+    return {
+      ok: false,
+      result: spawned.noSession ? "missing" : "refused",
+      reason: spawned.noSession
+        ? "The lead's session was not found, so no worker started"
+        : "The worker could not be started",
+      detail: spawned.error,
+    };
+  return {
+    ok: true,
+    result: spawned.already ? "already-spawned" : "spawned",
+    already: spawned.already,
+    sessionId: spawned.sessionId,
+  };
+}
+
+/** Who sends a support reply: the approver, or Sessions under the
+ *  inbox's rules for a run by the lead's rules. */
+export function supportSender(approval: LeadApproval): SupportActor {
+  return approval.rule || !approval.login
+    ? { kind: "sessions" }
+    : { kind: "person", name: approval.approvedBy, login: approval.login };
+}
+
+const ALREADY_SENT = "This reply was already sent";
+
+async function supportStep(
+  step: Extract<LeadStep, { kind: "support-send" }>,
+  ctx: RunContext,
+): Promise<StepOutcome> {
+  const name = `the reply in support conversation ${step.conversationId}`;
+  const c = await ctx.d.getConversation(step.conversationId);
+  if (!c || c.project !== ctx.project)
+    return {
+      ok: false,
+      result: "missing",
+      reason: `Support conversation ${step.conversationId} is no longer one of this project's`,
+    };
+  if (c.messages.some((m) => m.draftId === step.draftId))
+    return { ok: true, result: "already-sent", already: true };
+  if (c.draft?.id !== step.draftId)
+    return {
+      ok: false,
+      result: "changed",
+      reason: `The draft of ${name} changed since this was proposed`,
+    };
+  const sent = await ctx.d.sendDraft(
+    step.conversationId,
+    step.draftId,
+    supportSender(ctx.approval),
+  );
+  if (sent.ok) return { ok: true, result: "sent", already: false };
+  if (sent.error === ALREADY_SENT)
+    return { ok: true, result: "already-sent", already: true };
+  return {
+    ok: false,
+    result: "refused",
+    reason: `Support didn't send ${name}`,
+    detail: sent.error,
+  };
+}
+
+function runStep(
+  step: LeadStep,
+  index: number,
+  ctx: RunContext,
+): Promise<StepOutcome> {
   switch (step.kind) {
     case "merge-pr":
       return mergeStep(step, ctx);
     case "signal-patch":
       return patchStep(step, ctx);
-    default:
-      // Refused before the claim (RUNNABLE_STEPS).
-      return Promise.resolve({
-        ok: false,
-        result: "error",
-        reason: `${step.kind} steps are not available yet`,
-      });
+    case "autofix-pr":
+      return autofixStep(step, ctx);
+    case "spawn-worker":
+      return workerStep(step, index, ctx);
+    case "support-send":
+      return supportStep(step, ctx);
   }
 }
 
@@ -739,9 +1033,6 @@ export async function leadApply(
   const gate = applyGate(doc, record, d.now());
   if (!gate.ok) return gated(gate);
   const mode = gate.mode;
-  const later = proposal.steps.find((s) => !RUNNABLE_STEPS.includes(s.kind));
-  if (later)
-    return refuse(`${later.kind} steps are not available yet. ${NOTHING_RAN}`);
   const condition =
     mode === "approved" ? record.approval?.condition : proposal.condition;
   if (condition) {
@@ -797,7 +1088,14 @@ export async function leadApply(
     ...(approval.login ? { login: approval.login } : {}),
     ...(approval.rule ? { rule: approval.rule } : {}),
   };
-  const ctx: RunContext = { project, d, approval, names: {} };
+  const ctx: RunContext = {
+    project,
+    proposalId,
+    doc,
+    d,
+    approval,
+    names: {},
+  };
   const marks: StepMark[] = [];
   let failure: { reason: string; forceMerge?: boolean } | undefined;
   // Whatever happens below, the claim is settled after.
@@ -812,7 +1110,8 @@ export async function leadApply(
       let stop: string | null;
       try {
         doc = await d.projectDocument(project);
-        stop = runStillAllowed(doc, proposal.category, mode);
+        ctx.doc = doc;
+        stop = runStillAllowed(doc, proposal, mode);
       } catch (error) {
         logRaw(project, proposalId, "reading the settings", errorText(error));
         stop = "The project's settings could not be read";
@@ -829,7 +1128,7 @@ export async function leadApply(
       await leadAudit({ ...at, phase: "intent" });
       let outcome: StepOutcome;
       try {
-        outcome = await runStep(step, ctx);
+        outcome = await runStep(step, index, ctx);
       } catch (error) {
         outcome = {
           ok: false,
@@ -853,6 +1152,9 @@ export async function leadApply(
         phase: "result",
         result: outcome.result,
         ...(outcome.sha ? { sha: outcome.sha } : {}),
+        ...(outcome.ok && outcome.sessionId
+          ? { sessionId: outcome.sessionId }
+          : {}),
         ...(outcome.ok
           ? {}
           : {
