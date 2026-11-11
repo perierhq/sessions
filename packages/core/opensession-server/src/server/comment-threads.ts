@@ -84,6 +84,8 @@ export interface CommentThread {
   resolvedAt?: number;
   /** Teammate the thread is assigned to; it sits on their Desk until resolved. */
   assignee?: string;
+  /** Who made the current assignment. */
+  assignedBy?: string;
   /** The Desk todo that assignment created (src/server/todos.ts). */
   assigneeTodoId?: string;
   /** ms epoch the agent started answering; cleared when it posts. */
@@ -222,7 +224,9 @@ export function applyCreateThread(
     createdBy: user,
     ts: now,
     updatedAt: now,
-    ...(input.assignee ? { assignee: cleanName(input.assignee) } : {}),
+    ...(input.assignee
+      ? { assignee: cleanName(input.assignee), assignedBy: user }
+      : {}),
     comments: [
       { id, user, text, ...(images.length ? { images } : {}), ts: now },
     ],
@@ -370,8 +374,14 @@ export function applyUpdateThread(
     }
   }
   if (patch.assignee !== undefined) {
-    if (patch.assignee) next.assignee = cleanName(patch.assignee);
-    else delete next.assignee;
+    if (patch.assignee) {
+      next.assignee = cleanName(patch.assignee);
+      if (!sameUser(thread.assignee ?? "", patch.assignee))
+        next.assignedBy = cleanName(user);
+    } else {
+      delete next.assignee;
+      delete next.assignedBy;
+    }
   }
   if (patch.assigneeTodoId !== undefined) {
     if (patch.assigneeTodoId) next.assigneeTodoId = patch.assigneeTodoId;

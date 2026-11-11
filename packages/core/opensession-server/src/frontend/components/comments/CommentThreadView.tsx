@@ -11,7 +11,7 @@ import { agentIsAnswering } from "../../lib/comment-threads";
 import { errorMessage } from "../../lib/error-message";
 import { renderMarkdown } from "../../lib/markdown";
 import { openLightbox } from "../../lib/media-lightbox";
-import { usePeople } from "../../lib/people";
+import { useBots, usePeople, type Person } from "../../lib/people";
 import type { CommentThread, ThreadComment } from "../../lib/types";
 import { Button } from "../../ui/button";
 import { cn } from "../../ui/cn";
@@ -31,7 +31,7 @@ import {
 } from "../icons";
 import { MarkdownBody } from "../MarkdownBody";
 import { MentionText } from "../MentionText";
-import { UserAvatar } from "../UserAvatar";
+import { BotBadge, isBotName, UserAvatar } from "../UserAvatar";
 import { useCurrentUser } from "../UserPicker";
 import { CommentComposer } from "./CommentComposer";
 
@@ -44,6 +44,33 @@ export function commentTime(ts: number): string {
 
 function same(a?: string, b?: string): boolean {
   return !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/** Who the "Assign to" picker offers: the people, then the bots (Blob),
+ *  never the current assignee. */
+export function assigneeChoices(
+  people: Person[],
+  bots: Person[],
+  assignee?: string,
+): Person[] {
+  return [
+    ...people.filter((p) => p.kind !== "bot"),
+    ...bots.map((bot) => ({ ...bot, kind: "bot" as const })),
+  ].filter((p) => !same(p.name, assignee));
+}
+
+/** One row of the "Assign to" picker: the picture and name, "(you)" on
+ *  your own row, and the Bot badge on a bot (Blob), which the picker lists
+ *  below the people. Assigning Blob hands the thread to your supervisor. */
+export function AssigneeOption({ person, me }: { person: Person; me: string }) {
+  const bot = person.kind === "bot";
+  return (
+    <>
+      <UserAvatar name={person.name} image={person.image} size={18} />
+      {!bot && same(person.name, me) ? `${person.name} (you)` : person.name}
+      {bot && <BotBadge />}
+    </>
+  );
 }
 
 /** A quiet "…" trigger: visible on hover, keyboard focus, or while open,
@@ -319,6 +346,7 @@ export function CommentThreadView({
 }: ThreadViewProps) {
   const me = useCurrentUser();
   const people = usePeople();
+  const bots = useBots();
   const [editingId, setEditingId] = useState<string | null>(null);
   const resolved = thread.status === "resolved";
   const answering = agentIsAnswering(thread);
@@ -398,7 +426,7 @@ export function CommentThreadView({
             <IconLink size={18} className="text-faint" />
             Copy link
           </Menu.Item>
-          {(people.length > 0 || thread.assignee) && (
+          {(people.length > 0 || bots.length > 0 || thread.assignee) && (
             <>
               <Menu.Separator />
               {/* Base UI requires a GroupLabel inside a Group (error #31). */}
@@ -410,19 +438,16 @@ export function CommentThreadView({
                     Nobody
                   </Menu.Item>
                 )}
-                {people
-                  .filter((p) => !same(p.name, thread.assignee))
-                  .map((person) => (
+                {assigneeChoices(people, bots, thread.assignee).map(
+                  (person) => (
                     <Menu.Item
-                      key={person.name}
+                      key={`${person.kind ?? "person"}:${person.name}`}
                       onClick={() => void assign(person.name)}
                     >
-                      <UserAvatar name={person.name} size={18} />
-                      {same(person.name, me)
-                        ? `${person.name} (you)`
-                        : person.name}
+                      <AssigneeOption person={person} me={me} />
                     </Menu.Item>
-                  ))}
+                  ),
+                )}
               </Menu.Group>
             </>
           )}
@@ -459,6 +484,7 @@ export function CommentThreadView({
                   ? "Assigned to you"
                   : `Assigned to ${thread.assignee}`}
               </span>
+              {isBotName(thread.assignee) && <BotBadge />}
             </span>
           )}
           {resolved && (

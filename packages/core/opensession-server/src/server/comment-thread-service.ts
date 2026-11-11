@@ -2,7 +2,8 @@
  * Everything that happens around a comment-thread mutation: the store write
  * (comment-threads.ts), the live frame to the people watching the session,
  * @-mentions, inbox notifications for the thread's participants, the
- * assignee's Desk todo, and the agent's side answer when someone asks for it.
+ * assignee's Desk todo (or, for Blob, the assigner's supervisor), and the
+ * agent's side answer when someone asks for it.
  *
  * Routes, the agent's own MCP tools and the side answer all go through here,
  * so no surface can write a thread and forget to tell anyone.
@@ -24,10 +25,10 @@ import {
   type ThreadPatch,
 } from "./comment-threads";
 import { personaName } from "./config";
-import { mentionPreview, notifyMentions } from "./mentions";
+import { mentionPreview, notifyMentions, runBlobRoute } from "./mentions";
 import { mentionedUsers } from "./people";
 import { notifyUser, sessionSubject } from "./notifications";
-import { isBlobActor } from "./session-actors";
+import { BLOB_ACTOR, isBlobActor } from "./session-actors";
 import { findSessionAsync } from "./session-cache";
 import { removeStagedImages } from "./uploads";
 import { broadcastToAll, broadcastToSession } from "./ws-hub";
@@ -130,7 +131,7 @@ async function notifyParticipants(
   body: string,
   exclude: string[],
 ): Promise<void> {
-  const people = threadParticipants(thread, [actor, ...exclude]);
+  const people = threadParticipants(thread, [actor, BLOB_ACTOR, ...exclude]);
   if (!people.length) return;
   const session = await findSessionAsync(thread.sessionId).catch(
     () => undefined,
@@ -203,7 +204,15 @@ async function assign(
   thread: CommentThread,
   assignee: string,
   by: string,
+  verified = false,
 ): Promise<CommentThread> {
+  // Blob has no Desk: the assignment goes to the assigner's supervisor,
+  // which works it and answers in the thread (blob-mentions.ts).
+  if (isBlobActor(assignee)) {
+    if (thread.status === "open")
+      routeAssignmentToBlob(thread, by, verified ? by : undefined);
+    return thread;
+  }
   const todoId =
     thread.status === "open"
       ? await addAssigneeTodo(thread, assignee, by)
@@ -231,6 +240,47 @@ async function assign(
   return current;
 }
 
+// ── Assigning Blob ──────────────────────────────────────────────────────────────
+
+/** "Ada assigned you <thread>" to the assigner's supervisor, in the
+ *  background; only when the route verified the assigner is the signed-in
+ *  person (`verifiedBy`, blob-mentions.ts routeBlobAssignment). */
+function routeAssignmentToBlob(
+  thread: CommentThread,
+  assigner: string,
+  verifiedBy: string | undefined,
+): void {
+  void runBlobRoute("Blob assignment", async () => {
+    const { routeBlobAssignment } = await import("./blob-mentions");
+    await routeBlobAssignment({
+      sessionId: thread.sessionId,
+      threadId: thread.id,
+      assigner,
+      ...(verifiedBy ? { verifiedAssigner: verifiedBy } : {}),
+      assignedAt: thread.updatedAt,
+      text: thread.comments[0]!.text,
+      url: threadUrl(thread.sessionId, thread.id),
+    });
+  });
+}
+
+/** Blob was taken off the thread: its routing record allows no more
+ *  replies there until it is assigned or mentioned again. Awaited, so a
+ *  quick reassignment to Blob routes after the close, never before it. */
+async function unassignBlob(previous: CommentThread): Promise<void> {
+  const owner = previous.assignedBy;
+  if (!owner) return;
+  try {
+    const { closeRoutedThread } = await import("./blob-mentions");
+    await closeRoutedThread(owner, previous.sessionId, previous.id);
+  } catch (error) {
+    console.warn(
+      "[comment-threads] could not record Blob's unassignment:",
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
 // ── Mutations ───────────────────────────────────────────────────────────────
 
 export async function createThread(input: {
@@ -250,9 +300,17 @@ export async function createThread(input: {
   if (!result.ok) return result;
   let thread = result.thread;
   if (thread.assignee)
-    thread = await assign(thread, thread.assignee, input.user);
+    thread = await assign(
+      thread,
+      thread.assignee,
+      input.user,
+      !!input.verified,
+    );
   emit(thread);
   const url = threadUrl(thread.sessionId, thread.id);
+  // Assigning Blob already routed the thread to the supervisor; an @Blob in
+  // the same text would route it a second time.
+  const routesMention = input.verified && !isBlobActor(thread.assignee);
   await notifyMentions(
     thread.comments[0]!.text,
     input.user,
@@ -262,7 +320,7 @@ export async function createThread(input: {
     {
       threadId: thread.id,
       ref: thread.comments[0]!.id,
-      ...(input.verified ? { verifiedSender: input.user } : {}),
+      ...(routesMention ? { verifiedSender: input.user } : {}),
     },
   );
   if (mentionsAgent(thread.comments[0]!.text))
@@ -360,21 +418,36 @@ export async function deleteComment(
   return { ok: true, thread: result.thread };
 }
 
-/** Resolve, reopen, assign or unassign. */
+/** Resolve, reopen, assign or unassign. `verified`: `user` is the
+ *  signed-in person, verified by the route (as createThread's); only then
+ *  does assigning Blob reach Blob. Assigning Blob to a resolved thread
+ *  reopens it, since Blob only works open threads; reopening a thread
+ *  Blob holds routes it to Blob again. */
 export async function updateThread(
   sessionId: string,
   threadId: string,
   patch: Pick<ThreadPatch, "status" | "assignee" | "agentPending">,
   user: string,
+  options: { verified?: boolean } = {},
 ): Promise<ServiceResult> {
   let before: CommentThread | undefined;
   const result = await mutateThreads(sessionId, (threads) => {
     before = threads.find((t) => t.id === threadId);
-    return applyUpdateThread(threads, threadId, patch, user);
+    const reopen =
+      isBlobActor(patch.assignee) &&
+      !patch.status &&
+      before?.status === "resolved";
+    return applyUpdateThread(
+      threads,
+      threadId,
+      reopen ? { ...patch, status: "open" } : patch,
+      user,
+    );
   });
   if (!result.ok) return result;
   let thread = result.thread;
   const previous = before!;
+  const statusChanged = thread.status !== previous.status;
 
   const assigneeChanged =
     patch.assignee !== undefined &&
@@ -385,19 +458,29 @@ export async function updateThread(
       applyUpdateThread(threads, threadId, { assigneeTodoId: null }, user),
     );
     if (cleared.ok) thread = cleared.thread;
-    if (thread.assignee) thread = await assign(thread, thread.assignee, user);
-  } else if (patch.status && patch.status !== previous.status) {
+    if (isBlobActor(previous.assignee)) await unassignBlob(previous);
+    if (thread.assignee)
+      thread = await assign(thread, thread.assignee, user, !!options.verified);
+  } else if (statusChanged) {
     await setTodoStatus(
       thread.assigneeTodoId,
-      patch.status === "resolved" ? "done" : "open",
+      thread.status === "resolved" ? "done" : "open",
       user,
     );
+    // Reopened while Blob holds it: Blob picks it up again for whoever
+    // assigned it, when that is the person reopening it.
+    if (thread.status === "open" && isBlobActor(thread.assignee))
+      routeAssignmentToBlob(
+        thread,
+        thread.assignedBy ?? user,
+        options.verified ? user : undefined,
+      );
   }
 
   emit(thread);
-  if (patch.status && patch.status !== previous.status) {
+  if (statusChanged) {
     const root = thread.comments[0]!;
-    if (patch.status === "resolved" && !sameUser(thread.createdBy, user)) {
+    if (thread.status === "resolved" && !sameUser(thread.createdBy, user)) {
       const session = await findSessionAsync(sessionId).catch(() => undefined);
       void notifyUser(thread.createdBy, {
         kind: "comment",

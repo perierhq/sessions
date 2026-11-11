@@ -159,6 +159,7 @@ async function handleThreads(
       threadId,
       { status, assignee },
       user,
+      { verified: !!verifiedPerson(ctx) },
     );
     return result.ok
       ? Response.json({ thread: result.thread })

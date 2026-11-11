@@ -19,6 +19,12 @@
  * reply_in_thread (supervisor-mcp.ts) only posts where a mention of this
  * owner was routed in the last KEEP_MS and Blob hasn't resolved the thread
  * since that mention. A new mention after Blob resolved it reopens it.
+ *
+ * Assigning a comment thread to Blob (comment-thread-service.ts assign)
+ * goes the same way, to the assigner's supervisor (`routeBlobAssignment`):
+ * same verified-person rule, dedupe, cap and routing record, keyed by the
+ * thread and the time of the assignment, so reply_in_thread can report and
+ * resolve there. Unassigning Blob closes the record (`closeRoutedThread`).
  */
 import { catalogDocuments } from "./catalog-documents";
 import { mentionsBlob, teamFirstNames } from "./people";
@@ -302,12 +308,30 @@ export async function routeBlobMention(
     sessionId: mention.sessionId,
     ...(mention.threadId ? { threadId: mention.threadId } : {}),
   });
+  return deliver(person, id, claimed, now, () =>
+    blobMentionMessage(
+      person,
+      mention,
+      session.title?.trim() || "Untitled session",
+    ),
+  );
+}
+
+/** After a claim: the cap's fyi, or the message to the person's
+ *  supervisor. A failed enqueue releases the claim. */
+async function deliver(
+  person: string,
+  id: string,
+  claimed: "claimed" | "duplicate" | "capped",
+  now: number,
+  content: () => string,
+): Promise<BlobMentionOutcome> {
   if (claimed === "duplicate") return "duplicate";
   if (claimed === "capped") {
     await deps.postFyi({
       user: person,
       title: "Some @Blob mentions didn't reach Blob",
-      body: `You mentioned @Blob more than ${MAX_PER_HOUR} times in an hour, so the later ones this hour didn't reach Blob. Ask Blob in the app instead.`,
+      body: `You mentioned or assigned Blob more than ${MAX_PER_HOUR} times in an hour, so the later ones this hour didn't reach Blob. Ask Blob in the app instead.`,
       dedupeKey: `blob-mention-cap:${capHour(now)}`,
     });
     return "capped";
@@ -316,11 +340,7 @@ export async function routeBlobMention(
     const supervisorSessionId = await deps.supervisorSessionId(person);
     await deps.enqueue(supervisorSessionId, {
       id,
-      content: blobMentionMessage(
-        person,
-        mention,
-        session.title?.trim() || "Untitled session",
-      ),
+      content: content(),
       user: person,
     });
   } catch (error) {
@@ -328,4 +348,86 @@ export async function routeBlobMention(
     throw error;
   }
   return "routed";
+}
+
+// ── Assigning a thread to Blob ──────────────────────────────────────────────
+
+export interface BlobAssignment {
+  sessionId: string;
+  threadId: string;
+  /** Who assigned the thread to Blob. */
+  assigner: string;
+  /** The signed-in person the route verified made the change. Unset:
+   *  nothing routes. */
+  verifiedAssigner?: string;
+  /** ms epoch of the assignment: a later assignment routes again. */
+  assignedAt: number;
+  /** The thread's opening comment, quoted for the supervisor. */
+  text: string;
+  /** Deep link to the thread. */
+  url?: string;
+}
+
+/** One assignment of one thread, stable across replays of the same write. */
+export function blobAssignmentId(assignment: BlobAssignment): string {
+  return `blob-assign:${assignment.sessionId}:${assignment.threadId}:${assignment.assignedAt}`;
+}
+
+/** The supervisor's prompt for an assignment: a visible line, then how to
+ *  work it and the thread's opening comment as context. */
+export function blobAssignmentMessage(
+  person: string,
+  assignment: BlobAssignment,
+  title: string,
+): string {
+  const link = assignment.url ?? threadLink(assignment);
+  const safeTitle = title.replace(/[[\]]/g, "");
+  return `${person} assigned you [${safeTitle}](${link}).\n\n${wrapContext(
+    [
+      `${person} assigned you a comment thread on "${safeTitle}". Do what it asks: start the work with create_session or spawn_task, watch it with watch_for, report in the thread with opensession-supervisor reply_in_thread (session_id ${assignment.sessionId}, thread_id ${assignment.threadId}), and resolve it there (resolve: true) when it's done.`,
+      BLOB_MENTION_UNTRUSTED_NOTE,
+      quoted(assignment.text),
+    ].join("\n\n"),
+    // Same fence as a mention: both are Blob routing context.
+    "blob-mention",
+  )}`;
+}
+
+function threadLink(assignment: BlobAssignment): string {
+  return `/session/${encodeURIComponent(assignment.sessionId)}?thread=${encodeURIComponent(assignment.threadId)}`;
+}
+
+/**
+ * Route one assignment of a thread to Blob to the assigner's supervisor,
+ * under the same rules as a mention. Resolves what happened; never throws
+ * for an assignment it declines.
+ */
+export async function routeBlobAssignment(
+  assignment: BlobAssignment,
+): Promise<BlobMentionOutcome> {
+  const verified = assignment.verifiedAssigner?.trim();
+  if (
+    !verified ||
+    verified.toLowerCase() !== assignment.assigner.trim().toLowerCase()
+  )
+    return "not-a-person";
+  const person = rosteredSender(assignment.assigner);
+  if (!person) return "not-a-person";
+  const session = await deps.findSession(assignment.sessionId);
+  if (!session || session.supervisor) return "unsupported";
+  const now = deps.now();
+  const id = blobAssignmentId(assignment);
+  const claimed = await claim(person, {
+    id,
+    ts: now,
+    sessionId: assignment.sessionId,
+    threadId: assignment.threadId,
+  });
+  return deliver(person, id, claimed, now, () =>
+    blobAssignmentMessage(
+      person,
+      assignment,
+      session.title?.trim() || "Untitled session",
+    ),
+  );
 }
