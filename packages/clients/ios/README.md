@@ -246,6 +246,10 @@ Pure SwiftUI with SwiftStreamingMarkdown for CommonMark/GFM rendering. See
   the rows balanced so no card is wider than the rest; if one delta doesn't
   fit beside its value, every card puts its delta under the value). Every parser lives in `Models/` and falls back to the plain
   fence when it refuses the source, so a streaming block stays readable.
+  A complete fence no block takes draws in the same well (`CodeFenceView`):
+  the language and Copy in a 32 pt header, the code 8 pt under it, unwrapped
+  and scrolling sideways. A fence still being written stays with the
+  markdown renderer until the message settles.
   JSON trees reject values deeper than 64 levels. Sortable table headers share
   the body column widths and scroll with the rows when the table overflows.
 
@@ -729,8 +733,8 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   prose run for its whole life. Once the reply settles its prose gets the
   transcript's links (bare URLs, PR and commit references, session ids,
   files; `BlobProseLinks`), each on the words as written, so settling only
-  recolours them. A fence the block catalog claims draws as
-  soon as it closes; until then, and while a row, callout or quote is still
+  recolours them. A fence (a block from the catalog, or plain code) draws
+  as soon as it closes; until then, and while a row, callout or quote is still
   being written, a quiet placeholder in its shape holds its space (quick
   replies as chips or rows, by the lines so far). A paragraph opening in
   bold stays prose until its line has a row's shape. Markers

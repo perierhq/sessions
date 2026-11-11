@@ -160,6 +160,8 @@ struct MarkdownBody: View {
         case .markdown(let value):
             // Already linkified by `prepared`.
             markdownView(value)
+        case .code(let lang, let source):
+            CodeFenceView(lang: lang, source: source)
         case .mermaid(let source):
             MermaidDiagramView(source: source)
         case .table(let table):

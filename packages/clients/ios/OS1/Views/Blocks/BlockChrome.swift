@@ -122,6 +122,11 @@ struct BlockControl: View {
 struct CopyBlockControl: View {
     let text: String
     var label = "Copy"
+    /// What VoiceOver says before the copy, when the visible label is too
+    /// short to say what gets copied.
+    var accessibilityLabel: String?
+    /// How long "Copied" stays.
+    var hold: Duration = .seconds(1.4)
 
     @State private var copied = false
 
@@ -129,12 +134,12 @@ struct CopyBlockControl: View {
         BlockControl(
             copied ? "Copied" : label,
             symbol: copied ? "checkmark" : "document.on.document",
-            accessibilityLabel: copied ? "Copied" : label
+            accessibilityLabel: copied ? "Copied" : accessibilityLabel ?? label
         ) {
             copyToPasteboard(text)
             copied = true
             Task {
-                try? await Task.sleep(for: .seconds(1.4))
+                try? await Task.sleep(for: hold)
                 copied = false
             }
         }

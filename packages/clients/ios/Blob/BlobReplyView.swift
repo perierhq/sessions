@@ -101,7 +101,10 @@ struct BlobReplyView: View {
     /// on each snapshot; a finished part is read once, by its markdown.
     @MainActor
     private static func blocks(of part: BlobCues.Part, open: Bool) -> [BlobShow.Block] {
-        let claims = TranscriptRichBlocks.claimedLangs.contains
+        // Every complete fence is a block: the catalog's kinds, and plain
+        // code in the app's own well (`CodeFenceView`), not the prose
+        // renderer's code block.
+        let claims: (String) -> Bool = { _ in true }
         if open {
             return BlobShow.blocks(of: part.markdown, open: true, anchored: !part.ids.isEmpty, claims: claims)
         }
