@@ -14,9 +14,31 @@ final class TranscriptRichBlocksTests: XCTestCase {
     func testFenceParserRefusalKeepsTheFenceAsCode() {
         let text = "Before.\n\n```choices\n```\n\nAfter."
         let blocks = TranscriptRichBlocks.blocks(of: text)
-        XCTAssertEqual(blocks.count, 1)
-        guard case .markdown(let value) = blocks[0] else { return XCTFail("expected markdown") }
-        XCTAssertEqual(value, text)
+        XCTAssertEqual(blocks.count, 3)
+        guard case .code(let lang, let source) = blocks[1] else { return XCTFail("expected code") }
+        XCTAssertEqual(lang, "choices")
+        XCTAssertEqual(source, "")
+    }
+
+    func testPlainFencesBecomeCodeBlocks() {
+        let text = "Run:\n\n```Swift title\nlet a = 1\n```\n\nThen:\n\n```\nls -la\n```"
+        let blocks = TranscriptRichBlocks.blocks(of: text)
+        XCTAssertEqual(blocks.count, 4)
+        guard case .code(let lang, let source) = blocks[1] else { return XCTFail("expected code") }
+        XCTAssertEqual(lang, "swift")
+        XCTAssertEqual(source, "let a = 1")
+        guard case .code(let bare, let command) = blocks[3] else { return XCTFail("expected bare code") }
+        XCTAssertEqual(bare, "")
+        XCTAssertEqual(command, "ls -la")
+        guard case .code(let shell, _) = TranscriptRichBlocks.blocks(of: "```bash\nls\n```")[0] else {
+            return XCTFail("a shell fence without escapes is code")
+        }
+        XCTAssertEqual(shell, "bash")
+        let open = "Run:\n\n```swift\nlet a"
+        guard case .markdown(let value) = TranscriptRichBlocks.blocks(of: open)[0] else {
+            return XCTFail("an unclosed fence stays prose")
+        }
+        XCTAssertEqual(value, open)
     }
 
     func testUnterminatedFenceStaysProse() {
@@ -191,7 +213,7 @@ final class TranscriptRichBlocksTests: XCTestCase {
         XCTAssertNil(JsonTreeBlock.parse("\"scalar\""))
         XCTAssertEqual(JsonTreeBlock.parse("{\"s\": \"a\\u00e9\\n\", \"n\": -1.5e3, \"t\": true, \"z\": null}"),
                        .object([("s", .string("aé\n")), ("n", .number("-1.5e3")), ("t", .bool(true)), ("z", .null)]))
-        guard case .markdown = TranscriptRichBlocks.blocks(of: "```json\n\(small)\n```")[0] else {
+        guard case .code("json", small) = TranscriptRichBlocks.blocks(of: "```json\n\(small)\n```")[0] else {
             return XCTFail("small JSON stays a code fence")
         }
     }
@@ -209,8 +231,9 @@ final class TranscriptRichBlocksTests: XCTestCase {
             let fence = "```json\n\(deep)\n```"
             let blocks = TranscriptRichBlocks.blocks(of: fence)
             XCTAssertEqual(blocks.count, 1)
-            guard case .markdown(let source) = blocks[0] else { return XCTFail("deep JSON must stay code") }
-            XCTAssertEqual(source, fence)
+            guard case .code(let lang, let source) = blocks[0] else { return XCTFail("deep JSON must stay code") }
+            XCTAssertEqual(lang, "json")
+            XCTAssertEqual(source, deep)
         }
     }
 

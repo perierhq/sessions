@@ -3,11 +3,14 @@ import Foundation
 /// One rendered piece of a durable message: prose for the library, or a
 /// block this app lays out itself. `MarkdownBody` switches over these; the
 /// grammar of each kind lives in its own model (`ChoicesBlock`, `TreeBlock`,
-/// …) and every one of them falls back to `.markdown` with the fence as
-/// written when its parser refuses the source, which is what the web does
-/// with a fence it cannot upgrade.
+/// …) and every one of them falls back to `.code` with the fence's source
+/// when its parser refuses it, which is what the web does with a fence it
+/// cannot upgrade.
 enum TranscriptRichBlock {
     case markdown(String)
+    /// A complete fence no block takes: plain code (`CodeFenceView`). `lang`
+    /// is the info string's first word, lowercased, or empty.
+    case code(lang: String, source: String)
     case mermaid(String)
     case table(MarkdownTable)
     case chart(VegaLiteChart, source: String)
@@ -47,13 +50,15 @@ struct Callout: Equatable {
 /// Turns a durable message into the blocks `MarkdownBody` draws.
 ///
 /// The split runs on the RAW text, before the link rewrites, for the reason
-/// `MarkdownFenceSegmenter` gives. Three passes: claimed fences first, then
+/// `MarkdownFenceSegmenter` gives. Three passes: complete fences first, then
 /// the line-shaped blocks inside what is left (placed media figures,
 /// callouts, `$$` math), then GFM tables. Consecutive markdown pieces merge,
 /// so the common message with no block at all stays one `MarkdownView`.
 enum TranscriptRichBlocks {
     /// Every fence kind a block claims. A shell fence is claimed and handed
     /// straight back unless it carries an escape byte (`AnsiBlock.claims`).
+    /// `blocks(of:)` lifts every other complete fence out too, as `.code`;
+    /// this set is what Blob's two-pane split treats as a visual.
     static let claimedLangs: Set<String> = Set([
         "mermaid", "vega-lite", "vegalite", "chart", "compare", "choices", "tree", "palette",
         "csv", "tsv", "table", "json", "ansi", "terminal", "diff", "math", "metrics",
@@ -74,15 +79,16 @@ enum TranscriptRichBlocks {
         // Whether anything but whitespace came before: a say fence is Blob's
         // script only when it opens the body; further down it is code.
         var opened = false
-        for segment in MarkdownFenceSegmenter.split(text, claims: claimedLangs.contains) {
+        // Every complete fence comes out: a claimed one as its block, the
+        // rest (and a claimed one its parser refuses) as code. An unclosed
+        // fence stays in the prose, where the library draws it as it streams.
+        for segment in MarkdownFenceSegmenter.split(text, claims: { _ in true }) {
             switch segment {
-            case .fence(let lang, let source, let raw):
-                if lang == "say", opened {
-                    markdown(raw)
-                } else if let block = block(lang: lang, source: source) {
+            case .fence(let lang, let source, _):
+                if !(lang == "say" && opened), let block = block(lang: lang, source: source) {
                     out.append(block)
                 } else {
-                    markdown(raw)
+                    out.append(.code(lang: lang, source: source))
                 }
                 opened = true
             case .markdown(let value):

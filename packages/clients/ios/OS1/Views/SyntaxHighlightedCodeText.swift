@@ -194,6 +194,7 @@ struct SyntaxHighlightedCodeText: View {
     /// whole-file Write retains both its additions gutter and file language.
     var linePrefix: String?
     var linePrefixColor = OS1VisualStyle.codeWellGutter
+    var font: Font = .system(.caption, design: .monospaced)
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var highlighted: AttributedString?
@@ -217,7 +218,7 @@ struct SyntaxHighlightedCodeText: View {
 
     var body: some View {
         Text(numbered)
-            .font(.system(.caption, design: .monospaced))
+            .font(font)
             .textSelection(.enabled)
             .task(
             id: Request(
@@ -229,7 +230,8 @@ struct SyntaxHighlightedCodeText: View {
             )
         ) {
             highlighted = nil
-            guard !requireGutter || split != nil else { return }
+            // No language (a bare fence) stays plain, as it does on the web.
+            guard !language.isEmpty, !requireGutter || split != nil else { return }
             let result = await SyntaxHighlighting.attributedText(
                 renderedText,
                 language: language,
