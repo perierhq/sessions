@@ -941,7 +941,7 @@ describe("the owner's answer approves the proposal it saw", () => {
   const SHA = "a".repeat(40);
 
   beforeEach(async () => {
-    await setLead({ enabled: true });
+    await setLead({ enabled: true, stage: "act" });
     await ensureLeadGoal(PROJECT);
     onSupervisorAnswer("lead:", handleLeadAnswer);
   });
@@ -1111,7 +1111,65 @@ describe("the owner's answer approves the proposal it saw", () => {
     expect(await listForProject(PROJECT)).toEqual([]);
     const ledger = await readLedger(await leadGoal());
     expect(ledger).toContain("Owner answered");
+    expect(ledger).toContain("Nothing was applied by answering");
+    expect(ledger).not.toContain("Approved:");
+  });
+
+  test("at the watch stage the first option approves nothing", async () => {
+    await setLead({ stage: "watch" });
+    const { item, proposalId } = await proposed("PR 42");
+    await answerSupervisorItem("Ada", item.id, "1", "owner", {
+      ...ADA,
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).approval).toBeUndefined();
+    const ledger = await readLedger(await leadGoal());
     expect(ledger).toContain("Watch stage: nothing was applied.");
+    expect(ledger).not.toContain("Approved:");
+  });
+
+  test("someone sharing the owner's first name approves nothing", async () => {
+    __setOwnerRosterForTest(
+      [
+        { name: "Ada Lovelace", github: "ada" },
+        { name: "Ada Byron", github: "ada-byron" },
+      ] as never,
+      "Ada",
+    );
+    const { item, proposalId } = await proposed("PR 42");
+    await answerSupervisorItem("Ada", item.id, "1", "owner", {
+      login: "Ada-Byron",
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).approval).toBeUndefined();
+    expect(await readLedger(await leadGoal())).not.toContain("Approved:");
+  });
+
+  test("the owner's login is matched in any case", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    await answerSupervisorItem("Ada", item.id, "1", "owner", {
+      login: "ADA",
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).approval?.state).toBe("ready");
+  });
+
+  test("an owner with no GitHub login on the team approves nothing", async () => {
+    __setOwnerRosterForTest(
+      [
+        { name: "Ada Lovelace" },
+        { name: "Grace Hopper", github: "grace" },
+      ] as never,
+      "Ada",
+    );
+    const { item, proposalId } = await proposed("PR 42");
+    await answerSupervisorItem("Ada", item.id, "1", "owner", {
+      ...ADA,
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).approval).toBeUndefined();
+    const ledger = await readLedger(await leadGoal());
+    expect(ledger).toContain("has no GitHub login on the team");
     expect(ledger).not.toContain("Approved:");
   });
 
@@ -1127,6 +1185,24 @@ describe("the owner's answer approves the proposal it saw", () => {
       voidedAt: clock,
       voidReason: "declined",
     });
+  });
+
+  test("a decline the supervisor recorded voids nothing", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    await answerSupervisorItem("Ada", item.id, "2", "supervisor", {
+      ...ADA,
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).proposal.voidedAt).toBeUndefined();
+  });
+
+  test("a decline from a former owner voids nothing", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    await handleLeadAnswer({ ...item, user: "Grace" }, "Leave it", "owner", {
+      login: "grace",
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).proposal.voidedAt).toBeUndefined();
   });
 
   test("answering again changes nothing", async () => {

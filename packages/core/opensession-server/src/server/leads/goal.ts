@@ -32,7 +32,12 @@ import {
 } from "../supervisor-report-style";
 import { leadCharter } from "./charter";
 import { describeCondition, type LeadCondition } from "./conditions";
-import { LEAD_SOURCE_PREFIX, leadOwner, leadSource } from "./report";
+import {
+  LEAD_SOURCE_PREFIX,
+  leadOwner,
+  leadOwnerMember,
+  leadSource,
+} from "./report";
 
 export const LEAD_MIN_WAKE_MINUTES = 60;
 export const LEAD_OFF_REASON = "The lead is off in the project settings";
@@ -584,15 +589,17 @@ function approvedLine(title: string, condition?: LeadCondition): string {
 
 /**
  * Approve the recorded proposal the owner's answer is to, when it is the
- * first option, given by a signed-in person (their login) to the item's
- * current revision (the inbox hands the revision on only then), and the
- * proposal raised as this item still stands. It waits on the proposal's
- * condition, or is ready at once without one. Returns the ledger line, or
- * null when anything is missing or the approval is refused: the answer
- * then stays in the ledger only.
+ * first option, given signed in as the lead owner's GitHub login on the
+ * roster to the item's current revision (the inbox hands the revision on
+ * only then), and the proposal raised as this item still stands. It waits
+ * on the proposal's condition, or is ready at once without one. Returns
+ * the ledger line, or null when anything is missing or the approval is
+ * refused: the answer then stays in the ledger only. An owner with no
+ * GitHub login on the roster approves nothing; the line says so.
  */
 async function approveFromAnswer(
   project: string,
+  doc: Pick<ProjectSettingsDocument, "lead">,
   item: SupervisorItem,
   answer: string,
   context: SupervisorAnswerContext,
@@ -604,6 +611,17 @@ async function approveFromAnswer(
     const record = await d.proposalForItem(project, item.id);
     if (!record) return null;
     const { proposal } = record;
+    // A first name can be shared: only the owner's own GitHub login, as
+    // the roster has it, approves.
+    const ownerLogin = leadOwnerMember(doc)?.github?.trim().toLowerCase();
+    if (!ownerLogin)
+      return "Nothing was approved: the lead's owner has no GitHub login on the team. Ask them to add it to their team entry, then propose this again.";
+    if (context.login.trim().toLowerCase() !== ownerLogin) {
+      console.warn(
+        `[leads] ${project}: an answer signed in as ${context.login} is not the lead owner's, so it approves nothing`,
+      );
+      return null;
+    }
     const result = await d.approve({
       project,
       proposalId: proposal.id,
@@ -655,11 +673,12 @@ async function voidDeclined(
  * the lead's ledger and wakes it soon, resuming it from a pause of its
  * own if nothing blocks it. Their first option, given signed in to the
  * revision they saw, approves the proposal recorded for the item
- * (approveFromAnswer); any other option voids it. Without a recorded
- * proposal an approval changes nothing by itself: at the watch stage the
- * next wake prepares the change and proposes it. An answer the supervisor
- * recorded from a conversation, or one from someone who isn't the lead's
- * owner now, is logged as such and approves nothing.
+ * (approveFromAnswer), except at the watch stage; any other option voids
+ * it. Without a recorded proposal an approval changes nothing by itself:
+ * at the watch stage the next wake prepares the change and proposes it.
+ * An answer the supervisor recorded from a conversation, or one from
+ * someone who isn't the lead's owner now, is logged as such and neither
+ * approves nor voids anything.
  */
 export async function handleLeadAnswer(
   item: SupervisorItem,
@@ -670,19 +689,20 @@ export async function handleLeadAnswer(
   if (!item.source.startsWith(LEAD_SOURCE_PREFIX)) return;
   const project = item.source.slice(LEAD_SOURCE_PREFIX.length);
   const d = deps();
-  await voidDeclined(project, item, answer, d);
   const doc = await d.projectDocument(project);
-  if (!doc.lead.goalId) return;
-  const goal = await d.getGoal(doc.lead.goalId);
-  if (!goal) return;
-  const what = `"${item.title}"${item.dedupeKey ? ` (${item.dedupeKey})` : ""}`;
   // Only the lead's owner answering in their own inbox counts as the
-  // owner's answer: the item may sit in an earlier owner's inbox.
+  // owner's answer: the item may sit in an earlier owner's inbox. Only
+  // that answer approves or declines a proposal.
   const owner = leadOwner(doc);
   const ownersAnswer =
     answeredBy === "owner" &&
     !!owner &&
     supervisorInboxKey(item.user ?? "") === supervisorInboxKey(owner);
+  if (ownersAnswer) await voidDeclined(project, item, answer, d);
+  if (!doc.lead.goalId) return;
+  const goal = await d.getGoal(doc.lead.goalId);
+  if (!goal) return;
+  const what = `"${item.title}"${item.dedupeKey ? ` (${item.dedupeKey})` : ""}`;
   if (!ownersAnswer) {
     await d.appendLedger(
       goal,
@@ -711,9 +731,11 @@ export async function handleLeadAnswer(
   const hold = leadGuardHold(doc, goal, now0, day);
   const resumeGuard =
     answer === RESUME_OPTION && !!hold && item.dedupeKey === hold.dedupeKey;
-  const approved = resumeGuard
-    ? null
-    : await approveFromAnswer(project, item, answer, context, d);
+  // The watch stage changes nothing, so nothing is approved there either.
+  const approved =
+    resumeGuard || doc.lead.stage === "watch"
+      ? null
+      : await approveFromAnswer(project, doc, item, answer, context, d);
   if (resumeGuard)
     await d.mutateGoal(goal.id, (g) => {
       const {

@@ -15,7 +15,13 @@ import {
 } from "../../shared/project-lead";
 import type { ProjectSettingsDocument } from "../../shared/project-settings";
 import { auditDurable, digest } from "../audit";
-import { instanceOwner, personOwner } from "../incidents/owner";
+import type { TeamMember } from "../config";
+import {
+  instanceOwner,
+  instanceOwnerMember,
+  personOwner,
+  rosterMember,
+} from "../incidents/owner";
 import { BLOB_ACTOR } from "../session-actors";
 import {
   listSupervisorItems,
@@ -127,6 +133,17 @@ export async function leadAudit(event: Record<string, unknown>): Promise<void> {
  *  there is nobody. */
 export function leadOwner(doc: Pick<ProjectSettingsDocument, "lead">): string {
   return personOwner(doc.lead.owner) ?? instanceOwner();
+}
+
+/** The roster member `leadOwner` names, or null without a roster.
+ *  Permission checks compare their GitHub login with the signed-in one,
+ *  since a first name can be shared. */
+export function leadOwnerMember(
+  doc: Pick<ProjectSettingsDocument, "lead">,
+): TeamMember | null {
+  return personOwner(doc.lead.owner)
+    ? rosterMember(doc.lead.owner)
+    : instanceOwnerMember();
 }
 
 /** A subject as a key: lower case, single spaces, bounded. */
