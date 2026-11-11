@@ -852,3 +852,15 @@ enum BlobWAV {
         return data
     }
 }
+
+#if DEBUG
+extension BlobTextTalk {
+    /// `BLOB_DEMO_HEARD=<words>`: Blob listening with those words heard, for
+    /// screenshots without a microphone; with `BLOB_DEMO_THINKING` too,
+    /// thinking about them instead.
+    func demoHeard(_ words: String, waiting: Bool) {
+        heard = words
+        phase = waiting ? .waiting : .listening
+    }
+}
+#endif

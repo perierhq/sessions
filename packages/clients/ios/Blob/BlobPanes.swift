@@ -34,6 +34,20 @@ struct BlobPanes: Equatable {
         return free
     }
 
+    /// Where Blob goes in `area` (`BlobRoom.find` over `free`). With nothing
+    /// taken, Blob is in the middle of the whole surface, the system strip
+    /// included, so it looks centred on the screen even with the open Duo's
+    /// rail on one side; it may sit on the fold then.
+    func room(in area: CGRect, leadingTaken: Bool, trailingTaken: Bool) -> BlobRoom? {
+        guard var room = BlobRoom.find(in: free(in: area, leadingTaken: leadingTaken, trailingTaken: trailingTaken))
+        else { return nil }
+        if !leadingTaken && !trailingTaken {
+            let half = room.size / 2 + BlobRoom.margin
+            room.center.x = min(max(width / 2, area.minX + half), area.maxX - half)
+        }
+        return room
+    }
+
     /// The panes for a full-bleed proxy, or nil for one column. The Duo
     /// reports its fold as a division region (iOS 27.1); a fold across the
     /// screen (the inner display upright) keeps one column, since scrolling
