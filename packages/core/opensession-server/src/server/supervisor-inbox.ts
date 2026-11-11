@@ -1456,7 +1456,7 @@ export async function supervisorInboxContext(
     return {
       context: wrapContext(INBOX_EMPTY, "supervisor-inbox"),
       answered: [],
-      shown: [],
+      listed: [],
     };
 
   const sections = ["## Your inbox", BRIEFING_UNTRUSTED_NOTE];

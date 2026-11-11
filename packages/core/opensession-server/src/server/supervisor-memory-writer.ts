@@ -41,7 +41,7 @@
 import { memoryRolloutMode } from "./memory-v2/runtime";
 import { MEMORY_STATES, type MemoryKind } from "./memory-v2/types";
 import { findSecrets } from "./memory-repo/secrets";
-import type { EntryInput } from "./memory-repo/service";
+import type { Author, EntryInput } from "./memory-repo/service";
 import { wrapContext } from "./prompt-context";
 import { sessionMemoryScopes } from "./session-memory";
 import { canonicalName } from "./shared/user-store-key";
@@ -175,6 +175,12 @@ function ownerEntry(record: {
 
 /** The `by:` the supervisor's own memory writes carry. */
 export const SUPERVISOR_MEMORY_ACTOR = "supervisor";
+/** The git author of every memory commit Blob makes, adds and corrections
+ *  alike, so the repository history names it instead of the service. */
+export const SUPERVISOR_COMMIT_AUTHOR: Author = {
+  name: "Blob",
+  email: "supervisor@opensession.local",
+};
 /** The fixed start of the fyi item every owner_memory add and correct
  *  posts. */
 export const MEMORY_SAVED_TITLE = "Blob saved to memory";
@@ -261,7 +267,7 @@ const defaultDeps: WriterDeps = {
       )
     )
       return false;
-    await memoryRepo.service("addEntry", input);
+    await memoryRepo.service("addEntry", input, SUPERVISOR_COMMIT_AUTHOR);
     return true;
   },
   sessionLink: async (sessionId) =>
@@ -288,7 +294,7 @@ const defaultDeps: WriterDeps = {
       "updateEntry",
       id,
       patch,
-      undefined,
+      SUPERVISOR_COMMIT_AUTHOR,
       `Correct memory: ${patch.text.slice(0, 60)}`,
     );
   },
