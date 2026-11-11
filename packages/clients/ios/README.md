@@ -851,6 +851,22 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
 - Links (`blob` URL scheme): `blob://item/<id>`, as Bark notifications open
   it, shows that item as the current decision, even after "Not now";
   `blob://` alone just opens Blob.
+- Sheets (`Blob/BlobSheet.swift`): every sheet Blob presents (settings,
+  the turn's steps, "Server and account" and More options, which show the
+  OS app's `SettingsView`) is a `NavigationStack` with real toolbar items:
+  Close (`xmark`) as the cancellation action, Save or Done as the
+  confirmation action, and a short title. On iOS 27.1 and later, when the
+  surface draws two panes (`BlobPanes.layout`: a vertical fold, or a width
+  of 820 pt or more), `blobSheetPlacement()` presents them on the trailing
+  side with a large detent, so on the open iPhone Duo the sheet sits on the
+  hardware edge and Close is in the vertical bar below the status icons.
+  The home and the first-run screen pass that as the `blobWideSurface`
+  environment value; the size class can't, since the open Duo reports
+  compact. Without the explicit large detent the bar starts under the
+  status icons and hides Close, and a medium detent drops the vertical bar.
+  On one pane (other iPhones, the closed Duo) and on older systems sheets
+  present as before, and the steps sheet keeps its medium and large
+  detents.
 - Long-press settings include "How Blob reports" (bottom line first, SBAR
   or plain), the `reportStyle` field of `/api/supervisor/prefs`. The row is
   hidden when the server doesn't return the field.
@@ -877,6 +893,11 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   `BLOB_DEMO_TYPING=1` for text mode. `BLOB_DEMO_HEARD=<words>` holds
   Blob listening with those words heard; with `BLOB_DEMO_THINKING=1`,
   thinking about them.
+  `BLOB_DEMO_SHEET=settings|account|steps|connect` opens that sheet a
+  second after the app comes to the front: `account` is "Server and
+  account" over settings, `steps` wants `BLOB_DEMO_THINKING=1`, and
+  `connect` is More options on the first-run screen (a device with no
+  server).
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 

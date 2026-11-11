@@ -601,41 +601,28 @@ struct SettingsView: View {
         .buttonStyle(.borderless)
     }
 
+    /// Every item has a symbol, so on the iPhone Duo the items can move into
+    /// the vertical bar on the hardware edge; Close or Cancel goes first.
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         if showingConnection || !config.isConfigured {
+            ToolbarItem(placement: .cancellationAction) {
+                if config.isConfigured {
+                    Button("Back", systemImage: "chevron.backward") { showingConnection = false }
+                } else {
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                }
+            }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
+                Button("Save", systemImage: "checkmark") {
                     save()
                     if config.isConfigured { showingConnection = false }
                 }
             }
-            ToolbarItem(placement: .cancellationAction) {
-                Button(config.isConfigured ? "Back" : "Cancel") {
-                    if config.isConfigured {
-                        showingConnection = false
-                    } else {
-                        dismiss()
-                    }
-                }
-            }
         } else {
-            ToolbarItem(placement: .confirmationAction) {
-                #if os(iOS)
-                    // A glyph, not the word: the sheet's only exit reads faster
-                    // as a checkmark, and the accent tint is what marks it as
-                    // the confirming action.
-                    Button {
-                        dismiss()
-                    } label: {
-                        Label("Done", systemImage: "checkmark")
-                            .labelStyle(.iconOnly)
-                            .font(.body.weight(.semibold))
-                    }
-                    .tint(OS1VisualStyle.accentInk)
-                #else
-                    Button("Done") { dismiss() }
-                #endif
+            // Settings apply as you change them, so the only exit is Close.
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Close", systemImage: "xmark") { dismiss() }
             }
         }
     }

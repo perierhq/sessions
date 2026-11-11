@@ -97,16 +97,14 @@ struct BlobSettingsView: View {
             .navigationTitle("Blob")
             .inlineTitleBarCompat()
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Label("Done", systemImage: "checkmark").labelStyle(.iconOnly)
-                    }
+                // Changes apply as you make them, so the only exit is Close.
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", systemImage: "xmark") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showAccount) { SettingsView() }
+            .sheet(isPresented: $showAccount) { SettingsView().blobSheetPlacement() }
             .onAppear { voices = BlobSpeaker.goodVoices() }
+            .blobDemoSheet(.account) { showAccount = true }
             .task { await speaker.refreshServerVoice(force: true) }
             .task { reportStyle = try? await OS1API.supervisorPrefs().reportStyle }
             .onDisappear { speaker.stop() }

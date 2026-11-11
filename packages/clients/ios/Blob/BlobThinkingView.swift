@@ -55,7 +55,9 @@ struct BlobThinkingLayer: View {
                 #if os(macOS)
                 .frame(minWidth: 320, idealWidth: 360, minHeight: 240, idealHeight: 360)
                 #endif
+                .blobSheetPlacement(detents: [.medium, .large])
         }
+        .blobDemoSheet(.steps) { showSteps = true }
         // One new turn per message; the anchor settles after it without
         // restarting the filler's wait.
         .onChange(of: talk.sends, initial: true) { _, _ in
@@ -372,12 +374,11 @@ private struct BlobStepsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", systemImage: "xmark") { dismiss() }
+                }
             }
         }
-        #if os(iOS)
-        .presentationDetents([.medium, .large])
-        #endif
     }
 }
 
