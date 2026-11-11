@@ -141,6 +141,15 @@ describe("posting", () => {
     });
   });
 
+  test("the revision is the updatedAt the post wrote", async () => {
+    const first = await needsYou({ dedupeKey: "k" });
+    expect(first.revision).toBe(clock);
+    clock += 60_000;
+    const second = await needsYou({ dedupeKey: "k", body: "Now tripled." });
+    expect(second.revision).toBe(clock);
+    expect(second.item.updatedAt).toBe(second.revision);
+  });
+
   test("an fyi item is never pushed", async () => {
     const { delivery } = await fyi("CI fixed on main");
     expect(delivery).toBe("none");

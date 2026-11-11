@@ -86,6 +86,25 @@ export type LeadStep =
 
 export type LeadStepKind = LeadStep["kind"];
 
+/** The categories each step kind may serve: a merge only for a verified
+ *  fix, a release or a CI repair, a signal patch only for a rule change. */
+export const STEP_CATEGORIES: Readonly<
+  Record<LeadStepKind, readonly LeadCategory[]>
+> = {
+  "merge-pr": ["fix-verified", "public-release", "ci-repair"],
+  "autofix-pr": ["ci-repair"],
+  "spawn-worker": ["fix-verified", "ci-repair"],
+  "signal-patch": ["signal-rule-change"],
+  "support-send": ["support-routine-reply"],
+};
+
+export function stepFitsCategory(
+  kind: LeadStepKind,
+  category: LeadCategory,
+): boolean {
+  return STEP_CATEGORIES[kind].includes(category);
+}
+
 export interface ActProposal {
   id: string;
   project: string;
@@ -96,9 +115,11 @@ export interface ActProposal {
   itemId: string;
   itemRevision: number;
   steps: LeadStep[];
-  /** What the approval will wait for, and when it lapses; the owner's
-   *  answer approves the proposal with both as they are here. */
+  /** What the approval will wait for, shown to the owner; the owner's
+   *  answer approves the proposal with it as it is here. */
   condition?: LeadCondition;
+  /** When the steps may no longer run, shown to the owner; an unapproved
+   *  proposal is voided then, and the owner's answer approves with it. */
   expiresAt?: number;
   createdAt: number;
   /** Voided before it ran: superseded, its subject or level changed, or
@@ -511,13 +532,19 @@ export function validateProposalInput(
       "condition",
       "expiresAt",
     ]);
+    const category = categoryOf(raw.category);
+    const steps = stepsOf(raw.steps);
+    steps.forEach((step, index) => {
+      if (!stepFitsCategory(step.kind, category))
+        fail(`step ${index + 1}: ${step.kind} does not fit ${category}`);
+    });
     const proposal: ValidProposalInput = {
       project: projectOf(raw.project),
-      category: categoryOf(raw.category),
+      category,
       subject: line(raw.subject, "subject", SUBJECT_LEN),
       itemId: id(raw.itemId, "itemId"),
       itemRevision: time(raw.itemRevision, "itemRevision"),
-      steps: stepsOf(raw.steps),
+      steps,
     };
     if (raw.condition !== undefined)
       proposal.condition = conditionOf(raw.condition);
@@ -687,9 +714,11 @@ export function expireRecords(
   let expired = 0;
   const next = records.map((record) => {
     if (!voidable(record)) return record;
+    const { createdAt, expiresAt } = record.proposal;
     const due = record.approval
       ? now >= record.approval.expiresAt
-      : now - record.proposal.createdAt >= PROPOSAL_TTL_MS;
+      : now - createdAt >= PROPOSAL_TTL_MS ||
+        (expiresAt !== undefined && now >= expiresAt);
     if (!due) return record;
     expired++;
     return voidRecord(record, now, "expired");
@@ -894,6 +923,10 @@ export async function recordProposal(
   const valid = validateProposalInput(input);
   if (!valid.ok) return valid;
   const now = deps.now();
+  if (valid.value.expiresAt !== undefined) {
+    const expiry = approvalExpiry(now, valid.value.expiresAt);
+    if (!expiry.ok) return expiry;
+  }
   const proposal: ActProposal = {
     id: deps.newId(),
     ...valid.value,

@@ -119,7 +119,9 @@ export const MAX_ITEMS = 200;
 export const MAX_LIST = 100;
 const DEFAULT_LIST = 50;
 const TITLE_LEN = 120;
-const BODY_LEN = 4000;
+/** The longest body an item keeps; the rest is cut. */
+export const SUPERVISOR_BODY_LEN = 4000;
+const BODY_LEN = SUPERVISOR_BODY_LEN;
 const SOURCE_LEN = 80;
 const PROJECT_LEN = 80;
 const DEDUPE_LEN = 200;
@@ -568,6 +570,8 @@ export async function postSupervisorItem(
   item: SupervisorItem;
   created: boolean;
   delivery: PostDelivery;
+  /** The `updatedAt` this post wrote: the revision an answer must name. */
+  revision: number;
 }> {
   const user = input.user?.trim();
   if (!validUser(user)) throw new Error("missing user");
@@ -658,7 +662,13 @@ export async function postSupervisorItem(
       ),
     };
   });
-  if (already) return { item: already, created: false, delivery: "none" };
+  if (already)
+    return {
+      item: already,
+      created: false,
+      delivery: "none",
+      revision: already.updatedAt,
+    };
   const item = outcome.item as SupervisorItem | null;
   if (!item) throw new Error("supervisor item was not recorded");
   announcePosted(item, outcome.created);
@@ -678,6 +688,7 @@ export async function postSupervisorItem(
     item: (await getItem(user, item.id)) ?? item,
     created: outcome.created,
     delivery,
+    revision: item.updatedAt,
   };
 }
 

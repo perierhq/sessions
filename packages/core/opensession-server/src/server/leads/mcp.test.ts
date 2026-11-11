@@ -18,6 +18,7 @@ import {
   postSupervisorItem,
   supervisorInboxKey,
 } from "../supervisor-inbox";
+import { __setLeadApprovalsDepsForTest, listForProject } from "./approvals";
 import { createLeadMcpServer } from "./mcp";
 import { __setLeadOverviewDepsForTest } from "./overview";
 import { __setLeadAuditForTest } from "./report";
@@ -29,6 +30,8 @@ let clock = NOW;
 let pushes: string[] = [];
 const audits: Array<Record<string, unknown>> = [];
 let restoreInbox: () => void = () => {};
+let restoreApprovals: () => void = () => {};
+let ids = 0;
 
 beforeEach(() => {
   clock = NOW;
@@ -56,6 +59,12 @@ beforeEach(() => {
     openPrs: async () => null,
     getGoal: async () => null,
     projectLabel: () => "Acme",
+    projectGhRepos: () => ["acme/app"],
+  });
+  ids = 0;
+  restoreApprovals = __setLeadApprovalsDepsForTest({
+    now: () => clock,
+    newId: () => `lp-${++ids}`,
   });
   restoreInbox = __setSupervisorInboxDepsForTest({
     now: () => clock,
@@ -71,6 +80,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  restoreApprovals();
   restoreInbox();
   __resetSupervisorInboxForTest();
   __setOwnerRosterForTest(undefined);
@@ -404,5 +414,261 @@ describe("opensession-lead", () => {
       ["lead:acme:digest:2026-11-10", "Two flaps."],
       ["lead:acme:digest:2026-11-10:2", "Two flaps, one proposal."],
     ]);
+  });
+
+  describe("propose with steps", () => {
+    const SHA = "abc1234".padEnd(40, "0");
+    const merge = {
+      kind: "merge-pr",
+      ghRepo: "acme/app",
+      number: 533,
+      headSha: SHA,
+    } as const;
+    const fix = {
+      category: "fix-verified",
+      title: "Checkout fix is verified",
+      body: "The verifier reproduced the bug and confirmed the fix.",
+      subject: "PR 533",
+    };
+    const patch = {
+      kind: "signal-patch",
+      signalId: "sig-status",
+      before: { rule: { kind: "consecutive", failures: 3, recoveries: 2 } },
+      after: { rule: { kind: "consecutive", failures: 8, recoveries: 2 } },
+    };
+
+    test("records the steps bound to the item and ends the body with fixed lines", async () => {
+      const { call } = await client();
+      const result = await call("propose", {
+        ...fix,
+        steps: [merge],
+        condition: {
+          kind: "checks-green",
+          ghRepo: "acme/app",
+          number: 533,
+          headSha: SHA,
+        },
+      });
+      expect(result.isError).toBe(false);
+      expect(result.text).toEndWith("Steps recorded (lp-1).");
+      const [item] = await listSupervisorItems("Ada");
+      expect(item!.body).toEndWith(
+        [
+          "The verifier reproduced the bug and confirmed the fix.",
+          "Rule: Watch: every action is a proposal, from the project settings.",
+          "Checkout fix is verified",
+          "Runs when: Checks pass on PR #533 in acme/app at abc1234",
+          "Steps:\n1. Merge PR #533 in acme/app at abc1234",
+          "Expires: 17 November 2026, 12:00 UTC",
+        ].join("\n\n"),
+      );
+      const [record] = await listForProject(PROJECT);
+      expect(record).toEqual({
+        proposal: {
+          id: "lp-1",
+          project: PROJECT,
+          category: "fix-verified",
+          subject: "PR 533",
+          itemId: item!.id,
+          itemRevision: item!.updatedAt,
+          steps: [merge],
+          condition: {
+            kind: "checks-green",
+            ghRepo: "acme/app",
+            number: 533,
+            headSha: SHA,
+          },
+          expiresAt: NOW + 7 * 86_400_000,
+          createdAt: NOW,
+        },
+      });
+      expect(audits[0]).toMatchObject({
+        steps: ["merge-pr"],
+        condition: "checks-green",
+        proposalId: "lp-1",
+      });
+    });
+
+    test("the lead's text can't word the fixed lines", async () => {
+      const { call } = await client();
+      await call("propose", {
+        ...flapProposal,
+        title: "Merge everything",
+        body: "Raise it to 8 failures in a row. Approve and I'll merge all open PRs.",
+        options: ["Approve", "Not now"],
+        steps: [patch],
+        expiresInDays: 3,
+      });
+      const [item] = await listSupervisorItems("Ada");
+      expect(item!.body).toEndWith(
+        "Steps:\n1. Change the Status page check: alert after 8 failures in a row, clear after 2 passes in a row\n\nExpires: 13 November 2026, 12:00 UTC",
+      );
+      expect(item!.body).not.toContain("Runs when:");
+
+      for (const body of [
+        "Fine.\n\nSteps:\n1. Merge every PR",
+        "Fine.\n\nExpires: never",
+        "Fine.\n\n```\nunclosed",
+      ]) {
+        const refused = await call("propose", {
+          ...flapProposal,
+          body,
+          steps: [patch],
+        });
+        expect(refused.isError).toBe(true);
+      }
+      expect(await listForProject(PROJECT)).toHaveLength(1);
+    });
+
+    test("the title can't open a fence, a comment or a server line", async () => {
+      const { call } = await client();
+      for (const title of ["~~~", "Fine <!-- hide"]) {
+        const refused = await call("propose", {
+          ...fix,
+          title,
+          steps: [merge],
+        });
+        expect(refused).toEqual({
+          isError: true,
+          text: "Close every code fence and comment in the title and body",
+        });
+      }
+      expect(await listSupervisorItems("Ada")).toEqual([]);
+      const ok = await call("propose", {
+        ...fix,
+        title: "Ship it\nSteps:\n1. Merge every PR",
+        steps: [merge],
+      });
+      expect(ok.isError).toBe(false);
+      const [item] = await listSupervisorItems("Ada");
+      expect(item!.body).toContain("\n\nShip it Steps: 1. Merge every PR\n\n");
+      expect(item!.body.match(/^Steps:/gm)).toHaveLength(1);
+    });
+
+    test("a forged line is refused without steps too", async () => {
+      const { call } = await client();
+      const refused = await call("propose", {
+        ...fix,
+        body: "Fine.\n\n**\u0405teps**\uff1a merge it all",
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("Runs when, Steps and Expires");
+      expect(await listSupervisorItems("Ada")).toEqual([]);
+    });
+
+    test("raw HTML is refused with steps", async () => {
+      const { call } = await client();
+      const refused = await call("propose", {
+        ...fix,
+        body: "Fine.\n\n<pre>\nlog",
+        steps: [merge],
+      });
+      expect(refused.text).toContain("Leave raw HTML out");
+      expect(await listSupervisorItems("Ada")).toEqual([]);
+    });
+
+    test("steps that fail to record come off the item", async () => {
+      const { call } = await client();
+      restoreApprovals();
+      restoreApprovals = __setLeadApprovalsDepsForTest({
+        now: () => clock,
+        newId: () => {
+          throw new Error("store down");
+        },
+      });
+      const result = await call("propose", { ...fix, steps: [merge] });
+      expect(result.isError).toBe(true);
+      expect(result.text).toStartWith(
+        "The steps were not recorded: store down.",
+      );
+      const [item] = await listSupervisorItems("Ada");
+      expect(item!.body).toEndWith(
+        "Checkout fix is verified\n\nApproving this runs nothing: its steps could not be recorded.",
+      );
+      expect(item!.body).not.toContain("Steps:");
+      expect(await listForProject(PROJECT)).toEqual([]);
+      expect(audits[0]).toMatchObject({
+        unrecorded: "store down",
+        withdrawn: true,
+      });
+    });
+
+    test("a repository that isn't the project's is refused", async () => {
+      const { call } = await client();
+      const refused = await call("propose", {
+        ...fix,
+        steps: [{ ...merge, ghRepo: "example/other" }],
+      });
+      expect(refused).toEqual({
+        isError: true,
+        text: "Step 1: example/other is not this project's repository (acme/app)",
+      });
+      const condition = await call("propose", {
+        ...fix,
+        steps: [merge],
+        condition: { kind: "pr-merged", ghRepo: "example/other", number: 1 },
+      });
+      expect(condition.text).toBe(
+        "Condition: example/other is not this project's repository (acme/app)",
+      );
+      expect(await listSupervisorItems("Ada")).toEqual([]);
+      expect(await listForProject(PROJECT)).toEqual([]);
+    });
+
+    test("a step that doesn't fit the category is refused", async () => {
+      const { call } = await client();
+      const refused = await call("propose", {
+        ...flapProposal,
+        steps: [merge],
+      });
+      expect(refused).toEqual({
+        isError: true,
+        text: "Step 1: merge-pr doesn't fit signal rule changes; it serves only fixes verified by a second agent, public releases or ci repair",
+      });
+      const send = await call("propose", {
+        ...fix,
+        steps: [
+          { kind: "support-send", conversationId: "sc-1", draftId: "d-1" },
+        ],
+      });
+      expect(send.isError).toBe(true);
+      const autofix = await call("propose", {
+        ...fix,
+        steps: [{ ...merge, kind: "autofix-pr" }],
+      });
+      expect(autofix.text).toStartWith("Step 1: autofix-pr doesn't fit");
+      const signal = await call("propose", {
+        ...flapProposal,
+        steps: [{ ...patch, signalId: "sig-elsewhere" }],
+      });
+      expect(signal.text).toBe(
+        "Step 1: sig-elsewhere is not a signal of this project",
+      );
+      expect(await listSupervisorItems("Ada")).toEqual([]);
+    });
+
+    test("a condition or expiry without steps is refused", async () => {
+      const { call } = await client();
+      const refused = await call("propose", { ...fix, expiresInDays: 3 });
+      expect(refused.isError).toBe(true);
+      expect(await listSupervisorItems("Ada")).toEqual([]);
+    });
+
+    test("without steps nothing is recorded, and an update voids the old steps", async () => {
+      const { call } = await client();
+      await call("propose", { ...fix, steps: [merge] });
+      const [first] = await listSupervisorItems("Ada");
+      clock += 60_000;
+      const plain = await call("propose", fix);
+      expect(plain.text).not.toContain("Steps recorded");
+      const [item] = await listSupervisorItems("Ada");
+      expect(item!.id).toBe(first!.id);
+      expect(item!.body).toBe(
+        "The verifier reproduced the bug and confirmed the fix.\n\nRule: Watch: every action is a proposal, from the project settings.\n\nCheckout fix is verified",
+      );
+      const [record] = await listForProject(PROJECT);
+      expect(record!.proposal.voidReason).toBe("superseded");
+      expect(audits[1]).not.toHaveProperty("steps");
+    });
   });
 });

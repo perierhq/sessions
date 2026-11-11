@@ -53,6 +53,8 @@ export interface LeadOverviewDeps {
   getGoal(id: string): Promise<Goal | null>;
   /** The project as people know it. */
   projectLabel(project: string): string;
+  /** The project's GitHub repositories, `owner/name`. */
+  projectGhRepos(project: string): string[];
 }
 
 export interface FlapSummary {
@@ -176,6 +178,11 @@ const liveDeps: LeadOverviewDeps = {
   openPrs: async () => (await import("../pr-cache")).getOpenPrSummaries(),
   getGoal: async (id) => (await import("../goals")).getGoal(id),
   projectLabel: (project) => configuredRepos()[project]?.label || project,
+  projectGhRepos: (project) => {
+    const repo = configuredRepos()[project];
+    const gh = repo?.ghRepo?.trim();
+    return gh && (!repo.host || repo.host === "github") ? [gh] : [];
+  },
 };
 
 /** The live sources, with any test replacements. */

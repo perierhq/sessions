@@ -1036,6 +1036,78 @@ describe("the owner's answer approves the proposal it saw", () => {
   });
 
   test.each([
+    ["with a condition: waiting", true],
+    ["without one: ready", false],
+  ] as const)(
+    "the lead proposes steps, the owner approves %s",
+    async (_case, withCondition) => {
+      const condition = {
+        kind: "pr-merged",
+        ghRepo: "acme/api",
+        number: 41,
+      } as const;
+      const steps = [
+        { kind: "merge-pr", ghRepo: "acme/api", number: 42, headSha: SHA },
+      ] as const;
+      const expiresAt = clock + 3 * 24 * 60 * 60_000;
+      const delivered = await deliverLeadProposal(
+        PROJECT,
+        await getProjectDocument(PROJECT),
+        {
+          kind: "proposal",
+          category: "fix-verified",
+          title: "Merge the checkout fix",
+          body: "The fix is verified on a preview.",
+          options: ["Merge it", "Leave it"],
+          subject: "PR 42",
+          decision: {
+            level: "asks-first",
+            effective: "ask",
+            rule: "Asks first: Verified fixes, from the project settings",
+          },
+          act: {
+            steps: [...steps],
+            ...(withCondition ? { condition } : {}),
+            expiresAt,
+            signalNames: {},
+          },
+        },
+        "Acme",
+      );
+      if (!delivered.queued) throw new Error(delivered.reason);
+      expect(delivered.proposalId).toBeDefined();
+      const item = (await listSupervisorItems("Ada")).find(
+        (i) => i.id === delivered.itemId,
+      )!;
+      const recorded = await record(delivered.proposalId);
+      expect(recorded.proposal).toMatchObject({
+        itemId: item.id,
+        itemRevision: item.updatedAt,
+        steps,
+        expiresAt,
+      });
+      clock += 60_000;
+      const answered = await answerSupervisorItem(
+        "Ada",
+        item.id,
+        "1",
+        "owner",
+        { ...ADA, revision: item.updatedAt },
+      );
+      expect(answered.ok).toBe(true);
+      const approval = (await record(delivered.proposalId)).approval;
+      expect(approval).toMatchObject({
+        approvedBy: "Ada",
+        login: "ada",
+        expiresAt,
+        state: withCondition ? "waiting" : "ready",
+      });
+      if (withCondition) expect(approval?.condition).toEqual(condition);
+      else expect(approval?.condition).toBeUndefined();
+    },
+  );
+
+  test.each([
     ["free text", "Merge it, but tomorrow", { ...ADA, rev: true }],
     ["no signed-in login", "1", { rev: true }],
     ["an old client without a revision", "1", ADA],
