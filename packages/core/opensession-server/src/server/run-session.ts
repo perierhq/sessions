@@ -291,6 +291,7 @@ import {
 import { deskStateContext } from "./desk-state";
 import { blobSurfaceContext } from "./blob-surface";
 import {
+  itemsNamedInReply,
   markSupervisorAnswersBriefed,
   markSupervisorItemsShown,
   supervisorInboxContext,
@@ -3360,7 +3361,7 @@ async function runSessionPromptInner(
     ? undefined
     : supervisorInboxOwner(session, user);
   let briefedAnswers: string[] = [];
-  let shownItems: string[] = [];
+  let listedItems: Array<{ id: string; title: string }> = [];
   let seedDue = false;
   if (inboxOwner) {
     // When the owner spoke before this turn; this turn's time replaces it
@@ -3386,7 +3387,7 @@ async function runSessionPromptInner(
     if (inbox) {
       prompt = `${inbox.context}\n\n${prompt}`;
       briefedAnswers = inbox.answered;
-      shownItems = inbox.shown;
+      listedItems = inbox.listed;
     }
     if (style) prompt = `${style}\n\n${prompt}`;
     if (clock) prompt = `${clock}\n\n${prompt}`;
@@ -4323,11 +4324,17 @@ async function runSessionPromptInner(
           error instanceof Error ? error.message : error,
         ),
     );
-  // The items it listed in full were put in front of the owner: the next
-  // briefings list them after unseen ones, then fold or park them
-  // (supervisor-inbox.ts briefPlace).
-  if (inboxOwner && shownItems.length && !endedWithError && !runFailure)
-    await markSupervisorItemsShown(inboxOwner, shownItems).catch((error) =>
+  // Being in the briefing showed the owner nothing; the items this
+  // completed reply named (id or whole title) were put in front of them, so
+  // the next briefings list those after unseen ones, then fold or park them
+  // (supervisor-inbox.ts itemsNamedInReply, briefPlace). Blob marks the
+  // decisions it displays itself (POST /api/supervisor/items/shown).
+  const namedItems =
+    inboxOwner && listedItems.length && !endedWithError && !runFailure
+      ? itemsNamedInReply(listedItems, assistantText)
+      : [];
+  if (inboxOwner && namedItems.length)
+    await markSupervisorItemsShown(inboxOwner, namedItems).catch((error) =>
       console.warn(
         "[supervisor-inbox] could not mark items shown:",
         error instanceof Error ? error.message : error,

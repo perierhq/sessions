@@ -309,47 +309,109 @@ describe("prWaitReason", () => {
 });
 
 describe("the incidents tool", () => {
-  test("lists open incidents by default, filters by project and state", async () => {
+  test("lists the owner's open incidents by default, filters by project and state", async () => {
     fake();
-    const open = await incidentsReport({});
+    const open = await incidentsReport("Ada", {});
     expect(open).toContain('[inc-1] "API errors" (acme): investigating');
-    expect(open).toContain("[inc-2]");
+    // Bob's project isn't the owner's: never listed.
+    expect(open).not.toContain("inc-2");
     expect(open).not.toContain("inc-3");
-    const acme = await incidentsReport({ project: "acme" });
-    expect(acme).not.toContain("inc-2");
-    const closed = await incidentsReport({ state: "closed" });
+    const acme = await incidentsReport("Ada", { project: "Acme" });
+    expect(acme).toContain("[inc-1]");
+    const closed = await incidentsReport("Ada", { state: "closed" });
     expect(closed).toContain("[inc-3]");
     expect(closed).toContain("closed 30 h ago");
-    expect(
-      await incidentsReport({ state: "investigating", project: "other" }),
-    ).toContain("[inc-2]");
-    expect(await incidentsReport({ state: "deploying" })).toBe(
+    expect(await incidentsReport("Ada", { state: "deploying" })).toBe(
       "No deploying incidents.",
     );
   });
 
+  test("another owner's project or incident can't be read", async () => {
+    fake({
+      getIncident: async (id) =>
+        id === "inc-1"
+          ? incident()
+          : id === "inc-2"
+            ? incident({ id: "inc-2", project: "other" })
+            : null,
+    });
+    expect(
+      await incidentsReport("Ada", {
+        state: "investigating",
+        project: "other",
+      }),
+    ).toBe("No project by that name among the ones the owner leads.");
+    expect(await incidentsReport("Ada", { id: "inc-2" })).toBe(
+      "No incident with that id.",
+    );
+    expect(await incidentsReport("Bob", { id: "inc-2" })).toContain("[inc-2]");
+    expect(await incidentsReport("Grace", {})).toBe(
+      "The owner leads no project.",
+    );
+  });
+
+  test("history stops at incidents updated in the last 30 days", async () => {
+    fake({
+      listIncidents: async () => [
+        incident(),
+        incident({
+          id: "inc-recent",
+          state: "resolved",
+          closedAt: hoursAgo(48),
+          updatedAt: hoursAgo(48),
+        }),
+        incident({
+          id: "inc-ancient",
+          state: "resolved",
+          closedAt: hoursAgo(40 * 24),
+          updatedAt: hoursAgo(40 * 24),
+        }),
+      ],
+    });
+    const all = await incidentsReport("Ada", { state: "all" });
+    expect(all).toContain("[inc-1]");
+    expect(all).toContain("[inc-recent]");
+    expect(all).not.toContain("inc-ancient");
+  });
+
   test("shows one incident in detail, or says it doesn't exist", async () => {
     fake();
-    const detail = await incidentsReport({ id: "inc-1" });
+    const detail = await incidentsReport("Ada", { id: "inc-1" });
     expect(detail).toContain("Owner: Ada. Opened by: rule.");
     expect(detail).toContain('opened by rule: "5xx above 2%"');
-    expect(await incidentsReport({ id: "nope" })).toBe(
+    expect(await incidentsReport("Ada", { id: "nope" })).toBe(
       "No incident with that id.",
     );
   });
 });
 
 describe("the support_waiting tool", () => {
-  test("lists the owner's projects by default, or the named one", async () => {
+  test("lists the owner's projects by default, or one of them by name", async () => {
     fake();
     const mine = await supportWaitingReport("Ada");
     expect(mine).toContain("Acme: 4 waiting for a person");
     expect(mine).toContain('[conv-2] "maria": "Can\'t log in"');
     expect(mine).not.toContain("Other:");
-    const other = await supportWaitingReport("Ada", "other");
-    expect(other).toContain("Other: 1 waiting for a person");
+    expect(await supportWaitingReport("Ada", "acme")).toContain(
+      "Acme: 4 waiting for a person",
+    );
     expect(await supportWaitingReport("Ada", "nope")).toBe(
-      "No project by that name.",
+      "No project by that name among the ones the owner leads.",
+    );
+  });
+
+  test("a named project another owner leads is refused, as without one", async () => {
+    const calls = fake();
+    expect(await supportWaitingReport("Ada", "other")).toBe(
+      "No project by that name among the ones the owner leads.",
+    );
+    expect(await supportWaitingReport("Ada", "Other")).toBe(
+      "No project by that name among the ones the owner leads.",
+    );
+    // Nothing of Bob's inbox was read.
+    expect(calls.some((c) => c.includes("in-other"))).toBe(false);
+    expect(await supportWaitingReport("Bob", "other")).toContain(
+      "Other: 1 waiting for a person",
     );
   });
 });

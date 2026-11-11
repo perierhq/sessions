@@ -88,8 +88,9 @@ export interface SupervisorItem {
   digestedAt?: number;
   /** The answer was shown to the supervisor in a turn's briefing. */
   briefedAt?: number;
-  /** Last time the item was put in front of the owner: listed in a
-   *  completed turn's briefing, or shown by Blob. */
+  /** Last time the item was put in front of the owner: Blob displayed it
+   *  (POST /api/supervisor/items/shown) or a completed reply named it.
+   *  Being listed in the supervisor's briefing doesn't count. */
   shownAt?: number;
   /** How many times it was shown since it last changed. */
   shownCount?: number;
@@ -1342,10 +1343,13 @@ function placeItems(
   };
 }
 
+/** Only for a real show (shownAt is set by Blob's display or a reply that
+ *  named the item), and only while the item hasn't changed since. */
 function shownNote(item: SupervisorItem, now: number): string {
+  if (item.shownAt === undefined) return "";
   return changedSinceShown(item) || item.urgency === "down"
     ? ""
-    : ` (shown to the owner ${agoText(now - (item.shownAt ?? now))} ago)`;
+    : ` (shown to the owner ${agoText(now - item.shownAt)} ago)`;
 }
 
 function restLines(
@@ -1372,9 +1376,39 @@ export interface SupervisorBriefing {
   /** Answers shown in it: mark them with `markSupervisorAnswersBriefed`
    *  once the turn completed, so a failed turn shows them again. */
   answered: string[];
-  /** Open items listed in full: mark them with `markSupervisorItemsShown`
-   *  once the turn completed. */
-  shown: string[];
+  /** Open items listed in full. Being listed shows the owner nothing:
+   *  once the turn completed, mark only the ones its reply named
+   *  (`itemsNamedInReply`, then `markSupervisorItemsShown`). */
+  listed: Array<{ id: string; title: string }>;
+}
+
+/** A title must be at least this long to count as named by a reply. */
+const NAMED_TITLE_MIN = 12;
+
+function namedText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The listed items a supervisor reply put in front of the owner, by id:
+ * the reply quotes the item's id, or its whole title (case and spacing
+ * aside, titles of NAMED_TITLE_MIN characters or more). Conservative on
+ * purpose: a paraphrase doesn't count, so an item the reply only alluded
+ * to keeps its place as unseen.
+ */
+export function itemsNamedInReply(
+  listed: ReadonlyArray<{ id: string; title: string }>,
+  reply: string,
+): string[] {
+  const text = namedText(reply);
+  if (!text) return [];
+  return listed
+    .filter((item) => {
+      if (reply.includes(item.id)) return true;
+      const title = namedText(item.title);
+      return title.length >= NAMED_TITLE_MIN && text.includes(title);
+    })
+    .map((item) => item.id);
 }
 
 /**
@@ -1459,7 +1493,10 @@ export async function supervisorInboxContext(
   return {
     context: wrapContext(sections.join("\n\n"), "supervisor-inbox"),
     answered: answered.map((item) => item.id),
-    shown: [...needsYou.listed, ...fyi.listed].map((item) => item.id),
+    listed: [...needsYou.listed, ...fyi.listed].map((item) => ({
+      id: item.id,
+      title: item.title,
+    })),
   };
 }
 
@@ -1524,8 +1561,9 @@ export async function markSupervisorAnswersBriefed(
 }
 
 /**
- * These open items were put in front of the owner: listed in a completed
- * turn's briefing, or shown by Blob. Each gets `shownAt` now and one more
+ * These open items were put in front of the owner: Blob displayed them
+ * (POST /api/supervisor/items/shown), or a completed supervisor reply named
+ * them (itemsNamedInReply). Each gets `shownAt` now and one more
  * `shownCount`, which starts over when the item changed since it was last
  * shown. Closed and unknown ids are left alone.
  */

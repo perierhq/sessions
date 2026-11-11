@@ -128,9 +128,18 @@ describe("opensession-supervisor wiring", () => {
     withSession({ supervisor: true });
     __setSupervisorStatusDepsForTest({
       now: () => Date.parse("2026-11-11T12:00:00Z"),
-      roster: async () => [],
+      roster: async () => [
+        {
+          project: "acme",
+          label: "Acme",
+          enabled: true,
+          stage: "watch",
+          owner: "Ada",
+        },
+      ],
       listIncidents: async () => [],
       getIncident: async () => null,
+      listInboxes: async () => [],
     });
     try {
       expect((await call("incidents", {})).text).toBe("No open incidents.");
@@ -139,8 +148,11 @@ describe("opensession-supervisor wiring", () => {
       );
       // Outside the schema: refused before any read.
       expect((await call("incidents", { state: "bogus" })).isError).toBe(true);
-      expect((await call("support_waiting", {})).text).toBe(
-        "The owner leads no project with a support inbox.",
+      expect((await call("support_waiting", {})).text).toContain(
+        "Acme: 0 waiting for a person",
+      );
+      expect((await call("support_waiting", { project: "bobs" })).text).toBe(
+        "No project by that name among the ones the owner leads.",
       );
     } finally {
       __setSupervisorStatusDepsForTest(undefined);
@@ -150,7 +162,11 @@ describe("opensession-supervisor wiring", () => {
   test("owner_memory writes the session owner's scope, with the writer's checks", async () => {
     withSession({ supervisor: true });
     const written: Array<{ scopeKey: string; text: string; by?: string }> = [];
+    const notes: string[] = [];
     const restore = __setSupervisorMemoryWriterDepsForTest({
+      notify: async (_user, fact) => {
+        notes.push(fact);
+      },
       now: () => Date.parse("2026-11-11T12:00:00Z"),
       enabled: () => true,
       write: async (input) => {
@@ -167,7 +183,11 @@ describe("opensession-supervisor wiring", () => {
       });
       expect(added.isError).toBeFalsy();
       expect(written).toHaveLength(1);
-      expect(written[0]).toMatchObject({ scopeKey: "user-ada", by: "Ada" });
+      expect(written[0]).toMatchObject({
+        scopeKey: "user-ada",
+        by: "supervisor",
+      });
+      expect(notes).toEqual(["Ada reviews pull requests in the morning."]);
       const missing = await call("owner_memory", { action: "add" });
       expect(missing.isError).toBe(true);
       const noId = await call("owner_memory", {

@@ -134,6 +134,8 @@ interface WriterDeps {
     id: string,
     patch: { text: string; kind: MemoryKind; expires: string | null },
   ): Promise<void>;
+  /** Tell the owner what Blob saved: an fyi item in their inbox. */
+  notify(user: string, fact: string): Promise<void>;
 }
 
 /** A memory entry as the supervisor's memory tool sees it. */
@@ -144,6 +146,9 @@ export interface OwnerMemoryEntry {
   kind: MemoryKind;
   state: string;
   expiresAt?: string;
+  /** Who wrote it (the entry's `by:`). */
+  by?: string;
+  tags?: string[];
 }
 
 function ownerEntry(record: {
@@ -153,6 +158,8 @@ function ownerEntry(record: {
   kind: MemoryKind;
   state: string;
   expiresAt?: string;
+  source?: { actor?: string };
+  tags?: string[];
 }): OwnerMemoryEntry {
   return {
     id: record.id,
@@ -161,7 +168,38 @@ function ownerEntry(record: {
     kind: record.kind,
     state: record.state,
     ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}),
+    ...(record.source?.actor ? { by: record.source.actor } : {}),
+    ...(record.tags?.length ? { tags: record.tags } : {}),
   };
+}
+
+/** The `by:` the supervisor's own memory writes carry. */
+export const SUPERVISOR_MEMORY_ACTOR = "supervisor";
+/** The fixed start of the fyi item every owner_memory add and correct
+ *  posts. */
+export const MEMORY_SAVED_TITLE = "Blob saved to memory";
+/** An inbox title's room (supervisor-inbox.ts TITLE_LEN). */
+const SAVED_TITLE_LEN = 120;
+
+/** The fyi item for one save: the fixed copy with the fact quoted, clipped
+ *  in the title and whole in the body. */
+export function memorySavedItem(fact: string): { title: string; body: string } {
+  const room = SAVED_TITLE_LEN - MEMORY_SAVED_TITLE.length - 4;
+  const short = fact.length > room ? `${fact.slice(0, room - 1)}…` : fact;
+  return {
+    title: `${MEMORY_SAVED_TITLE}: "${short}"`,
+    body: `"${fact}"`,
+  };
+}
+
+/** Written by Blob: its owner_memory tool (`by: supervisor`) or the
+ *  background writer (tagged `supervisor`). Anything else is the owner's
+ *  or another writer's, and Blob doesn't rewrite it. */
+function writtenByBlob(entry: OwnerMemoryEntry): boolean {
+  return (
+    entry.by === SUPERVISOR_MEMORY_ACTOR ||
+    !!entry.tags?.includes(SUPERVISOR_MEMORY_ACTOR)
+  );
 }
 
 const defaultDeps: WriterDeps = {
@@ -253,6 +291,15 @@ const defaultDeps: WriterDeps = {
       undefined,
       `Correct memory: ${patch.text.slice(0, 60)}`,
     );
+  },
+  notify: async (user, fact) => {
+    const { postSupervisorItem } = await import("./supervisor-inbox");
+    await postSupervisorItem({
+      user,
+      kind: "fyi",
+      ...memorySavedItem(fact),
+      source: "supervisor",
+    });
   },
 };
 
@@ -777,21 +824,37 @@ export async function addOwnerMemory(
       text: fact.text,
       kind: fact.kind,
       ...(sessionId ? { source: await deps.sessionLink(sessionId) } : {}),
-      by: user,
+      // Blob wrote it, on the owner's word: never recorded as the owner's.
+      by: SUPERVISOR_MEMORY_ACTOR,
       via: "supervisor",
       tags: ["supervisor"],
       ...(fact.expires ? { expires: fact.expires } : {}),
     });
-    return added
-      ? { ok: true, message: `Remembered: ${fact.text}` }
-      : { ok: true, message: "Already remembered." };
+    if (!added) return { ok: true, message: "Already remembered." };
+    await notifySaved(user, fact.text);
+    return { ok: true, message: `Remembered: ${fact.text}` };
   } catch (error) {
     return writeFailure(error);
   }
 }
 
+/** Every save shows in the owner's inbox. The write already happened, so
+ *  a failed post is logged, not reported as a failed save. */
+async function notifySaved(user: string, fact: string): Promise<void> {
+  await deps
+    .notify(user, fact)
+    .catch((error) =>
+      console.warn(
+        "[supervisor-memory] could not tell the owner about a save:",
+        error instanceof Error ? error.message : error,
+      ),
+    );
+}
+
 /** Rewrite one fact in the owner's personal memory: only an active entry
- *  in their own scope. The kind and expiry stay unless given. */
+ *  in their own scope that Blob wrote. A fact the owner wrote stays theirs:
+ *  Blob adds one that corrects it instead. The kind and expiry stay unless
+ *  given. */
 export async function correctOwnerMemory(
   user: string,
   id: string,
@@ -803,6 +866,10 @@ export async function correctOwnerMemory(
   if (!record || record.scopeKey !== scope || record.state !== "active")
     return refused(
       "No active entry with that id in the owner's personal memory. Team and project memory can't be changed from here: add a personal fact that corrects it instead.",
+    );
+  if (!writtenByBlob(record))
+    return refused(
+      "The owner wrote that fact, so it isn't yours to rewrite: add a fact that corrects it instead.",
     );
   const fact = checkWriterFact(
     {
@@ -819,6 +886,7 @@ export async function correctOwnerMemory(
       kind: fact.kind,
       expires: fact.expires ?? null,
     });
+    await notifySaved(user, fact.text);
     return { ok: true, message: `Corrected [${id}]: ${fact.text}` };
   } catch (error) {
     return writeFailure(error);

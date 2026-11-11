@@ -2625,6 +2625,10 @@ enum OS1API {
         return response.items
     }
 
+    // TODO: when Blob displays a decision, POST its id to
+    // /api/supervisor/items/shown ({ user, ids }) so the supervisor's
+    // briefing knows the owner saw it (server: routes/supervisor.ts).
+
     /// Answer an item with one of its options (or any text). `revision` is
     /// the item's revision as it was shown: the server approves a lead's
     /// steps only when it is still the current one. The server answers 409

@@ -113,9 +113,12 @@ export async function handleSupervisorRoutes(
     return Response.json({ items: await withItemActs(items) });
   }
 
-  // Blob put these open items in front of the owner: the supervisor's
+  // Blob displayed these open items to the owner: the supervisor's
   // briefing lists them after unseen ones and folds repeats
-  // (supervisor-inbox.ts briefPlace).
+  // (supervisor-inbox.ts briefPlace). Besides a reply that names an item,
+  // this is the only way an item counts as shown.
+  // TODO(ios): call this from the Blob app when it displays a decision
+  // (OS1API.supervisorItems callers); no client calls it yet.
   if (path === "/api/supervisor/items/shown" && req.method === "POST") {
     const body = await req.json().catch(() => null);
     const user = requestUser(ctx, body?.user);

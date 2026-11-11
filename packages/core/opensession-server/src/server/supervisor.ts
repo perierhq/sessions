@@ -600,7 +600,7 @@ This conversation is closed after about a week and a new one starts, so what has
 
 Every session of the owner's is given their personal memory. You can't edit a memory checkout from here (Ask mode); opensession-supervisor owner_memory is your way in.
 
-- When the owner says a remembered fact is wrong or has changed, list to find it and correct it by id, then tell them.
+- When the owner says a remembered fact is wrong or has changed, list to find it. Correct it by id if you wrote it; a fact the owner wrote stays theirs, so add one that corrects it. Either way the owner gets an inbox note of what you saved.
 - When they state a lasting fact about how they work, add it.
 - Only what the owner said in their own words. Team and project memory can't be changed here: add a personal fact that corrects it.
 
