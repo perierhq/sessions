@@ -17,11 +17,18 @@
 //
 // A condition is re-checked now, whoever allowed the run: unknown or not
 // met refuses, and a waiting approval keeps waiting. Steps of a kind this
-// file can't run are refused before anything is claimed. Then one
+// file can't run are refused before anything is claimed. The settings and
+// the record are read again and checks 1 to 5 re-run right before one
 // compare-and-set claims the record (claimApply, or claimAlone for a run by
-// the rules) and the steps run in order: each step's intent is audited
-// before it runs, a step already done counts as done, and the first failure
-// stops the run (failed, or partial after a step that ran). Nothing re-runs.
+// the rules), so a change made while the condition was checked refuses.
+// The steps run in order: the settings are read again before each one and
+// a run they no longer allow stops; each step's intent is audited before it
+// runs, a step already done counts as done, and the first failure stops the
+// run (failed, or partial after a step that ran). Nothing re-runs.
+//
+// The lead and the inbox get fixed copy only. Raw error text from GitHub,
+// the signal store or a condition check is logged on the server and
+// audited as a digest.
 //
 // A merge goes through mergePinnedPr as the GitHub App, pinned to the
 // approved head, so branch protection applies; a signal change through
@@ -214,6 +221,60 @@ function lower(category: LeadRecord["proposal"]["category"]): string {
   return LEAD_CATEGORY_LABELS[category].toLowerCase();
 }
 
+type SettingsCheck =
+  | { ok: true; decision: LeadDecision }
+  | { ok: false; reason: string; void?: boolean };
+
+/** Checks 1 to 3 of the header: the lead, the kill switch, only-you and
+ *  the watch stage. Reasons are fixed copy without the closing sentence. */
+function settingsCheck(
+  doc: Pick<ProjectSettingsDocument, "lead" | "incidents">,
+  category: LeadRecord["proposal"]["category"],
+): SettingsCheck {
+  const off = leadReportRefusal(doc);
+  if (off) return { ok: false, reason: off };
+  const decision = leadDecision(
+    { ...doc.lead, agentsPaused: doc.incidents.agentsPaused },
+    category,
+  );
+  if (decision.level === "only-you")
+    return {
+      ok: false,
+      reason: `Only the owner decides ${lower(category)} (${decision.rule})`,
+      void: true,
+    };
+  if (doc.lead.stage === "watch")
+    return {
+      ok: false,
+      reason: "Watch stage: the lead proposes and nothing runs",
+    };
+  return { ok: true, decision };
+}
+
+/**
+ * Whether the settings as they are now still allow a claimed run in `mode`
+ * to go on: checks 1 to 4 again, and the stage and level the mode needs.
+ * The record is applying by then, so only the settings are checked.
+ * Returns the reason it stops (fixed copy), or null.
+ */
+export function runStillAllowed(
+  doc: Pick<ProjectSettingsDocument, "lead" | "incidents">,
+  category: LeadRecord["proposal"]["category"],
+  mode: ApplyMode,
+): string | null {
+  const checked = settingsCheck(doc, category);
+  if (!checked.ok) return checked.reason;
+  const stage = doc.lead.stage;
+  if (
+    mode === "alone" &&
+    (checked.decision.effective !== "act" || stage !== "act")
+  )
+    return "The lead's rules no longer let this run without the owner";
+  if (mode === "approved" && APPROVED_RUNS_ONLY_AT_ACT && stage !== "act")
+    return "Approved actions run at the act stage";
+  return null;
+}
+
 /**
  * Checks 1 to 5 of the header, on the project settings and the record as
  * they are now. Pure; the condition and the step kinds are checked after.
@@ -228,23 +289,15 @@ export function applyGate(
     reason,
     ...extra,
   });
-  const off = leadReportRefusal(doc);
-  if (off) return refuse(`${off}. ${NOTHING_RAN}`);
   const { proposal } = record;
-  const decision = leadDecision(
-    { ...doc.lead, agentsPaused: doc.incidents.agentsPaused },
-    proposal.category,
-  );
-  if (decision.level === "only-you")
+  const checked = settingsCheck(doc, proposal.category);
+  if (!checked.ok)
     return refuse(
-      `Only the owner decides ${lower(proposal.category)} (${decision.rule}). ${NOTHING_RAN}`,
-      { void: true },
+      `${checked.reason}. ${NOTHING_RAN}`,
+      checked.void ? { void: true } : {},
     );
+  const { decision } = checked;
   const stage = doc.lead.stage;
-  if (stage === "watch")
-    return refuse(
-      `Watch stage: the lead proposes and nothing runs. ${NOTHING_RAN}`,
-    );
   const approval = record.approval;
   if (proposal.voidedAt !== undefined || approval?.state === "void")
     return refuse(
@@ -321,7 +374,11 @@ type StepOutcome =
   | {
       ok: false;
       result: StepResult;
+      /** Fixed copy for the lead and the owner. */
       reason: string;
+      /** Raw text from GitHub or a store: logged and audited as a digest,
+       *  never shown. */
+      detail?: string;
       sha?: string;
       forceMerge?: boolean;
     };
@@ -358,7 +415,18 @@ async function mergeStep(
       result: "error",
       reason: `${step.ghRepo} is no longer this project's repository`,
     };
-  const { pr, title } = await ctx.d.readPr(step.ghRepo, step.number);
+  let read: ApplyPr;
+  try {
+    read = await ctx.d.readPr(step.ghRepo, step.number);
+  } catch (error) {
+    return {
+      ok: false,
+      result: "error",
+      reason: `Couldn't read ${name} from GitHub`,
+      detail: errorText(error),
+    };
+  }
+  const { pr, title } = read;
   const login = ctx.approval.login;
   const result = await ctx.d.mergePr({
     pr,
@@ -394,16 +462,23 @@ async function mergeStep(
         ok: false,
         result: "head-moved",
         reason: `${name} has new commits since ${short(step.headSha)} was approved`,
+        detail: result.reason,
       };
     case "blocked":
       return {
         ok: false,
         result: "blocked",
-        reason: result.reason,
+        reason: `Branch protection blocks the merge of ${name}`,
+        detail: result.reason,
         forceMerge: true,
       };
     case "error":
-      return { ok: false, result: "error", reason: result.message };
+      return {
+        ok: false,
+        result: "error",
+        reason: `GitHub refused the merge of ${name}`,
+        detail: result.message,
+      };
   }
 }
 
@@ -489,11 +564,14 @@ async function patchStep(
       reason: `Signal ${step.signalId} is gone`,
     };
   if ("error" in updated)
-    return {
-      ok: false,
-      result: updated.error === changed ? "changed" : "error",
-      reason: updated.error,
-    };
+    return updated.error === changed
+      ? { ok: false, result: "changed", reason: changed }
+      : {
+          ok: false,
+          result: "error",
+          reason: `The ${stored.name} check could not be changed`,
+          detail: updated.error,
+        };
   return { ok: true, result: "patched", already: false };
 }
 
@@ -607,6 +685,16 @@ export type LeadApplyResult =
       text: string;
     };
 
+/** Log raw text from GitHub, a store or a check on the server only. */
+function logRaw(
+  project: string,
+  proposalId: string,
+  what: string,
+  raw: string,
+): void {
+  console.warn(`[leads] ${project} ${proposalId}: ${what}: ${raw}`);
+}
+
 /** Run proposal `proposalId` of `project`, when the checks allow it. Never
  *  re-runs a proposal that was claimed before. */
 export async function leadApply(
@@ -614,8 +702,8 @@ export async function leadApply(
   proposalId: string,
 ): Promise<LeadApplyResult> {
   const d = deps();
-  const doc = await d.projectDocument(project);
-  const record = await getRecord(project, proposalId);
+  let doc = await d.projectDocument(project);
+  let record = await getRecord(project, proposalId);
   const audit = {
     kind: "lead_apply",
     project,
@@ -625,6 +713,19 @@ export async function leadApply(
   const refuse = async (text: string): Promise<LeadApplyResult> => {
     await leadAudit({ ...audit, phase: "refused", reasonDigest: digest(text) });
     return { ok: false, text };
+  };
+  const gated = async (
+    gate: Extract<ApplyGate, { ok: false }>,
+  ): Promise<LeadApplyResult> => {
+    if (gate.void) {
+      const voided = await voidFor(
+        project,
+        (r) => r.proposal.id === proposalId,
+        "the owner keeps this category",
+      );
+      if (voided.length) await leadAudit({ ...audit, phase: "voided", voided });
+    }
+    return refuse(gate.reason);
   };
   if (!record) {
     const off = leadReportRefusal(doc);
@@ -636,15 +737,7 @@ export async function leadApply(
   }
   const { proposal } = record;
   const gate = applyGate(doc, record, d.now());
-  if (!gate.ok) {
-    if (gate.void)
-      await voidFor(
-        project,
-        (r) => r.proposal.id === proposalId,
-        "the owner keeps this category",
-      );
-    return refuse(gate.reason);
-  }
+  if (!gate.ok) return gated(gate);
   const mode = gate.mode;
   const later = proposal.steps.find((s) => !RUNNABLE_STEPS.includes(s.kind));
   if (later)
@@ -653,13 +746,20 @@ export async function leadApply(
     mode === "approved" ? record.approval?.condition : proposal.condition;
   if (condition) {
     const checked = await d.checkCondition(condition);
+    if (checked.status !== "met")
+      logRaw(
+        project,
+        proposalId,
+        `condition ${checked.status}`,
+        checked.reason,
+      );
     if (checked.status === "unknown")
       return refuse(
-        `Couldn't check whether ${describeCondition(condition)}: ${checked.reason}. ${NOTHING_RAN} Try again later.`,
+        `Couldn't check whether ${describeCondition(condition)}. ${NOTHING_RAN} Try again later.`,
       );
     if (checked.status === "not-met")
       return refuse(
-        `Not yet: ${checked.reason}. ${NOTHING_RAN} ${mode === "approved" ? "The approval keeps waiting." : ""}`.trim(),
+        `Not yet: waiting until ${describeCondition(condition)}. ${NOTHING_RAN} ${mode === "approved" ? "The approval keeps waiting." : ""}`.trim(),
       );
     if (record.approval?.state === "waiting") {
       const ready = await transition(project, proposalId, "ready");
@@ -667,15 +767,28 @@ export async function leadApply(
         return refuse(
           `The approval could not become ready (${ready.error}). ${NOTHING_RAN}`,
         );
+      await leadAudit({ ...audit, phase: "ready" });
     }
   }
+
+  // The owner may have changed the settings or the record while the
+  // condition was checked: read both again and re-run checks 1 to 5.
+  doc = await d.projectDocument(project);
+  record = await getRecord(project, proposalId);
+  if (!record) return refuse(`The proposal was not found. ${NOTHING_RAN}`);
+  const regate = applyGate(doc, record, d.now());
+  if (!regate.ok) return gated(regate);
+  if (regate.mode !== mode)
+    return refuse(
+      `The lead's rules changed while this was checked. ${NOTHING_RAN} Try again.`,
+    );
 
   // 6: claim, then run each step once, in order.
   const claimId = d.newClaimId();
   const claim =
     mode === "approved"
       ? await claimApply(project, proposalId, claimId)
-      : await claimAlone(project, proposalId, claimId, gate.decision.rule);
+      : await claimAlone(project, proposalId, claimId, regate.decision.rule);
   if (!claim.ok) return refuse(`${claimRefusal(claim.error)}. ${NOTHING_RAN}`);
   const approval = claim.approval;
   const who = {
@@ -686,48 +799,94 @@ export async function leadApply(
   };
   const ctx: RunContext = { project, d, approval, names: {} };
   const marks: StepMark[] = [];
-  let failure: Extract<StepOutcome, { ok: false }> | undefined;
-  for (const [index, step] of proposal.steps.entries()) {
-    const at = {
-      ...who,
-      step: index + 1,
-      stepKind: step.kind,
-      ...stepRef(step),
-    };
-    await leadAudit({ ...at, phase: "intent" });
-    let outcome: StepOutcome;
-    try {
-      outcome = await runStep(step, ctx);
-    } catch (error) {
-      outcome = { ok: false, result: "error", reason: errorText(error) };
+  let failure: { reason: string; forceMerge?: boolean } | undefined;
+  // Whatever happens below, the claim is settled after.
+  try {
+    for (const [index, step] of proposal.steps.entries()) {
+      const at = {
+        ...who,
+        step: index + 1,
+        stepKind: step.kind,
+        ...stepRef(step),
+      };
+      let stop: string | null;
+      try {
+        doc = await d.projectDocument(project);
+        stop = runStillAllowed(doc, proposal.category, mode);
+      } catch (error) {
+        logRaw(project, proposalId, "reading the settings", errorText(error));
+        stop = "The project's settings could not be read";
+      }
+      if (stop) {
+        failure = { reason: stop };
+        await leadAudit({
+          ...at,
+          phase: "stopped",
+          reasonDigest: digest(stop),
+        });
+        break;
+      }
+      await leadAudit({ ...at, phase: "intent" });
+      let outcome: StepOutcome;
+      try {
+        outcome = await runStep(step, ctx);
+      } catch (error) {
+        outcome = {
+          ok: false,
+          result: "error",
+          reason: `Step ${index + 1} stopped with an unexpected error`,
+          detail: errorText(error),
+        };
+      }
+      if (outcome.ok) marks.push(outcome.already ? "already done" : "done");
+      else {
+        marks.push("failed");
+        failure = {
+          reason: outcome.reason,
+          ...(outcome.forceMerge ? { forceMerge: true } : {}),
+        };
+        if (outcome.detail)
+          logRaw(project, proposalId, `step ${index + 1}`, outcome.detail);
+      }
+      await leadAudit({
+        ...at,
+        phase: "result",
+        result: outcome.result,
+        ...(outcome.sha ? { sha: outcome.sha } : {}),
+        ...(outcome.ok
+          ? {}
+          : {
+              reasonDigest: digest(outcome.reason),
+              ...(outcome.detail
+                ? { detailDigest: digest(outcome.detail) }
+                : {}),
+            }),
+      });
+      if (!outcome.ok) break;
     }
-    await leadAudit({
-      ...at,
-      phase: "result",
-      result: outcome.result,
-      ...(outcome.sha ? { sha: outcome.sha } : {}),
-      ...(outcome.ok ? {} : { reasonDigest: digest(outcome.reason) }),
-    });
-    if (!outcome.ok) {
-      marks.push("failed");
-      failure = outcome;
-      break;
-    }
-    marks.push(outcome.already ? "already done" : "done");
+  } catch (error) {
+    // An audit write failed: stop rather than run a step unrecorded.
+    logRaw(project, proposalId, "the run stopped", errorText(error));
+    failure ??= { reason: "The run stopped unexpectedly" };
   }
-  const ran = marks.filter((m) => m !== "failed").length;
+  // Only steps this run did count as ran; already done ones did nothing.
+  const ran = marks.filter((m) => m === "done").length;
   const state = !failure ? "applied" : ran ? "partial" : "failed";
   const settled = await transition(project, proposalId, state, {
     claimId,
     ...(failure ? { reason: failure.reason } : {}),
   });
-  await leadAudit({
-    ...who,
-    phase: "done",
-    state,
-    recorded: settled.ok,
-    ...(failure ? { reasonDigest: digest(failure.reason) } : {}),
-  });
+  try {
+    await leadAudit({
+      ...who,
+      phase: "done",
+      state,
+      recorded: settled.ok,
+      ...(failure ? { reasonDigest: digest(failure.reason) } : {}),
+    });
+  } catch (error) {
+    logRaw(project, proposalId, "auditing the outcome", errorText(error));
+  }
   const title = proposalTitle(d.projectLabel(project), proposal.category);
   const lines = stepLines(proposal.steps, marks, ctx.names);
   let itemId: string | undefined;
@@ -746,18 +905,18 @@ export async function leadApply(
         : {}),
     });
   } catch (error) {
-    console.error(`[leads] ${project}: telling the owner failed:`, error);
+    logRaw(project, proposalId, "telling the owner", errorText(error));
   }
   const told = itemId ? ` The owner was told (${itemId}).` : "";
   if (!failure)
     return {
       ok: true,
       state: "applied",
-      text: `Applied ${proposalId}: ${ran} of ${proposal.steps.length} steps done.${told}`,
+      text: `Applied ${proposalId}: ${marks.length} of ${proposal.steps.length} steps done.${told}`,
     };
   return {
     ok: false,
     state: ran ? "partial" : "failed",
-    text: `Couldn't apply ${proposalId}: ${failure.reason}. ${state === "partial" ? `${ran} of ${proposal.steps.length} steps ran first; ` : ""}it never runs again.${told}`,
+    text: `Couldn't apply ${proposalId}: ${failure.reason}. ${ran ? `${ran} of ${proposal.steps.length} steps ran first; ` : ""}it never runs again.${told}`,
   };
 }

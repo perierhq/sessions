@@ -974,9 +974,10 @@ export interface ApproveInput {
   condition?: unknown;
   expiresAt?: number;
   /** The inbox item revision the owner answered; refused when it is not the
-   *  proposal's. The owner's answer always passes it (leads/goal.ts).
-   *  TODO(act PR 10): required once the iOS app sends it. */
-  itemRevision?: number;
+   *  proposal's. The owner's answer passes it only when the client sent
+   *  the item's current one (leads/goal.ts); without it nothing is
+   *  approved and the answer stays in the ledger. */
+  itemRevision: number;
 }
 
 export type ApproveError =
@@ -988,8 +989,10 @@ export type ApproveError =
 
 /**
  * The owner's approval of a recorded proposal: waiting when it has a
- * condition, else ready. Approving again while one is waiting or ready
- * returns that one (`created: false`).
+ * condition, else ready. Refused without the inbox item revision the
+ * owner answered (invalid) or with another one than the proposal's
+ * (stale). Approving again while one is waiting or ready returns that one
+ * (`created: false`).
  */
 export async function approve(
   input: ApproveInput,
@@ -1008,6 +1011,7 @@ export async function approve(
       proposalId: id(input.proposalId, "proposalId"),
       approvedBy: line(input.approvedBy, "approvedBy", NAME_LEN),
       login: input.login,
+      itemRevision: time(input.itemRevision, "itemRevision"),
       condition:
         input.condition === undefined
           ? undefined
@@ -1044,10 +1048,7 @@ export async function approve(
       result = { ok: false, error: "settled" };
       return fresh;
     }
-    if (
-      input.itemRevision !== undefined &&
-      input.itemRevision !== record.proposal.itemRevision
-    ) {
+    if (fields.itemRevision !== record.proposal.itemRevision) {
       result = { ok: false, error: "stale" };
       return fresh;
     }

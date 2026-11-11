@@ -255,6 +255,7 @@ async function approved(
     proposalId: proposal.id,
     approvedBy: "Ada",
     login: "ada-example",
+    itemRevision: proposal.itemRevision,
     ...approval,
   });
   if (!result.ok) throw new Error(result.error);
@@ -478,7 +479,8 @@ describe("leadApply", () => {
     expect(merges).toHaveLength(0);
     expect(posts[0]).toMatchObject({
       kind: "needs-you",
-      title: "Couldn't apply: Branch protection requires a review on PR #12",
+      title:
+        "Couldn't apply: Branch protection blocks the merge of PR #12 in acme/web",
       options: ["Propose again", "Drop it"],
     });
     expect(posts[0]!.body).toContain(FORCE_MERGE_LINE);
@@ -589,12 +591,16 @@ describe("leadApply", () => {
     condition = { status: "unknown", reason: "store down" };
     const unknown = await leadApply("acme", p.id);
     expect(unknown.text).toContain(
-      "Couldn't check whether Incident inc-1 is resolved: store down",
+      "Couldn't check whether Incident inc-1 is resolved.",
     );
+    expect(unknown.text).not.toContain("store down");
     expect(await state(p.id)).toBe("waiting");
     condition = { status: "not-met", reason: "Incident inc-1 is still open" };
     const notMet = await leadApply("acme", p.id);
-    expect(notMet.text).toContain("Not yet: Incident inc-1 is still open");
+    expect(notMet.text).toContain(
+      "Not yet: waiting until Incident inc-1 is resolved",
+    );
+    expect(notMet.text).not.toContain("still open");
     expect(notMet.text).toContain("The approval keeps waiting");
     expect(await state(p.id)).toBe("waiting");
     expect(merges).toHaveLength(0);
@@ -602,6 +608,7 @@ describe("leadApply", () => {
     expect(await leadApply("acme", p.id)).toMatchObject({ ok: true });
     expect(conditionChecks).toBe(3);
     expect(await state(p.id)).toBe("applied");
+    expect(audits.filter((a) => a.phase === "ready")).toHaveLength(1);
   });
 
   test("a category the owner now keeps voids the approval", async () => {
@@ -610,6 +617,9 @@ describe("leadApply", () => {
     const result = await leadApply("acme", p.id);
     expect(result.text).toContain("Only the owner decides signal rule changes");
     expect(await state(p.id)).toBe("void");
+    expect(audits).toContainEqual(
+      expect.objectContaining({ phase: "voided", voided: [p.id] }),
+    );
     withLead({}, { "signal-rule-change": "asks-first" });
     expect((await leadApply("acme", p.id)).text).toContain("was voided");
     expect(writes).toHaveLength(0);
@@ -650,6 +660,158 @@ describe("leadApply", () => {
     expect(record?.approval?.login).toBeUndefined();
     expect(await leadApply("acme", p.id)).toMatchObject({ ok: false });
     expect(merges).toHaveLength(1);
+  });
+
+  test("the owner tightening alone to asks first during the condition check claims nothing", async () => {
+    withLead({}, { "fix-verified": "alone" });
+    const p = await propose("fix-verified", [mergeStep()], {
+      condition: { kind: "incident-resolved", id: "inc-1" },
+    });
+    __setLeadApplyDepsForTest({
+      ...fakes,
+      checkCondition: async () => {
+        withLead({}, { "fix-verified": "asks-first" });
+        return { status: "met" };
+      },
+    });
+    const result = await leadApply("acme", p.id);
+    expect(result.text).toStartWith("The owner hasn't approved");
+    expect((await getRecord("acme", p.id))?.approval).toBeUndefined();
+    expect(merges).toHaveLength(0);
+  });
+
+  test("the kill switch flipped between steps stops the run: partial", async () => {
+    prs.set("acme/web#13", pr({ number: 13 }));
+    const p = await approved("fix-verified", [
+      mergeStep(),
+      mergeStep({ number: 13 }),
+    ]);
+    __setLeadApplyDepsForTest({
+      ...fakes,
+      mergePr: async (input) => {
+        const merged = await mergePinnedPr(input, github);
+        doc = { ...doc, incidents: { ...doc.incidents, agentsPaused: true } };
+        return merged;
+      },
+    });
+    const result = await leadApply("acme", p.id);
+    expect(result).toMatchObject({ ok: false, state: "partial" });
+    expect(result.text).toContain("Agents are paused");
+    expect(merges).toHaveLength(1);
+    expect(await state(p.id)).toBe("partial");
+    const body = String(posts[0]!.body);
+    expect(body).toContain("1. Merge PR #12 in acme/web at aaaaaaa (done)");
+    expect(body).toContain("2. Merge PR #13 in acme/web at aaaaaaa (not run)");
+    expect(audits).toContainEqual(
+      expect.objectContaining({ step: 2, phase: "stopped" }),
+    );
+  });
+
+  test("a step already done does not count as ran", async () => {
+    prs.set(
+      "acme/web#12",
+      pr({ state: "MERGED", mergeCommitSha: "d".repeat(40) }),
+    );
+    prs.set("acme/web#13", pr({ number: 13, requiredApprovals: 1 }));
+    const p = await approved("fix-verified", [
+      mergeStep(),
+      mergeStep({ number: 13 }),
+    ]);
+    expect(await leadApply("acme", p.id)).toMatchObject({
+      ok: false,
+      state: "failed",
+    });
+    expect(await state(p.id)).toBe("failed");
+  });
+
+  test("raw error text never reaches the lead or the inbox", async () => {
+    const RAW = "secret-internal-detail";
+    const warn = console.warn;
+    const logged: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    };
+    try {
+      const texts: string[] = [];
+      mergeResponse = { ok: false, status: 500, message: RAW };
+      const refused = await approved("fix-verified", [mergeStep()]);
+      texts.push((await leadApply("acme", refused.id)).text);
+
+      mergeResponse = { ok: true, sha: "f".repeat(40) };
+      __setLeadApplyDepsForTest({
+        ...fakes,
+        readPr: async () => {
+          throw new Error(RAW);
+        },
+      });
+      const unread = await approved("fix-verified", [mergeStep()]);
+      texts.push((await leadApply("acme", unread.id)).text);
+
+      __setLeadApplyDepsForTest({
+        ...fakes,
+        mergePr: async () => ({ kind: "error", message: RAW }),
+      });
+      const errored = await approved("fix-verified", [mergeStep()]);
+      texts.push((await leadApply("acme", errored.id)).text);
+
+      __setLeadApplyDepsForTest({
+        ...fakes,
+        updateSignal: async () => ({ error: RAW }),
+      });
+      const patch = await approved("signal-rule-change", [patchStep()]);
+      texts.push((await leadApply("acme", patch.id)).text);
+
+      __setLeadApplyDepsForTest(fakes);
+      condition = { status: "unknown", reason: RAW };
+      const waiting = await approved("fix-verified", [mergeStep()], {
+        condition: { kind: "incident-resolved", id: "inc-1" },
+      });
+      texts.push((await leadApply("acme", waiting.id)).text);
+      condition = { status: "not-met", reason: RAW };
+      texts.push((await leadApply("acme", waiting.id)).text);
+
+      expect(texts).toHaveLength(6);
+      for (const text of texts) expect(text).not.toContain(RAW);
+      expect(posts).toHaveLength(4);
+      for (const post of posts) expect(JSON.stringify(post)).not.toContain(RAW);
+      expect(texts[2]).toContain("GitHub refused the merge of PR #12");
+      expect(texts[1]).toContain(
+        "Couldn't read PR #12 in acme/web from GitHub",
+      );
+      expect(texts[3]).toContain("The Status page check could not be changed");
+      for (const record of await Promise.all(
+        [refused, unread, errored, patch].map((p) => getRecord("acme", p.id)),
+      ))
+        expect(JSON.stringify(record)).not.toContain(RAW);
+      // The raw text is logged on the server with the proposal, and
+      // audited as a digest only.
+      expect(logged.filter((l) => l.includes(RAW))).toHaveLength(6);
+      expect(logged.some((l) => l.includes(`acme ${errored.id}`))).toBe(true);
+      expect(JSON.stringify(audits)).not.toContain(RAW);
+      expect(audits).toContainEqual(
+        expect.objectContaining({ detailDigest: expect.any(String) }),
+      );
+    } finally {
+      console.warn = warn;
+    }
+  });
+
+  test("an audit failure after the claim still settles the record", async () => {
+    const p = await approved("fix-verified", [mergeStep()]);
+    __setLeadAuditForTest((event) => {
+      if (event.phase === "intent") throw new Error("audit down");
+      audits.push(event);
+    });
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      const result = await leadApply("acme", p.id);
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+    } finally {
+      console.warn = warn;
+    }
+    expect(merges).toHaveLength(0);
+    expect(await state(p.id)).toBe("failed");
   });
 
   test("an unknown proposal is refused and audited", async () => {

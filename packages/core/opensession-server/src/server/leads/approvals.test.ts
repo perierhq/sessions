@@ -105,6 +105,7 @@ async function approved(
     proposalId: proposal.id,
     approvedBy: "Ada",
     login: "ada-example",
+    itemRevision: proposal.itemRevision,
     ...approval,
   });
   if (!result.ok) throw new Error(result.error);
@@ -500,6 +501,7 @@ describe("approve", () => {
       proposalId: proposal.id,
       approvedBy: "Ada",
       login: "ada-example",
+      itemRevision: proposal.itemRevision,
     });
     expect(again).toEqual({ ok: true, approval, created: false });
 
@@ -509,11 +511,18 @@ describe("approve", () => {
       proposalId: other.id,
       approvedBy: "Ada",
       login: "ada-example",
+      itemRevision: 5,
     };
     expect(await A.approve({ ...base, itemRevision: 4 })).toEqual({
       ok: false,
       error: "stale",
     });
+    // No revision: the owner's answer can't be tied to what they saw.
+    const { itemRevision: _, ...noRevision } = base;
+    expect(
+      await A.approve(noRevision as import("./approvals").ApproveInput),
+    ).toMatchObject({ ok: false, error: "invalid" });
+    expect(await A.getRecord("acme", other.id)).not.toHaveProperty("approval");
     expect((await A.approve({ ...base, login: "-bad" })).ok).toBe(false);
     expect((await A.approve({ ...base, expiresAt: clock + 31 * DAY })).ok).toBe(
       false,
@@ -540,6 +549,7 @@ describe("approve", () => {
         proposalId: first.proposal.id,
         approvedBy: "Ada",
         login: "ada-example",
+        itemRevision: first.proposal.itemRevision,
       }),
     ).toEqual({ ok: false, error: "voided" });
     expect((await A.listForProject("acme"))[0]?.proposal.id).toBe(second.id);
@@ -562,6 +572,7 @@ describe("proposalForItem", () => {
       proposalId: second.id,
       approvedBy: "Ada",
       login: "ada-example",
+      itemRevision: second.itemRevision,
     });
     expect((await A.proposalForItem("acme", "si-1"))?.approval?.state).toBe(
       "ready",
@@ -1060,6 +1071,7 @@ describe("writes", () => {
         proposalId: "lp-x",
         approvedBy: "Ada",
         login: "ada-example",
+        itemRevision: 1,
       }),
     ).toEqual({ ok: false, error: "not-found" });
     expect(await A.expire()).toBe(0);
