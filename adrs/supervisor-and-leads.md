@@ -233,5 +233,84 @@ What landed from this proposal, and the decisions made on the way:
 - **Voice** (#150, #155): Fish Audio read-aloud on the server; the OpenAI live call is
   opt-in in Blob because it is billed per minute.
 
-Not built yet: the coordinate and act stages, applying approved changes, the classifier
-(Haiku 5.5 rather than a separate vendor), more leads, and Duo posture APIs.
+### The act stage (#173 to #184)
+
+A lead can now run what the owner approved, or what its rules let it run alone, and nothing
+else. The code is in `packages/core/opensession-server/src/server/leads/`; the security side
+is in `docs/security-model.md` ("Project leads").
+
+- **Proposals with steps** (`report.ts`, `approvals.ts`): `propose` may carry typed steps, a
+  condition and an expiry. The server checks that each step fits the category
+  (`STEP_CATEGORIES`) and names this project's repositories, signals or support drafts
+  (`checkLeadAct`). It records the proposal in the `lead-approvals` catalog namespace (one
+  document per project, every change one compare-and-set), bound to the inbox item and the
+  item's revision (its `updatedAt`). The body ends with server-written lines the lead can't
+  word. A new proposal on the same item voids the earlier one as superseded.
+- **Approvals bind to what the owner saw** (`goal.ts` `approveFromAnswer`, `approvals.ts`
+  `approve`). Only the owner's first option approves, answered in the lead owner's own inbox,
+  signed in as the lead owner's GitHub login on the team roster (`verifiedPerson`, so never a
+  claimed name or an automation), naming the item revision the client showed. A different
+  revision is refused as stale. An answer without a login or a revision approves nothing and
+  only lands in the ledger. Any other option voids the proposal. An approval expires after 7
+  days by default, at most 30; an unapproved proposal is voided after 30 days. States go
+  waiting, ready, applying, then applied, failed or partial; waiting or ready can go to void.
+  An apply still running after 30 minutes was interrupted: it is marked partial and never
+  runs again.
+- **Conditions** (`conditions.ts`): a pull request merged, checks green on a pull request at
+  a pinned head, or an incident resolved. Each check reads the live state (GitHub as the App,
+  the incident store). A read that fails is unknown, never met, so an approval becomes ready
+  only on a positive answer.
+- **Gate order in `lead_apply`** (`apply.ts`). The lead passes only the proposal id; the
+  steps are the recorded ones. Every call checks, in order:
+  1. The lead is off or the kill switch is on: refused.
+  2. The category is only the owner's (pinned or set so): refused, and whatever still stands
+     for the proposal is voided.
+  3. The watch stage: refused.
+  4. The rules say act: at the act stage the proposal runs without an approval; at coordinate
+     only a fix or CI repair (`COORDINATE_CATEGORIES`) whose steps are all `autofix-pr`.
+  5. Otherwise an approval of exactly this proposal: ready (or waiting with its condition met
+     now), not expired, and only at the act stage.
+
+  A condition is re-checked at apply time, whoever allowed the run. The settings and the
+  record are read again and checks 1 to 5 re-run right before one compare-and-set claims the
+  record. Before each step the settings are read again and a run they no longer allow stops.
+  Each step's intent is audited before it runs, a step already done counts as done, and the
+  first failure stops the run. Nothing re-runs; the lead proposes again instead.
+
+- **`APPROVED_RUNS_ONLY_AT_ACT`** (`apply.ts`) is `true`. The owner has not confirmed that an
+  approved asks-first action may also run at coordinate, so approved runs and condition
+  checks happen only at the act stage. At coordinate an approval waits.
+- **Steps available,** each through the mechanism that already does the job:
+  - `merge-pr` (fixes, public releases, CI repair): `mergePinnedPr` as the GitHub App,
+    pinned to the approved head (`incidents/response/merge.ts`).
+  - `signal-patch` (signal rule changes): `updateSignal`, written only while the stored
+    fields equal the proposal's `before`.
+  - `autofix-pr` (CI repair): `fireAutoFix`, only while the pull request is open, from this
+    repository and at the approved head.
+  - `support-send` (routine support replies): `sendDraft`, only while the draft is the one
+    proposed, it goes to the recipient the server pinned when the lead proposed it, and no
+    person has stopped it or acted on the conversation since.
+- **`spawn-worker` is refused,** at `propose` and at `lead_apply`, until a restricted spawn
+  path exists. `spawn_task` would start a fully trusted session for the owner. The restricted
+  path the incident fix loop uses hangs off an automation's coordinator session, and a lead
+  has none yet.
+- **Event wakes** (`goal.ts`, `goals.ts`): each wake first expires old approvals, settles
+  interrupted applies, checks up to 5 waiting conditions (least recently checked first, 10
+  seconds each), moves the met ones to ready and tells the owner once, "Ready to apply". A
+  merged pull request (the GitHub webhook) or a resolved incident that a waiting approval
+  names wakes the lead now (`wakeLeadFor`). A goal that is running or already due keeps that
+  wake as `pendingWakeAt`, so the next wake its run schedules doesn't drop it
+  (`takePendingWake`).
+- **Blob shows the steps natively** (#182): `GET /api/supervisor/items` returns each item's
+  `revision` and, for a lead item with a recorded proposal, a structured `act` read from the
+  record, never from the Markdown body (`item-acts.ts`). Blob draws it as its own Steps
+  section between the body and the options (`BlobDecisionView.swift` `BlobActSection`): the
+  numbered steps, when they run and when they expire. It drops the body's text copy of those
+  lines only when the body ends with exactly `act.bodySuffix`.
+- **Stale answers are refused** (`routes/supervisor.ts`, `supervisor-inbox.ts`): an answer
+  naming a revision the item no longer has gets a 409 `changed` and closes nothing. Blob says
+  "This changed. Have another look." and shows the new card.
+
+Not built yet: the `spawn-worker` step (it waits for a restricted spawn path), the steps
+section outside Blob, the classifier (Haiku 5.5 rather than a separate vendor), more leads,
+and Duo posture APIs.
