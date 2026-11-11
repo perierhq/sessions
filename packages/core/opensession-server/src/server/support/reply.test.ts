@@ -961,6 +961,34 @@ describe("draft figures", () => {
   });
 });
 
+describe("a send approved through the project lead", () => {
+  const VIA_LEAD = { ...ADA, approvedVia: "lead" as const };
+
+  test("reads approved by the person, sent by the persona", async () => {
+    const { c, draft } = await draftNeedingPerson();
+    const sent = await sendDraft(c.id, draft.id, VIA_LEAD);
+    expect(sent.ok).toBe(true);
+    const events = (await getConversation(c.id))!.events;
+    expect(
+      events.filter((e) => e.kind === "reply-sent").map((e) => e.detail),
+    ).toEqual([`Approved by Ada, sent by ${personaName()}`]);
+  });
+
+  test("never counts as sent unchanged", async () => {
+    const c = await tb.conversation();
+    const d = await proposeDraft(c.id, DRAFT, AGENT, undefined, CITED);
+    if (!d.ok) throw new Error(d.error);
+    expect((await sendDraft(c.id, d.draft.id, VIA_LEAD)).ok).toBe(true);
+    expect(await draftStats(tb.inbox().id)).toEqual({
+      days: 30,
+      sentUnchanged: 0,
+      sentEdited: 0,
+      discarded: 0,
+      sentAutomatically: 0,
+    });
+  });
+});
+
 describe("automatic sends answer the customer", () => {
   test("a second automatic reply without a new customer message waits", async () => {
     await tb.setInbox({ autonomy: "routine", vetoMs: null });

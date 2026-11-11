@@ -82,7 +82,17 @@ export type SupportActor =
   | { kind: "agent"; sessionId: string }
   /** `name` is the display name; `login` the signed-in account, when the
    *  person acted through a signed-in request (audit rows record it). */
-  | { kind: "person"; name: string; login?: string }
+  | {
+      kind: "person";
+      name: string;
+      login?: string;
+      /** Set when the person approved the send through their project
+       *  lead and the server sent it (leads/apply.ts): the log reads
+       *  "Approved by <name>, sent by <persona>" and the send stays out of
+       *  the "sent unchanged" draft counts, as nobody looked again at send
+       *  time. */
+      approvedVia?: "lead";
+    }
   | { kind: "sessions" };
 
 export interface SupportMessage {

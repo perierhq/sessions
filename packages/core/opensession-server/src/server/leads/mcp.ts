@@ -25,6 +25,7 @@ import {
   type LeadAct,
   type LeadDelivery,
   checkLeadAct,
+  supportDrafts,
   deliverLeadProposal,
   leadReportRefusal,
   postLeadDigestNote,
@@ -63,10 +64,6 @@ const STEP = z.discriminatedUnion("kind", [
     ghRepo: GH_REPO,
     number: PR_NUMBER,
     headSha: HEAD_SHA,
-  }),
-  z.object({
-    kind: z.literal("spawn-worker"),
-    prompt: z.string().describe("The worker's whole task, shown to the owner"),
   }),
   z.object({
     kind: z.literal("signal-patch"),
@@ -155,7 +152,7 @@ export function createLeadMcpServer(project: string) {
     ),
     tool(
       "propose",
-      `Propose an action for ${project} to its owner. Write the body as Blob presents it: a leading \`\`\`say fence is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner. To have the approval run something, give steps (and optionally a condition and expiresInDays): the server checks them, records them for the owner's answer and adds the lines saying when they run, each step and when they expire; leave those lines out of the title and body, close every code fence and comment, and keep raw HTML out (Markdown only, or HTML in backticks). Steps fit their category: merge-pr for fix-verified, public-release or ci-repair; autofix-pr for ci-repair; spawn-worker for fix-verified or ci-repair; signal-patch for signal-rule-change; support-send for support-routine-reply. Pull requests must be in this project's repositories.`,
+      `Propose an action for ${project} to its owner. Write the body as Blob presents it: a leading \`\`\`say fence is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner. To have the approval run something, give steps (and optionally a condition and expiresInDays): the server checks them, records them for the owner's answer and adds the lines saying when they run, each step and when they expire; leave those lines out of the title and body, close every code fence and comment, and keep raw HTML out (Markdown only, or HTML in backticks). Steps fit their category: merge-pr for fix-verified, public-release or ci-repair; autofix-pr for ci-repair; signal-patch for signal-rule-change; support-send for support-routine-reply. Pull requests must be in this project's repositories.`,
       {
         category: z
           .enum(LEAD_CATEGORIES)
@@ -260,6 +257,9 @@ export function createLeadMcpServer(project: string) {
               now: sources.now(),
               repos: sources.projectGhRepos(project),
               signals: await sources.listSignals(),
+              drafts: await supportDrafts(args.steps, (id) =>
+                sources.getConversation(id),
+              ),
             },
           );
           if (!checked.ok) return text(checked.error, true);
@@ -314,7 +314,7 @@ export function createLeadMcpServer(project: string) {
     ),
     tool(
       "lead_apply",
-      `Run the steps recorded for one of ${project}'s proposals (propose returns its id), when the lead rules or the owner's approval allow it now. The server checks the rules, the approval, its expiry and its condition every time, runs the steps it recorded in order (merging a pull request as the GitHub App at the approved head; changing a signal only while it still has the proposed before values), stops at the first failure and tells the owner either way. A proposal runs at most once: whatever happens, never call it again for the same id; propose again instead.`,
+      `Run the steps recorded for one of ${project}'s proposals (propose returns its id), when the lead rules or the owner's approval allow it now. The server checks the rules, the approval, its expiry and its condition every time, runs the steps it recorded in order (merging a pull request as the GitHub App at the approved head; asking the autofix agent only while the pull request is still at the proposed head; sending a support reply draft only while it is still the live draft; changing a signal only while it still has the proposed before values), stops at the first failure and tells the owner either way. A proposal runs at most once: whatever happens, never call it again for the same id; propose again instead.`,
       {
         proposalId: z
           .string()

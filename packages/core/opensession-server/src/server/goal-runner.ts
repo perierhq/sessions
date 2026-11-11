@@ -86,9 +86,9 @@ function goalMcpServers(
     };
   if (goal.leadProject)
     return {
-      // TODO(coordinate/act stages): spawning fix workers
-      // (opensession-sessions spawn_task, send_to_session) for leads past
-      // watch. Out of scope while every lead watches.
+      // No opensession-sessions: a lead starts no sessions. lead_apply
+      // refuses spawn-worker steps until workers can run restricted
+      // (leads/apply.ts).
       "opensession-lead": createLeadMcpServer(goal.leadProject),
       // Its status is its settings': no tools to pause or finish itself.
       "opensession-goal-self": createGoalSelfMcpServer(goal.id, {

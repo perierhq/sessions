@@ -20,6 +20,7 @@ import {
   type LeadDecision,
 } from "../../shared/project-lead";
 import type { ProjectSettingsDocument } from "../../shared/project-settings";
+import type { MailAddress, SupportConversation } from "../../shared/support";
 import { auditDurable, digest } from "../audit";
 import type { TeamMember } from "../config";
 import {
@@ -42,6 +43,7 @@ import {
   type ValidProposalInput,
   DEFAULT_APPROVAL_TTL_MS,
   MAX_APPROVAL_TTL_MS,
+  MAX_STEPS,
   STEP_CATEGORIES,
   recordProposal,
   stepFitsCategory,
@@ -175,6 +177,57 @@ export interface LeadActContext {
   /** Every signal, so a dependency elsewhere still has a name. */
   signals: ReadonlyArray<{ id: string; name: string; project: string }>;
   project: string;
+  /** The support conversations the steps name, read now (supportDrafts):
+   *  each one's project and live draft. A support-send step is pinned to
+   *  its draft's target from here; one missing here is refused. */
+  drafts?: Readonly<Record<string, LeadDraftSource>>;
+}
+
+/** A support conversation as a support-send step is checked against. */
+export interface LeadDraftSource {
+  project: string;
+  draft: {
+    id: string;
+    to?: MailAddress[];
+    answersMessageId?: string | null;
+  } | null;
+}
+
+/** The support conversations a proposal's steps name, for checkLeadAct.
+ *  Raw steps: they are validated after. */
+export async function supportDrafts(
+  steps: unknown,
+  read: (id: string) => Promise<SupportConversation | null>,
+): Promise<Record<string, LeadDraftSource>> {
+  const ids = new Set<string>();
+  if (Array.isArray(steps))
+    for (const step of steps.slice(0, MAX_STEPS))
+      if (
+        step &&
+        typeof step === "object" &&
+        (step as { kind?: unknown }).kind === "support-send" &&
+        typeof (step as { conversationId?: unknown }).conversationId ===
+          "string"
+      )
+        ids.add((step as { conversationId: string }).conversationId);
+  const out: Record<string, LeadDraftSource> = {};
+  for (const id of ids) {
+    const c = await read(id);
+    if (!c) continue;
+    out[id] = {
+      project: c.project,
+      draft: c.draft
+        ? {
+            id: c.draft.id,
+            ...(c.draft.to ? { to: c.draft.to } : {}),
+            ...(c.draft.answersMessageId !== undefined
+              ? { answersMessageId: c.draft.answersMessageId }
+              : {}),
+          }
+        : null,
+    };
+  }
+  return out;
 }
 
 /** Signal names by id, as the steps' copy names them. */
@@ -232,6 +285,42 @@ export function checkLeadAct(
       if ("error" in repo)
         return { ok: false, error: `Step ${n}: ${repo.error}` };
       checked.push({ ...step, ghRepo: repo.repo });
+      continue;
+    }
+    // leads/apply.ts WORKER_UNAVAILABLE: no restricted worker path yet.
+    if (step.kind === "spawn-worker")
+      return {
+        ok: false,
+        error: `Step ${n}: starting a worker is not available yet`,
+      };
+    if (step.kind === "support-send") {
+      // The pin is the server's, read now; any the lead gave is dropped.
+      const source = ctx.drafts?.[step.conversationId];
+      if (!source || source.project !== ctx.project)
+        return {
+          ok: false,
+          error: `Step ${n}: ${step.conversationId} is not a support conversation of this project`,
+        };
+      const draft = source.draft;
+      if (draft?.id !== step.draftId)
+        return {
+          ok: false,
+          error: `Step ${n}: ${step.draftId} is not the conversation's current draft`,
+        };
+      if (!draft.to?.length || draft.answersMessageId === undefined)
+        return {
+          ok: false,
+          error: `Step ${n}: draft ${step.draftId} has no recipient yet`,
+        };
+      checked.push({
+        kind: "support-send",
+        conversationId: step.conversationId,
+        draftId: step.draftId,
+        pin: {
+          to: draft.to.map((a) => ({ name: a.name, address: a.address })),
+          answersMessageId: draft.answersMessageId,
+        },
+      });
       continue;
     }
     if (

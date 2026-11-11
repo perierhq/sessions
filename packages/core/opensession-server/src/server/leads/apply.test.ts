@@ -1,12 +1,17 @@
 // lead_apply: the order of its checks, conditions re-checked at apply time,
 // the claim under concurrent calls, each merge outcome, the signal change's
-// before check, partial runs that never re-run, and the identities used.
-// Approvals run on the in-memory kernel; GitHub, signals and the inbox are
-// fakes, and merges go through the real mergePinnedPr.
+// before check, the autofix, worker and support-reply steps, the
+// coordinate stage's limits, partial runs that never re-run, and the
+// identities used. Approvals run on the in-memory kernel; GitHub, signals,
+// workers, support and the inbox are fakes, and merges go through the real
+// mergePinnedPr.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { PrSnapshot } from "../../shared/incident-response";
 import type { Signal } from "../../shared/incidents";
 import type { LeadCategory } from "../../shared/project-lead";
+import type { SupportConversation } from "../../shared/support";
+import { RULES } from "../support/policy";
+import type { PrRef } from "../../agents/github/review";
 import {
   defaultProjectDocument,
   type ProjectSettingsDocument,
@@ -24,11 +29,16 @@ import {
 } from "./approvals";
 import {
   APPROVED_RUNS_ONLY_AT_ACT,
+  type AutofixPr,
   FORCE_MERGE_LINE,
   type LeadApplyDeps,
+  COORDINATE_STEPS,
+  WORKER_UNAVAILABLE,
   __setLeadApplyDepsForTest,
   applyGate,
   leadApply,
+  personStepped,
+  samePin,
   signalHolds,
 } from "./apply";
 import type { ConditionResult } from "./conditions";
@@ -62,6 +72,40 @@ let conditionChecks = 0;
 let claims = 0;
 let restoreApprovals: () => void = () => {};
 let fakes: Partial<LeadApplyDeps> = {};
+let autofixPrs: Map<string, AutofixPr>;
+let autofixStarts: PrRef[] = [];
+let autofixRunning = false;
+let conversations: Map<string, SupportConversation>;
+let sends: unknown[][] = [];
+let sendResult:
+  | { ok: true }
+  | { ok: false; status: 404 | 409 | 502; error: string } = { ok: true };
+
+const CONV = "sc_0001";
+const DRAFT = "sd_0001";
+const TO = [{ name: "Customer", address: "customer@example.test" }];
+const ANSWERS = "m-in-1@example.test";
+
+function conversation(
+  over: Partial<SupportConversation> = {},
+): SupportConversation {
+  return {
+    id: CONV,
+    project: "acme",
+    messages: [],
+    events: [],
+    draft: {
+      id: DRAFT,
+      text: "Thanks, it's fixed.",
+      state: "veto",
+      rule: "Sends when the veto window ends",
+      decidedBy: null,
+      to: TO,
+      answersMessageId: ANSWERS,
+    },
+    ...over,
+  } as never;
+}
 
 const APP = { kind: "service", principal: "service", env: { GH_TOKEN: "app" } };
 
@@ -147,6 +191,23 @@ beforeEach(() => {
   condition = { status: "met" };
   mergeResponse = { ok: true, sha: "f".repeat(40) };
   prs = new Map([["acme/web#12", pr()]]);
+  autofixPrs = new Map([
+    [
+      "acme/web#12",
+      {
+        state: "OPEN",
+        title: "Fix search",
+        headRef: "fix-search",
+        headSha: SHA,
+        fork: false,
+      },
+    ],
+  ]);
+  autofixStarts = [];
+  autofixRunning = false;
+  conversations = new Map([[CONV, conversation()]]);
+  sends = [];
+  sendResult = { ok: true };
   signals = new Map([[statusSignal.id, structuredClone(statusSignal)]]);
   doc = defaultProjectDocument("acme", "");
   // Fixes and CI repair ask first here, so their merges need the owner.
@@ -190,6 +251,22 @@ beforeEach(() => {
       signals.set(id, next);
       return next;
     },
+    readAutofixPr: async (ghRepo, number) => {
+      const found = autofixPrs.get(`${ghRepo}#${number}`);
+      if (!found) throw new Error("not found");
+      return { ...found };
+    },
+    startAutofix: async (ref) => {
+      if (autofixRunning) return "running";
+      autofixStarts.push(ref);
+      return "started";
+    },
+    getConversation: async (id) =>
+      structuredClone(conversations.get(id) ?? null),
+    sendDraft: (async (...args: unknown[]) => {
+      sends.push(args);
+      return sendResult;
+    }) as never,
     postSupervisorItem: (async (input: Record<string, unknown>) => {
       posts.push(input);
       return {
@@ -216,6 +293,21 @@ const mergeStep = (over: Record<string, unknown> = {}) => ({
   number: 12,
   headSha: SHA,
   ...over,
+});
+
+const autofixStep = (over: Record<string, unknown> = {}) => ({
+  kind: "autofix-pr",
+  ghRepo: "acme/web",
+  number: 12,
+  headSha: SHA,
+  ...over,
+});
+
+const supportStep = () => ({
+  kind: "support-send",
+  conversationId: CONV,
+  draftId: DRAFT,
+  pin: { to: TO, answersMessageId: ANSWERS },
 });
 
 const patchStep = (over: Record<string, unknown> = {}) => ({
@@ -354,16 +446,40 @@ describe("applyGate", () => {
     });
   });
 
-  test("coordinate: workers and autofix alone are not available yet", () => {
+  test("coordinate: the rules run autofix alone, nothing else", () => {
+    expect(COORDINATE_STEPS).toEqual(["autofix-pr"]);
     withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
-    const gate = applyGate(
+    const autofix = {
+      kind: "autofix-pr" as const,
+      ghRepo: "acme/web",
+      number: 12,
+      headSha: SHA,
+    };
+    expect(
+      applyGate(doc, fakeRecord("ci-repair", undefined, [autofix]), NOW),
+    ).toMatchObject({ ok: true, mode: "alone" });
+    // A merge among them still needs the owner, and approved runs wait.
+    const merge = applyGate(
       doc,
       fakeRecord("ci-repair", undefined, [
-        { kind: "autofix-pr", ghRepo: "acme/web", number: 12, headSha: SHA },
+        autofix,
+        { kind: "merge-pr", ghRepo: "acme/web", number: 12, headSha: SHA },
       ]),
       NOW,
     );
-    expect(!gate.ok && gate.reason).toContain("not available yet");
+    expect(!merge.ok && merge.reason).toStartWith(
+      "Approved actions run at the act stage",
+    );
+    // A category outside COORDINATE_CATEGORIES never runs alone there.
+    withLead({ stage: "coordinate" }, { "support-routine-reply": "alone" });
+    const support = applyGate(
+      doc,
+      fakeRecord("support-routine-reply", undefined, [
+        { kind: "support-send", conversationId: CONV, draftId: DRAFT },
+      ]),
+      NOW,
+    );
+    expect(support.ok).toBe(false);
   });
 
   test("coordinate: an alone merge still needs an approval, and approved runs wait for act", () => {
@@ -625,15 +741,332 @@ describe("leadApply", () => {
     expect(writes).toHaveLength(0);
   });
 
-  test("steps this PR can't run are refused before the claim", async () => {
-    const p = await approved("fix-verified", [
-      mergeStep(),
-      { kind: "spawn-worker", prompt: "Fix the flaky test." },
+  test("asks the autofix agent as the App, at the proposed head", async () => {
+    const p = await approved("ci-repair", [autofixStep()]);
+    expect(await leadApply("acme", p.id)).toMatchObject({
+      ok: true,
+      state: "applied",
+    });
+    expect(autofixStarts).toEqual([
+      {
+        number: 12,
+        headRef: "fix-search",
+        headSha: SHA,
+        title: "Fix search",
+        ghRepo: "acme/web",
+      },
     ]);
+    expect(audits).toContainEqual(
+      expect.objectContaining({
+        step: 1,
+        phase: "result",
+        result: "autofix-started",
+        headSha: SHA,
+      }),
+    );
+    expect(String(posts[0]!.body)).toContain(
+      "1. Ask the autofix agent to fix PR #12 in acme/web at aaaaaaa (done)",
+    );
+  });
+
+  test("an autofix loop already running counts as done", async () => {
+    autofixRunning = true;
+    const p = await approved("ci-repair", [autofixStep()]);
+    expect(await leadApply("acme", p.id)).toMatchObject({ ok: true });
+    expect(String(posts[0]!.body)).toContain("(already done)");
+    expect(audits).toContainEqual(
+      expect.objectContaining({ result: "autofix-running" }),
+    );
+  });
+
+  test("a moved head, a closed PR or a fork never starts autofix", async () => {
+    const base = autofixPrs.get("acme/web#12")!;
+    const cases: Array<[Partial<AutofixPr>, string, string]> = [
+      [{ headSha: MOVED }, "head-moved", "has new commits since aaaaaaa"],
+      [{ state: "CLOSED" }, "not-open", "PR #12 in acme/web is closed"],
+      [{ fork: true }, "fork", "comes from another repository"],
+    ];
+    for (const [over, result, copy] of cases) {
+      autofixPrs.set("acme/web#12", { ...base, ...over });
+      const p = await approved("ci-repair", [autofixStep()]);
+      const applied = await leadApply("acme", p.id);
+      expect(applied).toMatchObject({ ok: false, state: "failed" });
+      expect(applied.text).toContain(copy);
+      expect(audits).toContainEqual(expect.objectContaining({ result }));
+    }
+    expect(autofixStarts).toHaveLength(0);
+  });
+
+  test("a worker step never runs: not available yet, alone or approved", async () => {
+    const worker = { kind: "spawn-worker", prompt: "Fix it." };
+    const p = await approved("fix-verified", [worker]);
     const result = await leadApply("acme", p.id);
-    expect(result.text).toStartWith("spawn-worker steps are not available yet");
+    expect(result.ok).toBe(false);
+    expect(result.text).toStartWith(WORKER_UNAVAILABLE);
+    // Refused before the claim: nothing ran and the approval still stands.
     expect(await state(p.id)).toBe("ready");
-    expect(merges).toHaveLength(0);
+
+    withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
+    const alone = await propose("ci-repair", [autofixStep(), worker]);
+    expect((await leadApply("acme", alone.id)).text).toStartWith(
+      WORKER_UNAVAILABLE,
+    );
+    expect(autofixStarts).toHaveLength(0);
+    expect((await getRecord("acme", alone.id))?.approval).toBeUndefined();
+  });
+
+  test("sends an approved support reply as the approver", async () => {
+    const p = await approved("support-routine-reply", [supportStep()]);
+    expect(await leadApply("acme", p.id)).toMatchObject({ ok: true });
+    expect(sends).toEqual([
+      [
+        CONV,
+        DRAFT,
+        {
+          kind: "person",
+          name: "Ada",
+          login: "ada-example",
+          approvedVia: "lead",
+        },
+      ],
+    ]);
+    expect(audits).toContainEqual(
+      expect.objectContaining({
+        result: "sent",
+        conversationId: CONV,
+        draftId: DRAFT,
+      }),
+    );
+  });
+
+  test("a support reply by the rules goes as Sessions, under the inbox's rules", async () => {
+    withLead({}, { "support-routine-reply": "alone" });
+    const p = await propose("support-routine-reply", [supportStep()]);
+    sendResult = {
+      ok: false,
+      status: 409,
+      error: "The veto window is still open",
+    };
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      const result = await leadApply("acme", p.id);
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+      expect(result.text).toContain(
+        `Support didn't send the reply in support conversation ${CONV}`,
+      );
+    } finally {
+      console.warn = warn;
+    }
+    expect(sends).toEqual([[CONV, DRAFT, { kind: "sessions" }]]);
+  });
+
+  test("a reply already sent counts as done; a changed draft or another project's conversation is left alone", async () => {
+    conversations.set(
+      CONV,
+      conversation({
+        draft: null,
+        messages: [{ id: "m1", draftId: DRAFT }] as never,
+      }),
+    );
+    const sent = await approved("support-routine-reply", [supportStep()]);
+    expect(await leadApply("acme", sent.id)).toMatchObject({ ok: true });
+    expect(String(posts.at(-1)!.body)).toContain("(already done)");
+
+    sendResult = {
+      ok: false,
+      status: 409,
+      error: "This reply was already sent",
+    };
+    conversations.set(CONV, conversation());
+    const raced = await approved("support-routine-reply", [supportStep()]);
+    expect(await leadApply("acme", raced.id)).toMatchObject({ ok: true });
+    expect(sends).toHaveLength(1);
+
+    conversations.set(
+      CONV,
+      conversation({
+        draft: { id: "sd_0002", text: "New text", state: "veto" } as never,
+      }),
+    );
+    const changed = await approved("support-routine-reply", [supportStep()]);
+    const result = await leadApply("acme", changed.id);
+    expect(result).toMatchObject({ ok: false, state: "failed" });
+    expect(result.text).toContain("changed since this was proposed");
+
+    conversations.set(CONV, conversation({ project: "other" }));
+    const foreign = await approved("support-routine-reply", [supportStep()]);
+    expect((await leadApply("acme", foreign.id)).text).toContain(
+      "is no longer one of this project's",
+    );
+    expect(sends).toHaveLength(1);
+  });
+
+  test("a support reply goes only to the target pinned at proposal time", async () => {
+    const moved = [
+      {
+        ...conversation().draft,
+        to: [{ name: null, address: "x@example.test" }],
+      },
+      { ...conversation().draft, answersMessageId: "m-in-2@example.test" },
+    ];
+    for (const draft of moved) {
+      conversations.set(CONV, conversation({ draft } as never));
+      const p = await approved("support-routine-reply", [supportStep()]);
+      const result = await leadApply("acme", p.id);
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+      expect(result.text).toContain(
+        `The recipient of the reply in support conversation ${CONV} changed since this was proposed`,
+      );
+    }
+    // A step recorded without a pin never sends.
+    conversations.set(CONV, conversation());
+    const { pin: _, ...unpinned } = supportStep();
+    const old = await approved("support-routine-reply", [unpinned]);
+    expect((await leadApply("acme", old.id)).text).toContain(
+      "changed since this was proposed",
+    );
+    expect(sends).toHaveLength(0);
+  });
+
+  test("a person who stopped the draft or acted after the proposal wins", async () => {
+    const base = conversation().draft!;
+    const cases: Array<Partial<SupportConversation>> = [
+      { draft: { ...base, state: "needs-person", rule: RULES.personStopped } },
+      {
+        draft: {
+          ...base,
+          state: "needs-person",
+          decidedBy: { kind: "person", name: "Grace" },
+        },
+      },
+      {
+        events: [
+          {
+            at: new Date(NOW + 1000).toISOString(),
+            kind: "note",
+            actor: { kind: "person", name: "Grace" },
+            detail: "Took it over",
+          },
+        ],
+      },
+    ];
+    for (const over of cases) {
+      conversations.set(CONV, conversation(over));
+      const p = await approved("support-routine-reply", [supportStep()]);
+      clock = NOW + 2000;
+      const result = await leadApply("acme", p.id);
+      clock = NOW;
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+      expect(result.text).toContain(
+        "A person stopped or answered the reply in support conversation",
+      );
+    }
+    expect(sends).toHaveLength(0);
+    // A person's action before the proposal doesn't stop it.
+    expect(
+      personStepped(
+        conversation({
+          events: [
+            {
+              at: new Date(NOW - 1000).toISOString(),
+              kind: "note",
+              actor: { kind: "person", name: "Grace" },
+              detail: "Read it",
+            },
+          ],
+        }),
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  test("a teammate acting after the proposal stops a rules run claimed later", async () => {
+    withLead({}, { "support-routine-reply": "alone" });
+    conversations.set(CONV, conversation());
+    const p = await propose("support-routine-reply", [supportStep()]);
+    conversations.set(
+      CONV,
+      conversation({
+        events: [
+          {
+            at: new Date(NOW + 1000).toISOString(),
+            kind: "note",
+            actor: { kind: "person", name: "Grace" },
+            detail: "Took it over",
+          },
+        ],
+      }),
+    );
+    clock = NOW + 2000;
+    const result = await leadApply("acme", p.id);
+    clock = NOW;
+    expect(result).toMatchObject({ ok: false, state: "failed" });
+    expect(result.text).toContain(
+      "A person stopped or answered the reply in support conversation",
+    );
+    expect(sends).toHaveLength(0);
+  });
+
+  test("samePin compares addresses case-insensitively and in order", () => {
+    const pin = { to: TO, answersMessageId: ANSWERS };
+    expect(samePin({ to: TO, answersMessageId: ANSWERS }, pin)).toBe(true);
+    expect(
+      samePin(
+        {
+          to: [{ name: "Customer", address: "CUSTOMER@example.test" }],
+          answersMessageId: ANSWERS,
+        },
+        pin,
+      ),
+    ).toBe(true);
+    expect(samePin({ to: TO, answersMessageId: null }, pin)).toBe(false);
+    expect(samePin({ answersMessageId: ANSWERS }, pin)).toBe(false);
+  });
+
+  test("coordinate: the rules ask the autofix agent without an approval", async () => {
+    withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
+    const p = await propose("ci-repair", [autofixStep()]);
+    expect(await leadApply("acme", p.id)).toMatchObject({
+      ok: true,
+      state: "applied",
+    });
+    expect(autofixStarts).toHaveLength(1);
+    expect((await getRecord("acme", p.id))?.approval).toMatchObject({
+      state: "applied",
+      approvedBy: "Blob (lead)",
+    });
+  });
+
+  test("coordinate: the rules tightened before a step stop the run: partial", async () => {
+    withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
+    autofixPrs.set("acme/web#13", { ...autofixPrs.get("acme/web#12")! });
+    const p = await propose("ci-repair", [
+      autofixStep(),
+      autofixStep({ number: 13 }),
+    ]);
+    const start = fakes.startAutofix!;
+    fakes.startAutofix = async (ref) => {
+      withLead({ stage: "coordinate" }, { "ci-repair": "asks-first" });
+      return start(ref);
+    };
+    const result = await leadApply("acme", p.id);
+    expect(result).toMatchObject({ ok: false, state: "partial" });
+    expect(result.text).toContain(
+      "The lead's rules no longer let this run without the owner",
+    );
+    expect(autofixStarts).toHaveLength(1);
+    expect(audits).toContainEqual(
+      expect.objectContaining({ step: 2, phase: "stopped" }),
+    );
+  });
+
+  test("coordinate: a support reply by the rules waits for the act stage", async () => {
+    withLead({ stage: "coordinate" }, { "support-routine-reply": "alone" });
+    const p = await propose("support-routine-reply", [supportStep()]);
+    expect((await leadApply("acme", p.id)).ok).toBe(false);
+    expect(sends).toHaveLength(0);
+    expect((await getRecord("acme", p.id))?.approval).toBeUndefined();
   });
 
   test("approved runs wait for the act stage", async () => {
