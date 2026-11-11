@@ -38,7 +38,10 @@ import {
 import {
   type LeadStep,
   type SignalPatchAfter,
+  type Valid,
   type ValidProposalInput,
+  DEFAULT_APPROVAL_TTL_MS,
+  MAX_APPROVAL_TTL_MS,
   STEP_CATEGORIES,
   recordProposal,
   stepFitsCategory,
@@ -146,8 +149,8 @@ export function proposalBody(
 // ── Steps, condition and expiry ─────────────────────────────────────────────
 
 const DAY_MS = 86_400_000;
-export const DEFAULT_EXPIRES_IN_DAYS = 7;
-export const MAX_EXPIRES_IN_DAYS = 30;
+export const DEFAULT_EXPIRES_IN_DAYS = DEFAULT_APPROVAL_TTL_MS / DAY_MS;
+export const MAX_EXPIRES_IN_DAYS = MAX_APPROVAL_TTL_MS / DAY_MS;
 
 /** A proposal's steps as the server checked them. */
 export interface LeadAct {
@@ -174,8 +177,6 @@ export interface LeadActContext {
   project: string;
 }
 
-type Checked<T> = { ok: true; value: T } | { ok: false; error: string };
-
 function listOf(items: readonly string[], word = "or"): string {
   if (items.length < 2) return items.join("");
   return `${items.slice(0, -1).join(", ")} ${word} ${items[items.length - 1]}`;
@@ -200,7 +201,7 @@ function repoRefusal(
 export function checkLeadAct(
   input: LeadActInput,
   ctx: LeadActContext,
-): Checked<LeadAct> {
+): Valid<LeadAct> {
   const steps = validateLeadSteps(input.steps);
   if (!steps.ok) return { ok: false, error: `Steps: ${steps.error}` };
   const label = LEAD_CATEGORY_LABELS[input.category].toLowerCase();
@@ -266,16 +267,20 @@ export function checkLeadAct(
   };
 }
 
-/** Characters that render as nothing or bend the line around them. */
+/** Characters that render as nothing or bend the line around them: the
+ *  default-ignorable ones (zero-width, bidi, soft hyphen, tag characters,
+ *  variation selectors) and the C0 and C1 controls. */
 const INVISIBLE =
-  /[\u0000-\u0008\u000b-\u001f\u007f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0]/g;
+  /[\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000e-\u001f\u007f-\u009f]/gu;
+
+/** Where a line ends, for Markdown and for Unicode. */
+const LINE_BREAK = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/;
 
 /** Cyrillic and Greek letters that look like the Latin ones, lower case. */
 const LOOKALIKES: Record<string, string> = {
   а: "a",
   в: "b",
   е: "e",
-  ё: "e",
   к: "k",
   м: "m",
   н: "h",
@@ -288,7 +293,6 @@ const LOOKALIKES: Record<string, string> = {
   х: "x",
   ѕ: "s",
   і: "i",
-  ї: "i",
   ј: "j",
   ԁ: "d",
   һ: "h",
@@ -322,8 +326,10 @@ function entity(code: number): string {
 }
 
 /** A line as it reads once rendered: entities decoded, invisible characters
- *  dropped, NFKC, lower case, lookalike letters as Latin, and HTML tags,
- *  Markdown punctuation and list markers gone. */
+ *  dropped, NFKD with the combining marks gone, lower case, lookalike
+ *  letters as Latin, HTML tags, heading anchors, link targets, backslash
+ *  escapes and Markdown punctuation gone, and whatever precedes the first
+ *  letter (list markers, bullets, numbers). */
 export function lineSkeleton(row: string): string {
   const decoded = row
     .replace(/&#x([0-9a-f]{1,6});?/gi, (_, hex: string) =>
@@ -333,16 +339,22 @@ export function lineSkeleton(row: string): string {
     .replace(/&colon;/gi, ":")
     .replace(/&nbsp;/gi, " ");
   const plain = [
-    ...decoded.replace(INVISIBLE, "").normalize("NFKC").toLowerCase(),
+    ...decoded
+      .replace(INVISIBLE, "")
+      .normalize("NFKD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase(),
   ]
     .map((c) => LOOKALIKES[c] ?? c)
     .join("")
     .replace(INVISIBLE, "")
     .replace(COLONS, ":")
     .replace(/<!--.*?-->|<\/?[a-z][^>]*>/g, " ")
-    .replace(/\]\([^)]*\)/g, "]")
+    .replace(/\{#[\w-]+\}/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\\([!-/:-@[-`{-~])/g, "$1")
     .replace(/[*_`|#>~\\[\]]/g, " ");
-  return plain.replace(/^(?:\s*(?:[-+=]+|\d{1,9}[.)])(?=\s|$))*/, "").trim();
+  return plain.replace(/^[^\p{L}]*/u, "").trim();
 }
 
 const SERVER_LINE = /^(?:runs\s*when|steps|expires)\s*:/;
@@ -350,12 +362,16 @@ const SERVER_LINE = /^(?:runs\s*when|steps|expires)\s*:/;
 /** Whether a line of the lead's text reads as one of the server's lines. */
 function forgesServerLine(text: string): boolean {
   return text
-    .split(/\r\n|\r|\n/)
+    .split(LINE_BREAK)
     .some((row) => SERVER_LINE.test(lineSkeleton(row)));
 }
 
 /** Raw HTML the inbox would not show as written, outside code. */
 const RAW_HTML = /<[a-z!?/]/i;
+
+/** An HTML entity, named or numeric, with or without its semicolon; one
+ *  letter after `&` (R&D, Q&A) passes. */
+const ENTITY = /&(?:#|[a-z][a-z0-9]+)/i;
 
 /** The text with closed code fences and code spans taken out. */
 function withoutCode(text: string): string {
@@ -379,16 +395,19 @@ function withoutCode(text: string): string {
 
 /** Why the lead's text (title and body) can't go out, or null. Never may it
  *  word the server's Runs when, Steps or Expires lines. With steps, it must
- *  also close every code fence and comment and leave raw HTML out, so
- *  nothing swallows or hides the server's lines after it. */
+ *  also close every code fence and comment and leave raw HTML and HTML
+ *  entities out, so nothing swallows, hides or spells the server's lines. */
 export function actBodyRefusal(text: string, withSteps = true): string | null {
   if (forgesServerLine(text))
     return "Leave the Runs when, Steps and Expires lines out of the title and body: the server writes them from steps, condition and expiresInDays";
   if (!withSteps) return null;
   if (openFence(text) || text.lastIndexOf("<!--") > text.lastIndexOf("-->"))
     return "Close every code fence and comment in the title and body";
-  if (RAW_HTML.test(withoutCode(text)))
+  const prose = withoutCode(text);
+  if (RAW_HTML.test(prose))
     return "Leave raw HTML out of the title and body: write Markdown, or put the HTML in backticks";
+  if (ENTITY.test(prose))
+    return "Leave HTML entities out of the title and body: write the character itself, or put the text in backticks";
   return null;
 }
 
@@ -410,7 +429,7 @@ function openFence(text: string): boolean {
 }
 
 const UNSAFE =
-  /[\u0000-\u001f\u007f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]/g;
+  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]/g;
 
 function oneLine(text: string, max: number): string {
   return text.replace(UNSAFE, " ").replace(/\s+/g, " ").trim().slice(0, max);
@@ -675,7 +694,7 @@ export async function deliverLeadProposal(
     return { queued: false, reason: refusal ?? NOBODY };
   }
   const lead = proposalLead(proposal);
-  const body = act ? `${lead}\n\n${actLines(act)}` : lead;
+  const body = proposalBody(proposal);
   const textRefusal = actBodyRefusal(lead, act !== undefined);
   if (textRefusal) {
     await leadAudit({ ...base, delivered: false });

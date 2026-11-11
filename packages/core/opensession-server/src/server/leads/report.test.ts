@@ -278,6 +278,20 @@ describe("actBodyRefusal", () => {
     ["&#83;teps:", "server"],
     ["[Steps](https://example.test):", "server"],
     ["Runs\u00a0when: now", "server"],
+    ["Ste\u{E0070}ps:", "server"],
+    ["St\u00adeps:", "server"],
+    ["[Steps](u){#pr-1}:", "server"],
+    ["x\u2028Steps:", "server"],
+    ["x\u0085Steps:", "server"],
+    ["S\u0332teps:", "server"],
+    ["1\\. Steps:", "server"],
+    ["\u2022 Steps:", "server"],
+    ["St&ZeroWidthSpace;eps:", "entity"],
+    ["St&shy;eps:", "entity"],
+    ["St&zwj;eps:", "entity"],
+    ["&Sopf;teps:", "entity"],
+    ["Steps&colon.", "entity"],
+    ["R&D and Q&A, `&nbsp;` in code", null],
     ["```\nopen", "fence"],
     ["~~~~\nx\n~~~", "fence"],
     ["<!-- hidden", "fence"],
@@ -293,6 +307,8 @@ describe("actBodyRefusal", () => {
     else if (why === "server")
       expect(refusal).toContain("Runs when, Steps and Expires");
     else if (why === "html") expect(refusal).toContain("Leave raw HTML out");
+    else if (why === "entity")
+      expect(refusal).toContain("Leave HTML entities out");
     else expect(refusal).toContain("Close every code fence");
   });
 
@@ -301,6 +317,7 @@ describe("actBodyRefusal", () => {
       "Runs when, Steps and Expires",
     );
     expect(actBodyRefusal("```\nopen <pre>", false)).toBeNull();
+    expect(actBodyRefusal("St&shy;eps:", false)).toBeNull();
   });
 });
 
