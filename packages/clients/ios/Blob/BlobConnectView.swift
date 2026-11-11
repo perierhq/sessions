@@ -41,6 +41,7 @@ struct BlobConnectView: View {
         .background(OS1VisualStyle.background.ignoresSafeArea())
         .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: stepKey)
         .sheet(isPresented: $showOptions) { SettingsView().blobSheetPlacement() }
+        .blobMeasuresWideSurface()
         .onAppear {
             host = Self.displayHost(config.baseURLString)
             if host.isEmpty { fieldFocused = true }

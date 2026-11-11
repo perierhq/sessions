@@ -22,6 +22,8 @@ struct BlobHomeView: View {
     /// What the supervisor is waiting on you for, shown while Blob is idle.
     @State private var decisions = BlobDecisions()
     @State private var showSettings = false
+    /// Two panes on screen, which puts sheets on the trailing edge.
+    @State private var wideSurface = false
     /// Writing instead of speaking.
     @State private var typing = false
     @State private var draft = ""
@@ -181,6 +183,7 @@ struct BlobHomeView: View {
             }
             .onLongPressGesture { showSettings = true }
             .onAppear { BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
+            .onChange(of: panes != nil, initial: true) { _, wide in wideSurface = wide }
             .onChange(of: Self.writeBarEnd(size: geo.size, insets: insets, panes: panes), initial: true) { _, end in
                 writeBarTrailing = end
             }
@@ -212,6 +215,7 @@ struct BlobHomeView: View {
                 #endif
                 .blobSheetPlacement()
         }
+        .environment(\.blobWideSurface, wideSurface)
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
         .onChange(of: text.acceptedEntry?.id) { _, _ in text.accepted() }
         .onChange(of: text.streamingText) { _, _ in text.answerStreamed() }

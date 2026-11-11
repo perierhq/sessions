@@ -1,13 +1,28 @@
 import SwiftUI
 
+extension EnvironmentValues {
+    /// Whether the surface under Blob draws two panes (`BlobPanes.layout`:
+    /// a vertical fold, as on the open iPhone Duo, or a width of 820 pt or
+    /// more). The size class can't say this: the open Duo reports compact.
+    /// The home and the first-run screen set it; sheets read it.
+    @Entry var blobWideSurface = false
+}
+
 extension View {
-    /// Every sheet Blob presents. On the open iPhone Duo it sits on the
-    /// trailing edge, where the system gives it a vertical bar: its Close and
-    /// other toolbar items sit in the strip below the status icons, not
-    /// inside the sheet. Elsewhere (other iPhones, older systems, the Mac)
-    /// the sheet presents as it always did, with `detents` if given.
+    /// Every sheet Blob presents. On a wide surface (`blobWideSurface`, so
+    /// the open iPhone Duo) it sits on the trailing edge, where the system
+    /// gives it a vertical bar: its Close and other toolbar items sit in the
+    /// strip below the status icons, not inside the sheet. Elsewhere (other
+    /// iPhones, the closed Duo, older systems, the Mac) the sheet presents as
+    /// it always did, with `detents` if given.
     func blobSheetPlacement(detents: Set<PresentationDetent>? = nil) -> some View {
         modifier(BlobSheetPlacement(detents: detents))
+    }
+
+    /// Sets `blobWideSurface` from a full-bleed measure of this view, for a
+    /// screen that doesn't lay out panes itself.
+    func blobMeasuresWideSurface() -> some View {
+        modifier(BlobWideSurfaceMeasure())
     }
 }
 
@@ -19,10 +34,11 @@ extension View {
 /// 27.2 Duo simulator).
 private struct BlobSheetPlacement: ViewModifier {
     let detents: Set<PresentationDetent>?
+    @Environment(\.blobWideSurface) private var wide
 
     func body(content: Content) -> some View {
         #if os(iOS)
-        if #available(iOS 27.1, *) {
+        if #available(iOS 27.1, *), wide {
             content
                 .presentationPlacement(.trailing)
                 .presentationDetents([.large])
@@ -34,6 +50,23 @@ private struct BlobSheetPlacement: ViewModifier {
         #else
         content
         #endif
+    }
+}
+
+private struct BlobWideSurfaceMeasure: ViewModifier {
+    @State private var wide = false
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                GeometryReader { geo in
+                    Color.clear.onChange(of: BlobPanes.layout(in: geo) != nil, initial: true) { _, isWide in
+                        wide = isWide
+                    }
+                }
+                .ignoresSafeArea()
+            }
+            .environment(\.blobWideSurface, wide)
     }
 }
 
