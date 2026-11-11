@@ -10,8 +10,13 @@ struct BlobExchange: Identifiable, Equatable {
     /// while there is no answer yet.
     var reply: String?
     var date: Date?
+    /// It was shown across two panes, the conversation leading and what
+    /// the reply showed (or a decision) trailing, so history lays it out
+    /// that way again.
+    var split = false
 
     /// Groups a supervisor transcript into exchanges, oldest first.
+    /// `shownBeside`: messages whose exchange was shown across two panes.
     ///
     /// A turn starts at a message from you; consecutive user rows (the voice
     /// call splits speech into rows) join into one. The reply is the turn's
@@ -19,7 +24,7 @@ struct BlobExchange: Identifiable, Equatable {
     /// the spoken rows of a voice reply. Reasoning, tools and operational
     /// notices (worker reports and the like) are left out, and so are the
     /// turns notices start, since Blob only shows what was said to you.
-    static func exchanges(in entries: [TranscriptEntry]) -> [BlobExchange] {
+    static func exchanges(in entries: [TranscriptEntry], shownBeside: Set<String> = []) -> [BlobExchange] {
         var out: [BlobExchange] = []
         var current: BlobExchange?
         var run: [String] = []
@@ -50,6 +55,7 @@ struct BlobExchange: Identifiable, Equatable {
                     flush()
                     current = BlobExchange(id: entry.id, said: text, date: entry.timestampDate)
                 }
+                if shownBeside.contains(entry.id) { current?.split = true }
             } else if entry.isAssistant {
                 guard current != nil, entry.isReasoning != true, entry.notice == nil, !text.isEmpty else { continue }
                 if afterTool { run = []; afterTool = false }
@@ -66,11 +72,18 @@ struct BlobExchange: Identifiable, Equatable {
 /// One earlier exchange on Blob's page, above the current one: an optional
 /// day header, what you said, then Blob's reply. The header and the exchange
 /// are one row, so each scroll target has one id and one height.
+///
+/// It is laid out the way it was shown (`BlobExchange.split`): an exchange
+/// shown across two panes is split again, conversation leading and its
+/// visual blocks trailing, and one shown in one column is centered with
+/// everything inline (`BlobColumns`). On a surface too narrow for two
+/// panes everything is inline.
 struct BlobHistoryRow: View {
     let exchange: BlobExchange
     /// "Today", "Yesterday" or the date, on the first exchange of each day.
     let day: String?
     let first: Bool
+    let columns: BlobColumns
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -79,11 +92,12 @@ struct BlobHistoryRow: View {
                     .font(.caption2)
                     .foregroundStyle(OS1VisualStyle.textDim)
                     .frame(maxWidth: .infinity)
+                    .blobColumn(columns.centered)
                     .padding(.top, first ? 0 : 12)
                     .padding(.bottom, 20)
                     .accessibilityAddTraits(.isHeader)
             }
-            row(exchange)
+            row
         }
         .padding(.bottom, 32)
     }
@@ -94,7 +108,24 @@ struct BlobHistoryRow: View {
         return index == 0 || Self.day(exchanges[index - 1].date) != day ? day : nil
     }
 
-    private func row(_ exchange: BlobExchange) -> some View {
+    // Past replies are read, not answered: their quick replies are left
+    // out, so no chip changes state or height as the conversation moves on.
+    @ViewBuilder
+    private var row: some View {
+        let reply = exchange.reply.map(Self.withoutChoices)
+        let split = exchange.split && columns.leading != nil ? reply.map(BlobReplySplit.init) : nil
+        if let split {
+            BlobSplitRow(columns: columns, visuals: split.visuals) {
+                conversation(split.conversation)
+            }
+            .accessibilityElement(children: .contain)
+        } else {
+            conversation(reply)
+                .blobColumn(columns.centered)
+        }
+    }
+
+    private func conversation(_ reply: String?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(exchange.said)
                 .font(.footnote)
@@ -102,13 +133,10 @@ struct BlobHistoryRow: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .multilineTextAlignment(.trailing)
                 .accessibilityLabel("You: \(exchange.said)")
-            if let reply = exchange.reply {
-                // Past replies are read, not answered: their quick replies
-                // are left out, so no chip changes state or height as the
-                // conversation moves on.
+            if let reply {
                 // A spoken script is a small "Blob said" line; an older reply
                 // without one keeps its first paragraph as the Say line.
-                let past = BlobReply(Self.withoutChoices(reply))
+                let past = BlobReply(reply)
                 BlobReplyView(reply: past, sayStyle: past.scripted ? .said : .line)
             }
         }
@@ -178,7 +206,8 @@ extension BlobExchange {
                 Median reply: 4 min (−2 min)
                 ```
                 """,
-                date: yesterday.addingTimeInterval(600)
+                date: yesterday.addingTimeInterval(600),
+                split: true
             ),
             BlobExchange(
                 id: "demo-3",
@@ -192,7 +221,8 @@ extension BlobExchange {
                 Answer the refund question,10:05
                 ```
                 """,
-                date: now.addingTimeInterval(-3 * 3600)
+                date: now.addingTimeInterval(-3 * 3600),
+                split: true
             ),
             BlobExchange(
                 id: "demo-4",

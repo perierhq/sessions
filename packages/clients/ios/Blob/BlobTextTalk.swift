@@ -266,7 +266,7 @@ final class BlobTextTalk {
         #if DEBUG
         if let demo = BlobExchange.demo { return demo }
         #endif
-        return BlobExchange.exchanges(in: desk?.entries ?? [])
+        return BlobExchange.exchanges(in: desk?.entries ?? [], shownBeside: shownBeside)
     }
 
     /// The exchanges above the current one on Blob's page: everything before
@@ -280,8 +280,30 @@ final class BlobTextTalk {
         let cut: Int? = answeringAsk
             ? sentAfter.flatMap { id in entries.lastIndex { $0.id == id } }.map { $0 + 1 }
             : acceptedIndex(in: entries)
-        guard let cut else { return BlobExchange.exchanges(in: entries) }
-        return BlobExchange.exchanges(in: Array(entries[..<cut]))
+        guard let cut else { return BlobExchange.exchanges(in: entries, shownBeside: shownBeside) }
+        return BlobExchange.exchanges(in: Array(entries[..<cut]), shownBeside: shownBeside)
+    }
+
+    /// The message that starts the exchange on screen: the server's copy of
+    /// the one you sent, or, answering an ask, the last one before it.
+    var currentExchangeId: String? {
+        guard let desk, let start = turnStart(in: desk.entries) else { return nil }
+        let entries = desk.entries[..<min(start, desk.entries.count)]
+        return entries.last { $0.isUser && $0.notice == nil }?.id
+    }
+
+    /// Messages whose exchange was shown across two panes, newest last, so
+    /// history lays them out that way again (`BlobExchange.split`). Kept
+    /// across launches; only the latest few hundred.
+    private(set) var shownBeside: Set<String> = Set(UserDefaults.standard.stringArray(forKey: shownBesideKey) ?? [])
+    private static let shownBesideKey = "blob.shownBeside"
+
+    func markShownBeside(_ id: String) {
+        guard !shownBeside.contains(id) else { return }
+        shownBeside.insert(id)
+        var kept = UserDefaults.standard.stringArray(forKey: Self.shownBesideKey) ?? []
+        kept.append(id)
+        UserDefaults.standard.set(Array(kept.suffix(300)), forKey: Self.shownBesideKey)
     }
 
     var canLoadEarlier: Bool { desk?.canLoadEarlier ?? false }

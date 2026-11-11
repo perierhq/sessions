@@ -724,14 +724,25 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   Scrolled up far enough, a Latest button goes back; tapping Blob goes back
   to the quiet home. Blob connects to the supervisor on launch so it is
   there before the first message.
-- Two panes (`Blob/BlobPanes.swift`): beside a vertical fold (the open
+- Fluid panes (`Blob/BlobPanes.swift`): beside a vertical fold (the open
   Duo's inner display on its side, from its division region) or on a
-  surface 820 pt wide, the conversation stays in the leading pane and the
-  current reply's visual blocks (metrics, tables, charts, slides, images,
-  the rest of the block catalog) go to the trailing pane, top-aligned with
-  their own scroll. Without any, it shows a decision waiting on you, or
-  nothing. Nothing is drawn on the fold. The open Duo upright and the
-  closed Duo keep one column.
+  surface 820 pt wide, what is on the page decides the layout, and Blob
+  goes where it can (`BlobRoom`: the largest region the page leaves free,
+  with a 24 pt margin, never over text, cards or the write bar). With
+  nothing to read (idle, listening, thinking) Blob sits in the middle of
+  the whole surface, across the fold if there is one. A reply, a question
+  or a decision takes the leading pane and Blob moves to the middle of the
+  trailing one. A reply with visual blocks (metrics, tables, charts,
+  slides, images, the rest of the block catalog), or with a decision
+  waiting beside it, puts those in the trailing pane, top-aligned with
+  their own scroll, and Blob goes to its slot. Text never crosses a
+  physical fold, and Blob's thought stays in Blob's region. Blob travels
+  on its spring and the text column keeps its width, so nothing re-wraps;
+  under Reduce Motion Blob fades in at its new place instead. History
+  keeps each exchange the way it was shown: one with visuals beside it
+  split across the panes, any other centered (`BlobColumns`,
+  `BlobSplitRow`). The open Duo upright and the closed Duo keep one
+  column.
 - Decisions (`Blob/BlobDecisions.swift`, `Blob/BlobDecisionView.swift`): the
   supervisor's open `needs-you` items (`GET /api/supervisor/items`), read on
   launch, when the app comes back and every minute while it is in front.
@@ -748,13 +759,17 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   aloud once. A question takes an option, a written answer through the
   write bar, or Skip; a force merge takes Merge anyway or Cancel. Answers go
   through the same calls as the OS app's cards, then Blob waits for the
-  run's reply. While a run works with nothing written yet, Blob says
-  "Working on it".
+  run's reply. While a run works with nothing written yet, Blob thinks
+  (below).
 - Thinking steps (`Blob/BlobSteps.swift`, `Blob/BlobThinkingView.swift`):
-  while the supervisor works on your message, one line above Blob says what
-  it is doing ("Reading my notes", "Reading PR #212 · 12s"), read from the
-  transcript entries after your message. Tap it for the turn's steps with
-  their times. If nothing has been said 4 s after the message went out and
+  while the supervisor works on your message, in voice and text mode, Blob
+  thinks it: a thought bubble beside its head, joined by two small circles,
+  says what it is doing ("Reading my notes", "Reading PR #212 · 12s"), read
+  from the transcript entries after your message, or shows three dots
+  before there is a step. It follows Blob from its physics, stays inside
+  the safe area and on Blob's side of a fold, emerges tail first, bobs a
+  few points, and a new step forms as the old one drifts up; under Reduce
+  Motion it only fades. Tap it for the turn's steps with their times. If nothing has been said 4 s after the message went out and
   reading aloud is on, Blob says a short filler once (`Blob/BlobFiller.swift`):
   the server voice's three fillers are fetched once per voice and model into
   `Caches/BlobFiller/<voiceId>/` and played from there; until then an Apple
@@ -771,11 +786,16 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   with canned exchanges; `BLOB_DEMO_HISTORY=open` also reveals it and
   `top` scrolls to its oldest exchange. `BLOB_DEMO_REPLY=1` shows a reply
   with blocks, `long` one taller than the screen, `plain` one without
-  visual blocks; `BLOB_DEMO_SCROLL=end`
-  starts the page at its end.
+  visual blocks, `cycle` adds and takes away that reply's visuals every
+  4 s (the move between one pane and two); `BLOB_DEMO_SCROLL=end`
+  starts the page at its end. `BLOB_DEMO_FOLD=1` makes the middle band of
+  a wide surface act as the Duo's fold, to check the open Duo's layout on
+  an iPad simulator (the Blob target is iPhone-only, so build it for one
+  with `TARGETED_DEVICE_FAMILY=1,2` on the command line).
   `BLOB_DEMO_DECISIONS=1` shows two canned decisions.
   `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
-  `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking.
+  `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking, and
+  `BLOB_DEMO_TYPING=1` for text mode.
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 
