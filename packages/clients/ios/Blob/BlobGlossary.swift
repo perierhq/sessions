@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// The words you say that a speech model can't know: project names, repos,
 /// teammates' first names, Pat and Blob, PR. The server builds the list
@@ -83,13 +88,15 @@ enum BlobGlossary {
     ///   with "/", ".", "@" in it) or between backticks changes.
     /// - Only a capitalized span changes, the way the transcribers write a
     ///   name they don't know: one to three words joined by spaces or
-    ///   hyphens, with a capital on a word that doesn't start a sentence
-    ///   (where every word is capitalized).
+    ///   hyphens, every word capitalized, with a capital on a word that
+    ///   doesn't start a sentence.
     /// - The span must sound like the term (`phonetic` keys at most one
     ///   apart, none for short words, same first sound) and be spelled close
     ///   to it (`allowedEdits`; a single word at most one change, two from
     ///   nine letters). A span that is already a term stays; a plural of
-    ///   one is not a near miss. A one-word name heard as two capitalized
+    ///   one is not a near miss. A single word changes only with five
+    ///   letters or more and when the spell checker doesn't know it in the
+    ///   current language, so "Mac" never becomes Max nor "Git" Kit. A one-word name heard as two capitalized
     ///   words ("Better Bahn") is joined; a lowercase id (`frontend`) never
     ///   is.
     /// - Only a term with a capital in it (a name) is what something
@@ -106,7 +113,14 @@ enum BlobGlossary {
     ///   ping) and a verb a name takes there (check, review, fix...), for a
     ///   name of four letters or more, sounding the same and one letter
     ///   off. So "have pet hair" and "have tea." stay.
+    @MainActor
     static func correct(_ text: String, glossary: [String]) -> Correction {
+        correct(text, glossary: glossary, isWord: isDictionaryWord)
+    }
+
+    /// `correct` with the spell check passed in: `isWord` is true for a
+    /// word the current language has.
+    static func correct(_ text: String, glossary: [String], isWord: (String) -> Bool) -> Correction {
         let terms = glossary.compactMap(Term.init)
         guard !terms.isEmpty else { return Correction(text: text, fixes: 0) }
         let known = Set(terms.map(\.key))
@@ -133,7 +147,7 @@ enum BlobGlossary {
             // span when two are as close.
             var best: (span: [Word], term: Term, edits: Int)?
             for span in spans {
-                guard let found = Self.match(span, in: text, terms: terms, known: known),
+                guard let found = Self.match(span, in: text, terms: terms, known: known, isWord: isWord),
                       best.map({ found.edits < $0.edits }) ?? true
                 else { continue }
                 best = (span, found.term, found.edits)
@@ -277,10 +291,15 @@ enum BlobGlossary {
         return ".!?:\n\"\u{201C}".contains(last)
     }
 
-    private static func match(_ span: [Word], in text: String, terms: [Term], known: Set<String>) -> (term: Term, edits: Int)? {
+    private static func match(
+        _ span: [Word], in text: String, terms: [Term], known: Set<String>, isWord: (String) -> Bool
+    ) -> (term: Term, edits: Int)? {
         // A capital the transcriber chose: not the one every sentence starts with.
         let capitals = span.filter { $0.core.first?.isUppercase == true && !sentenceStart($0, in: text) }
         guard !capitals.isEmpty else { return nil }
+        // Every word of a longer span capitalized: "Betterbahm now" is one
+        // word and "now", not a name.
+        if span.count > 1, span.contains(where: { $0.core.first?.isUppercase != true }) { return nil }
         let spanKey = key(span.map(\.core).joined(separator: " "))
         // A one-word name heard as words: "Better Bahn" is BetterBahn. Never
         // a lowercase id: "Front End" stays, not `frontend`.
@@ -289,6 +308,11 @@ enum BlobGlossary {
             return (whole, 0)
         }
         guard spanKey.count >= 3, !known.contains(spanKey) else { return nil }
+        // One word: five letters or more, and not one the language has
+        // ("Mac" stays, not Max; "Butter" stays).
+        if span.count == 1 {
+            guard span[0].core.filter(\.isLetter).count >= 5, !isWord(span[0].core) else { return nil }
+        }
         // Each word on its own already a term: it was heard right.
         if span.count > 1, span.contains(where: { known.contains(key($0.core)) }) { return nil }
         let spanSound = phonetic(spanKey)
@@ -326,6 +350,42 @@ enum BlobGlossary {
         default: min(3, length * 3 / 10)
         }
     }
+
+    /// Whether the system spell checker knows `word` in the current
+    /// language: UITextChecker on iOS, NSSpellChecker on macOS.
+    @MainActor
+    static func isDictionaryWord(_ word: String) -> Bool {
+        #if canImport(UIKit)
+        let checker = UITextChecker()
+        let range = NSRange(location: 0, length: (word as NSString).length)
+        let misspelled = checker.rangeOfMisspelledWord(
+            in: word, range: range, startingAt: 0, wrap: false, language: checkerLanguage
+        )
+        return misspelled.location == NSNotFound
+        #elseif canImport(AppKit)
+        let misspelled = NSSpellChecker.shared.checkSpelling(
+            of: word, startingAt: 0, language: nil, wrap: false,
+            inSpellDocumentWithTag: 0, wordCount: nil
+        )
+        return misspelled.location == NSNotFound
+        #else
+        return false
+        #endif
+    }
+
+    #if canImport(UIKit)
+    /// The checker language closest to the person's first preferred one
+    /// ("en-GB" to en_GB, else any en_*), English when none fits.
+    @MainActor
+    private static var checkerLanguage: String {
+        let available = UITextChecker.availableLanguages
+        let preferred = (Locale.preferredLanguages.first ?? "en").replacingOccurrences(of: "-", with: "_")
+        if available.contains(preferred) { return preferred }
+        let language = String(preferred.prefix { $0 != "_" })
+        return available.first { $0 == language || $0.hasPrefix(language + "_") }
+            ?? available.first { $0.hasPrefix("en") } ?? "en_US"
+    }
+    #endif
 
     // MARK: - PRs
 
