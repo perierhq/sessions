@@ -1,3 +1,4 @@
+import { codeRanges } from "../../shared/code-ranges";
 import {
   composerSessionRanges,
   SESSION_GLYPH_SLOT,
@@ -40,22 +41,7 @@ export interface ComposerSessionEditResult {
   touchedSession: boolean;
 }
 
-export function codeRanges(
-  text: string,
-): Array<{ start: number; end: number }> {
-  const ranges: Array<{ start: number; end: number }> = [];
-  const fences = /```[\s\S]*?```|```[\s\S]*$/g;
-  for (let match = fences.exec(text); match; match = fences.exec(text))
-    ranges.push({ start: match.index, end: match.index + match[0].length });
-
-  const inline = /`[^`\n]+`/g;
-  for (let match = inline.exec(text); match; match = inline.exec(text)) {
-    const start = match.index;
-    if (!ranges.some((range) => start >= range.start && start < range.end))
-      ranges.push({ start, end: start + match[0].length });
-  }
-  return ranges;
-}
+export { codeRanges };
 
 /** Show known session names while retaining canonical ids in draft state. */
 export function projectComposerSessions(

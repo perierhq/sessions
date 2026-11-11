@@ -188,33 +188,42 @@ export function personNameForKey(key: string): string {
 
 /**
  * People rows for the composer's @ palette. A bare "@" offers the complete
- * directory; typing filters by first or full name. Better matches sort first,
- * so "@john" puts John ahead of Johnny; ties put the current person first,
- * then keep the directory's configured order. Inserting yields
- * `@Name`, which the server's mention scan turns into a push when sent.
+ * directory, then the bots (Blob); typing filters by first or full name.
+ * Better matches sort first, so "@john" puts John ahead of Johnny; ties put
+ * the current person first, then keep the directory's configured order.
+ * Inserting yields `@Name`, which the server's mention scan turns into a
+ * push when sent, or `@Blob`, which reaches Blob (server people.ts
+ * `mentionsBlob`). A bot row has no subtitle: the palette badges it instead.
  */
 export function peopleMentionMatches(
   query: string,
   roster: Person[] = getPeople(),
   currentUser = "",
+  botRoster: Person[] = getBots(),
 ): FileMention[] {
   const current = currentUser.trim().toLowerCase();
-  return roster
+  return [
+    ...roster.filter((person) => person.kind !== "bot"),
+    ...botRoster.map((bot) => ({ ...bot, kind: "bot" as const })),
+  ]
     .map((person) => ({
       person,
       score: fuzzyMatch(query, [person.name, person.fullName]),
-      isCurrent: person.name.toLowerCase() === current,
+      isCurrent: person.kind !== "bot" && person.name.toLowerCase() === current,
     }))
     .filter((row) => row.score > 0)
     .sort(
       (a, b) => b.score - a.score || Number(b.isCurrent) - Number(a.isCurrent),
     )
-    .map(({ person: p }) => ({
-      display: p.name,
-      insert: p.name,
-      kind: "person" as const,
-      sub: p.fullName,
-    }));
+    .map(({ person: p }) => {
+      const row: FileMention = {
+        display: p.name,
+        insert: p.name,
+        kind: "person",
+      };
+      if (p.kind !== "bot") row.sub = p.fullName;
+      return row;
+    });
 }
 
 /** Reactive roster — triggers the fetch on first use. */

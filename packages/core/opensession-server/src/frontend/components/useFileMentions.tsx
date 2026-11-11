@@ -9,7 +9,7 @@ import React, {
 } from "react";
 import { createPortal } from "react-dom";
 import type { FileMention } from "../lib/api";
-import { UserAvatar } from "./UserAvatar";
+import { BotBadge, isBotName, UserAvatar } from "./UserAvatar";
 import { cn } from "../ui/cn";
 import { FLOATING_OVERLAY_LAYER } from "../ui/popup-classes";
 import { IconTile } from "./BrandTile";
@@ -22,7 +22,7 @@ import {
   IconPlug,
   IconStack,
 } from "./icons";
-import { peopleMentionMatches, usePeople } from "../lib/people";
+import { peopleMentionMatches, useBots, usePeople } from "../lib/people";
 import { useCurrentUser } from "./UserPicker";
 import {
   actionMentionSuggestions,
@@ -144,6 +144,7 @@ export function useFileMentions({
   const [activeIdx, setActiveIdx] = useState(0);
   const popupId = useId();
   const people = usePeople();
+  const bots = useBots();
   const currentUser = useCurrentUser();
   // Caret-target to apply after a programmatic value change (insertion).
   const pendingCaret = useRef<number | null>(null);
@@ -294,7 +295,7 @@ export function useFileMentions({
     const local =
       mention.kind === "file"
         ? mergeMentionSuggestions(
-            peopleMentionMatches(mention.query, people, currentUser),
+            peopleMentionMatches(mention.query, people, currentUser, bots),
             actionMentionSuggestions(mention.query, actionsRef.current),
           )
         : [];
@@ -361,7 +362,14 @@ export function useFileMentions({
   });
   useEffect(() => {
     loadSuggestions();
-  }, [mention?.query, mention?.start, mention?.kind, people, currentUser]);
+  }, [
+    mention?.query,
+    mention?.start,
+    mention?.kind,
+    people,
+    bots,
+    currentUser,
+  ]);
 
   const open = !!mention && suggestions.length > 0;
 
@@ -650,6 +658,8 @@ export function useFileMentions({
                         <span className="overflow-hidden text-ellipsis text-meta text-faint">
                           @{item.insert}
                         </span>
+                      ) : isPerson && isBotName(item.insert) ? (
+                        <BotBadge />
                       ) : isWorkspace ||
                         isSession ||
                         isSkill ||
