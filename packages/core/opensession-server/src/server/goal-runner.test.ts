@@ -20,6 +20,7 @@ import { getConfigAsync } from "./config";
 import type { Goal } from "./goals";
 import type {
   LeadGoalFields,
+  LeadRunPlan,
   LeadWakePlan,
   WatchWakePlan,
 } from "./goal-runner";
@@ -451,6 +452,20 @@ describe("a project lead's goal", () => {
     await c.connect(a);
     return (await c.listTools()).tools.map((t) => t.name).sort();
   }
+
+  test("the prompt lists the owner's approvals the wake check gave", async () => {
+    const lines = [
+      "Ready to apply: Shop: CI repair (proposal lp-1). Call lead_apply.",
+      "Waiting: Shop: CI repair (proposal lp-2). Runs when PR #41 in acme/shop is merged.",
+    ];
+    await runGoal(await leadGoal());
+    expect(lastRun!.prompt).not.toContain("## The owner's approvals");
+    plan = { ...(plan as LeadRunPlan), approvals: lines };
+    await runGoal(await leadGoal());
+    expect(lastRun!.prompt).toContain(
+      `## The owner's approvals\n\n${lines.join("\n")}`,
+    );
+  });
 
   test("runs with the lead's tools: no ask_human, no web while it watches, no way to end itself", async () => {
     const lead = await leadGoal();

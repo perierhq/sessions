@@ -121,14 +121,17 @@ export type LeadGoalFields = Pick<
 
 /** A lead's goal may wake: its fields from the settings, the owner's local
  *  day its wake counts towards, the tokens this wake may use, what it may
- *  still spend this month when it has a dollar cap (null: no cap), and
- *  whether it reads the web. */
+ *  still spend this month when it has a dollar cap (null: no cap),
+ *  whether it reads the web, and the approvals it may apply or waits on. */
 export interface LeadRunPlan {
   fields: LeadGoalFields;
   day: string;
   wakeTokens: number;
   budgetUsd: number | null;
   web: boolean;
+  /** The owner's approvals, one fixed line each: ready to apply, or
+   *  waiting on their condition. */
+  approvals?: string[];
 }
 
 /** What a project lead's settings say about one wake of its goal
@@ -303,6 +306,8 @@ function buildGoalWakePrompt(
     parts.push(
       `Limits: this wake may use about ${lead.wakeTokens.toLocaleString("en-US")} tokens${lead.budgetUsd === null ? "" : ` and spend about $${Number(lead.budgetUsd.toFixed(2))}, what is left of this month's cap`}. At that you are asked to wrap up, and past it the wake is stopped and the lead pauses until the owner resumes it.`,
     );
+  if (lead?.approvals?.length)
+    parts.push(`## The owner's approvals\n\n${lead.approvals.join("\n")}`);
   if (goal.mode === "code") {
     const repo = getRepo(goal.repo);
     const branchLabel = JSON.stringify(repo.defaultBranch);

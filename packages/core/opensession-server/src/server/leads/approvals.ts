@@ -1338,6 +1338,23 @@ export async function getRecord(
   );
 }
 
+/** Void what is past its expiry in `project`'s document, writing it only
+ *  when something is due. Returns how many records were voided. */
+export async function expireProject(
+  project: string,
+  now: number = deps.now(),
+): Promise<number> {
+  const key = projectKey(project);
+  if (!key) return 0;
+  let count = 0;
+  await updateDocument(key, (current) => {
+    const result = expireRecords(current.records, now);
+    count = result.expired;
+    return count ? { ...current, records: result.records } : null;
+  });
+  return count;
+}
+
 /**
  * Void what is past its expiry in every project (one bounded document per
  * project), writing only documents that have something due. Returns how
@@ -1348,13 +1365,7 @@ export async function expire(now: number = deps.now()): Promise<number> {
   for (const row of await deps.documents().list()) {
     if (projectKey(row.key) !== row.key) continue;
     if (!expired(cleanDocument(row.value, row.key), now)) continue;
-    let count = 0;
-    await updateDocument(row.key, (current) => {
-      const result = expireRecords(current.records, now);
-      count = result.expired;
-      return count ? { ...current, records: result.records } : null;
-    });
-    total += count;
+    total += await expireProject(row.key, now);
   }
   return total;
 }

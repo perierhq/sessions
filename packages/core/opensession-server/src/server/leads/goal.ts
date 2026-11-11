@@ -4,9 +4,13 @@
 // many wakes in the owner's day, or a wake past its token limit) or goes
 // over an optional dollar cap, and active again whenever the lead is on and nothing blocks it. Each wake
 // asks leadWakeCheck first, which rebuilds the goal's fields from the
-// settings. The owner's answers to the lead's proposals land in its ledger
-// and wake it. Nothing runs at import: `startProjectLeads` registers the
-// listeners, once.
+// settings, then looks at the project's approvals: it expires old ones,
+// moves waiting ones whose condition is met to ready and lists them in the
+// wake's prompt. The owner's answers to the lead's proposals land in its
+// ledger and wake it; a merged pull request or a resolved incident an
+// approval waits on wakes it too. Nothing runs at import:
+// `startProjectLeads` registers the listeners, once.
+import type { Incident } from "../../shared/incidents";
 import type { ProjectSettingsDocument } from "../../shared/project-settings";
 import type {
   SupervisorAnswerContext,
@@ -30,13 +34,21 @@ import {
   DEFAULT_REPORT_STYLE,
   type ReportStyle,
 } from "../supervisor-report-style";
+import { APPROVED_RUNS_ONLY_AT_ACT } from "./apply";
+import type { LeadRecord } from "./approvals";
 import { leadCharter } from "./charter";
-import { describeCondition, type LeadCondition } from "./conditions";
+import {
+  describeCondition,
+  type ConditionResult,
+  type LeadCondition,
+} from "./conditions";
 import {
   LEAD_SOURCE_PREFIX,
   leadOwner,
   leadOwnerMember,
   leadSource,
+  proposalTitle,
+  stepCopy,
 } from "./report";
 
 export const LEAD_MIN_WAKE_MINUTES = 60;
@@ -64,6 +76,12 @@ const RETRY_MS = 10 * 60_000;
 /** Boot retries of the lead goals that failed, doubling up to the cap. */
 const BOOT_RETRY_MS = 60_000;
 const BOOT_RETRY_MAX_MS = 30 * 60_000;
+/** Waiting approvals whose condition one wake checks, and how long each
+ *  check may take; the rest wait for a later wake. */
+export const WAKE_CONDITION_CHECKS = 5;
+export const CONDITION_CHECK_TIMEOUT_MS = 10_000;
+/** The most approval lines one wake's prompt lists. */
+export const WAKE_APPROVAL_LINES = 20;
 
 export interface LeadGoalDeps {
   now(): number;
@@ -82,6 +100,12 @@ export interface LeadGoalDeps {
   proposalForItem: (typeof import("./approvals"))["proposalForItem"];
   approve: (typeof import("./approvals"))["approve"];
   voidFor: (typeof import("./approvals"))["voidFor"];
+  listApprovals: (typeof import("./approvals"))["listForProject"];
+  expireApprovals: (typeof import("./approvals"))["expireProject"];
+  settleInterrupted: (typeof import("./approvals"))["settleInterrupted"];
+  transition: (typeof import("./approvals"))["transition"];
+  /** Whether an approval's condition holds now; never throws. */
+  checkCondition(condition: LeadCondition): Promise<ConditionResult>;
   /** The owner's report style from their supervisor prefs. */
   reportStyle(owner: string): Promise<ReportStyle>;
   /** The owner's time zone: their supervisor prefs, else their profile. */
@@ -116,6 +140,16 @@ const liveDeps: LeadGoalDeps = {
     (await import("./approvals")).proposalForItem(...args),
   approve: async (...args) => (await import("./approvals")).approve(...args),
   voidFor: async (...args) => (await import("./approvals")).voidFor(...args),
+  listApprovals: async (project) =>
+    (await import("./approvals")).listForProject(project),
+  expireApprovals: async (...args) =>
+    (await import("./approvals")).expireProject(...args),
+  settleInterrupted: async (...args) =>
+    (await import("./approvals")).settleInterrupted(...args),
+  transition: async (...args) =>
+    (await import("./approvals")).transition(...args),
+  checkCondition: async (condition) =>
+    (await import("./conditions")).checkCondition(condition),
   reportStyle: async (owner) =>
     (await import("../supervisor-inbox")).supervisorReportStyle(owner),
   timeZone: async (owner) =>
@@ -476,8 +510,10 @@ async function askAboutGuard(
  * loop guard holds it (which also asks the owner, once a hold), it is over
  * an optional dollar cap (which asks once a month) or the settings name
  * another goal. Otherwise it runs on the fields the settings give it, with
- * its token limit and what is left of a dollar cap, and reads the web only
- * past the watch stage.
+ * its token limit and what is left of a dollar cap, reads the web only
+ * past the watch stage, and is told which approvals are ready to apply and
+ * which still wait (reviewApprovals). A failed review of the approvals
+ * never blocks the wake.
  */
 export async function leadWakeCheck(goal: Goal): Promise<LeadWakePlan> {
   const project = goal.leadProject;
@@ -497,13 +533,242 @@ export async function leadWakeCheck(goal: Goal): Promise<LeadWakePlan> {
     return { block: reason };
   }
   const cap = doc.lead.budgetUsdPerMonth;
+  const approvals = await reviewApprovals(goal, project, doc, d).catch(
+    (error: unknown) => {
+      console.warn(
+        `[leads] ${project}: could not review the approvals:`,
+        error instanceof Error ? error.message : error,
+      );
+      return [];
+    },
+  );
   return {
     fields: await leadGoalFieldsNow(project, doc, d),
     day,
     wakeTokens: doc.lead.wakeTokenLimit,
     budgetUsd: cap === null ? null : cap - goalMonthSpend(goal, now),
     web: doc.lead.stage !== "watch",
+    ...(approvals.length ? { approvals } : {}),
   };
+}
+
+/** `run`, or `fallback` once it has taken `ms`. */
+async function within<T>(run: Promise<T>, ms: number, fallback: T) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A waiting or ready approval that still stands. */
+function isLiveApproval(
+  record: LeadRecord,
+): record is LeadRecord & { approval: NonNullable<LeadRecord["approval"]> } {
+  const state = record.approval?.state;
+  return (
+    record.proposal.voidedAt === undefined &&
+    (state === "waiting" || state === "ready")
+  );
+}
+
+/** What an approval waits for, as the second half of a sentence. */
+function whenClause(condition: LeadCondition): string {
+  const what = describeCondition(condition);
+  // A PR name leads its sentence as it is; the others start a clause.
+  return condition.kind === "pr-merged"
+    ? what
+    : `${what.charAt(0).toLowerCase()}${what.slice(1)}`;
+}
+
+/** Tell the owner, once per approval, that its condition is met. */
+async function tellReady(
+  project: string,
+  doc: ProjectSettingsDocument,
+  record: LeadRecord,
+  title: string,
+  d: LeadGoalDeps,
+): Promise<void> {
+  const owner = leadOwner(doc);
+  const condition = record.approval?.condition;
+  if (!owner || !condition) return;
+  try {
+    await d.postSupervisorItem({
+      user: owner,
+      source: leadSource(project),
+      project,
+      kind: "fyi",
+      title: `Ready to apply: ${title}`,
+      body: [
+        `${describeCondition(condition)}, so the lead can apply what you approved.`,
+        [
+          "Steps:",
+          ...record.proposal.steps.map(
+            (step, i) => `${i + 1}. ${stepCopy(step, {})}`,
+          ),
+        ].join("\n"),
+      ].join("\n\n"),
+      dedupeKey: `${leadSource(project)}:ready:${record.proposal.id}`,
+      once: true,
+    });
+  } catch (error) {
+    console.warn(
+      `[leads] ${project}: could not tell the owner ${record.proposal.id} is ready:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
+/**
+ * The project's approvals at the start of a wake: expire old ones and
+ * settle interrupted applies, then, where approved runs may happen, check
+ * the conditions of up to WAKE_CONDITION_CHECKS waiting ones (each wake
+ * takes the next ones in turn, each check bounded by
+ * CONDITION_CHECK_TIMEOUT_MS) and move the met ones to ready, telling the
+ * owner once. Returns the prompt's lines: ready ones first, then waiting
+ * ones with their condition, in fixed copy.
+ */
+async function reviewApprovals(
+  goal: Pick<Goal, "wakeCount">,
+  project: string,
+  doc: ProjectSettingsDocument,
+  d: LeadGoalDeps,
+): Promise<string[]> {
+  const now = d.now();
+  await d.expireApprovals(project, now);
+  await d.settleInterrupted(project, now);
+  // lead_apply runs approved steps only at these stages (leads/apply.ts).
+  const stage = doc.lead.stage;
+  if (stage === "watch" || (APPROVED_RUNS_ONLY_AT_ACT && stage !== "act"))
+    return [];
+  const live = (await d.listApprovals(project)).filter(isLiveApproval);
+  const waiting = live
+    .filter((r) => r.approval.state === "waiting" && r.approval.condition)
+    // Oldest first; ids are time-ordered, so they settle a tie.
+    .sort(
+      (a, b) =>
+        a.approval.at - b.approval.at ||
+        a.proposal.id.localeCompare(b.proposal.id),
+    );
+  const start =
+    waiting.length > WAKE_CONDITION_CHECKS
+      ? (goal.wakeCount * WAKE_CONDITION_CHECKS) % waiting.length
+      : 0;
+  const due = [...waiting.slice(start), ...waiting.slice(0, start)].slice(
+    0,
+    WAKE_CONDITION_CHECKS,
+  );
+  const label = d.projectLabel(project) || project;
+  const met = new Set<string>();
+  await Promise.all(
+    due.map(async (record) => {
+      const result = await within(
+        d
+          .checkCondition(record.approval.condition!)
+          .catch((): ConditionResult => ({
+            status: "unknown",
+            reason: "failed",
+          })),
+        CONDITION_CHECK_TIMEOUT_MS,
+        { status: "unknown", reason: "timed out" } as ConditionResult,
+      );
+      if (result.status !== "met") return;
+      const moved = await d.transition(project, record.proposal.id, "ready");
+      if (!moved.ok) return;
+      met.add(record.proposal.id);
+      await tellReady(
+        project,
+        doc,
+        record,
+        proposalTitle(label, record.proposal.category),
+        d,
+      );
+    }),
+  );
+  const ready = live.filter(
+    (r) => r.approval.state === "ready" || met.has(r.proposal.id),
+  );
+  const lines = [
+    ...ready.map(
+      (r) =>
+        `Ready to apply: ${proposalTitle(label, r.proposal.category)} (proposal ${r.proposal.id}). Call lead_apply.`,
+    ),
+    ...waiting
+      .filter((r) => !met.has(r.proposal.id))
+      .map(
+        (r) =>
+          `Waiting: ${proposalTitle(label, r.proposal.category)} (proposal ${r.proposal.id}). Runs when ${whenClause(r.approval.condition!)}.`,
+      ),
+  ];
+  if (lines.length <= WAKE_APPROVAL_LINES) return lines;
+  return [
+    ...lines.slice(0, WAKE_APPROVAL_LINES),
+    `And ${lines.length - WAKE_APPROVAL_LINES} more approvals.`,
+  ];
+}
+
+/** What wakes a lead early: the event an approval's condition names. */
+export type LeadWakeEvent =
+  | { kind: "pr-merged"; ghRepo: string; number: number }
+  | { kind: "incident-resolved"; id: string };
+
+function conditionNames(condition: LeadCondition, event: LeadWakeEvent) {
+  if (event.kind === "incident-resolved")
+    return condition.kind === "incident-resolved" && condition.id === event.id;
+  return (
+    condition.kind !== "incident-resolved" &&
+    condition.number === event.number &&
+    condition.ghRepo.toLowerCase() === event.ghRepo.toLowerCase()
+  );
+}
+
+/**
+ * Wake `project`'s lead now when one of its waiting approvals names
+ * `event`, so the wake checks the condition and the lead applies it. Reads
+ * the project's settings and its one approvals document, nothing else.
+ * Returns whether the lead was woken.
+ */
+export async function wakeLeadFor(
+  project: string,
+  event: LeadWakeEvent,
+): Promise<boolean> {
+  const d = deps();
+  const doc = await d.projectDocument(project);
+  const goalId = doc.lead.goalId;
+  if (!doc.lead.enabled || !goalId) return false;
+  const waits = (await d.listApprovals(project)).some(
+    (r) =>
+      isLiveApproval(r) &&
+      r.approval.state === "waiting" &&
+      !!r.approval.condition &&
+      conditionNames(r.approval.condition, event),
+  );
+  if (!waits) return false;
+  const now = new Date(d.now()).toISOString();
+  let woke = false;
+  await d.mutateGoal(goalId, (g) => {
+    woke =
+      g.leadProject === project && g.status === "active" && g.nextWakeAt > now;
+    return woke ? { ...g, nextWakeAt: now } : g;
+  });
+  return woke;
+}
+
+/** An incident that just resolved wakes its project's lead when an
+ *  approval waits on it. */
+export async function wakeLeadOnIncident(
+  next: Pick<Incident, "id" | "project" | "state">,
+  previous: Pick<Incident, "state"> | null,
+): Promise<boolean> {
+  if (next.state !== "resolved" || previous?.state === "resolved") return false;
+  return wakeLeadFor(next.project, { kind: "incident-resolved", id: next.id });
 }
 
 const idleRetries = new Map<string, number>();
@@ -578,13 +843,7 @@ export async function leadGoalWaiting(goal: Goal, now: number): Promise<void> {
 /** The ledger's fixed line for an approval the owner's answer made. */
 function approvedLine(title: string, condition?: LeadCondition): string {
   if (!condition) return `Approved: ${title}. Ready to apply.`;
-  const what = describeCondition(condition);
-  // A PR name leads its sentence as it is; the others start a clause.
-  const clause =
-    condition.kind === "pr-merged"
-      ? what
-      : `${what.charAt(0).toLowerCase()}${what.slice(1)}`;
-  return `Approved: ${title}. Runs when ${clause}.`;
+  return `Approved: ${title}. Runs when ${whenClause(condition)}.`;
 }
 
 /**
@@ -799,19 +1058,24 @@ export async function ensureLeadGoalsAtBoot(
   }, delayMs);
 }
 
-/** Register the lead's listeners: settings writes, the owner's answers and
- *  the goal runner's lead hooks, then bring every lead's goal in line once.
- *  Idempotent; called from boot. */
+/** Register the lead's listeners: settings writes, the owner's answers,
+ *  resolved incidents and the goal runner's lead hooks, then bring every
+ *  lead's goal in line once. Idempotent; called from boot. */
 export async function startProjectLeads(): Promise<void> {
   const g = globalThis as { __projectLeadsStarted?: boolean };
   if (g.__projectLeadsStarted) return;
   g.__projectLeadsStarted = true;
-  const [{ onProjectDocumentChange }, { onSupervisorAnswer }, runner] =
-    await Promise.all([
-      import("../projects/store"),
-      import("../supervisor-inbox"),
-      import("../goal-runner"),
-    ]);
+  const [
+    { onProjectDocumentChange },
+    { onSupervisorAnswer },
+    runner,
+    { onIncidentChange },
+  ] = await Promise.all([
+    import("../projects/store"),
+    import("../supervisor-inbox"),
+    import("../goal-runner"),
+    import("../incidents/incident-store"),
+  ]);
   onProjectDocumentChange((project) => {
     ensureLeadGoal(project).catch((error: unknown) => {
       console.warn(
@@ -821,6 +1085,14 @@ export async function startProjectLeads(): Promise<void> {
     });
   });
   onSupervisorAnswer(LEAD_SOURCE_PREFIX, handleLeadAnswer);
+  onIncidentChange((next, previous) => {
+    wakeLeadOnIncident(next, previous).catch((error: unknown) => {
+      console.warn(
+        `[leads] ${next.project}: could not wake the lead:`,
+        error instanceof Error ? error.message : error,
+      );
+    });
+  });
   runner.registerLeadGoalHooks({
     wake: leadWakeCheck,
     idle: leadGoalIdle,
