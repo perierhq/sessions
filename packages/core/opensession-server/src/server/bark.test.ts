@@ -583,6 +583,33 @@ describe("settings", () => {
     ).toBe(400);
   });
 
+  test("the first device key turns Bark on; a replaced key keeps the state", async () => {
+    const first = await call("PUT", "/api/supervisor/bark", {
+      deviceKey: DEVICE_KEY,
+    });
+    expect(first.json.bark.enabled).toBe(true);
+    await call("PUT", "/api/supervisor/bark", { enabled: false });
+    const replaced = await call("PUT", "/api/supervisor/bark", {
+      deviceKey: OTHER_DEVICE_KEY,
+    });
+    expect(replaced.json.bark.enabled).toBe(false);
+    await call("PUT", "/api/supervisor/bark", { enabled: true });
+    const again = await call("PUT", "/api/supervisor/bark", {
+      deviceKey: DEVICE_KEY,
+    });
+    expect(again.json.bark.enabled).toBe(true);
+    const removed = await call("PUT", "/api/supervisor/bark", {
+      deviceKey: null,
+    });
+    expect(removed.json.bark.enabled).toBe(false);
+    // A first key saved with enabled: false stays off.
+    const off = await call("PUT", "/api/supervisor/bark", {
+      deviceKey: DEVICE_KEY,
+      enabled: false,
+    });
+    expect(off.json.bark.enabled).toBe(false);
+  });
+
   test("replacing or clearing a key deletes the old secret", async () => {
     await call("PUT", "/api/supervisor/bark", { deviceKey: DEVICE_KEY });
     await call("PUT", "/api/supervisor/bark", { deviceKey: OTHER_DEVICE_KEY });
