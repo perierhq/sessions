@@ -21,7 +21,7 @@
  * travel as fixed generic copy with no subtitle; incident, support and
  * supervisor rows already push fixed copy (notifications.ts `pushFor`).
  * The subtitle is the row's project. Only a sealed push may carry the
- * event's `sealedMarkdown` (the digest's item titles).
+ * event's `sealedMarkdown` (the digest's count per project, never titles).
  *
  * A supervisor push wears Blob's icon, sets the badge to the open needs-you
  * items, keeps its `ttl` to the item's expiry, rings on (`call`) only when

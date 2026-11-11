@@ -19,6 +19,12 @@
  * - Fish Audio (blob-speech.ts) returns mp3; ffmpeg turns it into CAF. A
  *   server without ffmpeg, or without a Fish key, reports the feature
  *   unavailable and pushes without a sound URL.
+ * - Reading an entry recomputes its hash from the secret, its voice and its
+ *   text, and refuses a mismatch. A sound is made only in the entry's own
+ *   voice: when the voice has changed since, the push gets a new URL.
+ * - A failed synthesis is recorded in the entry and tried again at most
+ *   every 10 minutes, 3 times in all; after that the route answers 410
+ *   without calling Fish or ffmpeg, and the push carries no sound URL.
  * - An entry not pushed again for 30 days expires with its file, as Bark
  *   drops a cached sound unused for 30 days.
  *
@@ -54,6 +60,18 @@ const FFMPEG_TIMEOUT_MS = 20_000;
 /** The push never waits longer than this for its sound URL. */
 const URL_TIMEOUT_MS = 2_000;
 const PRUNE_EVERY_MS = 6 * 60 * 60 * 1000;
+/** A failed synthesis is tried again at most this often, this many times. */
+const RETRY_AFTER_MS = 10 * 60 * 1000;
+const MAX_ATTEMPTS = 3;
+
+/** What the push wrote, plus the failed attempts to make its sound. */
+interface SoundEntry {
+  text: string;
+  voice: string;
+  createdAt?: number;
+  attempts?: number;
+  failedAt?: number;
+}
 
 interface BarkSoundDeps {
   ffmpeg: string;
@@ -79,7 +97,7 @@ let deps: BarkSoundDeps = defaultDeps;
 let ffmpegPresent: Promise<boolean> | null = null;
 let secret: Promise<string> | null = null;
 let lastPrune = 0;
-const making = new Map<string, Promise<string | null>>();
+const making = new Map<string, Promise<SoundResult>>();
 
 /** Swap dependencies in tests. Returns a restore function. */
 export function __setBarkSoundDepsForTest(
@@ -120,7 +138,7 @@ async function run(argv: string[], timeoutMs: number): Promise<boolean> {
   } catch {
     return false;
   }
-  const timer = setTimeout(() => child.kill(), timeoutMs);
+  const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
   try {
     return (await child.exited) === 0;
   } finally {
@@ -191,6 +209,8 @@ async function soundUrlFor(text: string, base: string): Promise<string | null> {
     );
   } catch (error) {
     if (errorCode(error) !== "EEXIST") throw error;
+    // A sound that failed for good is not offered again.
+    if (exhausted(await freshEntry(hash))) return null;
     // Pushed again: the entry and its file live another 30 days.
     const now = new Date(deps.now());
     await utimes(entryPath(hash), now, now).catch(() => {});
@@ -229,21 +249,48 @@ export async function barkSoundUrl(
   }
 }
 
-async function freshEntry(
-  hash: string,
-): Promise<{ text: string; voice: string } | null> {
+/** The entry for `hash` when it is fresh and really names that hash. */
+async function freshEntry(hash: string): Promise<SoundEntry | null> {
   try {
     const info = await stat(entryPath(hash));
     if (deps.now() - info.mtimeMs > BARK_SOUND_MAX_AGE_MS) return null;
     const value: unknown = JSON.parse(await readFile(entryPath(hash), "utf8"));
     if (!value || typeof value !== "object") return null;
-    const { text, voice } = value as Record<string, unknown>;
-    return typeof text === "string" && typeof voice === "string"
-      ? { text, voice }
-      : null;
+    const { text, voice, createdAt, attempts, failedAt } = value as Record<
+      string,
+      unknown
+    >;
+    if (typeof text !== "string" || typeof voice !== "string") return null;
+    if (barkSoundHash(await soundSecret(), voice, text) !== hash) return null;
+    return {
+      text,
+      voice,
+      ...(typeof createdAt === "number" ? { createdAt } : {}),
+      ...(typeof attempts === "number" ? { attempts } : {}),
+      ...(typeof failedAt === "number" ? { failedAt } : {}),
+    };
   } catch {
     return null;
   }
+}
+
+function exhausted(entry: SoundEntry | null): boolean {
+  return (entry?.attempts ?? 0) >= MAX_ATTEMPTS;
+}
+
+/** Record a failed attempt, keeping the entry's age (its mtime). */
+async function recordFailure(hash: string, entry: SoundEntry): Promise<void> {
+  const info = await stat(entryPath(hash));
+  await writeFile(
+    entryPath(hash),
+    JSON.stringify({
+      ...entry,
+      attempts: (entry.attempts ?? 0) + 1,
+      failedAt: deps.now(),
+    }),
+    { mode: 0o600 },
+  );
+  await utimes(entryPath(hash), info.atime, info.mtime);
 }
 
 async function readBounded(
@@ -259,10 +306,17 @@ async function readBounded(
   return Buffer.concat(chunks);
 }
 
-/** Synthesize and convert one known entry. The file, or null. */
-async function makeSound(hash: string): Promise<string | null> {
-  const entry = await freshEntry(hash);
-  if (!entry) return null;
+/** The finished file, or why there is none: 404 not (yet) there, 410 gone. */
+type SoundResult = { file: string } | { status: 404 | 410 };
+const MISSING: SoundResult = { status: 404 };
+const GONE: SoundResult = { status: 410 };
+
+/** Synthesize and convert one known entry, in its own voice. The file, or
+ *  null when this attempt failed. */
+async function makeSound(
+  hash: string,
+  entry: SoundEntry,
+): Promise<string | null> {
   const result = await deps.synthesize(
     entry.text,
     AbortSignal.timeout(SYNTH_TIMEOUT_MS),
@@ -283,6 +337,12 @@ async function makeSound(hash: string): Promise<string | null> {
         "-loglevel",
         "error",
         "-y",
+        // Read only this file, only as mp3: never another protocol or a
+        // format guessed from the bytes.
+        "-protocol_whitelist",
+        "file",
+        "-f",
+        "mp3",
         "-i",
         `${temporary}.mp3`,
         "-t",
@@ -311,17 +371,33 @@ async function makeSound(hash: string): Promise<string | null> {
   }
 }
 
-/** The finished file for `hash`, making it once when it is due. */
-function ensureSound(hash: string): Promise<string | null> {
+/** The finished file for `hash`, making it once when it is due: 404 for an
+ *  unknown, expired or not-yet-retryable entry, 410 once it failed for good. */
+function ensureSound(hash: string): Promise<SoundResult> {
   const pending = making.get(hash);
   if (pending) return pending;
-  const job = (async () => {
-    if (!(await freshEntry(hash))) return null;
+  const job = (async (): Promise<SoundResult> => {
+    const entry = await freshEntry(hash);
+    if (!entry) return MISSING;
     try {
       await stat(soundPath(hash));
-      return soundPath(hash);
+      return { file: soundPath(hash) };
     } catch {}
-    return makeSound(hash);
+    if (exhausted(entry)) return GONE;
+    if (
+      entry.failedAt !== undefined &&
+      deps.now() - entry.failedAt < RETRY_AFTER_MS
+    )
+      return MISSING;
+    // Only in the voice the URL names; a new voice is a new URL.
+    const { voice } = await deps.speech();
+    if (voice !== entry.voice) return MISSING;
+    const file = await makeSound(hash, entry).catch(() => null);
+    if (file) return { file };
+    await recordFailure(hash, entry).catch(() => {});
+    return exhausted({ ...entry, attempts: (entry.attempts ?? 0) + 1 })
+      ? GONE
+      : MISSING;
   })().finally(() => making.delete(hash));
   making.set(hash, job);
   return job;
@@ -359,17 +435,21 @@ async function pruneSounds(): Promise<void> {
 /**
  * `GET /api/blob/speech/caf/<hash>.caf`: the spoken sound, made on first
  * request when the push's synthesis has not finished. 404 for a hash the
- * server never pushed or one that expired. Cacheable for good: a new text or
- * voice is a new URL.
+ * server never pushed, one that expired or one waiting to be retried; 410
+ * once it failed for good. Cacheable for good: a new text or voice is a new
+ * URL.
  */
 export async function serveBarkSound(
   path: string,
 ): Promise<Response | undefined> {
   const hash = path.match(SOUND_PATH)?.[1];
   if (!hash) return undefined;
-  const file = await ensureSound(hash).catch(() => null);
-  if (!file) return new Response("Not found", { status: 404 });
-  return new Response(Bun.file(file), {
+  const result = await ensureSound(hash).catch(() => MISSING);
+  if ("status" in result)
+    return new Response(result.status === 410 ? "Gone" : "Not found", {
+      status: result.status,
+    });
+  return new Response(Bun.file(result.file), {
     headers: {
       "Content-Type": "audio/x-caf",
       "Cache-Control": "public, max-age=2592000, immutable",

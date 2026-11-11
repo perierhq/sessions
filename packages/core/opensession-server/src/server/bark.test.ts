@@ -57,6 +57,7 @@ const barkSound = await import("./bark-sound");
 const { deliverNotification, markNotifications } =
   await import("./notifications");
 const { handleBlobSpeechRoutes } = await import("./routes/blob-speech");
+const { stateDir } = await import("./paths");
 const {
   updateSupervisorBark,
   postSupervisorItem,
@@ -979,7 +980,7 @@ describe("what each push carries", () => {
     });
     const hints = {
       body: "2 things happened",
-      sealedMarkdown: "- **Shipped acme**\n- **Fixed the build**",
+      sealedMarkdown: "- **acme**: 2 updates",
     };
     const fixed = { title: "Daily digest", body: "2 things happened" };
     const sealed = bark.barkMessageFor(
@@ -999,7 +1000,7 @@ describe("what each push carries", () => {
       opts,
     );
     expect(clear.markdown).toBeUndefined();
-    expect(JSON.stringify(clear)).not.toContain("Shipped");
+    expect(JSON.stringify(clear)).not.toContain("acme");
     const flat = bark.barkMessageFor(
       digest,
       event("supervisor_digest", { ...hints, sealedMarkdown: "just words" }),
@@ -1010,17 +1011,22 @@ describe("what each push carries", () => {
     expect(flat.markdown).toBeUndefined();
   });
 
-  test("the digest list bolds titles and escapes what they hold", async () => {
+  test("the digest list counts per project and never holds a title", async () => {
     const { digestMarkdown } = await import("./supervisor-inbox");
-    const items = ["Shipped *acme*", "Fixed [the] build", "c", "d", "e", "f"];
-    const markdown = digestMarkdown(items.map((title) => ({ title })));
+    const projects = ["a*b", "a*b", "c", undefined, "d", "e", "f", "g", "g"];
+    const items = projects.map((project, i) => ({
+      project,
+      title: `Secret title ${i}`,
+    }));
+    const markdown = digestMarkdown(items);
+    expect(markdown).not.toContain("Secret");
     expect(markdown.split("\n")).toEqual([
-      "- **Shipped \\*acme\\***",
-      "- **Fixed \\[the\\] build**",
-      "- **c**",
-      "- **d**",
-      "- **e**",
-      "- and 1 more",
+      "- **a\\*b**: 2 updates",
+      "- **g**: 2 updates",
+      "- **c**: 1 update",
+      "- **No project**: 1 update",
+      "- **d**: 1 update",
+      "- and 2 more",
     ]);
   });
 
@@ -1122,6 +1128,7 @@ describe("Blob's voice", () => {
     fakeFfmpeg,
     [
       "#!/bin/sh",
+      `echo "$*" >> '${join(root, "ffmpeg-args")}'`,
       'for a in "$@"; do [ "$a" = "-version" ] && exit 0; done',
       'in=""; prev=""; for a in "$@"; do [ "$prev" = "-i" ] && in="$a"; prev="$a"; out="$a"; done',
       'cp "$in" "$out"',
@@ -1184,6 +1191,10 @@ describe("Blob's voice", () => {
     expect(response?.status).toBe(200);
     expect(response?.headers.get("content-type")).toBe("audio/x-caf");
     expect(new Uint8Array(await response!.arrayBuffer())).toEqual(fakeAudio);
+    // ffmpeg reads only that file, only as mp3.
+    expect(readFileSync(join(root, "ffmpeg-args"), "utf8")).toMatch(
+      /-protocol_whitelist file -f mp3 -i \S+\.mp3 /,
+    );
     // The same fixed copy is the same URL, spoken once.
     await sendNeedsYou();
     expect(requests[1]!.body.soundUrl).toBe(body.soundUrl);
@@ -1229,6 +1240,98 @@ describe("Blob's voice", () => {
       expect(request.body.sound).toBeUndefined();
     }
     expect(spoken).toEqual([]);
+  });
+
+  /** Deps that speak in `voice`, counting calls, failing when `fail`. */
+  const countingDeps = (
+    voice: string,
+    calls: string[],
+    fail = false,
+    now = () => Date.now(),
+  ) =>
+    barkSound.__setBarkSoundDepsForTest({
+      ffmpeg: fakeFfmpeg,
+      speech: async () => ({ configured: true, voice }),
+      now,
+      synthesize: async (text) => {
+        calls.push(text);
+        return fail
+          ? { ok: false, status: 500, error: "fish is down" }
+          : {
+              ok: true,
+              body: new Blob([
+                fakeAudio,
+              ]).stream() as ReadableStream<Uint8Array>,
+            };
+      },
+    });
+  const soundsDir = join(stateDir("blob"), "bark-sounds");
+
+  test("a failed sound is retried every 10 minutes, 3 times, then gone", async () => {
+    let clock = Date.now();
+    const calls: string[] = [];
+    restoreSound();
+    restoreSound = countingDeps("test-voice", calls, true, () => clock);
+    const url = await barkSound.barkSoundUrl("Fish is down today", BASE);
+    expect(url).toBeDefined();
+    const path = url!.slice(BASE.length);
+    expect((await get(path))?.status).toBe(404);
+    expect(calls).toHaveLength(1);
+    const hash = path.match(/([0-9a-f]{64})/)![1]!;
+    const entry = JSON.parse(
+      readFileSync(join(soundsDir, `${hash}.json`), "utf8"),
+    );
+    expect(entry).toMatchObject({ attempts: 1, failedAt: clock });
+    // Within 10 minutes: no new attempt.
+    clock += 9 * 60 * 1000;
+    expect((await get(path))?.status).toBe(404);
+    expect(calls).toHaveLength(1);
+    clock += 60 * 1000;
+    expect((await get(path))?.status).toBe(404);
+    expect(calls).toHaveLength(2);
+    clock += 10 * 60 * 1000;
+    expect((await get(path))?.status).toBe(410);
+    expect(calls).toHaveLength(3);
+    clock += 60 * 60 * 1000;
+    expect((await get(path))?.status).toBe(410);
+    expect(calls).toHaveLength(3);
+    // Pushed again, it carries no sound URL.
+    expect(await barkSound.barkSoundUrl("Fish is down today", BASE)).toBe(
+      undefined,
+    );
+    expect(calls).toHaveLength(3);
+  });
+
+  test("an entry must match its hash and the current voice", async () => {
+    const calls: string[] = [];
+    restoreSound();
+    restoreSound = countingDeps("voice-1", calls);
+    // A push makes the secret; its own sound is let finish.
+    const warm = await barkSound.barkSoundUrl("warm up", BASE);
+    await get(warm!.slice(BASE.length));
+    const secret = readFileSync(join(soundsDir, "secret"), "utf8").trim();
+    const write = (hash: string, text: string, voice: string) =>
+      writeFileSync(
+        join(soundsDir, `${hash}.json`),
+        JSON.stringify({ text, voice, createdAt: Date.now() }),
+      );
+    const said = barkSound.barkSoundHash(secret, "voice-1", "Said in one");
+    write(said, "Said in one", "voice-1");
+    // The voice changed since: refused, a new push gets a new URL.
+    restoreSound();
+    restoreSound = countingDeps("voice-2", calls);
+    calls.length = 0;
+    expect((await get(`/api/blob/speech/caf/${said}.caf`))?.status).toBe(404);
+    expect(calls).toEqual([]);
+    restoreSound();
+    restoreSound = countingDeps("voice-1", calls);
+    expect((await get(`/api/blob/speech/caf/${said}.caf`))?.status).toBe(200);
+    expect(calls).toEqual(["Said in one"]);
+    // Text that is not what the hash names is refused.
+    const forged = barkSound.barkSoundHash(secret, "voice-1", "Original");
+    write(forged, "Something else", "voice-1");
+    expect((await get(`/api/blob/speech/caf/${forged}.caf`))?.status).toBe(404);
+    expect(calls).toEqual(["Said in one"]);
   });
 
   test("speak must be a boolean", async () => {

@@ -267,7 +267,7 @@ export function BarkSection() {
           desc={
             data?.speakAvailable === false && !data.speak
               ? "Not available: this server needs ffmpeg and a Fish Audio key for Blob's voice."
-              : "Blob says what a decision is about instead of the usual sound. If the clip can't load, Bark plays its Minuet sound."
+              : "Blob says which project needs you instead of the usual sound. If the clip can't load, Bark plays its Minuet sound."
           }
           control={
             <Switch

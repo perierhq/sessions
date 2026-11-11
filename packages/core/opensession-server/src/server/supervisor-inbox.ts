@@ -1099,8 +1099,9 @@ function digestEvent(
     eventKey: `digest:${day}`,
     at: now,
     delivery: "quiet",
-    // Should a digest ever push, the lock screen gets the count, not titles;
-    // only a push sealed end to end (encrypted Bark) lists them.
+    // Should a digest ever push, it never carries an item's title, sealed or
+    // not (as supervisorPushCopy): the lock screen gets the count, and only a
+    // push sealed end to end (encrypted Bark) adds the count per project.
     push: {
       body: `${count} ${count === 1 ? "thing" : "things"} happened`,
       expiresAt: now + DAY_MS,
@@ -1109,28 +1110,38 @@ function digestEvent(
   };
 }
 
-const DIGEST_MARKDOWN_ITEMS = 5;
-const DIGEST_MARKDOWN_TITLE = 80;
+const DIGEST_MARKDOWN_PROJECTS = 5;
+const DIGEST_MARKDOWN_PROJECT = 60;
 
-/** Characters that would turn an agent's title into markup. */
+/** Characters that would turn a project name into markup. */
 function escapeMarkdown(text: string): string {
   return text.replace(/[\\`*_~[\]()<>#!|]/g, (char) => `\\${char}`);
 }
 
-/** The digest's items as a Markdown list of bold titles, for a sealed push:
- *  one line each, a few at most. */
+/** The digest's counts per project as a Markdown list, for a sealed push:
+ *  one line each, the busiest first, a few at most. Never the titles. */
 export function digestMarkdown(
-  fyi: Array<Pick<SupervisorItem, "title">>,
+  fyi: Array<Pick<SupervisorItem, "project">>,
 ): string {
-  const lines = fyi.slice(0, DIGEST_MARKDOWN_ITEMS).map((item) => {
-    const title = pushSafeText(item.title);
-    const short =
-      title.length > DIGEST_MARKDOWN_TITLE
-        ? `${title.slice(0, DIGEST_MARKDOWN_TITLE - 1).trimEnd()}…`
-        : title;
-    return `- **${escapeMarkdown(short || "Untitled")}**`;
-  });
-  const more = fyi.length - lines.length;
+  const counts = new Map<string, number>();
+  for (const item of fyi) {
+    const project = pushSafeText(item.project ?? "");
+    const name =
+      project.length > DIGEST_MARKDOWN_PROJECT
+        ? `${project.slice(0, DIGEST_MARKDOWN_PROJECT - 1).trimEnd()}…`
+        : project;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const ranked = [...counts].sort((a, b) => b[1] - a[1]);
+  const lines = ranked
+    .slice(0, DIGEST_MARKDOWN_PROJECTS)
+    .map(
+      ([name, n]) =>
+        `- **${escapeMarkdown(name || "No project")}**: ${n} ${n === 1 ? "update" : "updates"}`,
+    );
+  const more = ranked
+    .slice(DIGEST_MARKDOWN_PROJECTS)
+    .reduce((sum, [, n]) => sum + n, 0);
   if (more > 0) lines.push(`- and ${more} more`);
   return lines.join("\n");
 }
