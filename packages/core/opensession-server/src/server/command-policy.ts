@@ -611,6 +611,22 @@ export interface PrivateTermsGuard {
   terms: string[];
 }
 
+const guardTerms = (guard: PrivateTermsGuard) =>
+  guard.terms
+    .map((term) => term.trim().toLowerCase())
+    .filter((term) => term.length >= 3);
+
+/** The first private term `text` contains, matched as privateTermsDenyReason
+ *  does; for text that is published without a shell command (Blob's posts,
+ *  github-blob.ts). */
+export function privateTermIn(
+  text: string,
+  guard: PrivateTermsGuard,
+): string | undefined {
+  const lower = text.toLowerCase();
+  return guardTerms(guard).find((term) => lower.includes(term));
+}
+
 const PUBLISHING_GIT_SUBCOMMANDS = new Set([
   "commit",
   "tag",
@@ -649,10 +665,7 @@ export function privateTermsDenyReason(
   command: string,
   guard: PrivateTermsGuard,
 ): string | undefined {
-  const terms = guard.terms
-    .map((term) => term.trim().toLowerCase())
-    .filter((term) => term.length >= 3);
-  if (terms.length === 0) return undefined;
+  if (!guardTerms(guard).length) return undefined;
   const scan = scannableCommand(command);
   const publishes =
     scanShell(scan).commands.some((words) => {
@@ -673,8 +686,7 @@ export function privateTermsDenyReason(
       scan,
     );
   if (!publishes) return undefined;
-  const lower = command.toLowerCase();
-  const hit = terms.find((term) => lower.includes(term));
+  const hit = privateTermIn(command, guard);
   if (hit === undefined) return undefined;
   return (
     `the primary repository is public and this command would publish the private term ` +

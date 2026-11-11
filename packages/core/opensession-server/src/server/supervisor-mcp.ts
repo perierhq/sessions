@@ -16,6 +16,9 @@
  * (supervisor-watch.ts): the conversation keeps no timers of its own.
  * `reply_in_thread` answers an @Blob mention or an assignment to Blob
  * (blob-mentions.ts) in the comment thread it came from, as Blob.
+ * blob_comment, blob_review, blob_label and blob_open_issue post on GitHub
+ * as Blob's machine user (blob-github-tools.ts, github-blob.ts); the watch
+ * gets none of them.
  *
  * The inbox and ledger tools are built here once and shared with the
  * watch's own server (supervisor-watch-mcp.ts).
@@ -23,6 +26,8 @@
 import { z } from "zod";
 import { personaName } from "./config";
 import { ASK_PAT_ACTIONS, askPat } from "./supervisor-ask-pat";
+import { blobGithubTools } from "./blob-github-tools";
+import { blobSupervisorPoster } from "./github-blob";
 import { createSdkMcpServer, tool } from "./inprocess-mcp";
 import {
   BLOB_ACTOR,
@@ -219,7 +224,12 @@ export function appendLedgerTool(
   );
 }
 
-export function createSupervisorMcpServer(ctx: { user: string }) {
+export function createSupervisorMcpServer(ctx: {
+  user: string;
+  /** The supervisor session, linked from Blob's posts on private
+   *  repositories. */
+  sessionId?: string;
+}) {
   const user = ctx.user;
   return createSdkMcpServer({
     name: SUPERVISOR_MCP_SERVER,
@@ -339,6 +349,7 @@ export function createSupervisorMcpServer(ctx: { user: string }) {
           };
         },
       ),
+      ...blobGithubTools(() => blobSupervisorPoster(user, ctx.sessionId)),
     ],
   });
 }
@@ -456,6 +467,7 @@ export function withoutSupervisorWithheld<T extends Record<string, unknown>>(
 }
 
 type SupervisorSessionShape = {
+  id?: string;
   supervisor?: boolean;
   supervisorRetiredAt?: string;
   createdBy?: string | null;
@@ -493,5 +505,10 @@ export function supervisorMcpFor(
 ): Record<string, ReturnType<typeof createSupervisorMcpServer>> {
   const user = supervisorInboxOwner(session, turnUser);
   if (!user) return {};
-  return { [SUPERVISOR_MCP_SERVER]: createSupervisorMcpServer({ user }) };
+  return {
+    [SUPERVISOR_MCP_SERVER]: createSupervisorMcpServer({
+      user,
+      ...(session?.id ? { sessionId: session.id } : {}),
+    }),
+  };
 }

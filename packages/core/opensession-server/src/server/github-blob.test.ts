@@ -137,6 +137,7 @@ describe("Blob's GitHub account settings", () => {
         token: TOKEN,
         repos: ["Acme/Widget", "acme/docs"],
         publicRepos: ["acme/docs"],
+        labels: ["bug", "triage"],
         enabled: true,
       }),
     );
@@ -149,6 +150,7 @@ describe("Blob's GitHub account settings", () => {
       expiresAt: "2027-02-09T12:00:00.000Z",
       repos: ["acme/widget", "acme/docs"],
       publicRepos: ["acme/docs"],
+      labels: ["bug", "triage"],
       enabled: true,
       tokenSet: true,
     });
@@ -167,6 +169,16 @@ describe("Blob's GitHub account settings", () => {
     expect(get.body.blob.tokenSet).toBe(true);
     expect(get.text).not.toContain(TOKEN);
     expect(get.text).not.toContain(blob.tokenRef);
+  });
+
+  test("the label allowlist is edited through the same route", async () => {
+    await setup();
+    const cleared = await call(request("PUT", { labels: [] }));
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.blob.labels).toEqual([]);
+    const bad = await call(request("PUT", { labels: ["os-review"] }));
+    expect(bad.status).toBe(400);
+    expect(bad.text).toContain("starts an agent loop");
   });
 
   test("a new token replaces the old secret", async () => {

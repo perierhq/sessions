@@ -116,10 +116,38 @@ const flapProposal = {
 };
 
 describe("opensession-lead", () => {
+  test("Blob's GitHub tools refuse while the lead may not report", async () => {
+    doc = { ...doc, lead: { ...doc.lead, enabled: false } };
+    const { call } = await client();
+    const off = await call("blob_comment", {
+      repo: "acme/app",
+      number: 1,
+      body: "Hi",
+    });
+    expect(off).toEqual({
+      isError: true,
+      text: "The lead is off in the project settings",
+    });
+    // On, the call reaches Blob's account checks (github-blob.ts), which
+    // refuse here: Blob's account isn't set up.
+    doc = { ...doc, lead: { ...doc.lead, enabled: true } };
+    const on = await call("blob_comment", {
+      repo: "acme/app",
+      number: 1,
+      body: "Hi",
+    });
+    expect(on.isError).toBe(true);
+    expect(on.text).toContain("Blob's GitHub account is off");
+  });
+
   test("lists its tools", async () => {
     const { c } = await client();
     const { tools } = await c.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
+      "blob_comment",
+      "blob_label",
+      "blob_open_issue",
+      "blob_review",
       "flap_report",
       "lead_apply",
       "post_digest_note",

@@ -192,6 +192,7 @@ itself is a workspace secret the config refers to:
         "tokenRef": "wssec-…",
         "repos": ["acme/widget", "acme/docs"],
         "publicRepos": ["acme/docs"],
+        "labels": ["bug", "triage"],
         "enabled": true,
         "expiresAt": "2027-02-09T12:00:00.000Z",
       },
@@ -199,6 +200,10 @@ itself is a workspace secret the config refers to:
   },
 }
 ```
+
+`labels` lists the labels Blob may add or remove with `blob_label`; it is
+empty by default, which turns labelling off. Set it with
+`PUT /api/blob/github` (`{ "labels": [...] }`); trigger labels are refused.
 
 The login counts as one of Open Session's own bots, so comments by it never
 start a reply, and no teammate can be added under it. It stays after the

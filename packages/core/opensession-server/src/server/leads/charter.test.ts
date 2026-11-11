@@ -189,4 +189,12 @@ describe("leadCharter", () => {
       "You are the project lead for acme. You wake on your own every few hours and report to the owner through the supervisor inbox, never directly.",
     );
   });
+
+  test("Blob may post on GitHub on the project's private repositories, never push or merge", () => {
+    const text = charter();
+    expect(text).toContain("## GitHub as Blob");
+    expect(text).toContain(
+      "blob_comment, blob_review, blob_label and blob_open_issue, on Acme (acme)'s private repositories the owner allowed. Pat stays the code worker; you never push or merge.",
+    );
+  });
 });

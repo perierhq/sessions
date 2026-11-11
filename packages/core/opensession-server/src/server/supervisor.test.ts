@@ -662,13 +662,16 @@ describe("standing sessions", () => {
     expect(note).toContain("Never mention the time of day unless it matters.");
   });
 
-  test("Blob names the persona when delegating and never posts publicly", () => {
+  test("Blob names the persona when delegating and posts only with its GitHub tools", () => {
     const note = supervisor.supervisorNote("Robin");
     expect(note).toContain('("I\'ve asked Robin to review it")');
     expect(note).toContain("ask_pat hands Robin GitHub work");
     expect(note).toContain(
-      "You never sign or post anything public yourself, and nothing public is ever signed Blob. Anything public goes out as Robin",
+      "Outside your GitHub tools you post nothing public yourself; anything else public goes out as Robin",
     );
+    expect(note).toContain("## GitHub as Blob");
+    expect(note).toContain("Robin stays the code worker");
+    expect(note).toContain("You never push or merge.");
     expect(note).not.toContain("Pat ");
   });
 });

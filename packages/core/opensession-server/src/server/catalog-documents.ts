@@ -115,6 +115,10 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // and the hourly cap, keyed by canonicalName(user) (blob-mentions.ts).
   // New, so its legacy directory is missing and imports as empty.
   "blob-mentions",
+  // Blob's GitHub writes in the last hour per owner, for its rate limits,
+  // keyed by canonicalName(user) (github-blob.ts). New, so its legacy
+  // directory is missing and imports as empty.
+  "blob-github-writes",
 ] as const;
 
 export type ApplicationCatalogNamespace =

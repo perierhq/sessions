@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { treatRepoAsPublic } from "./repo-visibility";
+import {
+  __setRepoVisibilityDepsForTest,
+  repoIsPrivate,
+  treatRepoAsPublic,
+} from "./repo-visibility";
 
 const never = async () => {
   throw new Error("lookup must not run");
@@ -44,5 +48,37 @@ describe("treatRepoAsPublic", () => {
       await treatRepoAsPublic({ ghRepo: "", host: "codestorage" }, never),
     ).toBe(false);
     expect(await treatRepoAsPublic(undefined, never)).toBe(false);
+  });
+});
+
+describe("repoIsPrivate", () => {
+  test("caches for the process, unless a caller asks for a fresher answer", async () => {
+    let now = 0;
+    let isPrivate = true;
+    let asked = 0;
+    const restore = __setRepoVisibilityDepsForTest({
+      now: () => now,
+      token: async () => "t",
+      fetch: async () => {
+        asked++;
+        return Response.json({ private: isPrivate });
+      },
+    });
+    try {
+      const fresh = { maxAgeMs: 10 * 60_000 };
+      expect(await repoIsPrivate("acme/widget", fresh)).toBe(true);
+      isPrivate = false;
+      now = 9 * 60_000;
+      expect(await repoIsPrivate("acme/widget", fresh)).toBe(true);
+      expect(asked).toBe(1);
+      now = 11 * 60_000;
+      expect(await repoIsPrivate("acme/widget", fresh)).toBe(false);
+      expect(asked).toBe(2);
+      now = 60 * 60_000;
+      expect(await repoIsPrivate("acme/widget")).toBe(false);
+      expect(asked).toBe(2);
+    } finally {
+      restore();
+    }
   });
 });
