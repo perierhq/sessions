@@ -360,6 +360,131 @@ export async function fetchPrSnapshot(
   }
 }
 
+export type PinnedMergeResult =
+  | {
+      kind: "merged";
+      method: MergeMethod;
+      mergedSha?: string;
+      /** False when the merge landed but the PR comment failed. */
+      commented?: boolean;
+    }
+  | { kind: "already-merged" }
+  /** Merged, but at a different head than the pinned one. */
+  | { kind: "merged-elsewhere"; mergedSha: string }
+  | { kind: "blocked"; reason: string; method?: MergeMethod }
+  | { kind: "head-moved"; reason: string; method?: MergeMethod }
+  | { kind: "error"; message: string; method?: MergeMethod };
+
+/** Who approved the merge; the comment also names the approved head SHA
+ *  and, when GitHub returns it, the merge commit. */
+export interface PinnedMergeComment {
+  approvedBy: string;
+}
+
+export function pinnedMergeComment(
+  comment: PinnedMergeComment,
+  headSha: string,
+  mergedSha?: string,
+): string {
+  const approved = `Merged by Sessions. @${comment.approvedBy} approved ${headSha}`;
+  return mergedSha ? `${approved}; merge commit ${mergedSha}.` : `${approved}.`;
+}
+
+/** Merges one PR as the GitHub App, pinned to `headSha`, or says why not.
+ *  Branch protection is checked first (assessAutoMerge) and GitHub's own
+ *  refusal is final, so this never bypasses it. Never throws. */
+export async function mergePinnedPr(
+  input: {
+    pr: PrSnapshot;
+    headSha: string;
+    title: string;
+    method?: MergeMethod;
+    comment?: PinnedMergeComment;
+  },
+  github: Pick<
+    MergeGithub,
+    "mergeMethods" | "merge" | "appCredential" | "comment"
+  >,
+): Promise<PinnedMergeResult> {
+  const { pr, headSha } = input;
+  if (pr.state === "MERGED")
+    return pr.headSha === headSha
+      ? { kind: "already-merged" }
+      : { kind: "merged-elsewhere", mergedSha: pr.headSha };
+  if (pr.state === "OPEN" && !pr.draft && pr.headSha !== headSha)
+    return {
+      kind: "head-moved",
+      reason: `PR #${pr.number} changed after verification`,
+    };
+  const assessment = assessAutoMerge(pr, headSha);
+  if (assessment.kind !== "ready") {
+    // Defence in depth: no merge call is ever made unless ready.
+    return {
+      kind: "blocked",
+      reason:
+        assessment.kind === "merged"
+          ? `PR #${pr.number} is already merged`
+          : assessment.kind === "wait"
+            ? assessment.detail
+            : assessment.reason,
+    };
+  }
+  let method: MergeMethod | undefined;
+  try {
+    method = pickMergeMethod(
+      await github.mergeMethods(pr.ghRepo),
+      input.method,
+    );
+    const credential = await github.appCredential(pr.ghRepo);
+    const response = await github.merge(
+      pr.ghRepo,
+      pr.number,
+      { sha: headSha, method, title: `${input.title} (#${pr.number})` },
+      credential,
+    );
+    if (!response.ok) {
+      const message =
+        response.message.trim().replace(/\.$/, "") || `HTTP ${response.status}`;
+      // 409: GitHub saw a different head than the pinned SHA.
+      if (response.status === 409)
+        return {
+          kind: "head-moved",
+          reason: `GitHub refused the merge: ${message}. The head of PR #${pr.number} changed since ${headSha} was approved.`,
+          method,
+        };
+      return {
+        kind: "blocked",
+        reason: `GitHub refused the merge: ${message}. Sessions never bypasses branch protection, so this needs you.`,
+        method,
+      };
+    }
+    const merged = {
+      kind: "merged" as const,
+      method,
+      ...(response.sha ? { mergedSha: response.sha } : {}),
+    };
+    if (!input.comment) return merged;
+    try {
+      await github.comment(
+        pr.ghRepo,
+        pr.number,
+        pinnedMergeComment(input.comment, headSha, response.sha),
+        credential,
+      );
+      return { ...merged, commented: true };
+    } catch (error) {
+      console.error("[merge] PR comment failed:", error);
+      return { ...merged, commented: false };
+    }
+  } catch (error) {
+    return {
+      kind: "error",
+      message: errorMessage(error),
+      ...(method ? { method } : {}),
+    };
+  }
+}
+
 /** Merges the verified SHA as the App, or says why not. Never throws. */
 export async function mergeIncidentPr(
   input: {
@@ -378,61 +503,32 @@ export async function mergeIncidentPr(
     sha: verifiedSha,
     at: new Date(input.now).toISOString(),
   };
-  let record: MergeRecord;
-  const assessment = assessAutoMerge(pr, verifiedSha);
-  if (assessment.kind !== "ready") {
-    // Defence in depth: no merge call is ever made unless ready.
-    record = {
-      ...base,
-      status: "refused",
-      detail:
-        assessment.kind === "needs-you" || assessment.kind === "send-back"
-          ? assessment.reason
-          : assessment.kind === "wait"
-            ? assessment.detail
-            : `PR #${pr.number} is already merged`,
-    };
-  } else {
-    let method: MergeMethod | undefined;
-    try {
-      method = pickMergeMethod(await github.mergeMethods(pr.ghRepo));
-      const response = await github.merge(
-        pr.ghRepo,
-        pr.number,
-        {
-          sha: verifiedSha,
-          method,
-          title: `${input.title} (#${pr.number})`,
-        },
-        await github.appCredential(pr.ghRepo),
-      );
-      if (response.ok) {
-        record = {
+  const result = await mergePinnedPr(
+    { pr, headSha: verifiedSha, title: input.title },
+    github,
+  );
+  const record: MergeRecord =
+    result.kind === "merged"
+      ? {
           ...base,
           status: "merged",
-          ...(response.sha ? { mergedSha: response.sha } : {}),
-          method,
-        };
-      } else {
-        const message =
-          response.message.trim().replace(/\.$/, "") ||
-          `HTTP ${response.status}`;
-        record = {
+          ...(result.mergedSha ? { mergedSha: result.mergedSha } : {}),
+          method: result.method,
+        }
+      : {
           ...base,
           status: "refused",
-          method,
-          detail: `GitHub refused the merge: ${message}. Sessions never bypasses branch protection, so this needs you.`,
+          ...("method" in result && result.method
+            ? { method: result.method }
+            : {}),
+          detail:
+            result.kind === "already-merged" ||
+            result.kind === "merged-elsewhere"
+              ? `PR #${pr.number} is already merged`
+              : result.kind === "error"
+                ? result.message
+                : result.reason,
         };
-      }
-    } catch (error) {
-      record = {
-        ...base,
-        status: "refused",
-        ...(method ? { method } : {}),
-        detail: errorMessage(error),
-      };
-    }
-  }
   incidentAudit({
     kind: "incident_merge",
     incidentId: input.incidentId,

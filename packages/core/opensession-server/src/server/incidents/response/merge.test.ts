@@ -10,6 +10,7 @@ import {
   assessAutoMerge,
   fetchPrSnapshot,
   mergeIncidentPr,
+  mergePinnedPr,
   MAX_PR_FILES,
   parsePrFileList,
   parsePrUrl,
@@ -330,6 +331,171 @@ test("a GitHub refusal is explained, never retried around", async () => {
   expect(parsePrUrl("https://example.test/acme/web/pull/12")).toBeNull();
   expect(parsePrUrl("https://github.com/acme/web/pull/0")).toBeNull();
   expect(parsePrUrl("https://github.com/acme/web/issues/12")).toBeNull();
+});
+
+const SHA = "abc1234";
+
+test("mergePinnedPr merges the pinned SHA as the App and comments who approved", async () => {
+  const comments: unknown[] = [];
+  const { gh, merges } = github({
+    comment: async (...args) => {
+      comments.push(args);
+    },
+  });
+  expect(
+    await mergePinnedPr(
+      {
+        pr: pr(),
+        headSha: SHA,
+        title: "Fix search",
+        method: "merge",
+        comment: { approvedBy: "acme-owner" },
+      },
+      gh,
+    ),
+  ).toEqual({
+    kind: "merged",
+    method: "merge",
+    mergedSha: "9f9f9f9",
+    commented: true,
+  });
+  expect((merges[0] as unknown[]).slice(0, 3)).toEqual([
+    "acme/web",
+    12,
+    { sha: SHA, method: "merge", title: "Fix search (#12)" },
+  ]);
+  expect(comments).toEqual([
+    [
+      "acme/web",
+      12,
+      "Merged by Sessions. @acme-owner approved abc1234; merge commit 9f9f9f9.",
+      { kind: "service", principal: "service", env: { GH_TOKEN: "app" } },
+    ],
+  ]);
+  // A failed comment never undoes the merge.
+  const quiet = github({
+    comment: async () => {
+      throw new Error("rate limited");
+    },
+  });
+  expect(
+    await mergePinnedPr(
+      {
+        pr: pr(),
+        headSha: SHA,
+        title: "x",
+        comment: { approvedBy: "acme-owner" },
+      },
+      quiet.gh,
+    ),
+  ).toMatchObject({ kind: "merged", method: "squash", commented: false });
+});
+
+test("mergePinnedPr reports an already merged PR without merging", async () => {
+  const { gh, merges } = github();
+  expect(
+    await mergePinnedPr(
+      { pr: pr({ state: "MERGED" }), headSha: SHA, title: "x" },
+      gh,
+    ),
+  ).toEqual({ kind: "already-merged" });
+  expect(
+    await mergePinnedPr(
+      {
+        pr: pr({ state: "MERGED", headSha: "fff9999" }),
+        headSha: SHA,
+        title: "x",
+      },
+      gh,
+    ),
+  ).toEqual({ kind: "merged-elsewhere", mergedSha: "fff9999" });
+  expect(merges).toEqual([]);
+});
+
+test("mergePinnedPr stops when the head moved, before or during the merge", async () => {
+  const { gh, merges } = github();
+  expect(
+    await mergePinnedPr(
+      { pr: pr({ headSha: "fff9999" }), headSha: SHA, title: "x" },
+      gh,
+    ),
+  ).toEqual({
+    kind: "head-moved",
+    reason: "PR #12 changed after verification",
+  });
+  expect(merges).toEqual([]);
+  // A moved head wins over any other blocker.
+  expect(
+    await mergePinnedPr(
+      {
+        pr: pr({
+          headSha: "fff9999",
+          reviewDecision: "CHANGES_REQUESTED",
+          failingChecks: ["test"],
+        }),
+        headSha: SHA,
+        title: "x",
+      },
+      gh,
+    ),
+  ).toMatchObject({ kind: "head-moved" });
+  const raced = github({
+    merge: async () => ({
+      ok: false,
+      status: 409,
+      message: "Head branch was modified. Review and try the merge again.",
+    }),
+  });
+  expect(
+    await mergePinnedPr({ pr: pr(), headSha: SHA, title: "x" }, raced.gh),
+  ).toEqual({
+    kind: "head-moved",
+    method: "squash",
+    reason:
+      "GitHub refused the merge: Head branch was modified. Review and try the merge again. The head of PR #12 changed since abc1234 was approved.",
+  });
+});
+
+test("mergePinnedPr never bypasses branch protection", async () => {
+  const { gh, merges } = github();
+  expect(
+    await mergePinnedPr(
+      { pr: pr({ requiredApprovals: 1 }), headSha: SHA, title: "x" },
+      gh,
+    ),
+  ).toEqual({
+    kind: "blocked",
+    reason: "Branch protection requires a review on PR #12",
+  });
+  expect(merges).toEqual([]);
+  const refused = github({
+    merge: async () => ({
+      ok: false,
+      status: 405,
+      message: "Repository rule violations found.",
+    }),
+  });
+  expect(
+    await mergePinnedPr({ pr: pr(), headSha: SHA, title: "x" }, refused.gh),
+  ).toEqual({
+    kind: "blocked",
+    method: "squash",
+    reason:
+      "GitHub refused the merge: Repository rule violations found. Sessions never bypasses branch protection, so this needs you.",
+  });
+  const down = github({
+    appCredential: async () => {
+      throw new Error("The selected GitHub bot credential is unavailable");
+    },
+  });
+  expect(
+    await mergePinnedPr({ pr: pr(), headSha: SHA, title: "x" }, down.gh),
+  ).toEqual({
+    kind: "error",
+    method: "squash",
+    message: "The selected GitHub bot credential is unavailable",
+  });
+  expect(kit.audits).toEqual([]);
 });
 
 const check = (name: string): PrReadinessCheck => ({
