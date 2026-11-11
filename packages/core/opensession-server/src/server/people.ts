@@ -9,7 +9,7 @@
  */
 
 import { configuredIdentity, type ReviewTeam } from "./config";
-import { BLOB_ACTOR, BLOB_ICON_PATH } from "./session-actors";
+import { BLOB_ACTOR, BLOB_ICON_PATH, isBlobActor } from "./session-actors";
 import { profileImagesByMemberName } from "./user-profiles";
 
 export interface DirectoryPerson {
@@ -122,4 +122,44 @@ export function mentionedUsers(text: string, sender: string): string[] {
       found.add(name);
   }
   return [...found];
+}
+
+/** `text` with its fenced blocks and inline code spans blanked out, the
+ *  same rule the composer uses to keep pills out of code
+ *  (frontend/lib/composer-session-projection.ts `codeRanges`). An unclosed
+ *  fence runs to the end. */
+function withoutCode(text: string): string {
+  return text
+    .replace(/(```|~~~)[\s\S]*?(?:\1|$)/g, " ")
+    .replace(/`[^`\n]+`/g, " ");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Whether `text` mentions Blob: `@Blob`, any case, as a whole word outside
+ * code, or `@<blobLogin>` once a GitHub account is set for Blob. An `@`
+ * inside a word (an email like `blob@example.test`) is not a mention, nor is
+ * a longer name (`@Blobby`). Blob mentioning itself never counts, so its own
+ * replies cannot route back to it.
+ */
+export function mentionsBlob(
+  text: string,
+  sender: string,
+  blobLogin?: string | null,
+): boolean {
+  const login = blobLogin?.trim();
+  const from = sender.trim().toLowerCase();
+  if (isBlobActor(sender) || (login && from === login.toLowerCase()))
+    return false;
+  const names = [BLOB_ACTOR, ...(login ? [login] : [])].map(escapeRegExp);
+  // Before: not part of a word, address or path. After: the name ends here;
+  // a sentence's full stop may follow, a domain's dot may not.
+  const pattern = new RegExp(
+    `(?<![\\w.@/+-])@(?:${names.join("|")})(?![\\w-]|\\.\\w)`,
+    "i",
+  );
+  return pattern.test(withoutCode(text));
 }
