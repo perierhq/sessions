@@ -56,7 +56,7 @@ final class BlobParakeet {
 
     nonisolated static let version: AsrModelVersion = .ultra
     static let sizeLabel = "about 630 MB"
-    static let log = Logger(subsystem: "pl.sessions.blob", category: "parakeet")
+    static let log = BlobLog(category: "parakeet")
 
     private(set) var state: State = .absent
     private var manager: AsrManager?
@@ -129,7 +129,9 @@ final class BlobParakeet {
                     Task { @MainActor in BlobParakeet.shared.progressed(fraction) }
                 }
                 state = .downloaded
+                Self.log.info("download done")
             } catch {
+                Self.log.info("download stopped by=\(stopping.map { String(describing: $0) } ?? "error")")
                 switch stopping {
                 case .user:
                     state = .absent
@@ -190,13 +192,14 @@ final class BlobParakeet {
         loadStartedAt = .now
         load += 1
         let load = load
+        Self.log.info("load start load=\(load)")
         work = Task {
             do {
                 let models = try await AsrModels.load(from: Self.directory, version: Self.version)
                 let manager = AsrManager(config: .default)
                 try await manager.loadModels(models)
                 let ms = loadStartedAt.map { BlobMetrics.elapsedMs(since: $0) }
-                Self.log.info("load done ms=\(ms ?? -1, privacy: .public) load=\(load, privacy: .public) kept=\(self.wanted, privacy: .public)")
+                Self.log.info("load done ms=\(ms ?? -1) load=\(load) kept=\(self.wanted)")
                 if wanted {
                     self.manager = manager
                     readyLoadMs = ms
@@ -209,6 +212,7 @@ final class BlobParakeet {
                     state = .downloaded
                 }
             } catch {
+                Self.log.error("load failed load=\(load) onDisk=\(Self.onDisk)")
                 // A broken download: offer the download again.
                 state = Self.onDisk ? .failed(error.localizedDescription) : .absent
             }
@@ -229,6 +233,7 @@ final class BlobParakeet {
     func unload() {
         wanted = false
         guard state == .ready, let manager else { return }
+        Self.log.info("unload load=\(load)")
         self.manager = nil
         state = .downloaded
         Task { await manager.cleanup() }
@@ -333,6 +338,20 @@ extension BlobParakeet.State {
     var isFailed: Bool {
         if case .failed = self { true } else { false }
     }
+
+    /// The state's name for `BlobMetrics` and the talk log, without the
+    /// progress or the error text.
+    var wireName: String {
+        switch self {
+        case .absent: "absent"
+        case .downloading: "downloading"
+        case .paused: "paused"
+        case .downloaded: "downloaded"
+        case .loading: "loading"
+        case .ready: "ready"
+        case .failed: "failed"
+        }
+    }
 }
 
 /// FluidAudio's Silero voice activity model, for `BlobEndpointer`. A small
@@ -348,13 +367,19 @@ actor BlobVoiceActivity {
 
     var isLoaded: Bool { manager != nil }
 
+    static let log = BlobLog(category: "vad")
+
     func load() async -> VadManager? {
         if let manager { return manager }
         if let loading { return await loading.value }
+        let started = ContinuousClock.now
+        Self.log.info("load start")
         let task = Task { try? await VadManager() }
         loading = task
         manager = await task.value
         loading = nil
+        let elapsed = ContinuousClock.now - started
+        Self.log.info("load done ok=\(manager != nil) ms=\(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)")
         return manager
     }
 

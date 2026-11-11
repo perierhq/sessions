@@ -42,6 +42,9 @@ final class BlobMetrics {
         case parakeetEmpty = "parakeet-empty"
         /// Parakeet was loaded and missed its deadline.
         case parakeetDeadline = "parakeet-deadline"
+        /// Still loading when you tapped to send what Apple heard instead
+        /// of waiting for it.
+        case parakeetSkipped = "parakeet-skipped"
         case fish
         /// Fish was asked (or meant to be) and gave no text in time.
         case fishMissed = "fish-missed"
@@ -53,6 +56,18 @@ final class BlobMetrics {
     enum EndOfSpeech: String { case auto, tap }
     enum Interruption: String { case hush, tap }
     enum Outcome: String { case answered, failed, abandoned }
+    /// Why a voice turn never went out (`BlobTextTalk.dropVoice`).
+    enum Dropped: String {
+        /// It ended with no text: nothing to send.
+        case nothingHeard = "nothing-heard"
+        /// You sent something else (typed, a chip) before it went out.
+        case movedOn = "moved-on"
+        /// The app went to the background with nothing heard yet.
+        case backgrounded
+        /// The listen ran to `BlobEndpointer.maxListen` without hearing you
+        /// stop, and ended with no text.
+        case noEndpoint = "no-endpoint"
+    }
 
     /// The wire shape; see `BlobTurnMetric` in blob-metrics.ts.
     struct Turn: Codable, Equatable, Sendable {
@@ -83,6 +98,8 @@ final class BlobMetrics {
         var build: String?
         var posture: String?
         var replyEntryId: String?
+        var dropped: String?
+        var parakeetState: String?
     }
 
     private static let pendingKey = "blob.metrics.pending"
@@ -97,7 +114,8 @@ final class BlobMetrics {
     private var acceptedAt: ContinuousClock.Instant?
     private var firstTokenAt: ContinuousClock.Instant?
     private var listeningAt: ContinuousClock.Instant?
-    private var speechMs: Int?
+    /// How long you spoke in the last listen, from `speechEnded`.
+    private(set) var speechMs: Int?
     private var settledAt: Date?
     /// The Parakeet load the open turn gave up waiting for.
     private var awaitedLoad: Int?
@@ -145,7 +163,7 @@ final class BlobMetrics {
     ) {
         close()
         awaitedLoad = parakeetLoad
-        var turn = Turn(turnId: UUID().uuidString, startedAt: Int64(Date().timeIntervalSince1970 * 1000), input: input.rawValue)
+        var turn = Self.newTurn(input)
         turn.inputChars = inputChars
         turn.transcriber = transcriber?.rawValue
         turn.transcribeMs = transcribeMs
@@ -159,9 +177,6 @@ final class BlobMetrics {
            Self.similar(last.inputChars, inputChars) {
             turn.reasked = true
         }
-        turn.appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        turn.build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-        turn.posture = (BlobSurfaceReport.current?["panes"] as? Int ?? 1) > 1 ? "open" : "closed"
         current = turn
         sentAt = .now
         acceptedAt = nil
@@ -171,6 +186,44 @@ final class BlobMetrics {
         settledAt = nil
         awaitingAudio = false
         replySpeaking = false
+    }
+
+    /// A voice turn that never went out, recorded on its own: the open
+    /// turn, if any, stays open (a typed message may have taken its place).
+    /// Abandoned, with why (`dropped`) and what the transcriber did, so the
+    /// review counts it instead of it vanishing.
+    func dropped(
+        _ why: Dropped,
+        final: BlobTextTalk.Final?,
+        heardChars: Int,
+        speechMs: Int?,
+        parakeetWaitMs: Int?,
+        endOfSpeech: EndOfSpeech?,
+        parakeetState: BlobParakeet.State
+    ) {
+        var turn = Self.newTurn(.voice)
+        turn.outcome = Outcome.abandoned.rawValue
+        turn.dropped = why.rawValue
+        turn.parakeetState = parakeetState.wireName
+        turn.inputChars = final?.text.count ?? heardChars
+        turn.transcriber = final?.transcriber.rawValue
+        turn.transcribeMs = final?.ms
+        turn.transcriberReason = final?.reason.rawValue
+        turn.parakeetMiss = final?.parakeetMiss?.rawValue
+        turn.parakeetLoadMs = final?.parakeetLoadMs
+        turn.parakeetWaitMs = final?.parakeetWaitMs ?? parakeetWaitMs
+        turn.speechMs = speechMs
+        turn.endOfSpeech = endOfSpeech?.rawValue
+        queue(turn)
+        flush()
+    }
+
+    private static func newTurn(_ input: Input) -> Turn {
+        var turn = Turn(turnId: UUID().uuidString, startedAt: Int64(Date().timeIntervalSince1970 * 1000), input: input.rawValue)
+        turn.appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        turn.build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        turn.posture = (BlobSurfaceReport.current?["panes"] as? Int ?? 1) > 1 ? "open" : "closed"
+        return turn
     }
 
     /// The answer is in: what it showed, how many steps it took. The turn

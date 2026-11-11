@@ -260,6 +260,55 @@ describe("cleanTurnMetric", () => {
     ).toBe(60 * 60 * 1000);
   });
 
+  test("keeps why an abandoned voice turn was dropped, and nowhere else", () => {
+    for (const dropped of metrics.DROPS) {
+      const clean = metrics.cleanTurnMetric(
+        turn({
+          outcome: "abandoned",
+          dropped,
+          transcriber: "apple",
+          transcriberReason: "parakeet-skipped",
+          parakeetState: "loading",
+        }),
+        NOW,
+      )!;
+      expect(clean.dropped).toBe(dropped);
+      expect(clean.transcriberReason).toBe("parakeet-skipped");
+      expect(clean.parakeetState).toBe("loading");
+    }
+    for (const parakeetState of metrics.PARAKEET_STATES)
+      expect(
+        metrics.cleanTurnMetric(
+          turn({ outcome: "abandoned", dropped: "no-endpoint", parakeetState }),
+          NOW,
+        )!.parakeetState,
+      ).toBe(parakeetState);
+    for (const [outcome, dropped, parakeetState] of [
+      ["abandoned", "lost", "loading"],
+      ["abandoned", 3, "ready"],
+      ["answered", "nothing-heard", "ready"],
+      ["failed", "moved-on", "ready"],
+    ]) {
+      const clean = metrics.cleanTurnMetric(
+        turn({ outcome, dropped, parakeetState }),
+        NOW,
+      )!;
+      expect(clean).not.toBeNull();
+      expect(clean.dropped).toBeUndefined();
+      expect(clean.parakeetState).toBeUndefined();
+    }
+    expect(
+      metrics.cleanTurnMetric(
+        turn({
+          outcome: "abandoned",
+          dropped: "backgrounded",
+          parakeetState: "warm",
+        }),
+        NOW,
+      )!.parakeetState,
+    ).toBeUndefined();
+  });
+
   test("caps durations at an hour", () => {
     expect(
       metrics.cleanTurnMetric(turn({ acceptedToFirstTokenMs: 9e9 }), NOW)!

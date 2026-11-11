@@ -54,6 +54,7 @@ export const PARAKEET_MISSES = [
   "parakeet-error",
   "parakeet-empty",
   "parakeet-deadline",
+  "parakeet-skipped",
 ] as const;
 export const TRANSCRIBER_REASONS = [
   "parakeet",
@@ -67,6 +68,26 @@ export const END_OF_SPEECH = ["auto", "tap"] as const;
 export const INTERRUPTIONS = ["hush", "tap"] as const;
 export const OUTCOMES = ["answered", "failed", "abandoned"] as const;
 export const POSTURES = ["closed", "open"] as const;
+/** Why an abandoned voice turn never went out (BlobTextTalk.dropVoice):
+ *  `nothing-heard` ended with no text, `moved-on` the owner sent something
+ *  else first, `backgrounded` the app left the screen with nothing heard,
+ *  `no-endpoint` the listen ran to its cap without an end of speech. */
+export const DROPS = [
+  "nothing-heard",
+  "moved-on",
+  "backgrounded",
+  "no-endpoint",
+] as const;
+/** BlobParakeet.State when a voice turn was dropped. */
+export const PARAKEET_STATES = [
+  "absent",
+  "downloading",
+  "paused",
+  "downloaded",
+  "loading",
+  "ready",
+  "failed",
+] as const;
 
 export type BlobInputMode = (typeof INPUT_MODES)[number];
 export type BlobTranscriber = (typeof TRANSCRIBERS)[number];
@@ -76,6 +97,8 @@ export type BlobEndOfSpeech = (typeof END_OF_SPEECH)[number];
 export type BlobInterruption = (typeof INTERRUPTIONS)[number];
 export type BlobOutcome = (typeof OUTCOMES)[number];
 export type BlobPosture = (typeof POSTURES)[number];
+export type BlobDrop = (typeof DROPS)[number];
+export type BlobParakeetState = (typeof PARAKEET_STATES)[number];
 
 /** One Blob turn, as the app measured it. Durations are milliseconds. */
 export interface BlobTurnMetric {
@@ -121,6 +144,10 @@ export interface BlobTurnMetric {
   posture?: BlobPosture;
   /** The reply's transcript entry id in the supervisor session. */
   replyEntryId?: string;
+  /** On an abandoned voice turn: why it never went out. */
+  dropped?: BlobDrop;
+  /** On a dropped voice turn: where Parakeet was. */
+  parakeetState?: BlobParakeetState;
 }
 
 interface DayDocument {
@@ -243,6 +270,12 @@ export function cleanTurnMetric(
   set("build", token(get("build"), TOKEN));
   set("posture", oneOf(POSTURES, get("posture")));
   set("replyEntryId", token(get("replyEntryId"), ID));
+  // A drop reason only says something on a turn that never went out.
+  if (turn.outcome === "abandoned") {
+    set("dropped", oneOf(DROPS, get("dropped")));
+    if (turn.dropped)
+      set("parakeetState", oneOf(PARAKEET_STATES, get("parakeetState")));
+  }
   return turn;
 }
 
