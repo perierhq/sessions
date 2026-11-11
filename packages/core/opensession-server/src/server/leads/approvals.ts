@@ -154,10 +154,14 @@ export const LEAD_APPROVAL_TRANSITIONS: Readonly<
 
 export interface LeadApproval {
   proposalId: string;
-  /** The person who approved, as the supervisor inbox names them. */
+  /** The person who approved, as the supervisor inbox names them; the
+   *  lead itself when `rule` is set. */
   approvedBy: string;
-  /** Their GitHub login. */
-  login: string;
+  /** Their GitHub login; absent when `rule` is set. */
+  login?: string;
+  /** Set when the lead's rules let it run without the owner (`claimAlone`):
+   *  the rule that did. */
+  rule?: string;
   at: number;
   condition?: LeadCondition;
   expiresAt: number;
@@ -600,16 +604,22 @@ function storedApproval(value: unknown, proposalId: string): LeadApproval {
     "claimId",
     "claimedAt",
     "reason",
+    "rule",
   ]);
   if (raw.proposalId !== proposalId) fail("approval is for another proposal");
   const state = LEAD_APPROVAL_STATES.find((s) => s === raw.state);
   if (!state) fail("approval state is unknown");
-  if (typeof raw.login !== "string" || !LOGIN.test(raw.login))
+  const byRule = raw.rule !== undefined;
+  if (byRule) {
+    if (raw.login !== undefined) fail("an approval by the rules has no login");
+  } else if (typeof raw.login !== "string" || !LOGIN.test(raw.login))
     fail("login is not a GitHub login");
   const approval: LeadApproval = {
     proposalId,
     approvedBy: line(raw.approvedBy, "approvedBy", NAME_LEN),
-    login: raw.login,
+    ...(byRule
+      ? { rule: line(raw.rule, "rule", REASON_LEN) }
+      : { login: raw.login as string }),
     at: time(raw.at, "at"),
     expiresAt: time(raw.expiresAt, "expiresAt"),
     state,
@@ -1134,6 +1144,89 @@ export async function claimApply(
     if (claimed.ok && !claimed.already)
       return replace(doc, { ...record, approval: claimed.approval });
     if (!claimed.ok && claimed.error === "expired")
+      return replace(doc, voidRecord(record, now, "expired"));
+    return null;
+  });
+  return result;
+}
+
+/** Who an approval by the lead's rules names as its approver. */
+export const LEAD_RULES_APPROVER = "Blob (lead)";
+
+/** Claim an unapproved proposal for a run the lead's rules allow without
+ *  the owner (an alone category at the act stage). Pure; see claimAlone. */
+export function claimAloneRecord(
+  record: LeadRecord,
+  claimId: string,
+  rule: string,
+  now: number,
+): { ok: true; approval: LeadApproval } | { ok: false; error: ClaimError } {
+  const approval = record.approval;
+  if (approval)
+    return {
+      ok: false,
+      error:
+        approval.state === "applying"
+          ? "busy"
+          : approval.state === "void"
+            ? "voided"
+            : TERMINAL.has(approval.state)
+              ? "settled"
+              : "not-ready",
+    };
+  if (record.proposal.voidedAt !== undefined)
+    return { ok: false, error: "voided" };
+  const expiresAt =
+    record.proposal.expiresAt ?? record.proposal.createdAt + PROPOSAL_TTL_MS;
+  if (now >= expiresAt) return { ok: false, error: "expired" };
+  return {
+    ok: true,
+    approval: {
+      proposalId: record.proposal.id,
+      approvedBy: LEAD_RULES_APPROVER,
+      rule: reasonOf(rule) ?? "The project's lead rules",
+      at: now,
+      expiresAt,
+      state: "applying",
+      updatedAt: now,
+      claimId,
+      claimedAt: now,
+    },
+  };
+}
+
+/**
+ * Claim a proposal the lead's rules let it run without the owner, in one
+ * compare-and-set: a standing proposal with no approval gets one by the
+ * rules (`rule` names it), applying under `claimId`. Refused once anything
+ * approved or claimed it (`not-ready`, `busy`, `settled`), and for one that
+ * is voided or expired (voided now). The caller decides the rules allow it.
+ */
+export async function claimAlone(
+  project: string,
+  proposalId: string,
+  claimId: string,
+  rule: string,
+): Promise<
+  { ok: true; approval: LeadApproval } | { ok: false; error: ClaimError }
+> {
+  const key = projectKey(project);
+  if (!key || !ID.test(claimId)) return { ok: false, error: "not-found" };
+  const now = deps.now();
+  let result:
+    | { ok: true; approval: LeadApproval }
+    | { ok: false; error: ClaimError } = { ok: false, error: "not-found" };
+  await updateDocument(key, (doc) => {
+    const record = doc.records.find((r) => r.proposal.id === proposalId);
+    if (!record) {
+      result = { ok: false, error: "not-found" };
+      return null;
+    }
+    const claimed = claimAloneRecord(record, claimId, rule, now);
+    result = claimed;
+    if (claimed.ok)
+      return replace(doc, { ...record, approval: claimed.approval });
+    if (claimed.error === "expired")
       return replace(doc, voidRecord(record, now, "expired"));
     return null;
   });

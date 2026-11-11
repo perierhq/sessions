@@ -740,6 +740,92 @@ describe("claimApply", () => {
   });
 });
 
+describe("claimAlone", () => {
+  test("an unapproved proposal is claimed once, by the rules, with no login", async () => {
+    const proposal = await propose();
+    const results = await Promise.all(
+      ["la-1", "la-2", "la-3"].map((claimId) =>
+        A.claimAlone("acme", proposal.id, claimId, "Alone: fixes"),
+      ),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const record = await A.getRecord("acme", proposal.id);
+    expect(record?.approval).toMatchObject({
+      state: "applying",
+      approvedBy: A.LEAD_RULES_APPROVER,
+      rule: "Alone: fixes",
+    });
+    expect(record?.approval?.login).toBeUndefined();
+    const claimId = record!.approval!.claimId!;
+    expect(
+      await A.transition("acme", proposal.id, "applied", { claimId }),
+    ).toMatchObject({ ok: true });
+    expect(
+      await A.claimAlone("acme", proposal.id, "la-4", "Alone: fixes"),
+    ).toEqual({ ok: false, error: "settled" });
+  });
+
+  test("refused once the owner approved, and for voided or expired proposals", async () => {
+    const { proposal } = await approved({ itemId: "si-a" });
+    expect(await A.claimAlone("acme", proposal.id, "la-1", "r")).toEqual({
+      ok: false,
+      error: "not-ready",
+    });
+    const old = await propose({ itemId: "si-b", expiresAt: clock + DAY });
+    clock += DAY;
+    expect(await A.claimAlone("acme", old.id, "la-2", "r")).toEqual({
+      ok: false,
+      error: "expired",
+    });
+    expect(await A.claimAlone("acme", old.id, "la-3", "r")).toEqual({
+      ok: false,
+      error: "voided",
+    });
+    expect((await A.getRecord("acme", old.id))?.proposal.voidReason).toBe(
+      "expired",
+    );
+  });
+
+  test("an approval by the rules that names a login doesn't read back", async () => {
+    await propose();
+    const { catalogDocuments } = await import("../catalog-documents");
+    const proposal = {
+      id: "lp-rules",
+      ...input({ itemId: "si-rules" }),
+      createdAt: clock,
+    };
+    const approval = {
+      proposalId: "lp-rules",
+      approvedBy: A.LEAD_RULES_APPROVER,
+      rule: "Alone: fixes",
+      at: clock,
+      expiresAt: clock + DAY,
+      state: "applying",
+      updatedAt: clock,
+    };
+    await catalogDocuments(A.LEAD_APPROVALS_NAMESPACE).update(
+      "acme",
+      (current) => {
+        const doc = current as { records: unknown[] };
+        return {
+          ...doc,
+          records: [
+            { proposal, approval },
+            {
+              proposal: { ...proposal, id: "lp-both", itemId: "si-both" },
+              approval: { ...approval, proposalId: "lp-both", login: "ada" },
+            },
+            ...doc.records,
+          ],
+        };
+      },
+    );
+    const ids = (await A.listForProject("acme")).map((r) => r.proposal.id);
+    expect(ids).toContain("lp-rules");
+    expect(ids).not.toContain("lp-both");
+  });
+});
+
 describe("expiry", () => {
   test("approvals after 7 days, unapproved proposals after 30", async () => {
     const ready = await approved({ itemId: "si-ready" });

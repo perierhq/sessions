@@ -25,7 +25,7 @@ const STAGE_TEXT: Record<LeadStage, string> = {
     "Watch. You read and propose; you change nothing, not even something the owner approved. When the owner approves a proposal, record the answer in your ledger and, on your next wake, prepare the change exactly (the fields and values, or the command) and propose it again as ready to apply. Someone else applies it.",
   coordinate:
     "Coordinate. You may start fix workers and leave pull requests for alone categories; merging stays with the existing loops. Starting workers isn't available to you yet, so propose them instead.",
-  act: "Act within the rules. Alone categories run without the owner; the rest as the table says. Acting tools aren't available to you yet, so propose instead.",
+  act: "Act within the rules. Alone categories run without the owner; the rest as the table says. Propose with steps, then run them with lead_apply once the rules or the owner's approval allow it; only merges and signal changes run so far, so propose anything else.",
 };
 
 const EFFECT_TEXT: Record<LeadEffect, string> = {

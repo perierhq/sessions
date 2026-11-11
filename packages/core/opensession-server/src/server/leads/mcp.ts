@@ -2,10 +2,12 @@
 // mounted on its goal (goal-runner.ts). Two read-only views (the project
 // overview and the flap triage), `propose`, which checks the project's lead
 // rules before raising a proposal in the owner's supervisor inbox (with
-// optional typed steps the server records for the owner's approval), and
-// `post_digest_note`, the day's note for the owner's digest. None of them
-// changes the project, and the two that report refuse while the lead is
-// off or the project's kill switch is on.
+// optional typed steps the server records for the owner's approval),
+// `post_digest_note`, the day's note for the owner's digest, and
+// `lead_apply`, which runs a recorded proposal's steps when the lead rules
+// or the owner's approval allow it (apply.ts). Only lead_apply changes the
+// project; it and the two that report refuse while the lead is off or the
+// project's kill switch is on.
 import { z } from "zod";
 import {
   LEAD_CATEGORIES,
@@ -13,6 +15,7 @@ import {
   leadDecision,
 } from "../../shared/project-lead";
 import { createSdkMcpServer, tool } from "../inprocess-mcp";
+import { leadApply } from "./apply";
 import { flapReportMarkdown } from "./flaps";
 import { buildFlapReport, buildLeadOverview, leadSources } from "./overview";
 import {
@@ -307,6 +310,21 @@ export function createLeadMcpServer(project: string) {
         );
         if (!delivered.queued) return text(delivered.reason, true);
         return text(`Saved for today's digest (${delivered.itemId}).`);
+      },
+    ),
+    tool(
+      "lead_apply",
+      `Run the steps recorded for one of ${project}'s proposals (propose returns its id), when the lead rules or the owner's approval allow it now. The server checks the rules, the approval, its expiry and its condition every time, runs the steps it recorded in order (merging a pull request as the GitHub App at the approved head; changing a signal only while it still has the proposed before values), stops at the first failure and tells the owner either way. A proposal runs at most once: whatever happens, never call it again for the same id; propose again instead.`,
+      {
+        proposalId: z
+          .string()
+          .min(1)
+          .max(128)
+          .describe("The id propose returned with the recorded steps."),
+      },
+      async (args: { proposalId: string }) => {
+        const result = await leadApply(project, args.proposalId.trim());
+        return text(result.text, !result.ok);
       },
     ),
   ];
