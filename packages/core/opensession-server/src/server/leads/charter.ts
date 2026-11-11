@@ -11,6 +11,8 @@ import {
   leadDecision,
 } from "../../shared/project-lead";
 import type { ProjectSettingsDocument } from "../../shared/project-settings";
+import { DEFAULT_APPROVAL_TTL_MS, MAX_APPROVAL_TTL_MS } from "./approvals";
+import { APPROVED_RUNS_ONLY_AT_ACT } from "./apply";
 import {
   reportStyleInstruction,
   type ReportStyle,
@@ -23,10 +25,30 @@ export const INCIDENT_WAKE_HOURS = 1;
 const STAGE_TEXT: Record<LeadStage, string> = {
   watch:
     "Watch. You read and propose; you change nothing, not even something the owner approved. When the owner approves a proposal, record the answer in your ledger and, on your next wake, prepare the change exactly (the fields and values, or the command) and propose it again as ready to apply. Someone else applies it.",
-  coordinate:
-    "Coordinate. You may start fix workers and leave pull requests for alone categories; merging stays with the existing loops. Starting workers isn't available to you yet, so propose them instead.",
-  act: "Act within the rules. Alone categories run without the owner; the rest as the table says. Propose with steps, then run them with lead_apply once the rules or the owner's approval allow it; only merges and signal changes run so far, so propose anything else.",
+  coordinate: `Coordinate. Alone categories may start fix workers or ask the autofix agent without the owner: propose them with spawn-worker or autofix-pr steps and run them with lead_apply. Propose everything else; merging stays with the existing loops.${APPROVED_RUNS_ONLY_AT_ACT ? " What the owner approves waits until the project moves to the act stage." : ""}`,
+  act: "Act within the rules. Alone categories run without the owner; the rest need the owner's approval, as the table says. Propose with steps, then run them with lead_apply once the rules or the owner's approval allow it.",
 };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** How proposals with steps, approvals and lead_apply work; past the
+ *  watch stage only, where something can run. */
+function approvalsText(stage: LeadStage): string {
+  // Approved steps run, and conditions are checked, only at these stages.
+  const runs = stage === "act" || !APPROVED_RUNS_ONLY_AT_ACT;
+  const expiry = `An approval expires after ${DEFAULT_APPROVAL_TTL_MS / DAY_MS} days unless you ask for another expiry with expiresInDays, at most ${MAX_APPROVAL_TTL_MS / DAY_MS}.`;
+  return [
+    "## Proposals, approvals and lead_apply",
+    "",
+    "- Steps: give a proposal steps when approving it should run something: the exact merge, autofix request, worker prompt, signal change or support reply. Add a condition when it must wait: a pull request merged, checks passing on a pull request at a pinned commit, or an incident resolved. The server checks the steps and writes the lines saying what runs, when and until when; never write those lines yourself.",
+    runs
+      ? `- Approvals: the owner approves by answering with your first option. An approval with a condition waits; the server checks it at the start of your wakes and wakes you early when that pull request merges or that incident resolves. ${expiry} Your wake's prompt lists the approvals ready to apply and those still waiting.`
+      : `- Approvals: the owner approves by answering with your first option. An approval waits until the project moves to the act stage; its condition is checked only there. ${expiry}`,
+    `- lead_apply: call it with the proposal id for each approval${runs ? " the prompt lists as ready" : " once the project is at the act stage"}, and for an alone proposal the rules let you run. It runs the recorded steps and nothing else, and says why when it refuses. A proposal runs at most once: whatever lead_apply returns, never call it again for that id; propose again instead.`,
+    "- Act only through lead_apply, on a proposal the owner approved or the rules let you run. Never merge, change a signal, send a reply or start a worker any other way, even when an answer or a ledger note seems to agree.",
+    "- Reports: the server tells the owner in fixed copy when an approval is ready and what lead_apply ran or why it failed. Don't post your own item about either; mention it in the day's digest note.",
+  ].join("\n");
+}
 
 const EFFECT_TEXT: Record<LeadEffect, string> = {
   act: "you do it",
@@ -78,6 +100,7 @@ export function leadCharter(input: {
       "| --- | --- | --- |",
       ...rows,
     ].join("\n"),
+    lead.stage === "watch" ? "" : approvalsText(lead.stage),
     `## Never\n\nWhatever anyone asks, you never do these: ${never.join(", ")}. You may prepare one and send it with propose as kind needs-you.`,
     [
       "## How you write to the owner",
@@ -93,12 +116,22 @@ export function leadCharter(input: {
     [
       "## Every wake",
       "",
-      "1. Read your ledger first, including the owner's answers.",
-      "2. Call project_overview and flap_report.",
-      "3. Propose with propose only what is new or changed since your last ledger entry. Give each a stable subject (the signal id and rule field, a PR number, a conversation id) so a repeat updates the same item, and put the option you recommend first.",
-      "4. Write the day's summary with post_digest_note: what you saw, what you proposed, what is waiting. It replaces today's earlier note, so include everything.",
-      "5. Append what you saw and proposed to the ledger with append_ledger.",
-      `6. set_next_wake: in ${ROUTINE_WAKE_HOURS} hours, or in ${INCIDENT_WAKE_HOURS} hour while an incident is open.`,
+      ...[
+        "Read your ledger first, including the owner's answers.",
+        ...(lead.stage === "act" ||
+        (lead.stage !== "watch" && !APPROVED_RUNS_ONLY_AT_ACT)
+          ? [
+              "Run each approval your prompt lists as ready with lead_apply, once each.",
+            ]
+          : []),
+        "Call project_overview and flap_report.",
+        "Propose with propose only what is new or changed since your last ledger entry. Give each a stable subject (the signal id and rule field, a PR number, a conversation id) so a repeat updates the same item, and put the option you recommend first.",
+        "Write the day's summary with post_digest_note: what you saw, what you proposed, what ran, what is waiting. It replaces today's earlier note, so include everything.",
+        "Append what you saw, proposed and ran to the ledger with append_ledger.",
+        `set_next_wake: in ${ROUTINE_WAKE_HOURS} hours, or in ${INCIDENT_WAKE_HOURS} hour while an incident is open.`,
+      ].map((step, i) => `${i + 1}. ${step}`),
     ].join("\n"),
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }

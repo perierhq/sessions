@@ -209,6 +209,16 @@ export async function resolveReviewConfig(): Promise<{
   };
 }
 
+/** Wake the lead of the project (the repository's id) when one of its
+ *  approvals waits on this pull request. Fire and forget. */
+function wakeLeadOnMerge(project: string, ghRepo: string, number: number) {
+  import("../../server/leads/goal")
+    .then((m) => m.wakeLeadFor(project, { kind: "pr-merged", ghRepo, number }))
+    .catch((e) =>
+      console.warn(`[github] waking the lead for #${number} failed:`, e),
+    );
+}
+
 export async function handleGithubPrEvent(
   event: string,
   payload: any,
@@ -421,6 +431,9 @@ export async function handleGithubPrEvent(
 
     // ── Merge → notify linked sessions + fire configured docs-sync ──
     if (action === "closed" && pr.merged) {
+      // A lead whose approval waits on this merge wakes to check it; the
+      // wake reads GitHub again, so who merged it doesn't matter.
+      if (eventRepo) wakeLeadOnMerge(eventRepo.id, eventRepo.ghRepo, pr.number);
       const mergedBy: string = pr.merged_by?.login || senderLogin;
       if (!isGithubBotLogin(mergedBy) && !isTrustedGithubLogin(mergedBy)) {
         console.warn(

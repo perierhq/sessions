@@ -172,6 +172,9 @@ export interface LeadApproval {
   claimedAt?: number;
   /** Why it is void, failed or partial. */
   reason?: string;
+  /** When a wake last checked its condition (`markChecked`): the wakes
+   *  check the least recently checked ones first. */
+  checkedAt?: number;
 }
 
 export interface LeadRecord {
@@ -605,6 +608,7 @@ function storedApproval(value: unknown, proposalId: string): LeadApproval {
     "claimedAt",
     "reason",
     "rule",
+    "checkedAt",
   ]);
   if (raw.proposalId !== proposalId) fail("approval is for another proposal");
   const state = LEAD_APPROVAL_STATES.find((s) => s === raw.state);
@@ -632,6 +636,8 @@ function storedApproval(value: unknown, proposalId: string): LeadApproval {
     approval.claimedAt = time(raw.claimedAt, "claimedAt");
   const reason = reasonOf(raw.reason);
   if (reason) approval.reason = reason;
+  if (raw.checkedAt !== undefined)
+    approval.checkedAt = time(raw.checkedAt, "checkedAt");
   return approval;
 }
 
@@ -1068,6 +1074,28 @@ export async function approve(
   return result;
 }
 
+/** Record that a wake checked these waiting approvals' conditions now.
+ *  Changes nothing else, so not the approval's revision either. */
+export async function markChecked(
+  project: string,
+  proposalIds: readonly string[],
+): Promise<void> {
+  const key = projectKey(project);
+  if (!key || proposalIds.length === 0) return;
+  const now = deps.now();
+  const ids = new Set(proposalIds);
+  await updateDocument(key, (doc) => {
+    let changed = false;
+    const records = doc.records.map((record) => {
+      if (!ids.has(record.proposal.id) || record.approval?.state !== "waiting")
+        return record;
+      changed = true;
+      return { ...record, approval: { ...record.approval, checkedAt: now } };
+    });
+    return changed ? { ...doc, records } : null;
+  });
+}
+
 /** Move a proposal's approval along the transition table. `applying` is
  *  only entered through `claimApply`; leaving it needs the claim id. */
 export async function transition(
@@ -1338,6 +1366,23 @@ export async function getRecord(
   );
 }
 
+/** Void what is past its expiry in `project`'s document, writing it only
+ *  when something is due. Returns how many records were voided. */
+export async function expireProject(
+  project: string,
+  now: number = deps.now(),
+): Promise<number> {
+  const key = projectKey(project);
+  if (!key) return 0;
+  let count = 0;
+  await updateDocument(key, (current) => {
+    const result = expireRecords(current.records, now);
+    count = result.expired;
+    return count ? { ...current, records: result.records } : null;
+  });
+  return count;
+}
+
 /**
  * Void what is past its expiry in every project (one bounded document per
  * project), writing only documents that have something due. Returns how
@@ -1348,13 +1393,7 @@ export async function expire(now: number = deps.now()): Promise<number> {
   for (const row of await deps.documents().list()) {
     if (projectKey(row.key) !== row.key) continue;
     if (!expired(cleanDocument(row.value, row.key), now)) continue;
-    let count = 0;
-    await updateDocument(row.key, (current) => {
-      const result = expireRecords(current.records, now);
-      count = result.expired;
-      return count ? { ...current, records: result.records } : null;
-    });
-    total += count;
+    total += await expireProject(row.key, now);
   }
   return total;
 }

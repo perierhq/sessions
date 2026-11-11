@@ -110,6 +110,79 @@ describe("leadCharter", () => {
     );
   });
 
+  test("never says acting isn't available", () => {
+    for (const stage of ["watch", "coordinate", "act"] as const) {
+      const text = charter({ stage });
+      expect(text).not.toMatch(/n't available|not available|so far/i);
+      expect(text).not.toContain("\u2014");
+    }
+  });
+
+  test("at watch, nothing about approvals or lead_apply", () => {
+    const text = charter();
+    expect(text).not.toContain("## Proposals, approvals and lead_apply");
+    expect(text).not.toContain("lead_apply");
+  });
+
+  test("at act, proposing with steps, approvals, lead_apply and reports", () => {
+    const text = charter({ stage: "act" });
+    expect(text).toContain(
+      "Propose with steps, then run them with lead_apply once the rules or the owner's approval allow it.",
+    );
+    expect(text).toContain("## Proposals, approvals and lead_apply");
+    expect(text).toContain(
+      "Add a condition when it must wait: a pull request merged, checks passing on a pull request at a pinned commit, or an incident resolved.",
+    );
+    expect(text).toContain(
+      "An approval expires after 7 days unless you ask for another expiry with expiresInDays, at most 30.",
+    );
+    expect(text).toContain(
+      "wakes you early when that pull request merges or that incident resolves",
+    );
+    expect(text).toContain(
+      "- lead_apply: call it with the proposal id for each approval the prompt lists as ready",
+    );
+    expect(text).toContain(
+      "never call it again for that id; propose again instead.",
+    );
+    expect(text).toContain(
+      "- Act only through lead_apply, on a proposal the owner approved or the rules let you run.",
+    );
+    expect(text).toContain(
+      "the server tells the owner in fixed copy when an approval is ready and what lead_apply ran or why it failed",
+    );
+    expect(text).toContain(
+      "2. Run each approval your prompt lists as ready with lead_apply, once each.",
+    );
+    expect(text.trimEnd()).toEndWith(
+      "7. set_next_wake: in 6 hours, or in 1 hour while an incident is open.",
+    );
+  });
+
+  test("at coordinate, alone workers run and approvals wait for act", () => {
+    const text = charter({ stage: "coordinate" });
+    expect(text).toContain(
+      "propose them with spawn-worker or autofix-pr steps and run them with lead_apply",
+    );
+    expect(text).toContain(
+      "What the owner approves waits until the project moves to the act stage.",
+    );
+    expect(text).toContain(
+      "for each approval once the project is at the act stage",
+    );
+    expect(text).not.toContain("Run each approval your prompt lists");
+    // Conditions are checked, and events wake the lead, only at act.
+    expect(text).toContain(
+      "An approval waits until the project moves to the act stage; its condition is checked only there.",
+    );
+    expect(text).not.toContain("start of your wakes");
+    expect(text).not.toContain("wakes you early");
+    expect(text).not.toContain("prompt lists the approvals");
+    expect(text).toContain(
+      "An approval expires after 7 days unless you ask for another expiry with expiresInDays, at most 30.",
+    );
+  });
+
   test("a project without a label reads by its id", () => {
     const doc = base();
     expect(

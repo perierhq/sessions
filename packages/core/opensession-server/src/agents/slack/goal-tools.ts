@@ -25,6 +25,7 @@ import {
   appendLedger,
   readLedger,
   mutateGoal,
+  takePendingWake,
 } from "../../server/goals";
 import { parseWhen } from "./parse-when";
 
@@ -309,14 +310,22 @@ export function createGoalSelfMcpServer(
         if (!iso) return text(`Couldn't read "${args.when}" as a future time.`);
         const requested = Date.parse(iso);
         const now = Date.now();
-        const g = await mutateGoal(goalId, (current) => ({
-          ...current,
-          nextWakeAt: new Date(
-            Math.max(requested, now + current.minWakeMinutes * 60_000),
-          ).toISOString(),
-          // A lead's pause is its settings' (turned off mid-run): keep it.
-          status: options.lead ? current.status : "active",
-        }));
+        // An event that came during this run (since it started, lastRunAt)
+        // still wakes the lead then, whatever this asks for.
+        const g = await mutateGoal(goalId, (current) =>
+          takePendingWake(
+            {
+              ...current,
+              nextWakeAt: new Date(
+                Math.max(requested, now + current.minWakeMinutes * 60_000),
+              ).toISOString(),
+              // A lead's pause is its settings' (turned off mid-run): keep it.
+              status: options.lead ? current.status : "active",
+            },
+            current.lastRunAt,
+            { keep: true },
+          ),
+        );
         if (!g) return text("Goal record missing.");
         return text(`Next wake set to ${g.nextWakeAt}.`);
       },

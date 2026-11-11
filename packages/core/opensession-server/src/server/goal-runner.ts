@@ -27,6 +27,7 @@ import {
   goalGuardFor,
   listGoals,
   mutateGoal,
+  takePendingWake,
   type Goal,
 } from "./goals";
 import { createLeadMcpServer } from "./leads/mcp";
@@ -121,14 +122,17 @@ export type LeadGoalFields = Pick<
 
 /** A lead's goal may wake: its fields from the settings, the owner's local
  *  day its wake counts towards, the tokens this wake may use, what it may
- *  still spend this month when it has a dollar cap (null: no cap), and
- *  whether it reads the web. */
+ *  still spend this month when it has a dollar cap (null: no cap),
+ *  whether it reads the web, and the approvals it may apply or waits on. */
 export interface LeadRunPlan {
   fields: LeadGoalFields;
   day: string;
   wakeTokens: number;
   budgetUsd: number | null;
   web: boolean;
+  /** The owner's approvals, one fixed line each: ready to apply, or
+   *  waiting on their condition. */
+  approvals?: string[];
 }
 
 /** What a project lead's settings say about one wake of its goal
@@ -303,6 +307,8 @@ function buildGoalWakePrompt(
     parts.push(
       `Limits: this wake may use about ${lead.wakeTokens.toLocaleString("en-US")} tokens${lead.budgetUsd === null ? "" : ` and spend about $${Number(lead.budgetUsd.toFixed(2))}, what is left of this month's cap`}. At that you are asked to wrap up, and past it the wake is stopped and the lead pauses until the owner resumes it.`,
     );
+  if (lead?.approvals?.length)
+    parts.push(`## The owner's approvals\n\n${lead.approvals.join("\n")}`);
   if (goal.mode === "code") {
     const repo = getRepo(goal.repo);
     const branchLabel = JSON.stringify(repo.defaultBranch);
@@ -645,7 +651,11 @@ export async function runGoal(stored: Goal): Promise<void> {
         merged.status === "active" &&
         Date.parse(merged.nextWakeAt) <= startedAt.getTime();
       if (defaulted) merged.nextWakeAt = dayAfter(startedAt);
-      return merged;
+      // An event that asked to wake the lead during this run (an answer, a
+      // merged PR) wakes it again now instead of at the run's choice.
+      return merged.status === "active"
+        ? takePendingWake(merged, startedAt.toISOString())
+        : merged;
     });
     spendRecorded = true;
     if (defaulted)
@@ -660,18 +670,23 @@ export async function runGoal(stored: Goal): Promise<void> {
     try {
       // A watch goes back on its schedule; its daily wake cap stops a loop.
       const watchNext = await settleWatch(false);
-      await mutateGoal(goal.id, (fresh) => ({
-        ...fresh,
-        lastRunAt: startedAt.toISOString(),
-        lastRunStatus: "error",
-        lastRunError: e?.message || String(e),
-        // Back off a day on a hard failure so it can't hot-loop crashing.
-        nextWakeAt:
-          fresh.status === "active" &&
-          Date.parse(fresh.nextWakeAt) <= startedAt.getTime()
-            ? (watchNext ?? dayAfter(startedAt))
-            : fresh.nextWakeAt,
-      }));
+      await mutateGoal(goal.id, (fresh) => {
+        const failed: Goal = {
+          ...fresh,
+          lastRunAt: startedAt.toISOString(),
+          lastRunStatus: "error",
+          lastRunError: e?.message || String(e),
+          // Back off a day on a hard failure so it can't hot-loop crashing.
+          nextWakeAt:
+            fresh.status === "active" &&
+            Date.parse(fresh.nextWakeAt) <= startedAt.getTime()
+              ? (watchNext ?? dayAfter(startedAt))
+              : fresh.nextWakeAt,
+        };
+        return failed.status === "active"
+          ? takePendingWake(failed, startedAt.toISOString())
+          : failed;
+      });
     } catch (saveError) {
       // The catalog may be what failed; callers fire and forget this run.
       console.error(
