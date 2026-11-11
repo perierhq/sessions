@@ -1034,6 +1034,7 @@ struct BlobHomeView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Read aloud")
                 .accessibilityValue(readAloud ? "On" : "Off")
+                .accessibilityAddTraits(.isToggle)
                 #if os(macOS)
                 .help("Read aloud (\u{21E7}\u{2318}M)")
                 #endif

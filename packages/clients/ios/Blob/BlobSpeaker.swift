@@ -79,7 +79,27 @@ final class BlobSpeaker: NSObject {
     override init() {
         super.init()
         synthesizer.delegate = self
+        BlobListener.registerPlayback { [weak self] in
+            guard let self else { return false }
+            return self.player?.isPlaying == true || self.synthesizer.isSpeaking || self.queueTask != nil
+        }
+        #if os(iOS)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(interrupted(_:)),
+            name: AVAudioSession.interruptionNotification, object: nil)
+        #endif
     }
+
+    #if os(iOS)
+    /// A call or another app took the audio: what was playing ends and the
+    /// current utterance finishes, so `speaking` doesn't stick. Nothing
+    /// resumes when the interruption ends.
+    @objc nonisolated private func interrupted(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+        Task { @MainActor in self.stop() }
+    }
+    #endif
 
     /// Voice pulse for Blob: a beat on every word with an Apple voice, the
     /// player's loudness with the server voice.
@@ -216,6 +236,7 @@ final class BlobSpeaker: NSObject {
         }
         queueTask = nil
         speaking = false
+        BlobListener.deactivateSession()
         onQueueDrained?()
     }
 
@@ -281,7 +302,9 @@ final class BlobSpeaker: NSObject {
             _ = await play(data)
             if Task.isCancelled { next?.cancel(); return }
         }
+        serverTask = nil
         speaking = false
+        BlobListener.deactivateSession()
     }
 
     private static func fetch(_ piece: String?) -> Task<Data, Error>? {
@@ -332,6 +355,7 @@ final class BlobSpeaker: NSObject {
     func stop() {
         cutOff()
         appleForReply = false
+        BlobListener.deactivateSession()
     }
 
     /// Stops whatever is reading and clears the queue.
@@ -448,7 +472,9 @@ extension BlobSpeaker: AVSpeechSynthesizerDelegate {
             utteranceDone = nil
             done.resume()
         } else {
+            // A standalone utterance (`speak`, a preview) ended.
             speaking = false
+            BlobListener.deactivateSession()
         }
     }
 }
