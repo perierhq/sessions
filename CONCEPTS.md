@@ -282,6 +282,20 @@ a persistent worktree across wakes. When the shared-checkout exception is
 active, a code goal instead works directly on the default branch, without a
 feature branch or pull request.
 
+## Blob
+
+Blob is each person's supervisor and the project leads, shown as one bot
+teammate. The supervisor watches every project for its owner and reaches them
+only when something needs them. A lead runs one project inside the rules its
+owner set. Blob talks through the Blob app and the owner's inbox. See
+`adrs/supervisor-and-leads.md`.
+
+People can mention Blob with `@Blob` and assign it work, like a teammate. On
+GitHub, Blob has its own machine user, for example `acme-blob`. It may comment
+and review there, but it never pushes or merges. Code work goes to Pat, the
+code worker persona. See "Current policy" in `docs/github-authority.md`.
+Mentions, assignment and the GitHub account are decided but not built yet.
+
 ## Workflows
 
 A workflow is a model-authored script running in an environment-scrubbed Bun
