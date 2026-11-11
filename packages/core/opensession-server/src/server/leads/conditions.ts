@@ -4,7 +4,11 @@
 // (GitHub as the App, the incident store); a read that fails is unknown,
 // never met, so an approval only becomes ready on a positive answer.
 import type { IncidentState } from "../../shared/incidents";
-import type { PrCheckOutcome } from "../pr-merge-readiness";
+import type {
+  PrCheckOutcome,
+  PrMergeVerdict,
+  PrReadinessTarget,
+} from "../pr-merge-readiness";
 
 export type LeadCondition =
   | { kind: "pr-merged"; ghRepo: string; number: number }
@@ -12,9 +16,9 @@ export type LeadCondition =
   | { kind: "incident-resolved"; id: string };
 
 export type ConditionResult =
-  | { met: true }
-  | { met: false; reason: string }
-  | { unknown: string };
+  | { status: "met" }
+  | { status: "not-met"; reason: string }
+  | { status: "unknown"; reason: string };
 
 /** One pull request as the condition checks need it. */
 export interface ConditionPr {
@@ -34,33 +38,51 @@ export interface ConditionDeps {
   incidentState(id: string): Promise<IncidentState | null>;
 }
 
-export const defaultConditionDeps: ConditionDeps = {
-  async readPr(ghRepo, number) {
-    const { githubForceMergeApi } = await import("../force-merge");
-    // repoId only labels the verdict; the read itself goes by ghRepo.
-    const v = await githubForceMergeApi.verdict({
-      repoId: ghRepo,
-      ghRepo,
-      number,
-    });
-    const { passing, failing, pending, skipped } = v.checks;
-    return {
-      state: v.state,
-      headSha: v.pr.headSha,
-      checks: [...passing, ...failing, ...pending, ...skipped].map((c) => ({
-        name: c.name,
-        outcome: c.outcome,
-        required: c.required,
-      })),
-      missingRequired: v.checks.missingRequired,
-      rulesReadable: v.rules.readable,
-    };
+/** The condition view of a readiness verdict. */
+export function conditionPrFromVerdict(v: PrMergeVerdict): ConditionPr {
+  const { passing, failing, pending, skipped } = v.checks;
+  return {
+    state: v.state,
+    headSha: v.pr.headSha,
+    checks: [...passing, ...failing, ...pending, ...skipped].map((c) => ({
+      name: c.name,
+      outcome: c.outcome,
+      required: c.required,
+    })),
+    missingRequired: v.checks.missingRequired,
+    rulesReadable: v.rules.readable,
+  };
+}
+
+/** Condition deps that read pull requests through `verdict`. */
+export function conditionDepsWith(
+  verdict: (target: PrReadinessTarget) => Promise<PrMergeVerdict>,
+): ConditionDeps {
+  return {
+    async readPr(ghRepo, number) {
+      // repoId only labels the verdict; the read itself goes by ghRepo.
+      return conditionPrFromVerdict(
+        await verdict({ repoId: ghRepo, ghRepo, number }),
+      );
+    },
+    async incidentState(id) {
+      const { getIncident } = await import("../incidents/incident-store");
+      return (await getIncident(id))?.state ?? null;
+    },
+  };
+}
+
+export const defaultConditionDeps: ConditionDeps = conditionDepsWith(
+  async (target) => {
+    const { assessPrMergeReadiness, fetchPrReadinessSource } =
+      await import("../pr-merge-readiness");
+    // No condition reads `mergeable`, so skip the wait for GitHub to compute
+    // it: a wake-time check stays one round trip.
+    return assessPrMergeReadiness(
+      await fetchPrReadinessSource(target, undefined, []),
+    );
   },
-  async incidentState(id) {
-    const { getIncident } = await import("../incidents/incident-store");
-    return (await getIncident(id))?.state ?? null;
-  },
-};
+);
 
 function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)) || "failed";
@@ -75,29 +97,35 @@ function names(list: string[]): string {
 }
 
 /** The checks that must pass: the required ones when the branch rules are
- *  readable and name some, otherwise every check that ran (skipped ones
- *  aside), since nothing tells which of them matter. */
+ *  readable and name some, otherwise every check that ran. A check that ended
+ *  skipped or neutral counts as satisfied, as GitHub treats it. */
 function checksGreen(
   pr: ConditionPr,
   c: Extract<LeadCondition, { kind: "checks-green" }>,
 ): ConditionResult {
+  if (!c.headSha)
+    return {
+      status: "not-met",
+      reason: `No commit is pinned for ${prName(c)}`,
+    };
   if (pr.state === "CLOSED")
-    return { met: false, reason: `${prName(c)} is closed` };
+    return { status: "not-met", reason: `${prName(c)} is closed` };
   if (pr.headSha !== c.headSha)
     return {
-      met: false,
+      status: "not-met",
       reason: `${prName(c)} has new commits since it was approved`,
     };
+  // Required checks come only from rulesets. A repo on classic branch
+  // protection (or with unreadable rules) names none here, so fall back to
+  // the strict reading: every check that ran must pass.
   const byRule =
     pr.rulesReadable &&
     (pr.checks.some((k) => k.required) || pr.missingRequired.length > 0);
-  const counted = byRule
-    ? pr.checks.filter((k) => k.required)
-    : pr.checks.filter((k) => k.outcome !== "skipped");
+  const counted = byRule ? pr.checks.filter((k) => k.required) : pr.checks;
   const failing = counted.filter((k) => k.outcome === "failing");
   if (failing.length)
     return {
-      met: false,
+      status: "not-met",
       reason: `Checks failed on ${prName(c)}: ${names(failing.map((k) => k.name))}`,
     };
   const pending = [
@@ -106,12 +134,12 @@ function checksGreen(
   ];
   if (pending.length)
     return {
-      met: false,
+      status: "not-met",
       reason: `Checks still running on ${prName(c)}: ${names(pending)}`,
     };
-  if (!counted.some((k) => k.outcome === "passing"))
-    return { met: false, reason: `No checks have passed on ${prName(c)}` };
-  return { met: true };
+  if (!counted.length)
+    return { status: "not-met", reason: `No checks have run on ${prName(c)}` };
+  return { status: "met" };
 }
 
 /** Whether the condition holds now. Never throws. */
@@ -123,9 +151,9 @@ export async function checkCondition(
     switch (condition.kind) {
       case "pr-merged": {
         const pr = await deps.readPr(condition.ghRepo, condition.number);
-        if (pr.state === "MERGED") return { met: true };
+        if (pr.state === "MERGED") return { status: "met" };
         return {
-          met: false,
+          status: "not-met",
           reason:
             pr.state === "CLOSED"
               ? `${prName(condition)} was closed without merging`
@@ -139,9 +167,9 @@ export async function checkCondition(
         );
       case "incident-resolved": {
         const state = await deps.incidentState(condition.id);
-        if (state === "resolved") return { met: true };
+        if (state === "resolved") return { status: "met" };
         return {
-          met: false,
+          status: "not-met",
           reason:
             state === null
               ? `Incident ${condition.id} was not found`
@@ -152,7 +180,7 @@ export async function checkCondition(
       }
     }
   } catch (error) {
-    return { unknown: errorText(error) };
+    return { status: "unknown", reason: errorText(error) };
   }
 }
 
