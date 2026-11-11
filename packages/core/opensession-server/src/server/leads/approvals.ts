@@ -172,6 +172,9 @@ export interface LeadApproval {
   claimedAt?: number;
   /** Why it is void, failed or partial. */
   reason?: string;
+  /** When a wake last checked its condition (`markChecked`): the wakes
+   *  check the least recently checked ones first. */
+  checkedAt?: number;
 }
 
 export interface LeadRecord {
@@ -605,6 +608,7 @@ function storedApproval(value: unknown, proposalId: string): LeadApproval {
     "claimedAt",
     "reason",
     "rule",
+    "checkedAt",
   ]);
   if (raw.proposalId !== proposalId) fail("approval is for another proposal");
   const state = LEAD_APPROVAL_STATES.find((s) => s === raw.state);
@@ -632,6 +636,8 @@ function storedApproval(value: unknown, proposalId: string): LeadApproval {
     approval.claimedAt = time(raw.claimedAt, "claimedAt");
   const reason = reasonOf(raw.reason);
   if (reason) approval.reason = reason;
+  if (raw.checkedAt !== undefined)
+    approval.checkedAt = time(raw.checkedAt, "checkedAt");
   return approval;
 }
 
@@ -1066,6 +1072,28 @@ export async function approve(
     return replace(current, { ...record, approval });
   });
   return result;
+}
+
+/** Record that a wake checked these waiting approvals' conditions now.
+ *  Changes nothing else, so not the approval's revision either. */
+export async function markChecked(
+  project: string,
+  proposalIds: readonly string[],
+): Promise<void> {
+  const key = projectKey(project);
+  if (!key || proposalIds.length === 0) return;
+  const now = deps.now();
+  const ids = new Set(proposalIds);
+  await updateDocument(key, (doc) => {
+    let changed = false;
+    const records = doc.records.map((record) => {
+      if (!ids.has(record.proposal.id) || record.approval?.state !== "waiting")
+        return record;
+      changed = true;
+      return { ...record, approval: { ...record.approval, checkedAt: now } };
+    });
+    return changed ? { ...doc, records } : null;
+  });
 }
 
 /** Move a proposal's approval along the transition table. `applying` is

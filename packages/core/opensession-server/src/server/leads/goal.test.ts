@@ -836,6 +836,46 @@ describe("the owner's answers", () => {
     // The signal itself was never touched: the lead has no tool that could.
   });
 
+  test("an answer during a running wake wakes the lead again after it", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    const due = new Date(clock - 60_000).toISOString();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      nextWakeAt: due,
+      lastRunStatus: "running",
+    }));
+    onSupervisorAnswer("lead:", handleLeadAnswer);
+    const delivered = await deliverLeadProposal(
+      PROJECT,
+      await getProjectDocument(PROJECT),
+      {
+        kind: "proposal",
+        category: "signal-rule-change",
+        title: "Status page flaps",
+        body: "16 incidents closed by themselves.",
+        options: ["Raise to 8 failures", "Leave it"],
+        subject: "sig-status consecutive.failures",
+        decision: {
+          level: "asks-first",
+          effective: "ask",
+          rule: "Asks first: Signal rule changes, from the project settings",
+        },
+      },
+      "Acme",
+    );
+    if (!delivered.queued) throw new Error(delivered.reason);
+    clock += 60_000;
+    expect(
+      (await answerSupervisorItem("Ada", delivered.itemId, "2", "owner")).ok,
+    ).toBe(true);
+    expect(await leadGoal()).toMatchObject({
+      nextWakeAt: due,
+      pendingWakeAt: new Date(clock).toISOString(),
+    });
+  });
+
   test("answers to other sources are not the lead's", async () => {
     await setLead({ enabled: true });
     await ensureLeadGoal(PROJECT);
@@ -1437,23 +1477,58 @@ describe("approvals on a wake", () => {
     expect(await readyItems()).toEqual([]);
   });
 
-  test("one wake checks a bounded number of conditions, the next wake the rest", async () => {
+  test("one wake checks a bounded number of conditions, the least recently checked first", async () => {
     for (let n = 1; n <= WAKE_CONDITION_CHECKS + 2; n++)
       await approved(100 + n, {
         kind: "pr-merged",
         ghRepo: "acme/api",
         number: n,
       });
+    const numbers = (): number[] =>
+      checks.map((c) => (c as { number: number }).number);
     await wake();
-    expect(checks).toHaveLength(WAKE_CONDITION_CHECKS);
-    const first = new Set(checks.map((c) => (c as typeof PR41).number));
+    const first = numbers();
+    expect(first).toHaveLength(WAKE_CONDITION_CHECKS);
+    // The wake count doesn't pick them: a second wake on the same count
+    // still checks the ones never checked first.
     checks = [];
-    const goal = await leadGoal();
-    await mutateGoal(goal.id, (g) => ({ ...g, wakeCount: g.wakeCount + 1 }));
+    clock += 60_000;
     await wake();
-    const second = checks.map((c) => (c as typeof PR41).number);
+    const second = numbers();
     expect(second).toHaveLength(WAKE_CONDITION_CHECKS);
     expect(new Set([...first, ...second]).size).toBe(WAKE_CONDITION_CHECKS + 2);
+    expect(second.slice(0, 2).sort()).toEqual(
+      [WAKE_CONDITION_CHECKS + 1, WAKE_CONDITION_CHECKS + 2].sort(),
+    );
+    const checked = (await listForProject(PROJECT)).map(
+      (r) => r.approval?.checkedAt,
+    );
+    expect(checked.every((at) => typeof at === "number")).toBe(true);
+  });
+
+  test("telling the owner an approval is ready is retried on the next wake", async () => {
+    const id = await approved(42, PR41);
+    verdict = async () => ({ status: "met" });
+    let fail = true;
+    const real = (await import("../supervisor-inbox")).postSupervisorItem;
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      checkCondition: (c) => verdict(c),
+      postSupervisorItem: async (...args) => {
+        if (fail) throw new Error("inbox down");
+        return real(...args);
+      },
+    });
+    await wake();
+    expect((await getRecord(PROJECT, id))?.approval?.state).toBe("ready");
+    expect(await readyItems()).toEqual([]);
+    fail = false;
+    clock += 60_000;
+    await wake();
+    await wake();
+    expect(await readyItems()).toHaveLength(1);
   });
 
   test("expired approvals are voided and interrupted applies settled", async () => {
@@ -1519,6 +1594,70 @@ describe("approvals on a wake", () => {
         }),
       ).toBe(true);
       expect((await leadGoal()).nextWakeAt).toBe(new Date(clock).toISOString());
+    });
+
+    test("a merge doesn't wake a lead waiting on checks passing", async () => {
+      await approved(43, {
+        kind: "checks-green",
+        ghRepo: "acme/api",
+        number: 43,
+        headSha: SHA,
+      });
+      const later = await wakeLater();
+      expect(
+        await wakeLeadFor(PROJECT, {
+          kind: "pr-merged",
+          ghRepo: "acme/api",
+          number: 43,
+        }),
+      ).toBe(false);
+      expect((await leadGoal()).nextWakeAt).toBe(later);
+    });
+
+    test("before the act stage nothing wakes the lead", async () => {
+      await approved(42, PR41);
+      await approved(44, { kind: "incident-resolved", id: "inc-1" });
+      for (const stage of ["coordinate", "watch"] as const) {
+        await setLead({ stage });
+        const later = await wakeLater();
+        expect(
+          await wakeLeadFor(PROJECT, {
+            kind: "pr-merged",
+            ghRepo: "acme/api",
+            number: 41,
+          }),
+        ).toBe(false);
+        expect(
+          await wakeLeadOnIncident(
+            { id: "inc-1", project: PROJECT, state: "resolved" } as never,
+            { state: "open" } as never,
+          ),
+        ).toBe(false);
+        expect((await leadGoal()).nextWakeAt).toBe(later);
+      }
+    });
+
+    test("an event during a running wake wakes the lead again after it", async () => {
+      await approved(42, PR41);
+      const goal = await leadGoal();
+      const due = new Date(clock - 60_000).toISOString();
+      await mutateGoal(goal.id, (g) => ({
+        ...g,
+        nextWakeAt: due,
+        lastRunStatus: "running",
+      }));
+      expect(
+        await wakeLeadFor(PROJECT, {
+          kind: "pr-merged",
+          ghRepo: "acme/api",
+          number: 41,
+        }),
+      ).toBe(true);
+      const now = new Date(clock).toISOString();
+      expect(await leadGoal()).toMatchObject({
+        nextWakeAt: due,
+        pendingWakeAt: now,
+      });
     });
 
     test("a ready or voided approval wakes nothing", async () => {

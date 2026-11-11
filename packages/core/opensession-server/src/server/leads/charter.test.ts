@@ -171,6 +171,16 @@ describe("leadCharter", () => {
       "for each approval once the project is at the act stage",
     );
     expect(text).not.toContain("Run each approval your prompt lists");
+    // Conditions are checked, and events wake the lead, only at act.
+    expect(text).toContain(
+      "An approval waits until the project moves to the act stage; its condition is checked only there.",
+    );
+    expect(text).not.toContain("start of your wakes");
+    expect(text).not.toContain("wakes you early");
+    expect(text).not.toContain("prompt lists the approvals");
+    expect(text).toContain(
+      "An approval expires after 7 days unless you ask for another expiry with expiresInDays, at most 30.",
+    );
   });
 
   test("a project without a label reads by its id", () => {

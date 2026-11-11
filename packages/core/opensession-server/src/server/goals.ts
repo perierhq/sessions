@@ -99,6 +99,10 @@ export interface Goal {
    *  accounts are near their limits), and since when (ISO). Set by the
    *  runner, cleared when the wake starts. */
   waiting?: { reason: string; since: string };
+  /** When an event asked to wake the goal now (ISO) while it was running
+   *  or already due, so the next wake its run sets can't drop it
+   *  (takePendingWake). Set by the project lead, cleared by the runner. */
+  pendingWakeAt?: string;
   createdBy: string;
   createdAt: string;
 }
@@ -135,6 +139,27 @@ export function goalGuardFor(
       ? { trippedAt: guard.trippedAt, trippedTokens: guard.trippedTokens }
       : {}),
   };
+}
+
+/**
+ * `goal` with its pending wake taken into its next wake: `nextWakeAt`
+ * becomes the pending wake when that is earlier and came at or after
+ * `since`, the start of the run setting the next wake (an earlier one that
+ * run already saw). The runner takes it after a wake and clears it;
+ * set_next_wake `keep`s it, since the runner may still replace the next
+ * wake it set (a run that set none gets a day's default).
+ */
+export function takePendingWake<
+  G extends Pick<Goal, "nextWakeAt" | "pendingWakeAt">,
+>(goal: G, since: string | undefined, options: { keep?: boolean } = {}): G {
+  const { pendingWakeAt, ...rest } = goal;
+  if (!pendingWakeAt) return goal;
+  const counts = !since || pendingWakeAt >= since;
+  const nextWakeAt =
+    counts && pendingWakeAt < goal.nextWakeAt ? pendingWakeAt : goal.nextWakeAt;
+  return (
+    options.keep ? { ...goal, nextWakeAt } : { ...rest, nextWakeAt }
+  ) as G;
 }
 
 /** Why the runner paused a project lead's goal without running it: no lead
@@ -342,7 +367,7 @@ export async function createGoal(
 
 /** Fields an operator (via opensession-goals or the goals API) may patch.
  *  Runtime/scheduling fields (engineSessionId, wakeCount, lastRun*,
- *  worktreePath, spend, guard, waiting) are owned by the runner,
+ *  worktreePath, spend, guard, waiting, pendingWakeAt) are owned by the runner,
  *  `leadProject` by the project lead, `watchOwner` by the supervisor's
  *  watch, and `id` and `stateFile` are fixed
  *  at creation: the ledger tools read and write `stateFile` by path. */

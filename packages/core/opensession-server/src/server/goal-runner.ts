@@ -27,6 +27,7 @@ import {
   goalGuardFor,
   listGoals,
   mutateGoal,
+  takePendingWake,
   type Goal,
 } from "./goals";
 import { createLeadMcpServer } from "./leads/mcp";
@@ -650,7 +651,11 @@ export async function runGoal(stored: Goal): Promise<void> {
         merged.status === "active" &&
         Date.parse(merged.nextWakeAt) <= startedAt.getTime();
       if (defaulted) merged.nextWakeAt = dayAfter(startedAt);
-      return merged;
+      // An event that asked to wake the lead during this run (an answer, a
+      // merged PR) wakes it again now instead of at the run's choice.
+      return merged.status === "active"
+        ? takePendingWake(merged, startedAt.toISOString())
+        : merged;
     });
     spendRecorded = true;
     if (defaulted)
@@ -665,18 +670,23 @@ export async function runGoal(stored: Goal): Promise<void> {
     try {
       // A watch goes back on its schedule; its daily wake cap stops a loop.
       const watchNext = await settleWatch(false);
-      await mutateGoal(goal.id, (fresh) => ({
-        ...fresh,
-        lastRunAt: startedAt.toISOString(),
-        lastRunStatus: "error",
-        lastRunError: e?.message || String(e),
-        // Back off a day on a hard failure so it can't hot-loop crashing.
-        nextWakeAt:
-          fresh.status === "active" &&
-          Date.parse(fresh.nextWakeAt) <= startedAt.getTime()
-            ? (watchNext ?? dayAfter(startedAt))
-            : fresh.nextWakeAt,
-      }));
+      await mutateGoal(goal.id, (fresh) => {
+        const failed: Goal = {
+          ...fresh,
+          lastRunAt: startedAt.toISOString(),
+          lastRunStatus: "error",
+          lastRunError: e?.message || String(e),
+          // Back off a day on a hard failure so it can't hot-loop crashing.
+          nextWakeAt:
+            fresh.status === "active" &&
+            Date.parse(fresh.nextWakeAt) <= startedAt.getTime()
+              ? (watchNext ?? dayAfter(startedAt))
+              : fresh.nextWakeAt,
+        };
+        return failed.status === "active"
+          ? takePendingWake(failed, startedAt.toISOString())
+          : failed;
+      });
     } catch (saveError) {
       // The catalog may be what failed; callers fire and forget this run.
       console.error(

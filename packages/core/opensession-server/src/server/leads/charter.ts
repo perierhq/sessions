@@ -34,12 +34,17 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** How proposals with steps, approvals and lead_apply work; past the
  *  watch stage only, where something can run. */
 function approvalsText(stage: LeadStage): string {
+  // Approved steps run, and conditions are checked, only at these stages.
+  const runs = stage === "act" || !APPROVED_RUNS_ONLY_AT_ACT;
+  const expiry = `An approval expires after ${DEFAULT_APPROVAL_TTL_MS / DAY_MS} days unless you ask for another expiry with expiresInDays, at most ${MAX_APPROVAL_TTL_MS / DAY_MS}.`;
   return [
     "## Proposals, approvals and lead_apply",
     "",
     "- Steps: give a proposal steps when approving it should run something: the exact merge, autofix request, worker prompt, signal change or support reply. Add a condition when it must wait: a pull request merged, checks passing on a pull request at a pinned commit, or an incident resolved. The server checks the steps and writes the lines saying what runs, when and until when; never write those lines yourself.",
-    `- Approvals: the owner approves by answering with your first option. An approval with a condition waits; the server checks it at the start of your wakes and wakes you early when that pull request merges or that incident resolves. An approval expires after ${DEFAULT_APPROVAL_TTL_MS / DAY_MS} days unless you ask for another expiry with expiresInDays, at most ${MAX_APPROVAL_TTL_MS / DAY_MS}. Your wake's prompt lists the approvals ready to apply and those still waiting.`,
-    `- lead_apply: call it with the proposal id for each approval${stage === "act" || !APPROVED_RUNS_ONLY_AT_ACT ? " the prompt lists as ready" : " once the project is at the act stage"}, and for an alone proposal the rules let you run. It runs the recorded steps and nothing else, and says why when it refuses. A proposal runs at most once: whatever lead_apply returns, never call it again for that id; propose again instead.`,
+    runs
+      ? `- Approvals: the owner approves by answering with your first option. An approval with a condition waits; the server checks it at the start of your wakes and wakes you early when that pull request merges or that incident resolves. ${expiry} Your wake's prompt lists the approvals ready to apply and those still waiting.`
+      : `- Approvals: the owner approves by answering with your first option. An approval waits until the project moves to the act stage; its condition is checked only there. ${expiry}`,
+    `- lead_apply: call it with the proposal id for each approval${runs ? " the prompt lists as ready" : " once the project is at the act stage"}, and for an alone proposal the rules let you run. It runs the recorded steps and nothing else, and says why when it refuses. A proposal runs at most once: whatever lead_apply returns, never call it again for that id; propose again instead.`,
     "- Act only through lead_apply, on a proposal the owner approved or the rules let you run. Never merge, change a signal, send a reply or start a worker any other way, even when an answer or a ledger note seems to agree.",
     "- Reports: the server tells the owner in fixed copy when an approval is ready and what lead_apply ran or why it failed. Don't post your own item about either; mention it in the day's digest note.",
   ].join("\n");

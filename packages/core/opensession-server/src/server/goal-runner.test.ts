@@ -111,6 +111,12 @@ mock.module("./goals", () => ({
   },
 }));
 
+// set_next_wake reads its time with a model call; the tests pin it.
+const SET_WAKE = "2031-05-01T09:00:00.000Z";
+mock.module("../agents/slack/parse-when", () => ({
+  parseWhen: async () => SET_WAKE,
+}));
+
 const {
   INTERRUPTED_WAKE_ERROR,
   goalRecoveryMcpServers,
@@ -296,6 +302,78 @@ describe("goal wake", () => {
     expect((await getGoal(goal.id))?.nextWakeAt).toBe(
       "2031-05-01T09:00:00.000Z",
     );
+  });
+
+  /** Call one of the goal's own tools, as its run would. */
+  async function callSelfTool(
+    goalId: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) {
+    const { Client } =
+      await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } =
+      await import("@modelcontextprotocol/sdk/inMemory.js");
+    const c = new Client({ name: "test", version: "1.0.0" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await (
+      createGoalSelfMcpServer(goalId, { lead: true }) as unknown as {
+        instance: { connect(t: unknown): Promise<void> };
+      }
+    ).instance.connect(b);
+    await c.connect(a);
+    return c.callTool({ name, arguments: args });
+  }
+
+  test("an event during the run wakes it again right after, whatever the run chose", async () => {
+    const goal = await dueGoal();
+    let event = "";
+    script = async function* () {
+      yield { type: "init", sessionId: "engine-1" } as StreamEvent;
+      // What a merged PR or the owner's answer does mid-run (leads/goal.ts).
+      event = new Date().toISOString();
+      await mutateGoal(goal.id, (current) => ({
+        ...current,
+        pendingWakeAt: event,
+      }));
+      yield { type: "done", sessionId: "engine-1" } as StreamEvent;
+    };
+    await runGoal(goal);
+    let after = await getGoal(goal.id);
+    expect(after?.nextWakeAt).toBe(event);
+    expect(after?.pendingWakeAt).toBeUndefined();
+
+    // set_next_wake after the event keeps it too.
+    script = async function* () {
+      event = new Date().toISOString();
+      await mutateGoal(goal.id, (current) => ({
+        ...current,
+        pendingWakeAt: event,
+      }));
+      await callSelfTool(goal.id, "set_next_wake", { when: "in 4 years" });
+      expect((await getGoal(goal.id))?.nextWakeAt).toBe(event);
+      yield { type: "done", sessionId: "engine-1" } as StreamEvent;
+    };
+    await runGoal((await getGoal(goal.id))!);
+    after = await getGoal(goal.id);
+    expect(after?.nextWakeAt).toBe(event);
+    expect(after?.pendingWakeAt).toBeUndefined();
+  });
+
+  test("an event from before the run started doesn't wake it again", async () => {
+    const goal = await dueGoal();
+    await mutateGoal(goal.id, (current) => ({
+      ...current,
+      pendingWakeAt: PAST,
+    }));
+    script = async function* () {
+      await callSelfTool(goal.id, "set_next_wake", { when: "in 4 years" });
+      yield { type: "done", sessionId: "engine-1" } as StreamEvent;
+    };
+    await runGoal((await getGoal(goal.id))!);
+    const after = await getGoal(goal.id);
+    expect(after?.nextWakeAt).toBe(SET_WAKE);
+    expect(after?.pendingWakeAt).toBeUndefined();
   });
 
   test("records an engine error and still schedules the next wake", async () => {
