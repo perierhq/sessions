@@ -266,13 +266,14 @@ is in `docs/security-model.md` ("Project leads").
   2. The category is only the owner's (pinned or set so): refused, and whatever still stands
      for the proposal is voided.
   3. The watch stage: refused.
-  4. The rules say act: at the act stage the proposal runs without an approval; at coordinate
+  4. The proposal was voided, or it has a `spawn-worker` step: refused.
+  5. The rules say act: at the act stage the proposal runs without an approval; at coordinate
      only a fix or CI repair (`COORDINATE_CATEGORIES`) whose steps are all `autofix-pr`.
-  5. Otherwise an approval of exactly this proposal: ready (or waiting with its condition met
+  6. Otherwise an approval of exactly this proposal: ready (or waiting with its condition met
      now), not expired, and only at the act stage.
 
   A condition is re-checked at apply time, whoever allowed the run. The settings and the
-  record are read again and checks 1 to 5 re-run right before one compare-and-set claims the
+  record are read again and checks 1 to 6 re-run right before one compare-and-set claims the
   record. Before each step the settings are read again and a run they no longer allow stops.
   Each step's intent is audited before it runs, a step already done counts as done, and the
   first failure stops the run. Nothing re-runs; the lead proposes again instead.
