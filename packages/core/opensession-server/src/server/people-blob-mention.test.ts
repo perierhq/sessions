@@ -13,6 +13,10 @@ describe("mentionsBlob", () => {
     ["first line\n@Blob second line", "at a line start"],
     ["`code` then @Blob", "after a code span"],
     ["```\nnpm test\n```\n@Blob run it", "after a fenced block"],
+    ["~~~\nnpm test\n~~~\n@Blob run it", "after a tilde fence"],
+    ["``a `b` c`` then @Blob", "after a double-backtick span"],
+    ["zażółć @Blob", "after a Polish word"],
+    ["@Blob, dzięki.", "before Polish text"],
   ])("matches %p (%s)", (text) => {
     expect(mentionsBlob(text, "Ada")).toBe(true);
   });
@@ -29,6 +33,18 @@ describe("mentionsBlob", () => {
     ["```\n@Blob in a fence\n```", "fenced block"],
     ["~~~\n@Blob in a tilde fence\n~~~", "tilde fence"],
     ["```\nunclosed @Blob", "unclosed fence"],
+    ["~~~\nunclosed @Blob", "unclosed tilde fence"],
+    ["run ``@Blob`` literally", "double-backtick span"],
+    [
+      "run ``a `@Blob` b`` literally",
+      "double-backtick span holding a backtick",
+    ],
+    ["run ```@Blob``` inline", "triple-backtick span"],
+    ["@Blobą is someone else", "longer name in Polish"],
+    ["ł@Blob", "after a Polish letter"],
+    ["\u0301@Blob", "after a combining mark"],
+    ["@Blob\u0301", "before a combining mark"],
+    ["@Blob.ąę", "domain in Polish"],
   ])("ignores %p (%s)", (text) => {
     expect(mentionsBlob(text, "Ada")).toBe(false);
   });

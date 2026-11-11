@@ -148,6 +148,12 @@ describe("composer session projection", () => {
     expect(projectComposerSessions(`\`\`\`\n${ID}\n\`\`\``).displayText).toBe(
       `\`\`\`\n${ID}\n\`\`\``,
     );
+    expect(projectComposerSessions(`~~~\n${ID}\n~~~`).displayText).toBe(
+      `~~~\n${ID}\n~~~`,
+    );
+    expect(projectComposerSessions(`\`\`${ID}\`\``).displayText).toBe(
+      `\`\`${ID}\`\``,
+    );
   });
 
   test("turns a newly pasted id into a named token on the next projection", () => {

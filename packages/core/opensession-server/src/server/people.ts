@@ -8,6 +8,7 @@
  * a mention roster of its own).
  */
 
+import { codeRanges } from "../shared/code-ranges";
 import { configuredIdentity, type ReviewTeam } from "./config";
 import { BLOB_ACTOR, BLOB_ICON_PATH, isBlobActor } from "./session-actors";
 import { profileImagesByMemberName } from "./user-profiles";
@@ -124,14 +125,16 @@ export function mentionedUsers(text: string, sender: string): string[] {
   return [...found];
 }
 
-/** `text` with its fenced blocks and inline code spans blanked out, the
- *  same rule the composer uses to keep pills out of code
- *  (frontend/lib/composer-session-projection.ts `codeRanges`). An unclosed
- *  fence runs to the end. */
+/** `text` with its code blanked out, by the rule the composer uses to keep
+ *  pills out of code (shared/code-ranges.ts). */
 function withoutCode(text: string): string {
-  return text
-    .replace(/(```|~~~)[\s\S]*?(?:\1|$)/g, " ")
-    .replace(/`[^`\n]+`/g, " ");
+  let out = "";
+  let at = 0;
+  for (const range of codeRanges(text)) {
+    out += `${text.slice(at, range.start)} `;
+    at = range.end;
+  }
+  return out + text.slice(at);
 }
 
 function escapeRegExp(value: string): string {
@@ -155,11 +158,11 @@ export function mentionsBlob(
   if (isBlobActor(sender) || (login && from === login.toLowerCase()))
     return false;
   const names = [BLOB_ACTOR, ...(login ? [login] : [])].map(escapeRegExp);
-  // Before: not part of a word, address or path. After: the name ends here;
-  // a sentence's full stop may follow, a domain's dot may not.
+  // Before: not part of a word in any script, address or path. After: the
+  // name ends here; a sentence's full stop may follow, a domain's dot may not.
   const pattern = new RegExp(
-    `(?<![\\w.@/+-])@(?:${names.join("|")})(?![\\w-]|\\.\\w)`,
-    "i",
+    `(?<![\\p{L}\\p{M}\\p{N}_.@/+-])@(?:${names.join("|")})(?![\\p{L}\\p{M}\\p{N}_-]|\\.[\\p{L}\\p{N}_])`,
+    "iu",
   );
   return pattern.test(withoutCode(text));
 }
