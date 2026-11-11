@@ -139,6 +139,30 @@ describe("BlobGithubSection", () => {
     expect(html).toContain('type="password"');
   });
 
+  test("expired: says so, without 'before then', and offers the token field", () => {
+    const html = view({
+      ...setUp,
+      expiresAt: new Date(NOW - DAY).toISOString(),
+    });
+    const shown = text(html);
+    expect(shown).toContain("Expired. Paste a new token.");
+    expect(shown).not.toContain("before then");
+    expect(html).toContain('type="password"');
+  });
+
+  test("labels: a field when the server sends the allowlist, else none", () => {
+    const html = view({ ...setUp, labels: ["bug", "needs-info"] });
+    expect(text(html)).toContain("Labels Blob may set");
+    expect(html).toContain('value="bug, needs-info"');
+    expect(text(html)).toContain("Save labels");
+    const empty = text(view({ ...setUp, labels: [] }));
+    expect(empty).toContain("Labels Blob may set");
+    expect(text(view(setUp))).not.toContain("Labels Blob may set");
+    expect(text(view({ ...notSetUp, labels: [] }))).not.toContain(
+      "Labels Blob may set",
+    );
+  });
+
   test("server errors show inline in plain words", () => {
     const tokenError = view(notSetUp, {
       tokenError: "GitHub refused the token. Check it was copied whole.",

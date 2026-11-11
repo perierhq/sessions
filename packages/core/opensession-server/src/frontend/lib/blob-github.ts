@@ -35,6 +35,9 @@ const viewSchema = z.object({
   publicRepos: z.array(z.string()),
   enabled: z.boolean(),
   tokenSet: z.boolean(),
+  /** The labels Blob may set; empty turns labelling off. Absent on a
+   *  server without the allowlist, and the field then stays hidden. */
+  labels: z.array(z.string()).optional(),
 });
 export type BlobGithub = z.infer<typeof viewSchema>;
 
@@ -71,30 +74,47 @@ export interface BlobGithubPatch {
   repos?: string[];
   publicRepos?: string[];
   enabled?: boolean;
+  labels?: string[];
 }
 
-export async function saveBlobGithub(
-  patch: BlobGithubPatch,
+/** The server answered, but not with the settings. */
+export class UnexpectedAnswerError extends Error {
+  constructor() {
+    super("The server sent an unexpected answer.");
+    this.name = "UnexpectedAnswerError";
+  }
+}
+
+/** One request whose answer is the settings. A body that is not the
+ *  settings is UnexpectedAnswerError, so it never reads as the network. */
+async function requestView(
+  path: string,
+  opts: { method: string; body?: BlobGithubPatch; label: string },
 ): Promise<BlobGithub> {
-  const body = await request<unknown>("/blob/github", {
+  const parsed = responseSchema.safeParse(await request(path, opts));
+  if (!parsed.success) throw new UnexpectedAnswerError();
+  return parsed.data.blob;
+}
+
+export function saveBlobGithub(patch: BlobGithubPatch): Promise<BlobGithub> {
+  return requestView("/blob/github", {
     method: "PUT",
     body: patch,
     label: "Couldn't save Blob's GitHub account",
   });
-  return responseSchema.parse(body).blob;
 }
 
-export async function removeBlobGithubToken(): Promise<BlobGithub> {
-  const body = await request<unknown>("/blob/github/token", {
+export function removeBlobGithubToken(): Promise<BlobGithub> {
+  return requestView("/blob/github/token", {
     method: "DELETE",
     label: "Couldn't remove the token",
   });
-  return responseSchema.parse(body).blob;
 }
 
 /** A server or network error as a sentence for the person. The route's
  *  checks name the field (`token: ...`); the person only sees the reason. */
 export function plainError(error: Error): string {
+  if (error instanceof UnexpectedAnswerError) return error.message;
   if (!(error instanceof ApiError))
     return "Couldn't reach the server. Try again.";
   const message = error.message.trim();
@@ -115,6 +135,7 @@ export interface TokenExpiry {
   text: string;
   /** Under EXPIRY_WARN_DAYS left, or already past. */
   warn: boolean;
+  expired: boolean;
 }
 
 /** The token's expiry, relative: "Expires in 42 days", "Expires tomorrow". */
@@ -126,12 +147,24 @@ export function tokenExpiry(
   const at = Date.parse(expiresAt);
   if (Number.isNaN(at)) return null;
   const left = at - now;
-  if (left <= 0) return { text: "Expired", warn: true };
+  if (left <= 0) return { text: "Expired", warn: true, expired: true };
   const days = Math.floor(left / DAY_MS);
   const warn = days < EXPIRY_WARN_DAYS;
-  if (days === 0) return { text: "Expires today", warn };
-  if (days === 1) return { text: "Expires tomorrow", warn };
-  return { text: `Expires in ${days} days`, warn };
+  const expired = false;
+  if (days === 0) return { text: "Expires today", warn, expired };
+  if (days === 1) return { text: "Expires tomorrow", warn, expired };
+  return { text: `Expires in ${days} days`, warn, expired };
+}
+
+/** The labels field's text as a list: comma separated, trimmed, each once. */
+export function parseLabels(text: string): string[] {
+  const labels = new Map<string, string>();
+  for (const part of text.split(",")) {
+    const label = part.trim();
+    if (label && !labels.has(label.toLowerCase()))
+      labels.set(label.toLowerCase(), label);
+  }
+  return [...labels.values()];
 }
 
 /** The registered repositories Blob can be given: those on GitHub. */

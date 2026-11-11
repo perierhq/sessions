@@ -1,12 +1,15 @@
 // Blob's GitHub account settings: the server's answers read into what the
 // section shows (401/403 hide it), errors in plain words, the expiry warning
 // and the repository toggles.
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { ApiError } from "./api/request";
 import {
   githubRepoNames,
   loadBlobGithub,
+  parseLabels,
   plainError,
+  removeBlobGithubToken,
+  saveBlobGithub,
   togglePublicRepo,
   toggleRepo,
   tokenExpiry,
@@ -29,6 +32,14 @@ describe("loadBlobGithub", () => {
     ) =>
     async () =>
       new Response(JSON.stringify(body), { status });
+
+  test("reads the labels allowlist when the server sends it", async () => {
+    const labels = { ...settings, labels: ["bug"] };
+    expect(await loadBlobGithub(answer(200, { blob: labels }))).toEqual({
+      kind: "ready",
+      settings: labels,
+    });
+  });
 
   test("reads the settings", async () => {
     expect(await loadBlobGithub(answer(200, { blob: settings }))).toEqual({
@@ -94,6 +105,43 @@ describe("plainError", () => {
   });
 });
 
+describe("an unexpected answer to a save", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("is its own plain error, not a network failure", async () => {
+    const stub = async () =>
+      new Response(JSON.stringify({ blob: { login: 1 } }), { status: 200 });
+    globalThis.fetch = Object.assign(stub, {
+      preconnect: realFetch.preconnect,
+    });
+    for (const call of [
+      () => saveBlobGithub({ enabled: true }),
+      () => removeBlobGithubToken(),
+    ]) {
+      const caught = await call().then(
+        () => null,
+        (error: Error) => error,
+      );
+      expect(caught).toBeInstanceOf(Error);
+      expect(plainError(caught!)).toBe("The server sent an unexpected answer.");
+    }
+  });
+});
+
+describe("parseLabels", () => {
+  test("comma separated, trimmed, each once", () => {
+    expect(parseLabels(" bug, needs-info,,Bug , good first issue ")).toEqual([
+      "bug",
+      "needs-info",
+      "good first issue",
+    ]);
+    expect(parseLabels("  ")).toEqual([]);
+  });
+});
+
 describe("tokenExpiry", () => {
   const now = Date.parse("2026-11-11T12:00:00Z");
   const inDays = (days: number) =>
@@ -103,17 +151,20 @@ describe("tokenExpiry", () => {
     expect(tokenExpiry(inDays(60), now)).toEqual({
       text: "Expires in 60 days",
       warn: false,
+      expired: false,
     });
     expect(tokenExpiry(inDays(14), now)?.warn).toBe(false);
     expect(tokenExpiry(inDays(13.5), now)).toEqual({
       text: "Expires in 13 days",
       warn: true,
+      expired: false,
     });
     expect(tokenExpiry(inDays(1.2), now)?.text).toBe("Expires tomorrow");
     expect(tokenExpiry(inDays(0.2), now)?.text).toBe("Expires today");
     expect(tokenExpiry(inDays(-1), now)).toEqual({
       text: "Expired",
       warn: true,
+      expired: true,
     });
     expect(tokenExpiry(null, now)).toBeNull();
   });

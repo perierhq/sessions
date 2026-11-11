@@ -3,16 +3,12 @@ import {
   BLOB_GITHUB_DOCS_URL,
   BLOB_GITHUB_PURPOSE,
   BLOB_GITHUB_STEPS,
-  plainError,
-  removeBlobGithubToken,
-  saveBlobGithub,
-  togglePublicRepo,
-  toggleRepo,
+  parseLabels,
   tokenExpiry,
   type BlobGithub,
   type BlobGithubLoad,
-  type BlobGithubPatch,
 } from "../../lib/blob-github";
+import { blobGithubActions } from "../../lib/blob-github-actions";
 import { blobInset, blobSubhead } from "../../lib/blob-member-classes";
 import { Button } from "../../ui/button";
 import { Checkbox } from "../../ui/checkbox";
@@ -57,30 +53,16 @@ export function BlobGithubSection({
     );
 
   const settings = saved ?? load.settings;
-
-  const run = async (
-    action: () => Promise<BlobGithub>,
-    onError: (message: string) => void,
-  ) => {
-    setBusy(true);
-    setError(null);
-    setTokenError(null);
-    const ok = await action().then(
-      (next) => {
-        setSaved(next);
-        return true;
-      },
-      (caught: Error) => {
-        onError(plainError(caught));
-        return false;
-      },
-    );
-    setBusy(false);
-    return ok;
-  };
-
-  const save = (patch: BlobGithubPatch) =>
-    void run(() => saveBlobGithub(patch), setError);
+  const act = blobGithubActions({
+    settings,
+    token,
+    setSaved,
+    setToken,
+    setTokenError,
+    setError,
+    setBusy,
+    confirm,
+  });
 
   return (
     <>
@@ -96,33 +78,12 @@ export function BlobGithubSection({
           setToken(value);
           if (tokenError) setTokenError(null);
         }}
-        onSaveToken={() => {
-          const value = token.trim();
-          if (!value) {
-            setTokenError("Paste a token.");
-            return;
-          }
-          void run(() => saveBlobGithub({ token: value }), setTokenError).then(
-            (ok) => {
-              if (ok) setToken("");
-            },
-          );
-        }}
-        onEnabledChange={(enabled) => save({ enabled })}
-        onRepoChange={(name, on) => save(toggleRepo(settings, name, on))}
-        onPublicRepoChange={(name, on) =>
-          save({ publicRepos: togglePublicRepo(settings, name, on) })
-        }
-        onRemoveToken={() =>
-          confirm({
-            title: "Remove Blob\u2019s token?",
-            description:
-              "Blob stops posting on GitHub until you paste a new token.",
-            confirmLabel: "Remove",
-            destructive: true,
-            onConfirm: () => void run(removeBlobGithubToken, setError),
-          })
-        }
+        onSaveToken={() => void act.saveToken()}
+        onEnabledChange={(enabled) => void act.setEnabled(enabled)}
+        onRepoChange={(name, on) => void act.setRepo(name, on)}
+        onPublicRepoChange={(name, on) => void act.setPublicRepo(name, on)}
+        onLabelsChange={(labels) => void act.setLabels(labels)}
+        onRemoveToken={act.removeToken}
       />
       {confirmDialog}
     </>
@@ -153,6 +114,7 @@ export function BlobGithubView({
   onEnabledChange = () => {},
   onRepoChange = () => {},
   onPublicRepoChange = () => {},
+  onLabelsChange = () => {},
   onRemoveToken = () => {},
 }: {
   settings: BlobGithub;
@@ -167,6 +129,7 @@ export function BlobGithubView({
   onEnabledChange?: (enabled: boolean) => void;
   onRepoChange?: (name: string, on: boolean) => void;
   onPublicRepoChange?: (name: string, on: boolean) => void;
+  onLabelsChange?: (labels: string[]) => void;
   onRemoveToken?: () => void;
 }) {
   const errorId = useId();
@@ -241,9 +204,11 @@ export function BlobGithubView({
                   expiry.warn ? "text-yellow" : "text-dim",
                 )}
               >
-                {expiry.warn
-                  ? `${expiry.text}. Paste a new token before then.`
-                  : expiry.text}
+                {expiry.expired
+                  ? "Expired. Paste a new token."
+                  : expiry.warn
+                    ? `${expiry.text}. Paste a new token before then.`
+                    : expiry.text}
               </div>
             )}
           </div>
@@ -278,6 +243,15 @@ export function BlobGithubView({
           busy={busy}
           onChange={onPublicRepoChange}
         />
+        {settings.labels && (
+          <LabelsField
+            // Remounts on a save, so the field shows what the server kept.
+            key={settings.labels.join("\n")}
+            labels={settings.labels}
+            busy={busy}
+            onSave={onLabelsChange}
+          />
+        )}
 
         {errorLine}
         <Button
@@ -366,6 +340,64 @@ function TokenField({
       >
         Save
       </Button>
+    </form>
+  );
+}
+
+function LabelsField({
+  labels,
+  busy,
+  onSave,
+}: {
+  labels: string[];
+  busy: boolean;
+  onSave: (labels: string[]) => void;
+}) {
+  const [text, setText] = useState(labels.join(", "));
+  const inputId = useId();
+  const hintId = useId();
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave(parseLabels(text));
+      }}
+    >
+      <label
+        htmlFor={inputId}
+        className="block text-supporting font-medium text-fg"
+      >
+        Labels Blob may set
+      </label>
+      <div
+        id={hintId}
+        className="mt-0.5 text-supporting text-dim phone:text-meta"
+      >
+        Separate them with commas. With none, Blob sets no labels.
+      </div>
+      <div className="mt-2 flex flex-wrap items-start gap-2">
+        <Input
+          id={inputId}
+          aria-describedby={hintId}
+          placeholder="bug, needs-info"
+          value={text}
+          autoComplete="off"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          disabled={busy}
+          className="min-w-0 flex-[1_1_16rem] phone:min-h-11 phone:text-input-phone"
+          onChange={(e) => setText(e.target.value)}
+        />
+        <Button
+          type="submit"
+          variant="soft"
+          disabled={busy}
+          className="phone:min-h-11"
+        >
+          Save labels
+        </Button>
+      </div>
     </form>
   );
 }
