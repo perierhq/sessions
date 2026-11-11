@@ -23,7 +23,7 @@ struct CodeFenceView: View {
         } content: {
             ScrollView(.horizontal) {
                 SyntaxHighlightedCodeText(
-                    text: source,
+                    text: Self.narrowIndent(source),
                     language: SyntaxHighlighting.language(forExtension: lang) ?? lang,
                     fallbackColor: OS1VisualStyle.text,
                     font: Self.font
@@ -40,6 +40,18 @@ struct CodeFenceView: View {
             // whatever transaction redrew the message.
             .transaction { $0.animation = nil }
         }
+    }
+
+    /// The code as drawn: each line's leading indent at half width (a tab
+    /// or four spaces become two), since a reply column is narrow. Only the
+    /// leading run changes; Copy still copies `source` as written.
+    static func narrowIndent(_ code: String) -> String {
+        code.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            let lead = line.prefix { $0 == " " || $0 == "\t" }
+            guard !lead.isEmpty else { return String(line) }
+            let columns = lead.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+            return String(repeating: " ", count: (columns + 1) / 2) + line.dropFirst(lead.count)
+        }.joined(separator: "\n")
     }
 
     /// The code font the markdown renderer already uses (15 pt on iOS,
