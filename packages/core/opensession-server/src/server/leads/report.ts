@@ -177,6 +177,15 @@ export interface LeadActContext {
   project: string;
 }
 
+/** Signal names by id, as the steps' copy names them. */
+export function signalNamesOf(
+  signals: ReadonlyArray<{ id: string; name: string }>,
+): Record<string, string> {
+  const names: Record<string, string> = {};
+  for (const s of signals) names[s.id] = oneLine(s.name, 80) || s.id;
+  return names;
+}
+
 function listOf(items: readonly string[], word = "or"): string {
   if (items.length < 2) return items.join("");
   return `${items.slice(0, -1).join(", ")} ${word} ${items[items.length - 1]}`;
@@ -205,8 +214,7 @@ export function checkLeadAct(
   const steps = validateLeadSteps(input.steps);
   if (!steps.ok) return { ok: false, error: `Steps: ${steps.error}` };
   const label = LEAD_CATEGORY_LABELS[input.category].toLowerCase();
-  const signalNames: Record<string, string> = {};
-  for (const s of ctx.signals) signalNames[s.id] = oneLine(s.name, 80) || s.id;
+  const signalNames = signalNamesOf(ctx.signals);
   const checked: LeadStep[] = [];
   for (const [index, step] of steps.value.entries()) {
     const n = index + 1;

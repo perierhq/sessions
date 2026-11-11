@@ -7,6 +7,7 @@
  *
  *   POST /api/supervisor/ensure                 { user } → { sessionId, previousSessionIds, session }
  *   GET  /api/supervisor/items?user=&state=&kind=&since=&limit=
+ *                                               → { items: [{ ...item, revision, act? }] }
  *   POST /api/supervisor/items/:id/answer       { user, answer, revision? }
  *   POST /api/supervisor/items/:id/dismiss      { user }
  *   GET  /api/supervisor/prefs?user=
@@ -37,6 +38,7 @@ import {
   type SupervisorItemState,
 } from "../supervisor-inbox";
 import { validatePrefsPatch } from "../supervisor-quiet-hours";
+import { withItemActs } from "../leads/item-acts";
 
 const ITEM_ACTION = /^\/api\/supervisor\/items\/([^/]+)\/(answer|dismiss)$/;
 const STATES: readonly SupervisorItemState[] = [
@@ -93,7 +95,9 @@ export async function handleSupervisorRoutes(
       since: Number.isFinite(since) && since > 0 ? since : undefined,
       limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     });
-    return Response.json({ items });
+    // Each item with the revision an answer names, and a lead's item with
+    // the steps its approval runs, read from the record (leads/item-acts.ts).
+    return Response.json({ items: await withItemActs(items) });
   }
 
   const action = ITEM_ACTION.exec(path);

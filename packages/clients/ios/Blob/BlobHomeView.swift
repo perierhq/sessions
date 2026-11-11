@@ -248,7 +248,7 @@ struct BlobHomeView: View {
             guard !text.replyHasVoice else { return }
             if old != nil, old != new { text.hush() }
             if let decision, decisions.shouldSpeak(decision) {
-                let say = BlobReply(decision.body).spoken
+                let say = BlobReply(decision.shownBody).spoken
                 if !say.isEmpty { text.speaker.speak(say) }
             }
         }

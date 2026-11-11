@@ -7,6 +7,12 @@ import SwiftUI
 /// numbered buttons. The first option is
 /// the recommended one and the only filled button on the screen.
 ///
+/// A lead's proposal with steps adds the server's own section between the
+/// body and the options (`BlobActSection`): the steps, when they run, when
+/// they expire and, once approved, where they stand. It is drawn from the
+/// item's structured `act`, never from the Markdown, and the body drops the
+/// same lines the server wrote into it for older clients.
+///
 /// "Not now" skips it for this launch. Long-press for "Dismiss", which closes
 /// it on the server without an answer.
 struct BlobDecisionView: View {
@@ -46,12 +52,16 @@ struct BlobDecisionView: View {
                             .accessibilityLabel(metaSpoken ?? meta)
                     }
                 }
-                let reply = BlobReply(item.body)
+                let reply = BlobReply(item.shownBody)
                 if !reply.isEmpty {
                     // The card carries its script as the Say line, so it is
                     // not lost when reading aloud is off.
                     BlobReplyView(reply: reply, sayStyle: .line)
                         .padding(.top, 10)
+                }
+                if let act = item.act, !act.steps.isEmpty {
+                    BlobActSection(act: act)
+                        .padding(.top, 16)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -114,6 +124,144 @@ struct BlobDecisionView: View {
     private func optionButton(_ option: String, number: Int) -> some View {
         BlobOptionButton(label: option, number: number, role: number == 1 ? .recommended : .plain) {
             answer(option)
+        }
+    }
+}
+
+/// What approving runs, from the server's record (`OS1API.SupervisorItemAct`):
+/// a hairline, then the numbered steps, when they run and when they expire,
+/// and the approval's state once there is one. Quieter than the lead's prose
+/// above it and set apart from it, so nothing in the prose passes for it.
+struct BlobActSection: View {
+    let act: OS1API.SupervisorItemAct
+
+    @ScaledMetric(relativeTo: .subheadline) private var numberWidth: CGFloat = 16
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle()
+                .fill(OS1VisualStyle.border)
+                .frame(height: 1 / displayScale)
+                .accessibilityHidden(true)
+
+            Text("Steps")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(OS1VisualStyle.textDim)
+                .padding(.top, 14)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(act.steps.enumerated()), id: \.offset) { index, step in
+                    stepRow(step, number: index + 1)
+                }
+            }
+            .padding(.top, 8)
+
+            VStack(alignment: .leading, spacing: 4) {
+                if let runsWhen = act.runsWhen, !runsWhen.isEmpty {
+                    Text(Self.runsWhen(runsWhen))
+                }
+                if let expires = act.expires {
+                    TimelineView(.periodic(from: .now, by: 60)) { _ in
+                        Text(Self.expiry(expires))
+                    }
+                }
+            }
+            .font(.footnote)
+            .foregroundStyle(OS1VisualStyle.textDim)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 12)
+
+            if let line = act.stateLine, !line.isEmpty {
+                Label {
+                    Text(line)
+                } icon: {
+                    Image(systemName: stateSymbol)
+                }
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(stateInk)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 10)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+
+    @Environment(\.displayScale) private var displayScale
+
+    private func stepRow(_ step: String, number: Int) -> some View {
+        let (line, detail) = Self.split(step)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(verbatim: "\(number)")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(OS1VisualStyle.textFaint)
+                .frame(minWidth: numberWidth, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(verbatim: line)
+                    .font(.subheadline)
+                    .foregroundStyle(OS1VisualStyle.text)
+                if let detail {
+                    Text(verbatim: detail)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(OS1VisualStyle.textDim)
+                        .textSelection(.enabled)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Steps, \(number) of \(act.steps.count): \(line)\(detail.map { ". \($0)" } ?? "")")
+    }
+
+    /// A step's first line, and what follows it: a worker's prompt, without
+    /// the fence and indent the server wraps it in.
+    static func split(_ step: String) -> (String, String?) {
+        var rows = step.components(separatedBy: "\n")
+        let line = rows.removeFirst()
+        rows = rows.map { $0.hasPrefix("   ") ? String($0.dropFirst(3)) : $0 }
+        if rows.count >= 2, rows.first?.hasPrefix("```") == true,
+           let last = rows.last, !last.isEmpty, last.allSatisfy({ $0 == "`" }) {
+            rows = Array(rows.dropFirst().dropLast())
+        }
+        let detail = rows.joined(separator: "\n").trimmingCharacters(in: .newlines)
+        return (line, detail.isEmpty ? nil : detail)
+    }
+
+    /// "Runs when PR #556 in acme/app is merged", "Runs when checks pass on …".
+    static func runsWhen(_ condition: String) -> String {
+        let words = condition.split(separator: " ", maxSplits: 1)
+        // A name in capitals (PR) keeps its case; a plain word starts lower.
+        guard let first = words.first, first.dropFirst().allSatisfy(\.isLowercase) else {
+            return "Runs when \(condition)"
+        }
+        return "Runs when \(first.prefix(1).lowercased())\(condition.dropFirst())"
+    }
+
+    /// "Expires in 7 days", "Expired 2 hours ago".
+    static func expiry(_ date: Date) -> String {
+        let relative = date.formatted(.relative(presentation: .numeric, unitsStyle: .wide))
+        return date > .now ? "Expires \(relative)" : "Expired \(relative)"
+    }
+
+    private var stateSymbol: String {
+        switch act.state {
+        case "waiting": "clock"
+        case "ready": "checkmark.circle"
+        case "applying": "arrow.triangle.2.circlepath"
+        case "applied": "checkmark.circle.fill"
+        case "failed": "xmark.circle"
+        case "partial": "exclamationmark.circle"
+        default: "circle"
+        }
+    }
+
+    private var stateInk: Color {
+        switch act.state {
+        case "applied", "ready": OS1VisualStyle.greenInk
+        case "failed": OS1VisualStyle.redInk
+        case "partial": OS1VisualStyle.yellowInk
+        default: OS1VisualStyle.textDim
         }
     }
 }

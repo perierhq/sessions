@@ -958,6 +958,73 @@ describe("routes", () => {
     expect(heard).toHaveLength(4);
   });
 
+  test("lists each item's revision, and a lead item's recorded steps", async () => {
+    const approvals = await import("./leads/approvals");
+    const report = await import("./leads/report");
+    const undo = approvals.__setLeadApprovalsDepsForTest({
+      now: () => clock,
+      newId: () => "lp-1",
+    });
+    try {
+      const act = {
+        steps: [
+          {
+            kind: "merge-pr" as const,
+            ghRepo: "acme/app",
+            number: 533,
+            headSha: "abc1234".padEnd(40, "0"),
+          },
+        ],
+        condition: {
+          kind: "pr-merged" as const,
+          ghRepo: "acme/app",
+          number: 556,
+        },
+        expiresAt: clock + 7 * 86_400_000,
+        signalNames: {},
+      };
+      const lead = "Merge the fix once 556 lands.";
+      const body = `${lead}\n\n${report.actLines(act)}`;
+      const posted = await needsYou({ body, options: ["Approve", "Not now"] });
+      const plain = await needsYou({ dedupeKey: "plain" });
+      const recorded = await approvals.recordProposal({
+        project: "acme",
+        category: "fix-verified",
+        subject: "PR 533",
+        itemId: posted.item.id,
+        itemRevision: posted.revision,
+        steps: act.steps,
+        condition: act.condition,
+        expiresAt: act.expiresAt,
+      });
+      expect(recorded.ok).toBe(true);
+      const list = await call("GET", "/api/supervisor/items?user=Ada");
+      const { items } = (await list!.json()) as {
+        items: Array<{
+          id: string;
+          revision: number;
+          updatedAt: number;
+          body: string;
+          act?: import("./leads/item-acts").ItemAct;
+        }>;
+      };
+      const shown = items.find((i) => i.id === posted.item.id)!;
+      expect(shown.revision).toBe(posted.revision);
+      expect(shown.act).toEqual({
+        steps: ["Merge PR #533 in acme/app at abc1234"],
+        runsWhen: "PR #556 in acme/app is merged",
+        expiresAt: act.expiresAt,
+        state: "proposed",
+        bodySuffix: body.slice(lead.length),
+      });
+      const other = items.find((i) => i.id === plain.item.id)!;
+      expect(other.revision).toBe(other.updatedAt);
+      expect(other.act).toBeUndefined();
+    } finally {
+      undo();
+    }
+  });
+
   test("refuses a request with no user or no answer", async () => {
     expect((await call("GET", "/api/supervisor/items"))?.status).toBe(400);
     expect(

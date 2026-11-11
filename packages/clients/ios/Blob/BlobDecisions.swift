@@ -123,7 +123,8 @@ final class BlobDecisions {
         spoken.insert(item.id).inserted
     }
 
-    /// Sends the answer. Success, or the item already closed elsewhere,
+    /// Sends the answer with the revision of the item as it is shown, so
+    /// approving binds to exactly what was on screen. Success, or the item already closed elsewhere,
     /// moves on; any other failure keeps it on screen with a reason.
     func answer(_ item: Item, with option: String) async {
         guard sending == nil else { return }
@@ -134,10 +135,10 @@ final class BlobDecisions {
             if Self.demoEnabled {
                 try await Task.sleep(for: .milliseconds(400))
             } else {
-                try await OS1API.answerSupervisorItem(id: item.id, answer: option)
+                try await OS1API.answerSupervisorItem(id: item.id, answer: option, revision: item.revision)
             }
             #else
-            try await OS1API.answerSupervisorItem(id: item.id, answer: option)
+            try await OS1API.answerSupervisorItem(id: item.id, answer: option, revision: item.revision)
             #endif
             closed.insert(item.id)
             handled()
@@ -191,13 +192,60 @@ final class BlobDecisions {
 
 #if DEBUG
 extension BlobDecisions {
-    /// Two canned decisions for screenshots without a server:
-    /// `BLOB_DEMO_DECISIONS=1`.
+    /// Three canned decisions for screenshots without a server:
+    /// `BLOB_DEMO_DECISIONS=1`. The first has steps; `BLOB_DEMO_ACT_STATE`
+    /// (`waiting`, `ready`, `applied`) shows it as approved.
     static var demoEnabled: Bool { ProcessInfo.processInfo.environment["BLOB_DEMO_DECISIONS"] != nil }
 
     static let demo: [Item] = {
         let now = Date.now.timeIntervalSince1970 * 1000
+        let expires = now + 7 * 86_400_000
+        // The server's own lines, as report.ts ends the body with them.
+        let suffix = """
+
+
+        Runs when: PR #556 in acme/app is merged
+
+        Steps:
+        1. Merge PR #533 in acme/app at abc1234, squashed
+        2. Change the Status page check: alert after 8 failures in a row
+
+        Expires: 17 November 2026, 12:00 UTC
+        """
+        let state = ProcessInfo.processInfo.environment["BLOB_DEMO_ACT_STATE"] ?? "proposed"
+        let stateLine: String? = switch state {
+        case "waiting": "Waiting for PR #556 in acme/app to merge"
+        case "ready": "Ready to apply"
+        case "applied": "Applied"
+        default: nil
+        }
         return [
+            Item(
+                id: "demo-act",
+                kind: "needs-you",
+                title: "acme: Merge a verified fix",
+                body: """
+                The checkout fix in #533 passed on staging. It needs the session refactor in #556 first, so I\u{2019}d merge it right after that lands.
+
+                Rule: verified fixes ask first.
+                """ + suffix,
+                options: ["Approve", "Not now"],
+                project: "acme",
+                source: "lead:acme",
+                createdAt: now - 4 * 60 * 1000,
+                revision: Int64(now - 4 * 60 * 1000),
+                act: .init(
+                    steps: [
+                        "Merge PR #533 in acme/app at abc1234, squashed",
+                        "Change the Status page check: alert after 8 failures in a row",
+                    ],
+                    runsWhen: "PR #556 in acme/app is merged",
+                    expiresAt: expires,
+                    state: state,
+                    stateLine: stateLine,
+                    bodySuffix: suffix
+                )
+            ),
             Item(
                 id: "demo-signal",
                 kind: "needs-you",
