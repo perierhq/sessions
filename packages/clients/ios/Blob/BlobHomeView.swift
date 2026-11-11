@@ -38,6 +38,9 @@ struct BlobHomeView: View {
     @State private var latestTaps = 0
     /// What this turn's reply has taken so far (`RoomClaim`).
     @State private var turnRoom = RoomClaim()
+    /// How far the write bar keeps from the trailing edge: its margin on one
+    /// column, the trailing pane and the fold beside two (`writeBarEnd`).
+    @State private var writeBarTrailing: CGFloat = 16
     @FocusState private var fieldFocused: Bool
     #if DEBUG
     /// `BLOB_DEMO_REPLY=cycle`: which of its two replies is up.
@@ -144,15 +147,26 @@ struct BlobHomeView: View {
                 )
 
                 if !hasContent && !historyRevealed {
-                    // The hint sits under Blob: in the middle while Blob is
-                    // in the middle of a flat surface, toward the fold beside
-                    // one, and toward the corner on one column.
-                    captions(
-                        insets: insets,
-                        column: columns.centered,
-                        hint: room != nil && panes?.physical == false ? .center : .trailing
-                    )
-                    .transition(.opacity)
+                    if let beside = Self.captionBeside(spot: spot, panes: panes, room: room, columns: columns) {
+                        // Blob sits across a physical fold, so nothing it
+                        // says can go under it: the captions go beside it,
+                        // in the leading pane, level with Blob and ending
+                        // short of it and of the fold.
+                        captionLines(hint: .trailing, alignment: .trailing)
+                            .frame(width: beside.width, alignment: .trailing)
+                            .position(x: beside.midX, y: spot.position.y)
+                            .transition(.opacity)
+                    } else {
+                        // The hint sits under Blob: in the middle while Blob
+                        // is in the middle of a flat surface, toward the fold
+                        // beside one, and toward the corner on one column.
+                        captions(
+                            insets: insets,
+                            column: columns.centered,
+                            hint: room != nil && panes?.physical == false ? .center : .trailing
+                        )
+                        .transition(.opacity)
+                    }
                 }
 
                 if showsLatest {
@@ -170,6 +184,9 @@ struct BlobHomeView: View {
             }
             .onLongPressGesture { showSettings = true }
             .onAppear { BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
+            .onChange(of: Self.writeBarEnd(size: geo.size, insets: insets, panes: panes), initial: true) { _, end in
+                writeBarTrailing = end
+            }
             .onChange(of: panes) { _, panes in BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
             // History lays this exchange out the way it is shown now.
             .onChange(of: split && !currentVisuals.isEmpty ? text.currentExchangeId : nil, initial: true) { _, id in
@@ -259,6 +276,11 @@ struct BlobHomeView: View {
             if ProcessInfo.processInfo.environment["BLOB_DEMO_TYPING"] != nil {
                 draft = "what shipped this week?"
                 typing = true
+                // Focused, so a software keyboard comes up as it would.
+                Task {
+                    try? await Task.sleep(for: .milliseconds(600))
+                    fieldFocused = true
+                }
             }
             if BlobExchange.demoReveal != nil { revealHistory() }
         }
@@ -424,10 +446,11 @@ struct BlobHomeView: View {
                 position: spot.position,
                 size: spot.size,
                 look: nil,
-                level: reading ? text.speaker.level(at: date) : 0
+                level: reading ? text.speaker.level(at: date) : 0,
+                halo: !typing
             )
         }
-        return BlobTargets(mode: mode, position: spot.position, size: spot.size, look: nil, level: level)
+        return BlobTargets(mode: mode, position: spot.position, size: spot.size, look: nil, level: level, halo: !typing)
     }
 
     /// Where Blob is going and how big it is there, without its voice
@@ -951,11 +974,38 @@ struct BlobHomeView: View {
     /// apart from a one-time hint and any reason a call failed. What is read
     /// (replies, questions, decisions) goes on the page instead.
     /// `hint`: where the one-time hint sits in the column, under Blob.
-    @ViewBuilder
     private func captions(insets: EdgeInsets, column: BlobColumns.Span, hint: Alignment) -> some View {
+        captionLines(hint: hint, alignment: .leading)
+            .blobColumn(column)
+            .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : talking ? 28 : 60))
+    }
+
+    /// Where the captions go when Blob sits across a physical fold (the open
+    /// Duo with nothing to read): beside Blob in the leading pane, from the
+    /// leading column's start to just short of Blob and of the fold. Nil
+    /// anywhere else, or when that leaves too little room.
+    private static func captionBeside(spot: (position: CGPoint, size: Double), panes: BlobPanes?, room: BlobRoom?, columns: BlobColumns) -> BlobColumns.Span? {
+        guard let panes, panes.physical, room != nil, let leading = columns.leading else { return nil }
+        // Blob's body is 0.4 of its size across its radius.
+        let end = min(spot.position.x - spot.size * 0.4 - 16, panes.fold.minX - 16)
+        guard end - leading.x >= 120 else { return nil }
+        return BlobColumns.Span(x: leading.x, width: end - leading.x)
+    }
+
+    /// The trailing margin of the write bar: 16 pt on one column; beside two
+    /// panes it ends where the leading pane does, before the fold.
+    private static func writeBarEnd(size: CGSize, insets: EdgeInsets, panes: BlobPanes?) -> CGFloat {
+        guard let panes else { return 16 }
+        return max(16, size.width - insets.trailing - panes.fold.minX)
+    }
+
+    /// The captions' lines; `alignment` for the lines that don't set their
+    /// own side (an error, a notice).
+    @ViewBuilder
+    private func captionLines(hint: Alignment, alignment: Alignment) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if text.active {
-                textCaptions
+                textCaptions(alignment: alignment)
             } else if engine.active, let caption = engine.caption, !caption.text.isEmpty {
                 Text(caption.text)
                     .font(caption.role == .assistant ? .title3 : .callout)
@@ -968,14 +1018,17 @@ struct BlobHomeView: View {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textDim)
+                    .frame(maxWidth: .infinity, alignment: alignment)
             } else if let hint = engine.hint, engine.active {
                 Text(hint)
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textDim)
+                    .frame(maxWidth: .infinity, alignment: alignment)
             } else if case .failed(let message) = text.phase, !usesVoice {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textDim)
+                    .frame(maxWidth: .infinity, alignment: alignment)
             } else if !hasTalked && !talking && !typing && !Self.demoRunning {
                 Text(Self.talkHint)
                     .font(.footnote)
@@ -983,8 +1036,7 @@ struct BlobHomeView: View {
                     .frame(maxWidth: .infinity, alignment: hint)
             }
         }
-        .blobColumn(column)
-        .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : talking ? 28 : 60))
+        .multilineTextAlignment(alignment == .trailing ? .trailing : .leading)
         .animation(.easeOut(duration: 0.24), value: engine.caption?.text)
         .allowsHitTesting(false)
     }
@@ -1017,7 +1069,8 @@ struct BlobHomeView: View {
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityLabel("Send")
             }
-            .padding(.horizontal, 16)
+            .padding(.leading, 16)
+            .padding(.trailing, writeBarTrailing)
             .padding(.bottom, 10)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         } else if !engine.active && text.phase != .listening {
@@ -1084,7 +1137,7 @@ struct BlobHomeView: View {
     /// Text mode before there is anything to read: what you are saying.
     /// That Blob is working on it is its thought (`BlobThinkingLayer`).
     @ViewBuilder
-    private var textCaptions: some View {
+    private func textCaptions(alignment: Alignment) -> some View {
         if !text.heard.isEmpty {
             Text(text.heard)
                 .font(.callout)
@@ -1104,16 +1157,16 @@ struct BlobHomeView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         if let notice = text.notice {
-            noticeLine(notice)
+            noticeLine(notice, alignment: alignment)
         }
     }
 
     /// An answered ask that didn't go through, like a refused merge.
-    private func noticeLine(_ notice: String) -> some View {
+    private func noticeLine(_ notice: String, alignment: Alignment = .leading) -> some View {
         Text(notice)
             .font(.footnote)
             .foregroundStyle(OS1VisualStyle.textDim)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: alignment)
             .fixedSize(horizontal: false, vertical: true)
     }
 

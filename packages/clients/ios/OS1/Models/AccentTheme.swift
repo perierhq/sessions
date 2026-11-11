@@ -31,7 +31,14 @@ enum AccentTheme: String, CaseIterable, Identifiable, Sendable {
     case green
     case mono
 
+    /// The accent before anything is stored or the server answers. Blob
+    /// (iOS and Mac) starts on Tangerine instead of Sky, so a fresh
+    /// install, the demo and a slow server never show it blue.
+    #if BLOB
+    static let `default` = AccentTheme.orange
+    #else
     static let `default` = AccentTheme.sky
+    #endif
 
     var id: String { rawValue }
 

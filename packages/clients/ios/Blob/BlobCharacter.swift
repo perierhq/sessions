@@ -29,6 +29,9 @@ struct BlobTargets {
     var level: Double
     /// Degrees, for hinge effects only.
     var tilt: Double = 0
+    /// Off while you type: the ring would sit behind Blob for every
+    /// keystroke and pull at you while you write.
+    var halo = true
 }
 
 /// A damped spring that keeps its velocity when the target moves.
@@ -113,7 +116,7 @@ final class BlobPhysics {
         tilt = targets.tilt
         let m = mode.targets
         sky.target = m.sky; open.target = m.open; smile.target = m.smile
-        energy.target = m.energy; halo.target = m.halo
+        energy.target = m.energy; halo.target = targets.halo ? m.halo : 0
         x.target = targets.position.x; y.target = targets.position.y; size.target = targets.size
     }
 
@@ -173,14 +176,16 @@ final class BlobPhysics {
         let breathe = reduceMotion ? 1 : 1 + 0.018 * sin(t * (mode == .quiet ? 1.4 : 2.2))
         let scale = s0 / 200 * breathe * (reduceMotion ? 1 : pulse.x) * (reduceMotion ? 1 : 1 + 0.035 * envelope)
 
-        // Halo: follows the voice while listening, one soft ring when it needs you.
+        // Halo: a soft ring just outside the body (which is 0.4 of `size`
+        // across its radius), at most 1.3 times its radius. It follows the
+        // voice while listening and stays still when it needs you.
         let haloOpacity = min(max(halo.x, 0), 1.2)
         if haloOpacity > 0.01 {
-            let d = s0 * (1.45 + (reduceMotion || mode != .listen ? 0 : 0.25 * envelope))
+            let d = s0 * (0.98 + (reduceMotion || mode != .listen ? 0 : 0.06 * envelope))
             let ring = Path(ellipseIn: CGRect(x: x.x - d / 2, y: y.x - d / 2, width: d, height: d))
             let tint = Self.accentStops(dark: dark)[1]
-            let color: Color = sky.x > 0.5 ? Color(red: tint.0 / 255, green: tint.1 / 255, blue: tint.2 / 255).opacity(0.14)
-                : (dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05))
+            let color: Color = sky.x > 0.5 ? Color(red: tint.0 / 255, green: tint.1 / 255, blue: tint.2 / 255).opacity(0.12)
+                : (dark ? Color.white.opacity(0.07) : Color.black.opacity(0.045))
             context.fill(ring, with: .color(color.opacity(haloOpacity)))
         }
 

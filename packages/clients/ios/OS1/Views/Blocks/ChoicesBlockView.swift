@@ -61,7 +61,7 @@ struct ChoicesBlockView: View {
             }
             .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ChipButtonStyle())
         .disabled(!isOpen)
         .contextMenu {
             if isOpen, let relay {
@@ -81,13 +81,28 @@ struct ChoicesBlockView: View {
         .accessibilityValue(sent ? "Sent" : "")
     }
 
+    /// Every label clears 4.5:1 on its own fill, in light and dark. An open
+    /// chip says it is live with its accent wash and edge and keeps the
+    /// page's ink, as the web's chips do: the accent as text on its own 10%
+    /// wash measures under 4:1 on a light page. A closed chip is quieter but
+    /// still read: `textNarration` (about 5.3:1 light, 7.6:1 dark), where
+    /// `textDim` measured 3.3:1 on the chip fill.
     private func chipInk(sent: Bool) -> Color {
         if sent { return OS1VisualStyle.onAccent }
-        return isOpen ? OS1VisualStyle.accentInk : OS1VisualStyle.textDim
+        return isOpen ? OS1VisualStyle.text : OS1VisualStyle.textNarration
     }
 
     private func chipFill(sent: Bool) -> Color {
         if sent { return OS1VisualStyle.accent }
         return isOpen ? OS1VisualStyle.accent.opacity(0.10) : OS1VisualStyle.chipFill
+    }
+}
+
+/// A plain button that only answers a press. `.plain` also dims a disabled
+/// label, which took a closed chip's label to about 2:1; a closed chip
+/// already says so with its ink and fill.
+private struct ChipButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.6 : 1)
     }
 }
