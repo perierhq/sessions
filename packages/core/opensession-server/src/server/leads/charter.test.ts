@@ -159,25 +159,23 @@ describe("leadCharter", () => {
     );
   });
 
-  test("at coordinate, alone autofix runs and approvals wait for act", () => {
+  test("at coordinate, alone autofix runs and approvals run once approved", () => {
     const text = charter({ stage: "coordinate" });
     expect(text).toContain(
-      "propose them with autofix-pr steps and run them with lead_apply",
+      "Alone fixes and CI repairs may ask the autofix agent without the owner: propose them with autofix-pr steps and run them with lead_apply.",
     );
     expect(text).toContain(
-      "What the owner approves waits until the project moves to the act stage.",
+      "What the owner approves runs with lead_apply once approved, or once its condition is met.",
+    );
+    expect(text).not.toContain("moves to the act stage");
+    expect(text).toContain(
+      "- lead_apply: call it with the proposal id for each approval the prompt lists as ready",
     );
     expect(text).toContain(
-      "for each approval once the project is at the act stage",
+      "Run each approval your prompt lists as ready with lead_apply, once each.",
     );
-    expect(text).not.toContain("Run each approval your prompt lists");
-    // Conditions are checked, and events wake the lead, only at act.
-    expect(text).toContain(
-      "An approval waits until the project moves to the act stage; its condition is checked only there.",
-    );
-    expect(text).not.toContain("start of your wakes");
-    expect(text).not.toContain("wakes you early");
-    expect(text).not.toContain("prompt lists the approvals");
+    expect(text).toContain("start of your wakes");
+    expect(text).toContain("wakes you early");
     expect(text).toContain(
       "An approval expires after 7 days unless you ask for another expiry with expiresInDays, at most 30.",
     );

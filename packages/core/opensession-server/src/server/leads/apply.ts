@@ -13,8 +13,8 @@
 //      (COORDINATE_CATEGORIES) whose steps all ask the autofix agent
 //      (COORDINATE_STEPS)
 //   5. otherwise an approval of exactly this proposal: ready (or waiting
-//      with its condition met now), not expired, and only at the act stage
-//      (APPROVED_RUNS_ONLY_AT_ACT)
+//      with its condition met now), not expired, at the coordinate or act
+//      stage (APPROVED_RUNS_ONLY_AT_ACT is off)
 //
 // A condition is re-checked now, whoever allowed the run: unknown or not
 // met refuses, and a waiting approval keeps waiting. The settings and
@@ -119,12 +119,12 @@ import {
 } from "./report";
 
 /**
- * Whether a run the owner approved waits for the act stage. The owner has
- * not confirmed the looser reading (an approved asks-first action may also
- * run at coordinate), so approved runs happen only at act. Set this to
- * false to let them run at coordinate too; watch always refuses.
+ * Whether a run the owner approved waits for the act stage. Owner decision
+ * (2026-11-11): his approval is the gate, so an approved asks-first action
+ * also runs at coordinate. Set this to true to hold approved runs until
+ * act; watch always refuses.
  */
-export const APPROVED_RUNS_ONLY_AT_ACT = true;
+export const APPROVED_RUNS_ONLY_AT_ACT: boolean = false;
 
 /** What the rules let run without the owner at the coordinate stage. */
 export const COORDINATE_STEPS: readonly LeadStepKind[] = ["autofix-pr"];

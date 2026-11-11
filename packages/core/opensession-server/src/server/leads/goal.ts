@@ -7,7 +7,7 @@
 // settings, then looks at the project's approvals: it expires old ones,
 // moves waiting ones whose condition is met to ready and lists them in the
 // wake's prompt. The owner's answers to the lead's proposals land in its
-// ledger and wake it; at the act stage a merged pull request or a resolved
+// ledger and wake it; past the watch stage a merged pull request or a resolved
 // incident an approval waits on wakes it too. A wake that comes while it
 // runs wakes it again after that run. Nothing runs at import:
 // `startProjectLeads` registers the listeners, once.

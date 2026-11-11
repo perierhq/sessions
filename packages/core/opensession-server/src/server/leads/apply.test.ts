@@ -468,7 +468,7 @@ describe("applyGate", () => {
       NOW,
     );
     expect(!merge.ok && merge.reason).toStartWith(
-      "Approved actions run at the act stage",
+      "The owner hasn't approved this proposal",
     );
     // A category outside COORDINATE_CATEGORIES never runs alone there.
     withLead({ stage: "coordinate" }, { "support-routine-reply": "alone" });
@@ -482,18 +482,16 @@ describe("applyGate", () => {
     expect(support.ok).toBe(false);
   });
 
-  test("coordinate: an alone merge still needs an approval, and approved runs wait for act", () => {
-    expect(APPROVED_RUNS_ONLY_AT_ACT).toBe(true);
+  test("coordinate: an alone merge still needs an approval, and approved runs run", () => {
+    expect(APPROVED_RUNS_ONLY_AT_ACT).toBe(false);
     withLead({ stage: "coordinate" }, { "fix-verified": "alone" });
-    for (const record of [
-      fakeRecord("fix-verified"),
-      fakeRecord("public-release", {}),
-    ]) {
-      const gate = applyGate(doc, record, NOW);
-      expect(!gate.ok && gate.reason).toStartWith(
-        "Approved actions run at the act stage",
-      );
-    }
+    const unapproved = applyGate(doc, fakeRecord("fix-verified"), NOW);
+    expect(!unapproved.ok && unapproved.reason).toStartWith(
+      "The owner hasn't approved this proposal",
+    );
+    expect(applyGate(doc, fakeRecord("public-release", {}), NOW)).toMatchObject(
+      { ok: true, mode: "approved" },
+    );
   });
 
   test("asks first at act needs a live, unexpired approval", () => {
@@ -1069,13 +1067,12 @@ describe("leadApply", () => {
     expect((await getRecord("acme", p.id))?.approval).toBeUndefined();
   });
 
-  test("approved runs wait for the act stage", async () => {
+  test("approved runs run at coordinate", async () => {
     const p = await approved("fix-verified", [mergeStep()]);
     withLead({ stage: "coordinate" });
-    expect((await leadApply("acme", p.id)).text).toStartWith(
-      "Approved actions run at the act stage",
-    );
-    expect(await state(p.id)).toBe("ready");
+    expect(await leadApply("acme", p.id)).toMatchObject({ ok: true });
+    expect(merges).toHaveLength(1);
+    expect(await state(p.id)).toBe("applied");
   });
 
   test("alone at act runs by the rules, with no approver to name", async () => {

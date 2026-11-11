@@ -25,7 +25,7 @@ export const INCIDENT_WAKE_HOURS = 1;
 const STAGE_TEXT: Record<LeadStage, string> = {
   watch:
     "Watch. You read and propose; you change nothing, not even something the owner approved. When the owner approves a proposal, record the answer in your ledger and, on your next wake, prepare the change exactly (the fields and values, or the command) and propose it again as ready to apply. Someone else applies it.",
-  coordinate: `Coordinate. Alone fixes and CI repairs may ask the autofix agent without the owner: propose them with autofix-pr steps and run them with lead_apply. Propose everything else; merging stays with the existing loops.${APPROVED_RUNS_ONLY_AT_ACT ? " What the owner approves waits until the project moves to the act stage." : ""}`,
+  coordinate: `Coordinate. Alone fixes and CI repairs may ask the autofix agent without the owner: propose them with autofix-pr steps and run them with lead_apply. Propose everything else; merging stays with the existing loops.${APPROVED_RUNS_ONLY_AT_ACT ? " What the owner approves waits until the project moves to the act stage." : " What the owner approves runs with lead_apply once approved, or once its condition is met."}`,
   act: "Act within the rules. Alone categories run without the owner; the rest need the owner's approval, as the table says. Propose with steps, then run them with lead_apply once the rules or the owner's approval allow it.",
 };
 
