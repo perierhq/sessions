@@ -133,6 +133,15 @@ export function instanceOwnerMember(): TeamMember | null {
   );
 }
 
+/** The directory member `name` refers to (as `personOwner` resolves it),
+ *  or null without a roster or when nobody on it goes by `name`. */
+export function rosterMember(
+  name: string | null | undefined,
+): TeamMember | null {
+  if (!isPersonName(name)) return null;
+  return memberFor(name, roster()) ?? null;
+}
+
 /** Whether the signed-in GitHub `login` is `name`'s on the roster: one
  *  directory member goes by `name` and has that login. Never true without
  *  a roster, since a name alone proves nothing. */
