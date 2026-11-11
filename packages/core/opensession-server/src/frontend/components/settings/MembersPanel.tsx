@@ -1,10 +1,12 @@
 import { BASE_PATH } from "../../lib/base";
 import { SettingsHeader, SettingsPanel } from "../../ui/settings";
 import { TeamSection } from "../SetupTeam";
+import { BotsSection } from "./BotsSection";
 
 // Workspace → Members: the identity table, on a page of its own. Commit
 // attribution, `allowedUsers` scoping and GitHub sign-in all resolve through
 // it, so it long outlives the Setup wizard step that first fills it in.
+// Blob follows under Bots: a teammate that is not a member.
 
 export function MembersPanel() {
   return (
@@ -25,6 +27,7 @@ export function MembersPanel() {
         }
       />
       <TeamSection onChanged={() => {}} />
+      <BotsSection />
     </SettingsPanel>
   );
 }

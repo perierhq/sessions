@@ -137,7 +137,7 @@ export const SETTINGS_KEYWORDS = {
     "branch",
     "clone",
   ],
-  members: ["team", "people", "teammates", "access"],
+  members: ["team", "people", "teammates", "access", "bots", "blob"],
   authentication: [
     "sign in",
     "login",

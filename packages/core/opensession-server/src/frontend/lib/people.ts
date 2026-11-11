@@ -58,7 +58,18 @@ const peopleResponseSchema = z.object({
 });
 
 const CHANGE_EVENT = "opensession-people-changed";
+/** Blob as this client knows it, kept until a server lists its own bots, so
+ *  an old server without `bots` still shows Blob (and UserAvatar draws it). */
+const BUILTIN_BOTS: readonly Person[] = [
+  {
+    kind: "bot",
+    name: "Blob",
+    fullName: "Blob",
+    image: "/bot-icon/blob.png",
+  },
+];
 let people: Person[] = [];
+let bots: Person[] = [...BUILTIN_BOTS];
 let reviewTeams: ReviewTeam[] = [];
 let fetched = false;
 
@@ -66,6 +77,13 @@ let fetched = false;
 export function getPeople(): Person[] {
   void ensurePeople();
   return people;
+}
+
+/** The first-party bots (Blob), synchronously: the built-in Blob until a
+ *  server that lists `bots` answers. */
+export function getBots(): Person[] {
+  void ensurePeople();
+  return bots;
 }
 
 export function getReviewTeams(): ReviewTeam[] {
@@ -98,10 +116,10 @@ export function ensurePeople(): Promise<void> {
       // A bot never joins the people roster, even if a server listed one
       // there: pickers, mentions and the owner lens read `people`.
       const list = (body?.people ?? []).filter((p) => p.kind !== "bot");
-      const bots = [
+      const listed = [
         ...(body?.people ?? []).filter((p) => p.kind === "bot"),
         ...(body?.bots ?? []),
-      ];
+      ].map((bot) => ({ ...bot, kind: "bot" as const }));
       people = list;
       reviewTeams = body?.reviewTeams ?? [];
       fetched = true;
@@ -123,15 +141,17 @@ export function ensurePeople(): Promise<void> {
         ),
       );
       // An old server lists no bots: keep the built-in Blob then.
-      if (body?.bots)
+      if (body?.bots) {
+        bots = listed;
         registerBots(
           Object.fromEntries(
-            bots.map((bot): [string, string] => [
+            listed.map((bot): [string, string] => [
               bot.name.toLowerCase(),
               bot.image ?? "",
             ]),
           ),
         );
+      }
       window.dispatchEvent(new Event(CHANGE_EVENT));
     })
     .catch(() => {})
@@ -203,6 +223,18 @@ export function usePeople(): Person[] {
   useEffect(() => {
     void ensurePeople();
     const handler = () => setList(people);
+    window.addEventListener(CHANGE_EVENT, handler);
+    return () => window.removeEventListener(CHANGE_EVENT, handler);
+  }, []);
+  return list;
+}
+
+/** Reactive bots: Settings, Members lists them under the people. */
+export function useBots(): Person[] {
+  const [list, setList] = useState(bots);
+  useEffect(() => {
+    void ensurePeople();
+    const handler = () => setList(bots);
     window.addEventListener(CHANGE_EVENT, handler);
     return () => window.removeEventListener(CHANGE_EVENT, handler);
   }, []);
