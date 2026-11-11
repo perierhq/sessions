@@ -13,7 +13,7 @@ import Foundation
 /// the background. Separate from `BlobSpeaker` so a filler never touches
 /// the answer's own playback; the view stops it when the answer starts.
 @MainActor
-final class BlobFiller {
+final class BlobFiller: NSObject {
     nonisolated static let phrases = ["One sec.", "Let me check.", "Give me a moment."]
     /// Quiet this long after sending before the filler plays.
     static let delay: Duration = .seconds(4)
@@ -22,6 +22,15 @@ final class BlobFiller {
     private let synthesizer = AVSpeechSynthesizer()
     private var filling: Task<Void, Never>?
     private var fillingKey: String?
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+        BlobListener.registerPlayback { [weak self] in
+            guard let self else { return false }
+            return self.player?.isPlaying == true || self.synthesizer.isSpeaking
+        }
+    }
 
     /// Says a random filler: from the cache when it holds the current server
     /// voice's, else with an Apple voice while the cache fills.
@@ -33,7 +42,8 @@ final class BlobFiller {
                 guard !Task.isCancelled else { return }
                 try? BlobListener.activateSession(record: false)
                 player = try? AVAudioPlayer(data: data)
-                player?.play()
+                player?.delegate = self
+                if player?.play() != true { BlobListener.deactivateSession() }
                 return
             }
             fill(key)
@@ -50,6 +60,7 @@ final class BlobFiller {
         player?.stop()
         player = nil
         synthesizer.stopSpeaking(at: .immediate)
+        BlobListener.deactivateSession()
     }
 
     // MARK: Cache
@@ -140,5 +151,17 @@ final class BlobFiller {
             hash = hash &* 0x0000_0100_0000_01b3
         }
         return String(hash, radix: 16)
+    }
+}
+
+/// When the filler ends, the audio session goes back (`deactivateSession`
+/// skips it while the answer is already playing).
+extension BlobFiller: AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate {
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in BlobListener.deactivateSession() }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in BlobListener.deactivateSession() }
     }
 }

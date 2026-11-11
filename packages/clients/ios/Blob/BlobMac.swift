@@ -24,6 +24,7 @@ final class BlobMacState {
 struct BlobMacScenes: Scene {
     static let windowId = "blob"
     @State private var state = BlobMacState.shared
+    @AppStorage(BlobSpeaker.readAloudKey) private var readAloud = true
 
     var body: some Scene {
         Window("Blob", id: Self.windowId) {
@@ -44,6 +45,9 @@ struct BlobMacScenes: Scene {
                     .keyboardShortcut("l")
                 Button("Show history") { state.request = .history }
                     .keyboardShortcut("y")
+                // The home's bell; off stops the voice at once.
+                Toggle("Read aloud", isOn: $readAloud)
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
             }
         }
 

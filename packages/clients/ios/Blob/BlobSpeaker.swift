@@ -71,10 +71,6 @@ final class BlobSpeaker: NSObject {
         var request: String { CueMarkers.directed(text, hint: delivery) }
     }
 
-    /// Some of the current reply was heard: audio played or an Apple voice
-    /// spoke. False after `stop` until the next one is.
-    private(set) var heardReply = false
-
     /// Called when a segment with a cue starts playing, with the cue's id.
     @ObservationIgnored var onCue: ((String) -> Void)?
     /// Called when the reply's queue has been read to its end.
@@ -83,7 +79,27 @@ final class BlobSpeaker: NSObject {
     override init() {
         super.init()
         synthesizer.delegate = self
+        BlobListener.registerPlayback { [weak self] in
+            guard let self else { return false }
+            return self.player?.isPlaying == true || self.synthesizer.isSpeaking || self.queueTask != nil
+        }
+        #if os(iOS)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(interrupted(_:)),
+            name: AVAudioSession.interruptionNotification, object: nil)
+        #endif
     }
+
+    #if os(iOS)
+    /// A call or another app took the audio: what was playing ends and the
+    /// current utterance finishes, so `speaking` doesn't stick. Nothing
+    /// resumes when the interruption ends.
+    @objc nonisolated private func interrupted(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+        Task { @MainActor in self.stop() }
+    }
+    #endif
 
     /// Voice pulse for Blob: a beat on every word with an Apple voice, the
     /// player's loudness with the server voice.
@@ -214,13 +230,13 @@ final class BlobSpeaker: NSObject {
             // Audio that won't play is read with an Apple voice too.
             var played = false
             if let data { played = await play(data) }
-            if played { heardReply = true }
             if Task.isCancelled { return }
-            if !played, await sayWithApple(item.text) { heardReply = true }
+            if !played { await sayWithApple(item.text) }
             if Task.isCancelled { return }
         }
         queueTask = nil
         speaking = false
+        BlobListener.deactivateSession()
         onQueueDrained?()
     }
 
@@ -286,7 +302,9 @@ final class BlobSpeaker: NSObject {
             _ = await play(data)
             if Task.isCancelled { next?.cancel(); return }
         }
+        serverTask = nil
         speaking = false
+        BlobListener.deactivateSession()
     }
 
     private static func fetch(_ piece: String?) -> Task<Data, Error>? {
@@ -321,9 +339,11 @@ final class BlobSpeaker: NSObject {
         finished = nil
     }
 
+    /// Says a sample in `voice`. You asked to hear it, so it plays even on
+    /// silent.
     func preview(_ voice: AVSpeechSynthesisVoice) {
         stop()
-        try? BlobListener.activateSession(record: false)
+        try? BlobListener.activateSession(record: false, overSilent: true)
         let utterance = AVSpeechUtterance(string: "Hi, I\u{2019}m Blob. I\u{2019}ll be here when something needs you.")
         utterance.voice = voice
         synthesizer.stopSpeaking(at: .immediate)
@@ -335,7 +355,7 @@ final class BlobSpeaker: NSObject {
     func stop() {
         cutOff()
         appleForReply = false
-        heardReply = false
+        BlobListener.deactivateSession()
     }
 
     /// Stops whatever is reading and clears the queue.
@@ -452,7 +472,9 @@ extension BlobSpeaker: AVSpeechSynthesizerDelegate {
             utteranceDone = nil
             done.resume()
         } else {
+            // A standalone utterance (`speak`, a preview) ended.
             speaking = false
+            BlobListener.deactivateSession()
         }
     }
 }

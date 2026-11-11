@@ -64,6 +64,19 @@ final class BlobListener {
     /// Input level above which a buffer counts as speech when the VAD isn't
     /// loaded. An assumption tuned by ear against `level`'s 0…1 scale.
     static let speechLevel = 0.15
+    /// Listening has the audio session: `deactivateSession` leaves it alone.
+    private var holdsSession = false {
+        didSet { Self.listening += holdsSession == oldValue ? 0 : (holdsSession ? 1 : -1) }
+    }
+    private static var listening = 0
+    /// Playback that still uses the session (Blob's voice, the filler),
+    /// registered by its owner. Asked when the session would be released.
+    private static var playbackChecks: [() -> Bool] = []
+    private static var deactivation: Task<Void, Never>?
+
+    static func registerPlayback(_ isPlaying: @escaping () -> Bool) {
+        playbackChecks.append(isPlaying)
+    }
 
     func start() async throws {
         text = ""; finalized = ""; level = 0
@@ -91,6 +104,7 @@ final class BlobListener {
             } catch {}
         }
         try Self.activateSession(record: true)
+        holdsSession = true
         try await analyzer.start(inputSequence: stream)
         let vadState = await BlobVoiceActivity.shared.makeStreamState()
         if vadState == nil { Task.detached { _ = await BlobVoiceActivity.shared.load() } }
@@ -106,6 +120,7 @@ final class BlobListener {
     /// Neural Engine), and what you said must still go.
     func stop(within seconds: Double) async -> Heard {
         ended = true
+        holdsSession = false
         if let fallback {
             fallback.stop()
             self.fallback = nil
@@ -159,6 +174,7 @@ final class BlobListener {
 
     /// Drops everything without waiting for the model.
     func cancel() {
+        holdsSession = false
         fallback?.stop(); fallback = nil
         engine?.stop(); engine?.inputNode.removeTap(onBus: 0); engine = nil
         input?.finish(); input = nil
@@ -214,6 +230,7 @@ final class BlobListener {
     }
 
     private func startFallback() async {
+        holdsSession = true
         let dictation = Dictation()
         fallback = dictation
         await dictation.start(base: "") { [weak self] heard in self?.text = heard }
@@ -274,15 +291,53 @@ final class BlobListener {
     }
 
     /// Recording and speaking want different audio sessions; switching is cheap.
-    static func activateSession(record: Bool) throws {
+    ///
+    /// Speaking (replies, decisions, asks, the filler) uses `.soloAmbient`,
+    /// so the ring/silent switch holds: on silent Blob is quiet on the
+    /// built-in speaker and still speaks in headphones and AirPods (A2DP,
+    /// which the playback categories route to on their own). Apps can't read
+    /// the switch, so this category is the only way to respect it.
+    /// `.ambient` would respect it too, but it always mixes and can't duck
+    /// (`.duckOthers` is only for `.playback`, `.playAndRecord` and
+    /// `.multiRoute`), so Blob would talk over music at full volume; with
+    /// `.soloAmbient` other audio pauses while Blob has the floor. Its mode
+    /// stays `.default`: Apple lists `.spokenAudio` for `.playback` only.
+    /// `overSilent` keeps `.playback` for a sound you asked to hear (the
+    /// voice preview in Settings). Listening keeps `.playAndRecord`, with
+    /// A2DP allowed so a Bluetooth output stays where it is while the
+    /// built-in mic listens. The opt-in live call configures its own session
+    /// (`DeskVoiceEngine`).
+    static func activateSession(record: Bool, overSilent: Bool = false) throws {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         if record {
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .duckOthers])
-        } else {
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetoothA2DP, .duckOthers])
+        } else if overSilent {
             try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        } else {
+            try session.setCategory(.soloAmbient, mode: .default)
         }
+        deactivation?.cancel()
+        deactivation = nil
         try session.setActive(true)
+        #endif
+    }
+
+    /// Gives the audio session back once Blob is quiet, so music that
+    /// paused for Blob resumes. Waits a moment, so back-to-back segments
+    /// keep it, and does nothing while anything still plays, you are being
+    /// listened to, or a live call has the session.
+    static func deactivateSession() {
+        #if os(iOS)
+        deactivation?.cancel()
+        deactivation = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(0.3))
+            guard !Task.isCancelled else { return }
+            deactivation = nil
+            guard listening == 0, !DeskVoiceEngine.supervisor.active,
+                  !playbackChecks.contains(where: { $0() }) else { return }
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         #endif
     }
 }

@@ -216,6 +216,12 @@ struct BlobHomeView: View {
             }
         }
         .haptic(.commit, trigger: decisions.answered)
+        // Off (the bell, Settings, the Mac menu) stops the voice at once. Back
+        // on, a reply already on its way stays quiet and the next one is read.
+        .onChange(of: readAloud) { _, on in
+            if !on || text.replying { text.hush() }
+        }
+        .haptic(.selection, trigger: readAloud)
         // Blob reads a decision's first paragraph when it comes up, once.
         // The reply to your message wins: while one is on its way or being
         // read, decisions stay silent.
@@ -982,7 +988,8 @@ struct BlobHomeView: View {
     }
 
     /// Writing instead of speaking: a small keyboard button while Blob is
-    /// quiet, a one-line field while you type. Return sends.
+    /// quiet, with the read-aloud bell beside it, and a one-line field while
+    /// you type. Return sends.
     /// The page keeps room for it at the bottom, so it covers nothing.
     @ViewBuilder
     private var writeBar: some View {
@@ -1012,21 +1019,39 @@ struct BlobHomeView: View {
             .padding(.bottom, 10)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         } else if !engine.active && text.phase != .listening {
-            HStack {
+            HStack(spacing: 0) {
                 Button(action: startWriting) {
-                    Image(systemName: "keyboard")
-                        .font(.system(size: 17, weight: .regular))
-                        .foregroundStyle(OS1VisualStyle.textDim)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+                    barSymbol("keyboard")
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Write instead")
+                // Reading aloud on or off, the Settings toggle one tap away.
+                // Off stops the voice at once (`readAloud`'s onChange).
+                Button { readAloud.toggle() } label: {
+                    barSymbol(readAloud ? "bell" : "bell.slash")
+                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Read aloud")
+                .accessibilityValue(readAloud ? "On" : "Off")
+                .accessibilityAddTraits(.isToggle)
+                #if os(macOS)
+                .help("Read aloud (\u{21E7}\u{2318}M)")
+                #endif
                 Spacer()
             }
             .padding(.leading, 14)
             .padding(.bottom, 4)
         }
+    }
+
+    /// A symbol button in the row under the page: the keyboard and the bell.
+    private func barSymbol(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 17, weight: .regular))
+            .foregroundStyle(OS1VisualStyle.textDim)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 
     private func sendDraft() {
@@ -1149,15 +1174,14 @@ struct BlobHomeView: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// The spoken script, as a quiet subtitle while Blob says it; it fades
-    /// once Blob has said it. It stays when it was not heard: reading aloud
-    /// is off, Blob was hushed, or nothing played (no voice fit, a call was
-    /// on), since nothing else carries it. A reply without a script shows
-    /// its Say line instead.
+    /// The spoken script, as a quiet subtitle under the reply. It stays
+    /// after Blob has said it: the app can't tell whether it was heard (the
+    /// phone may be on silent, the volume down, reading aloud off or
+    /// hushed), and nothing else on the page carries it. A reply without a
+    /// script shows its Say line instead.
     @ViewBuilder
     private func spokenCaption(_ reply: BlobReply) -> some View {
-        let unheard = !readAloud || text.hushed || !text.speaker.heardReply
-        if reply.scripted, !reply.say.isEmpty, text.reading || unheard {
+        if reply.scripted, !reply.say.isEmpty {
             Text(reply.say)
                 .font(.footnote)
                 .foregroundStyle(OS1VisualStyle.textDim)

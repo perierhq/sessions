@@ -712,6 +712,21 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   at once (two ahead) and plays them back to back; a failed request falls
   back to an Apple voice for that sentence. Its doc comment lists the cases
   to check with a scratch `swiftc` run.
+- Silent switch (`BlobListener.activateSession`): apps can't read the
+  ring/silent switch, so Blob speaks in the `.soloAmbient` audio session,
+  which the switch silences. On silent, replies, decisions, asks and the
+  filler are quiet on the phone's speaker and still play in headphones and
+  AirPods. Other audio pauses while Blob speaks (`.ambient` can't duck it).
+  Listening keeps `.playAndRecord`; the opt-in live call keeps its own
+  session and ignores the switch, like a phone call; the voice preview in
+  Settings plays on silent too. Because the app can't know whether you
+  heard it, the spoken script stays on the page under the reply, and
+  history keeps it as the "Blob said" line.
+- The bell: next to the keyboard button at the bottom of the home, a bell
+  (`bell` / `bell.slash`) turns reading aloud on or off, the same
+  preference as "Read answers aloud" in Settings. Turning it off stops the
+  voice at once; turned back on, the reply already on its way stays quiet
+  and the next one is read.
 - One page (`Blob/BlobHomeView.swift`): what Blob shows you (a reply, a
   question from the run, a decision) starts at the top of the screen while
   Blob waits small in its slot, and the whole of it scrolls as one page,
@@ -808,7 +823,8 @@ opens the window. `Blob/BlobMac.swift` holds the Mac scenes, the menu bar
 face and the keys; iOS-only code elsewhere in `Blob/` sits behind
 `#if os(iOS)`. Return sends what you wrote, Cmd+L writes, Cmd+Y shows
 history, Space talks while you aren't typing, Esc stops Blob reading or
-hides history. Settings are Cmd+, or a long click on Blob.
+hides history, Cmd+Shift+M turns reading aloud on or off (the bell).
+Settings are Cmd+, or a long click on Blob.
 
 Build and run with Development signing (a free personal team works for a
 local run):
