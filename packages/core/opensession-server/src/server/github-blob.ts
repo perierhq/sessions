@@ -679,9 +679,21 @@ const HIDDEN_MARKER = /<!--/;
 /** A line that starts with a slash command, for any bot or Action
  *  (`/deploy`, `/lgtm`). */
 const SLASH_COMMAND = /^\s*\/\w/m;
-/** A GitHub @mention: a login, or `org/team` with the slash. GitHub only
- *  links one that follows a non-word character, so emails don't count. */
-const MENTION = /(?:^|[^\w`])@([A-Za-z0-9][A-Za-z0-9-]*)(\/[\w.-]+)?/g;
+/** A GitHub @mention: a login, or `org/team` with the slash, anywhere but
+ *  right after an ASCII letter or digit, so emails don't count but
+ *  `_@bot_` and `` `x`@bot `` do. */
+const MENTION = /(?<![A-Za-z0-9])@([A-Za-z0-9][A-Za-z0-9-]*)(\/[\w.-]+)?/g;
+/** An HTML entity for `@`, which GitHub renders as one. */
+const AT_ENTITY = /&(?:#0*64|#x0*40|commat);?/gi;
+/** Markdown emphasis markers, which can sit between `@` and a login. */
+const EMPHASIS = /[*_~]/g;
+
+/** The ways `text` can read once rendered: entities decoded, then with
+ *  emphasis markers kept and stripped. */
+function mentionForms(text: string): string[] {
+  const decoded = text.replace(AT_ENTITY, "@");
+  return [decoded, decoded.replace(EMPHASIS, "")];
+}
 
 /** The roster's GitHub logins, lowercase. */
 function rosterLogins(): string[] {
@@ -706,7 +718,9 @@ export function blobTextRefusal(
     return "The text contains a /os command. Blob never posts commands for the review or fix loops; quote the text without it.";
   if (SLASH_COMMAND.test(text))
     return "A line of the text starts with a slash command, which bots on GitHub may run. Reword it so no line starts with /.";
-  for (const [, login, team] of text.matchAll(MENTION)) {
+  for (const [, login, team] of mentionForms(text).flatMap((form) => [
+    ...form.matchAll(MENTION),
+  ])) {
     if (team)
       return `The text mentions the team @${login}${team}. Blob never mentions teams; write the name without @.`;
     if (!teammates.includes(login!.toLowerCase()))

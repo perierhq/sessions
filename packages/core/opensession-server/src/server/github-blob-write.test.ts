@@ -662,6 +662,34 @@ describe("review findings", () => {
     expect((await comment("@ada and @Bob, this is ready.")).ok).toBe(true);
   });
 
+  test("a mention hidden by emphasis, code or an entity is still caught", () => {
+    const team = ["ada"];
+    const mentions = (text: string) =>
+      expect(blobTextRefusal(text, team)).toMatch(/@dependabot/);
+    mentions("Please _@dependabot_ rebase");
+    mentions("Please *@dependabot* rebase");
+    mentions("Please @*dependabot* rebase");
+    mentions("Please @_dependabot_ rebase");
+    mentions("Please ~~@dependabot~~ rebase");
+    mentions("Run `x`@dependabot rebase");
+    mentions("Please &#64;dependabot rebase");
+    mentions("Please &#064;dependabot rebase");
+    mentions("Please &#x40;dependabot rebase");
+    mentions("Please &#X40;dependabot rebase");
+    mentions("Please &commat;dependabot rebase");
+    mentions("Please &Commat;dependabot rebase");
+    mentions("Please _&#64;dependabot_ rebase");
+    expect(blobTextRefusal("cc &#64;acme/core", team)).toMatch(
+      /team @acme\/core/,
+    );
+    expect(
+      blobTextRefusal(
+        "Mail ada@example.test, first_last@example.test or a&#64;example.test; _@ada_ and &#64;ada are fine.",
+        team,
+      ),
+    ).toBeNull();
+  });
+
   test("a public repository never gets private terms or internal hosts", async () => {
     await setup(
       {},
