@@ -20,25 +20,50 @@ enum BlobGlossary {
     static let log = BlobLog(category: "glossary")
     private static let termsKey = "blob.glossary.terms"
     private static let fetchedKey = "blob.glossary.fetchedAt"
+    private static let serverKey = "blob.glossary.server"
     private static let refreshAfter: TimeInterval = 60 * 60
 
-    /// The last list the server sent; empty until the first fetch.
+    /// The last list the signed-in server sent; empty until the first fetch,
+    /// and for any other server or account than the one it came from.
     static var terms: [String] {
-        UserDefaults.standard.stringArray(forKey: termsKey) ?? []
+        guard let server = currentServer,
+              UserDefaults.standard.string(forKey: serverKey) == server
+        else { return [] }
+        return UserDefaults.standard.stringArray(forKey: termsKey) ?? []
     }
 
-    /// Fetches the list when the one kept is older than an hour. Never
-    /// throws: a failed fetch keeps the old list.
+    /// Drops the kept list. ServerConfig calls it on sign-out and when the
+    /// server address changes, so one server's names never reach another.
+    static func forget() {
+        for key in [termsKey, fetchedKey, serverKey] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    /// The account and address the list belongs to; nil when signed out.
+    private static var currentServer: String? {
+        let config = ServerConfig.shared
+        guard config.isConfigured else { return nil }
+        return config.activeId + " " + config.baseURLString
+    }
+
+    /// Fetches the list when the one kept is older than an hour or from
+    /// another server. Never throws: a failed fetch keeps the old list.
     @MainActor
     static func refreshIfStale() {
+        guard let server = currentServer, !refreshing else { return }
         let fetched = UserDefaults.standard.double(forKey: fetchedKey)
-        guard Date().timeIntervalSince1970 - fetched >= refreshAfter, !refreshing else { return }
+        let sameServer = UserDefaults.standard.string(forKey: serverKey) == server
+        guard !sameServer || Date().timeIntervalSince1970 - fetched >= refreshAfter else { return }
         refreshing = true
         Task { @MainActor in
             defer { refreshing = false }
-            guard let fresh = try? await OS1API.blobGlossary() else { return }
+            guard let fresh = try? await OS1API.blobGlossary(),
+                  currentServer == server // signed out or switched while it loaded
+            else { return }
             UserDefaults.standard.set(Array(fresh.prefix(100)), forKey: termsKey)
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: fetchedKey)
+            UserDefaults.standard.set(server, forKey: serverKey)
             log.info("refreshed terms=\(fresh.count)")
         }
     }
@@ -54,6 +79,8 @@ enum BlobGlossary {
     /// `text` with near misses of glossary terms replaced. Conservative on
     /// purpose; a wrong fix is worse than a missed one:
     ///
+    /// - Nothing inside a URL, path, file name, email or handle (a token
+    ///   with "/", ".", "@" in it) or between backticks changes.
     /// - Only a capitalized span changes, the way the transcribers write a
     ///   name they don't know: one to three words joined by spaces or
     ///   hyphens, with a capital on a word that doesn't start a sentence
@@ -62,23 +89,23 @@ enum BlobGlossary {
     ///   apart, none for short words, same first sound) and be spelled close
     ///   to it (`allowedEdits`; a single word at most one change, two from
     ///   nine letters). A span that is already a term stays; a plural of
-    ///   one is not a near miss. A one-word term heard as two words ("Better
-    ///   Bahn") is joined.
-    /// - A single word only becomes a term with a capital in it (a name),
-    ///   and words become a lowercase term only when there are several of
-    ///   them and it is at least six letters long ("Butter Band" to
-    ///   `betterbahn`), so common words in the glossary ("merge", "lead")
-    ///   are never what something changes into.
+    ///   one is not a near miss. A one-word name heard as two capitalized
+    ///   words ("Better Bahn") is joined; a lowercase id (`frontend`) never
+    ///   is.
+    /// - Only a term with a capital in it (a name) is what something
+    ///   changes into, so lowercase ids (`frontend`, `web-app`) and common
+    ///   words in the glossary ("merge", "lead") never are.
     /// - Two terms equally close: nothing changes.
     /// - "piers", "peers" and "pier" become PRs or PR only next to a PR
     ///   word: a number after them ("piers #12"; a bare number only after
     ///   the plural, so "Pier 39" stays), an action before them ("open
     ///   piers", "merged pier") or a passive one after ("piers were
     ///   opened").
-    /// - A lowercase word becomes a name ("have pet check" to "have Pat
-    ///   check") only right after an asking word (have, ask, tell, hey,
-    ///   thanks, ping) and before punctuation, the end or a verb, sounding
-    ///   the same and one letter off, so "have pet hair" stays.
+    /// - A lowercase word becomes a name ("have mice check" to "have Mike
+    ///   check") only between an asking word (have, ask, tell, hey, thanks,
+    ///   ping) and a verb a name takes there (check, review, fix...), for a
+    ///   name of four letters or more, sounding the same and one letter
+    ///   off. So "have pet hair" and "have tea." stay.
     static func correct(_ text: String, glossary: [String]) -> Correction {
         let terms = glossary.compactMap(Term.init)
         guard !terms.isEmpty else { return Correction(text: text, fixes: 0) }
@@ -90,9 +117,10 @@ enum BlobGlossary {
         var fixes = 0
         var i = 0
         while i < words.count {
+            guard !words[i].protected else { i += 1; continue }
             let spans = stride(from: min(3, words.count - i), through: 1, by: -1)
                 .map { Array(words[i..<(i + $0)]) }
-                .filter { Self.joined($0, in: text) }
+                .filter { Self.joined($0, in: text) && !$0.contains(where: \.protected) }
             // Already a term, as written: keep it whole. Words that spell a
             // one-word term ("Better Bahn") are joined below instead.
             if let exact = spans.first(where: {
@@ -160,6 +188,8 @@ enum BlobGlossary {
         let core: String
         /// "'s" when the word had one, put back after a replacement.
         let possessive: String
+        /// Part of a URL, path, file name, email or code: never changed.
+        var protected = false
     }
 
     private static func words(in text: String) -> [Word] {
@@ -189,7 +219,45 @@ enum BlobGlossary {
             words.append(Word(range: index..<end, core: core, possessive: possessive))
             index = end
         }
+        let shielded = protectedRanges(in: text)
+        for k in words.indices where shielded.contains(where: { $0.overlaps(words[k].range) }) {
+            words[k].protected = true
+        }
         return words
+    }
+
+    /// Text no fix may touch: what sits between backticks (to the end when
+    /// one is left open), and every space-separated token with "/", "@" or
+    /// "." inside it ("://" included); a sentence's closing punctuation
+    /// doesn't count, so "have tea." is still words.
+    private static func protectedRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var open: String.Index?
+        for index in text.indices where text[index] == "`" {
+            if let start = open {
+                ranges.append(start..<text.index(after: index))
+                open = nil
+            } else {
+                open = index
+            }
+        }
+        if let open { ranges.append(open..<text.endIndex) }
+        var start: String.Index?
+        for index in text.indices + [text.endIndex] {
+            let space = index == text.endIndex || text[index].isWhitespace
+            if !space {
+                if start == nil { start = index }
+                continue
+            }
+            guard let from = start else { continue }
+            start = nil
+            let token = text[from..<index]
+            let core = token.reversed().drop(while: { ".,!?;:)]}\"'\u{201D}\u{2019}\u{2026}".contains($0) })
+            if core.contains(where: { $0 == "/" || $0 == "@" || $0 == "." }) {
+                ranges.append(from..<index)
+            }
+        }
+        return ranges
     }
 
     /// The words follow each other with one space or hyphen between them,
@@ -214,8 +282,10 @@ enum BlobGlossary {
         let capitals = span.filter { $0.core.first?.isUppercase == true && !sentenceStart($0, in: text) }
         guard !capitals.isEmpty else { return nil }
         let spanKey = key(span.map(\.core).joined(separator: " "))
-        // A one-word name heard as words: "Better Bahn" is BetterBahn.
-        if span.count > 1, let whole = terms.first(where: { !$0.multiword && $0.key == spanKey }) {
+        // A one-word name heard as words: "Better Bahn" is BetterBahn. Never
+        // a lowercase id: "Front End" stays, not `frontend`.
+        if span.count > 1,
+           let whole = terms.first(where: { !$0.multiword && $0.capitalized && $0.key == spanKey }) {
             return (whole, 0)
         }
         guard spanKey.count >= 3, !known.contains(spanKey) else { return nil }
@@ -225,11 +295,7 @@ enum BlobGlossary {
         var best: (term: Term, edits: Int)?
         var tied = false
         for term in terms {
-            if span.count == 1 {
-                guard term.capitalized, !term.multiword else { continue }
-            } else {
-                guard term.capitalized || term.key.count >= 6 else { continue }
-            }
+            guard term.capitalized, span.count > 1 || !term.multiword else { continue }
             guard spanKey.first.map(firstSound) == term.key.first.map(firstSound) else { continue }
             // A plural is the same word, not a near miss.
             guard spanKey != term.key + "s", term.key != spanKey + "s" else { continue }
@@ -265,10 +331,11 @@ enum BlobGlossary {
 
     private static let prSounds: [String: String] = ["piers": "PRs", "peers": "PRs", "pier": "PR"]
     /// Words that make "piers" right before it mean PRs. Quantities ("two
-    /// peers") and "review" ("review peers") are English with peers too.
+    /// peers"), "review" ("review peers") and "close" ("close peers") are
+    /// English with peers too.
     private static let prActions: Set<String> = [
         "open", "opened", "opening", "merge", "merged", "merging", "approve", "approved",
-        "close", "closed", "land", "landed", "ship", "shipped", "draft", "stale", "failing",
+        "closed", "land", "landed", "ship", "shipped", "draft", "stale", "failing",
         "pending",
     ]
     /// "piers were opened": a form of be or get, then one of these.
@@ -279,7 +346,7 @@ enum BlobGlossary {
 
     private static func prFix(_ words: [Word], at i: Int, in text: String, terms: [Term]) -> String? {
         let word = words[i]
-        guard word.possessive.isEmpty, let target = prSounds[word.core.lowercased()],
+        guard !word.protected, word.possessive.isEmpty, let target = prSounds[word.core.lowercased()],
               terms.contains(where: { $0.text == target })
         else { return nil }
         // A number right after: "piers #12", "piers 12", "piers number 12".
@@ -303,24 +370,21 @@ enum BlobGlossary {
 
     /// Words that put a name right after them: "have Pat", "ask Ada".
     private static let askingWords: Set<String> = ["have", "ask", "tell", "hey", "thanks", "ping"]
-    /// Words a name is followed by in "have Pat check it".
+    /// Verbs a name is followed by in "have Mike check it".
     private static let nameFollowers: Set<String> = [
         "check", "look", "merge", "handle", "review", "fix", "do", "take", "find", "know",
-        "and", "to", "please",
     ]
 
     private static func nameFix(_ words: [Word], at i: Int, in text: String, terms: [Term]) -> String? {
         guard i > 0 else { return nil }
         let word = words[i], previous = words[i - 1]
-        guard word.core.first?.isLowercase == true, spaced(previous, word, in: text),
-              askingWords.contains(previous.core.lowercased())
+        guard !word.protected, word.core.first?.isLowercase == true, spaced(previous, word, in: text),
+              askingWords.contains(previous.core.lowercased()),
+              i + 1 < words.count, !words[i + 1].protected, spaced(word, words[i + 1], in: text),
+              nameFollowers.contains(words[i + 1].core.lowercased())
         else { return nil }
-        let following = text[word.range.upperBound...].first
-        let ends = following == nil || ",.!?;:\u{2026}".contains(following!)
-        let followed = i + 1 < words.count && spaced(word, words[i + 1], in: text)
-            && nameFollowers.contains(words[i + 1].core.lowercased())
-        guard ends || followed else { return nil }
         let spoken = key(word.core)
+        guard spoken.count >= 4 else { return nil }
         let sound = phonetic(spoken)
         let names = terms.filter {
             $0.capitalized && !$0.multiword && $0.text.first?.isUppercase == true

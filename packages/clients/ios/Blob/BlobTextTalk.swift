@@ -664,12 +664,13 @@ final class BlobTextTalk {
                 return
             }
             // Misheard names put right ("Butter Band" to BetterBahn), whoever
-            // wrote the text. Only the count is logged and measured.
+            // wrote the text. Only counts are logged and measured, and those
+            // of what was heard, not what the glossary made of it.
             let corrected = BlobGlossary.correct(final.text, glossary: BlobGlossary.terms)
             let text = corrected.text
             if corrected.fixes > 0 { Self.log.info("glossary fixes=\(corrected.fixes)") }
             BlobMetrics.shared.began(
-                .voice, inputChars: text.count, transcriber: final.transcriber,
+                .voice, inputChars: final.text.count, transcriber: final.transcriber,
                 transcribeMs: final.ms, transcriberReason: final.reason,
                 parakeetMiss: final.parakeetMiss, parakeetLoadMs: final.parakeetLoadMs,
                 parakeetWaitMs: final.parakeetWaitMs, parakeetLoad: final.parakeetLoad,
