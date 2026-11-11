@@ -756,6 +756,105 @@ describe("assigning a thread to Blob", () => {
     expect(enqueued.map((e) => e.sessionId)).toEqual(["os-sup-ada"]);
   });
 
+  test("a new thread assigned to Blob that also mentions @Blob routes once", async () => {
+    const created = await service.createThread({
+      sessionId: "os-acme",
+      user: "Ada",
+      text: "@Blob rotate the deploy key",
+      assignee: "Blob",
+      verified: true,
+    });
+    if (!created.ok) throw new Error("no thread");
+    await __settleBlobRoutesForTest();
+    expect(enqueued.map((e) => e.id)).toEqual([
+      `blob-assign:os-acme:${created.thread.id}:${created.thread.updatedAt}`,
+    ]);
+  });
+
+  test("assigning Blob to a resolved thread reopens it and routes", async () => {
+    const thread = await openThread("Ada");
+    await service.updateThread(
+      "os-acme",
+      thread.id,
+      { status: "resolved" },
+      "Ada",
+      { verified: true },
+    );
+    const result = await service.updateThread(
+      "os-acme",
+      thread.id,
+      { assignee: "Blob" },
+      "Ada",
+      { verified: true },
+    );
+    if (!result.ok) throw new Error("not assigned");
+    await __settleBlobRoutesForTest();
+    expect(result.thread.status).toBe("open");
+    expect(result.thread.resolvedBy).toBeUndefined();
+    expect(result.thread.assignee).toBe("Blob");
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.id).toStartWith(`blob-assign:os-acme:${thread.id}:`);
+  });
+
+  test("reopening a thread Blob holds routes it again", async () => {
+    const thread = await openThread("Ada");
+    await service.updateThread(
+      "os-acme",
+      thread.id,
+      { assignee: "Blob" },
+      "Ada",
+      { verified: true },
+    );
+    await __settleBlobRoutesForTest();
+    expect(
+      await replyInThread("Ada", {
+        sessionId: "os-acme",
+        threadId: thread.id,
+        text: "Fixed in #12.",
+        resolve: true,
+      }),
+    ).toEqual({ ok: true, message: "Replied and resolved." });
+
+    // Someone other than the assigner reopening it reaches nobody's Blob.
+    await service.updateThread(
+      "os-acme",
+      thread.id,
+      { status: "open" },
+      "Bob",
+      { verified: true },
+    );
+    await service.updateThread(
+      "os-acme",
+      thread.id,
+      { status: "resolved" },
+      "Bob",
+      { verified: true },
+    );
+    await __settleBlobRoutesForTest();
+    expect(enqueued).toHaveLength(1);
+
+    const reopened = await service.updateThread(
+      "os-acme",
+      thread.id,
+      { status: "open" },
+      "Ada",
+      { verified: true },
+    );
+    if (!reopened.ok) throw new Error("not reopened");
+    await __settleBlobRoutesForTest();
+    expect(enqueued).toHaveLength(2);
+    expect(enqueued[1]!.id).toBe(
+      `blob-assign:os-acme:${thread.id}:${reopened.thread.updatedAt}`,
+    );
+    expect(
+      await replyInThread("Ada", {
+        sessionId: "os-acme",
+        threadId: thread.id,
+        text: "Looking again.",
+      }),
+    ).toEqual({ ok: true, message: "Replied." });
+  });
+
   test("an unverified assigner routes nothing", async () => {
     const thread = await openThread();
     await service.updateThread(
