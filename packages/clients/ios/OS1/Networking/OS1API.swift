@@ -2571,18 +2571,23 @@ enum OS1API {
         /// The IANA zone quiet hours, the digest and the watch run in.
         /// Empty means none is set and the server falls back to its own.
         let timezone: String?
+        /// The zone the server actually uses: prefs, then the owner's
+        /// profile timezone, then UTC.
+        let effectiveTimezone: String?
 
-        private enum CodingKeys: String, CodingKey { case reportStyle, timezone }
+        private enum CodingKeys: String, CodingKey { case reportStyle, timezone, effectiveTimezone }
 
-        init(reportStyle: String? = nil, timezone: String? = nil) {
+        init(reportStyle: String? = nil, timezone: String? = nil, effectiveTimezone: String? = nil) {
             self.reportStyle = reportStyle
             self.timezone = timezone
+            self.effectiveTimezone = effectiveTimezone
         }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             reportStyle = (try? c.decodeIfPresent(String.self, forKey: .reportStyle)) ?? nil
             timezone = (try? c.decodeIfPresent(String.self, forKey: .timezone)) ?? nil
+            effectiveTimezone = (try? c.decodeIfPresent(String.self, forKey: .effectiveTimezone)) ?? nil
         }
     }
 
@@ -2590,19 +2595,26 @@ enum OS1API {
         let prefs: SupervisorPrefs?
     }
 
-    /// Reads the prefs. When the server has no timezone yet (an empty
-    /// string, not a missing field), it gets this device's zone, so quiet
-    /// hours and the digest follow the owner's clock. A zone already set
-    /// on the server is never replaced.
     static func supervisorPrefs() async throws -> SupervisorPrefs {
         var components = URLComponents()
         components.queryItems = [URLQueryItem(name: "user", value: ServerConfig.shared.userName)]
         let response: SupervisorPrefsResponse = try await get(
             "/api/supervisor/prefs?\(components.percentEncodedQuery ?? "")"
         )
-        let prefs = response.prefs ?? SupervisorPrefs()
+        return response.prefs ?? SupervisorPrefs()
+    }
+
+    /// Gives the server this device's zone when neither the prefs nor the
+    /// owner's profile has one (prefs timezone empty, effective zone empty
+    /// or UTC), so quiet hours and the digest follow the owner's clock. A
+    /// zone already set is never replaced.
+    @discardableResult
+    static func ensureSupervisorTimezone() async throws -> SupervisorPrefs {
+        let prefs = try await supervisorPrefs()
         guard prefs.timezone == "" else { return prefs }
-        return (try? await setSupervisorTimezone(TimeZone.current.identifier)) ?? prefs
+        let effective = prefs.effectiveTimezone ?? ""
+        guard effective.isEmpty || effective == "UTC" else { return prefs }
+        return try await setSupervisorTimezone(TimeZone.current.identifier)
     }
 
     private static func setSupervisorTimezone(_ identifier: String) async throws -> SupervisorPrefs {
