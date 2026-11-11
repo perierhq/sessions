@@ -779,7 +779,19 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   (recommended) one filled. "Not now" hides it until the next launch;
   long-press for "Dismiss", which closes it on the server. `fyi` items never
   show on the home unless a link opens one. Blob reads each decision's first
-  paragraph aloud once, when it comes up.
+  paragraph aloud once, when it comes up. Every answer sends the item's
+  `revision` as shown, so an approval binds to exactly that card. A lead's
+  proposal with steps carries a structured `act` (server:
+  `leads/item-acts.ts`); below the body, after a hairline, Blob draws it as
+  its own section (`BlobActSection`): the numbered steps, "Runs when …",
+  and "Expires in …". Blob shows only open items, so it draws no approval
+  state; `act.stateLine` is decoded for clients that show approved ones.
+  The body drops the server's own lines for the steps, exactly the
+  `act.bodySuffix` the server names, never by matching text, and only when
+  the section is drawn. An answer to a card that changed since it was read
+  gets a 409 `changed` and closes nothing: Blob says "This changed. Have
+  another look." and shows the new card, which is keyed on id and revision,
+  read aloud again and holds its options for 0.6 s.
 - Asks (`Blob/BlobAsk.swift`): when the supervisor's run stops on a
   question (`ask_question`) or a force merge to confirm
   (`force_merge_pull_request`), Blob shows it where replies render, before
@@ -820,7 +832,8 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   a wide surface act as the Duo's fold, to check the open Duo's layout on
   an iPad simulator (the Blob target is iPhone-only, so build it for one
   with `TARGETED_DEVICE_FAMILY=1,2` on the command line).
-  `BLOB_DEMO_DECISIONS=1` shows two canned decisions.
+  `BLOB_DEMO_DECISIONS=1` shows three canned decisions, the first with
+  steps.
   `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
   `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking, and
   `BLOB_DEMO_TYPING=1` for text mode.

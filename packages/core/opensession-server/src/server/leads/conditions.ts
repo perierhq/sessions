@@ -195,3 +195,15 @@ export function describeCondition(condition: LeadCondition): string {
       return `Incident ${condition.id} is resolved`;
   }
 }
+
+/** Fixed owner-facing copy for an approval still waiting on `condition`. */
+export function waitingCopy(condition: LeadCondition): string {
+  switch (condition.kind) {
+    case "pr-merged":
+      return `Waiting for ${prName(condition)} to merge`;
+    case "checks-green":
+      return `Waiting for checks to pass on ${prName(condition)} at ${condition.headSha.slice(0, 7)}`;
+    case "incident-resolved":
+      return `Waiting for incident ${condition.id} to be resolved`;
+  }
+}

@@ -7,6 +7,7 @@
  *
  *   POST /api/supervisor/ensure                 { user } → { sessionId, previousSessionIds, session }
  *   GET  /api/supervisor/items?user=&state=&kind=&since=&limit=
+ *                                               → { items: [{ ...item, revision, act? }] }
  *   POST /api/supervisor/items/:id/answer       { user, answer, revision? }
  *   POST /api/supervisor/items/:id/dismiss      { user }
  *   GET  /api/supervisor/prefs?user=
@@ -37,6 +38,7 @@ import {
   type SupervisorItemState,
 } from "../supervisor-inbox";
 import { validatePrefsPatch } from "../supervisor-quiet-hours";
+import { withItemActs } from "../leads/item-acts";
 
 const ITEM_ACTION = /^\/api\/supervisor\/items\/([^/]+)\/(answer|dismiss)$/;
 const STATES: readonly SupervisorItemState[] = [
@@ -57,6 +59,10 @@ function closeResponse(result: CloseResult): Response {
     return Response.json({ error: "not found" }, { status: 404 });
   if (result.error === "closed")
     return Response.json({ error: "already closed" }, { status: 409 });
+  // The item was rewritten after the client read it: it stays open, and
+  // the client shows the new version.
+  if (result.error === "changed")
+    return Response.json({ error: "changed" }, { status: 409 });
   return Response.json({ error: "missing answer" }, { status: 400 });
 }
 
@@ -93,7 +99,9 @@ export async function handleSupervisorRoutes(
       since: Number.isFinite(since) && since > 0 ? since : undefined,
       limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     });
-    return Response.json({ items });
+    // Each item with the revision an answer names, and a lead's item with
+    // the steps its approval runs, read from the record (leads/item-acts.ts).
+    return Response.json({ items: await withItemActs(items) });
   }
 
   const action = ITEM_ACTION.exec(path);
@@ -112,7 +120,8 @@ export async function handleSupervisorRoutes(
       if (!answer.trim())
         return Response.json({ error: "missing answer" }, { status: 400 });
       // The item's updatedAt as the client showed it. Optional: older
-      // clients send none, and their answers approve nothing.
+      // clients send none, and their answers approve nothing. A revision
+      // the item no longer has answers nothing (409 `changed`).
       const revision: unknown = body?.revision;
       if (
         revision !== undefined &&

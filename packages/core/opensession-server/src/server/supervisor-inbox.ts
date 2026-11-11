@@ -773,9 +773,10 @@ export interface SupervisorAnswerContext {
   /** The GitHub login of the signed-in person who answered; absent for a
    *  claimed name, an automation or the supervisor. */
   login?: string;
-  /** The item revision (its `updatedAt`) the answer was given to. Handed to
-   *  handlers only when it was the item's current revision as it closed:
-   *  absent when the client sent none or the item had changed since. */
+  /** The item revision (its `updatedAt`) the answer was given to. An answer
+   *  whose revision is no longer the item's closes nothing, so handlers only
+   *  ever see the revision the item closed at; absent when the client sent
+   *  none. */
   revision?: number;
 }
 
@@ -818,12 +819,15 @@ function resolveAnswer(item: SupervisorItem, raw: string): string {
 
 export type CloseResult =
   | { ok: true; item: SupervisorItem }
-  | { ok: false; error: "not-found" | "closed" | "empty" };
+  | { ok: false; error: "not-found" | "closed" | "empty" | "changed" };
 
 async function closeItem(
   user: string,
   id: string,
-  close: (item: SupervisorItem, now: number) => SupervisorItem | "empty",
+  close: (
+    item: SupervisorItem,
+    now: number,
+  ) => SupervisorItem | "empty" | "changed",
 ): Promise<CloseResult> {
   if (!validUser(user)) return { ok: false, error: "not-found" };
   const now = deps.now();
@@ -839,8 +843,8 @@ async function closeItem(
       return doc;
     }
     const next = close(current, now);
-    if (next === "empty") {
-      result = { ok: false, error: "empty" };
+    if (next === "empty" || next === "changed") {
+      result = { ok: false, error: next };
       return doc;
     }
     result = { ok: true, item: next };
@@ -864,8 +868,10 @@ async function closeItem(
  *  by the supervisor from the conversation (`supervisor`). It reaches the
  *  supervisor's next turn (briefing) and every `onSupervisorAnswer` handler
  *  whose prefix matches the source. `context` carries the answerer's
- *  verified login and the revision they saw; the revision reaches handlers
- *  only when it matched the item as it closed. */
+ *  verified login and the revision they saw. An answer naming a revision
+ *  the item no longer has closes nothing (`changed`): the owner answered a
+ *  card that has since been rewritten. Without a revision, the answer
+ *  closes the item as it is now. */
 export async function answerSupervisorItem(
   user: string,
   id: string,
@@ -873,10 +879,9 @@ export async function answerSupervisorItem(
   answeredBy: SupervisorAnswerer,
   context: SupervisorAnswerContext = {},
 ): Promise<CloseResult> {
-  // Set on the compare-and-set's last run, the one that committed.
-  let seen: number | undefined;
   const result = await closeItem(user, id, (item, now) => {
-    seen = item.updatedAt;
+    if (context.revision !== undefined && context.revision !== item.updatedAt)
+      return "changed";
     const resolved = resolveAnswer(
       item,
       typeof answer === "string" ? answer : "",
@@ -896,8 +901,7 @@ export async function answerSupervisorItem(
   if (result.ok) {
     const handed: SupervisorAnswerContext = {};
     if (context.login) handed.login = context.login;
-    if (context.revision !== undefined && context.revision === seen)
-      handed.revision = context.revision;
+    if (context.revision !== undefined) handed.revision = context.revision;
     for (const { prefix, handler } of [...answerHandlers]) {
       if (!result.item.source.startsWith(prefix)) continue;
       try {

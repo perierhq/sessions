@@ -76,6 +76,8 @@ function closed(result: CloseResult, verb: string): string {
   if (result.ok) return `${verb}: ${format(result.item)}`;
   if (result.error === "not-found") return "No item with that id.";
   if (result.error === "closed") return "That item is already closed.";
+  if (result.error === "changed")
+    return "That item changed since it was read. List it again.";
   return "The answer is empty.";
 }
 

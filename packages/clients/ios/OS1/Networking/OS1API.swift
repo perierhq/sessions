@@ -2476,23 +2476,50 @@ enum OS1API {
         let state: String
         /// Milliseconds since the epoch.
         let createdAt: Double?
+        /// The item's revision as this copy shows it (its `updatedAt`). An
+        /// answer names it, so an approval binds to exactly what was shown;
+        /// nil from a server that sends neither.
+        let revision: Int64?
+        /// What approving runs, from the server's record of the proposal,
+        /// never from the body.
+        let act: SupervisorItemAct?
 
         var needsYou: Bool { kind == "needs-you" }
         var isOpen: Bool { state == "open" }
         var created: Date? { createdAt.map { Date(timeIntervalSince1970: $0 / 1000) } }
 
+        /// This card as shown: the item at this revision. A re-raised item
+        /// (same id, new revision) is a new card.
+        var cardKey: String { "\(id)@\(revision.map(String.init) ?? "")" }
+
+        /// The body without the server's own lines for the steps when the
+        /// steps section is drawn (`act` with steps): exactly the ending the
+        /// server names, else the whole body.
+        var shownBody: String {
+            guard let act, !act.steps.isEmpty,
+                  let suffix = act.bodySuffix, !suffix.isEmpty
+            else { return body }
+            let tail = Array(suffix.utf8)
+            guard body.utf8.count > tail.count, body.utf8.suffix(tail.count).elementsEqual(tail)
+            else { return body }
+            return String(decoding: body.utf8.dropLast(tail.count), as: UTF8.self)
+        }
+
         private enum CodingKeys: String, CodingKey {
             case id, kind, title, body, options, project, source, urgency, state, createdAt
+            case updatedAt, revision, act
         }
 
         init(
             id: String, kind: String, title: String, body: String = "", options: [String] = [],
             project: String? = nil, source: String? = nil, urgency: String? = nil,
-            state: String = "open", createdAt: Double? = nil
+            state: String = "open", createdAt: Double? = nil, revision: Int64? = nil,
+            act: SupervisorItemAct? = nil
         ) {
             self.id = id; self.kind = kind; self.title = title; self.body = body
             self.options = options; self.project = project; self.source = source
             self.urgency = urgency; self.state = state; self.createdAt = createdAt
+            self.revision = revision; self.act = act
         }
 
         init(from decoder: Decoder) throws {
@@ -2509,6 +2536,58 @@ enum OS1API {
             urgency = (try? c.decodeIfPresent(String.self, forKey: .urgency)) ?? nil
             state = ((try? c.decodeIfPresent(String.self, forKey: .state)) ?? nil) ?? "open"
             createdAt = (try? c.decodeIfPresent(Double.self, forKey: .createdAt)) ?? nil
+            let revision = ((try? c.decodeIfPresent(Double.self, forKey: .revision)) ?? nil)
+                ?? ((try? c.decodeIfPresent(Double.self, forKey: .updatedAt)) ?? nil)
+            self.revision = revision.flatMap { $0 >= 0 && $0 == $0.rounded() ? Int64(exactly: $0) : nil }
+            act = (try? c.decodeIfPresent(SupervisorItemAct.self, forKey: .act)) ?? nil
+        }
+    }
+
+    /// What approving a lead's item runs, as the server recorded it
+    /// (server: leads/item-acts.ts): each step in fixed copy, what the
+    /// approval waits for, when it expires and where it stands.
+    struct SupervisorItemAct: Decodable, Sendable, Equatable {
+        /// Each step in the server's fixed copy. A worker's step continues
+        /// with its prompt on the following lines, fenced.
+        let steps: [String]
+        /// "PR #556 in acme/app is merged"; nil when it runs at once.
+        let runsWhen: String?
+        /// Milliseconds since the epoch.
+        let expiresAt: Double?
+        /// `proposed`, then the approval's `waiting`, `ready`, `applying`,
+        /// `applied`, `failed` or `partial`.
+        let state: String
+        /// The state in the server's words once approved: "Ready to apply".
+        /// Blob shows only open items, so it never draws this; decoded for
+        /// clients that show approved ones.
+        let stateLine: String?
+        /// The server's lines the body ends with, for `shownBody`.
+        let bodySuffix: String?
+
+        var expires: Date? { expiresAt.map { Date(timeIntervalSince1970: $0 / 1000) } }
+
+        private enum CodingKeys: String, CodingKey {
+            case steps, runsWhen, expiresAt, state, stateLine, bodySuffix
+        }
+
+        init(
+            steps: [String], runsWhen: String? = nil, expiresAt: Double? = nil,
+            state: String = "proposed", stateLine: String? = nil, bodySuffix: String? = nil
+        ) {
+            self.steps = steps; self.runsWhen = runsWhen; self.expiresAt = expiresAt
+            self.state = state; self.stateLine = stateLine; self.bodySuffix = bodySuffix
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            steps = (((try? c.decodeIfPresent([String?].self, forKey: .steps)) ?? nil) ?? [])
+                .compactMap { $0 }
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            runsWhen = (try? c.decodeIfPresent(String.self, forKey: .runsWhen)) ?? nil
+            expiresAt = (try? c.decodeIfPresent(Double.self, forKey: .expiresAt)) ?? nil
+            state = ((try? c.decodeIfPresent(String.self, forKey: .state)) ?? nil) ?? "proposed"
+            stateLine = (try? c.decodeIfPresent(String.self, forKey: .stateLine)) ?? nil
+            bodySuffix = (try? c.decodeIfPresent(String.self, forKey: .bodySuffix)) ?? nil
         }
     }
 
@@ -2546,12 +2625,16 @@ enum OS1API {
         return response.items
     }
 
-    /// Answer an item with one of its options (or any text). The server
-    /// answers 409 when it was already closed somewhere else.
-    static func answerSupervisorItem(id: String, answer: String) async throws {
+    /// Answer an item with one of its options (or any text). `revision` is
+    /// the item's revision as it was shown: the server approves a lead's
+    /// steps only when it is still the current one. The server answers 409
+    /// when it was already closed somewhere else.
+    static func answerSupervisorItem(id: String, answer: String, revision: Int64?) async throws {
+        var body: [String: Any] = ["user": ServerConfig.shared.userName, "answer": answer]
+        if let revision { body["revision"] = NSNumber(value: revision) }
         let _: SupervisorItemResponse = try await post(
             "/api/supervisor/items/\(pathComponent(id))/answer",
-            body: ["user": ServerConfig.shared.userName, "answer": answer]
+            body: body
         )
     }
 

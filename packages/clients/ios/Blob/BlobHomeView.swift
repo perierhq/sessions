@@ -241,14 +241,15 @@ struct BlobHomeView: View {
             if !on || text.replying { text.hush() }
         }
         .haptic(.selection, trigger: readAloud)
-        // Blob reads a decision's first paragraph when it comes up, once.
-        // The reply to your message wins: while one is on its way or being
-        // read, decisions stay silent.
-        .onChange(of: decision?.id, initial: true) { old, new in
+        // Blob reads a decision's first paragraph when it comes up, once,
+        // and again when the item is re-raised with a new revision. The
+        // reply to your message wins: while one is on its way or being read,
+        // decisions stay silent.
+        .onChange(of: decision?.cardKey, initial: true) { old, new in
             guard !text.replyHasVoice else { return }
             if old != nil, old != new { text.hush() }
             if let decision, decisions.shouldSpeak(decision) {
-                let say = BlobReply(decision.body).spoken
+                let say = BlobReply(decision.shownBody).spoken
                 if !say.isEmpty { text.speaker.speak(say) }
             }
         }
@@ -393,7 +394,7 @@ struct BlobHomeView: View {
     private var showingDecision: Bool { decision != nil || decisionSaid != nil }
 
     /// Changes whenever the decision surface does, for its animation.
-    private var decisionKey: String { decisionSaid ?? decision?.id ?? "" }
+    private var decisionKey: String { decisionSaid ?? decision?.cardKey ?? "" }
 
     private var statusLabel: String {
         if !textConversation { return engine.state.label }
@@ -603,7 +604,7 @@ struct BlobHomeView: View {
     /// Changes when a new item takes the page: a message sent, a question
     /// asked, the next decision. History folds away and the page goes to
     /// the new item's top.
-    private var turnKey: String { "\(text.sends)|\(ask?.id ?? "")|\(decision?.id ?? "")" }
+    private var turnKey: String { "\(text.sends)|\(ask?.id ?? "")|\(decision?.cardKey ?? "")" }
 
     /// How far past an edge a pull must go before letting go reveals history.
     private static let pullToReveal: CGFloat = 64
@@ -735,11 +736,13 @@ struct BlobHomeView: View {
                 position: decisions.position,
                 count: decisions.count,
                 sending: decisions.sending == waiting.id,
+                revised: decisions.isRevised(waiting),
                 answer: { option in Task { await decisions.answer(waiting, with: option) } },
                 notNow: { decisions.skip(waiting) },
                 dismiss: { Task { await decisions.dismiss(waiting) } }
             )
-            .id(waiting.id)
+            // A re-raised item is a new card.
+            .id(waiting.cardKey)
         }
     }
 
@@ -1218,11 +1221,13 @@ struct BlobHomeView: View {
                     position: decisions.position,
                     count: decisions.count,
                     sending: decisions.sending == decision.id,
+                    revised: decisions.isRevised(decision),
                     answer: { option in Task { await decisions.answer(decision, with: option) } },
                     notNow: { decisions.skip(decision) },
                     dismiss: { Task { await decisions.dismiss(decision) } }
                 )
-                .id(decision.id)
+                // A re-raised item is a new card, drawn and read afresh.
+                .id(decision.cardKey)
                 .transition(reduceMotion ? .opacity : .offset(y: 16).combined(with: .opacity))
             }
         }
