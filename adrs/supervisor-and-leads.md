@@ -270,7 +270,7 @@ is in `docs/security-model.md` ("Project leads").
   5. The rules say act: at the act stage the proposal runs without an approval; at coordinate
      only a fix or CI repair (`COORDINATE_CATEGORIES`) whose steps are all `autofix-pr`.
   6. Otherwise an approval of exactly this proposal: ready (or waiting with its condition met
-     now), not expired, and only at the act stage.
+     now), not expired, at the coordinate or act stage.
 
   A condition is re-checked at apply time, whoever allowed the run. The settings and the
   record are read again and checks 1 to 6 re-run right before one compare-and-set claims the
@@ -278,9 +278,11 @@ is in `docs/security-model.md` ("Project leads").
   Each step's intent is audited before it runs, a step already done counts as done, and the
   first failure stops the run. Nothing re-runs; the lead proposes again instead.
 
-- **`APPROVED_RUNS_ONLY_AT_ACT`** (`apply.ts`) is `true`. The owner has not confirmed that an
-  approved asks-first action may also run at coordinate, so approved runs and condition
-  checks happen only at the act stage. At coordinate an approval waits.
+- **`APPROVED_RUNS_ONLY_AT_ACT`** (`apply.ts`) is `false`, by the owner's decision of
+  2026-11-11: his approval is the gate, so an approved asks-first action also runs at
+  coordinate. Approvals are checked on each wake, and a merged pull request or a resolved
+  incident wakes the lead, at coordinate and act. Watch still runs nothing, and an answer
+  there approves nothing. What runs alone at coordinate is unchanged: only `autofix-pr`.
 - **Steps available,** each through the mechanism that already does the job:
   - `merge-pr` (fixes, public releases, CI repair): `mergePinnedPr` as the GitHub App,
     pinned to the approved head (`incidents/response/merge.ts`).

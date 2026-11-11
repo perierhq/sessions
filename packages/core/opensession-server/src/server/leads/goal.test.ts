@@ -1559,12 +1559,15 @@ describe("approvals on a wake", () => {
     });
   });
 
-  test("before the act stage nothing is checked or listed", async () => {
+  test("at coordinate approvals are checked and listed; at watch nothing", async () => {
     await approved(42, PR41);
     verdict = async () => ({ status: "met" });
-    await setLead({ stage: "coordinate" });
+    await setLead({ stage: "watch" });
     expect(await wake()).toEqual([]);
     expect(checks).toEqual([]);
+    await setLead({ stage: "coordinate" });
+    expect(await wake()).toHaveLength(1);
+    expect(checks).toHaveLength(1);
   });
 
   describe("event wakes", () => {
@@ -1621,26 +1624,27 @@ describe("approvals on a wake", () => {
       expect((await leadGoal()).nextWakeAt).toBe(later);
     });
 
-    test("before the act stage nothing wakes the lead", async () => {
+    test("at coordinate events wake the lead; at watch nothing does", async () => {
       await approved(42, PR41);
       await approved(44, { kind: "incident-resolved", id: "inc-1" });
       for (const stage of ["coordinate", "watch"] as const) {
         await setLead({ stage });
         const later = await wakeLater();
+        const woke = stage === "coordinate";
         expect(
           await wakeLeadFor(PROJECT, {
             kind: "pr-merged",
             ghRepo: "acme/api",
             number: 41,
           }),
-        ).toBe(false);
+        ).toBe(woke);
         expect(
           await wakeLeadOnIncident(
             { id: "inc-1", project: PROJECT, state: "resolved" } as never,
             { state: "open" } as never,
           ),
-        ).toBe(false);
-        expect((await leadGoal()).nextWakeAt).toBe(later);
+        ).toBe(woke);
+        if (!woke) expect((await leadGoal()).nextWakeAt).toBe(later);
       }
     });
 
