@@ -42,6 +42,12 @@ import {
   leadGoalWaiting,
   leadWakeCheck,
 } from "./goal";
+import {
+  __setLeadApprovalsDepsForTest,
+  getRecord,
+  listForProject,
+  recordProposal,
+} from "./approvals";
 import { deliverLeadProposal } from "./report";
 
 useIncidentTestKernel();
@@ -49,6 +55,7 @@ const PROJECT = "acme";
 let clock = Date.parse("2026-11-10T12:00:00.000Z");
 let pushes = 0;
 let restoreInbox: () => void = () => {};
+let restoreApprovals: () => void = () => {};
 
 beforeEach(() => {
   clock = Date.parse("2026-11-10T12:00:00.000Z");
@@ -88,9 +95,15 @@ beforeEach(() => {
     supervisorSessionId: async (user) => `os-sup-${user}`,
     timeZone: () => "UTC",
   });
+  let ids = 0;
+  restoreApprovals = __setLeadApprovalsDepsForTest({
+    now: () => clock,
+    newId: () => `lp-${++ids}`,
+  });
 });
 
 afterEach(() => {
+  restoreApprovals();
   restoreInbox();
   __resetSupervisorInboxForTest();
   __setLeadGoalDepsForTest(undefined);
@@ -920,6 +933,222 @@ describe("the owner's answers", () => {
     expect(ledger).toContain("not the lead's owner now");
     expect(ledger).not.toContain("Owner answered");
     expect((await leadGoal()).nextWakeAt).toBe("2026-11-10T18:00:00.000Z");
+  });
+});
+
+describe("the owner's answer approves the proposal it saw", () => {
+  const ADA = { login: "ada" };
+  const SHA = "a".repeat(40);
+
+  beforeEach(async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    onSupervisorAnswer("lead:", handleLeadAnswer);
+  });
+
+  /** A lead proposal delivered to Ada's inbox as an item, and, unless
+   *  `record` is false, the act proposal recorded for that item. */
+  async function proposed(
+    subject: string,
+    extra: { condition?: unknown; record?: boolean } = {},
+  ) {
+    const delivered = await deliverLeadProposal(
+      PROJECT,
+      await getProjectDocument(PROJECT),
+      {
+        kind: "proposal",
+        category: "fix-verified",
+        title: "Merge the checkout fix",
+        body: "The fix is verified on a preview.",
+        options: ["Merge it", "Leave it"],
+        subject,
+        decision: {
+          level: "asks-first",
+          effective: "ask",
+          rule: "Asks first: Verified fixes, from the project settings",
+        },
+      },
+      "Acme",
+    );
+    if (!delivered.queued) throw new Error(delivered.reason);
+    const item = (await listSupervisorItems("Ada")).find(
+      (i) => i.id === delivered.itemId,
+    )!;
+    let proposalId: string | undefined;
+    if (extra.record !== false) {
+      const recorded = await recordProposal({
+        project: PROJECT,
+        category: "fix-verified",
+        subject,
+        itemId: item.id,
+        itemRevision: item.updatedAt,
+        steps: [
+          { kind: "merge-pr", ghRepo: "acme/api", number: 42, headSha: SHA },
+        ],
+        ...(extra.condition ? { condition: extra.condition } : {}),
+      });
+      if (!recorded.ok) throw new Error(recorded.error);
+      proposalId = recorded.value.id;
+    }
+    clock += 60_000;
+    return { item, proposalId };
+  }
+
+  async function record(proposalId: string | undefined) {
+    return (await getRecord(PROJECT, proposalId!))!;
+  }
+
+  test("the first option, signed in, at the current revision: ready at once", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    const answered = await answerSupervisorItem("Ada", item.id, "1", "owner", {
+      ...ADA,
+      revision: item.updatedAt,
+    });
+    expect(answered.ok).toBe(true);
+    expect((await record(proposalId)).approval).toMatchObject({
+      approvedBy: "Ada",
+      login: "ada",
+      at: clock,
+      state: "ready",
+      expiresAt: clock + 7 * 24 * 60 * 60_000,
+    });
+    const ledger = await readLedger(await leadGoal());
+    expect(ledger).toContain(
+      "Approved: Acme: Fixes verified by a second agent. Ready to apply.",
+    );
+    expect(ledger).not.toContain("Watch stage: nothing was applied.");
+  });
+
+  test("a proposal with a condition waits for it", async () => {
+    const condition = { kind: "pr-merged", ghRepo: "acme/api", number: 41 };
+    const { item, proposalId } = await proposed("PR 42", { condition });
+    await answerSupervisorItem("Ada", item.id, "Merge it", "owner", {
+      ...ADA,
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).approval).toMatchObject({
+      state: "waiting",
+      condition,
+    });
+    expect(await readLedger(await leadGoal())).toContain(
+      "Approved: Acme: Fixes verified by a second agent. Runs when PR #41 in acme/api is merged.",
+    );
+  });
+
+  test.each([
+    ["free text", "Merge it, but tomorrow", { ...ADA, rev: true }],
+    ["no signed-in login", "1", { rev: true }],
+    ["an old client without a revision", "1", ADA],
+  ] as const)("%s approves nothing", async (_case, answer, context) => {
+    const { item, proposalId } = await proposed("PR 42");
+    await answerSupervisorItem("Ada", item.id, answer, "owner", {
+      ...("login" in context ? { login: context.login } : {}),
+      ...("rev" in context ? { revision: item.updatedAt } : {}),
+    });
+    const after = await record(proposalId);
+    expect(after.approval).toBeUndefined();
+    expect(after.proposal.voidedAt).toBeUndefined();
+    const ledger = await readLedger(await leadGoal());
+    expect(ledger).toContain("Owner answered");
+    expect(ledger).not.toContain("Approved:");
+  });
+
+  test("an answer the supervisor recorded approves nothing", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    await answerSupervisorItem("Ada", item.id, "1", "supervisor", {
+      ...ADA,
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).approval).toBeUndefined();
+    expect(await readLedger(await leadGoal())).toContain("approves nothing");
+  });
+
+  test("an answer from someone who isn't the lead's owner approves nothing", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    await handleLeadAnswer({ ...item, user: "Grace" }, "Merge it", "owner", {
+      login: "grace",
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).approval).toBeUndefined();
+    expect(await readLedger(await leadGoal())).toContain(
+      "not the lead's owner now",
+    );
+  });
+
+  test("an item that changed since the owner read it approves nothing", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    // The lead updates the item; the owner answers what they saw before.
+    await proposed("PR 42", { record: false });
+    await answerSupervisorItem("Ada", item.id, "1", "owner", {
+      ...ADA,
+      revision: item.updatedAt,
+    });
+    expect((await record(proposalId)).approval).toBeUndefined();
+  });
+
+  test("a proposal recorded for an earlier revision of the item approves nothing", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    // The item moved on, with no proposal recorded for what it says now.
+    await proposed("PR 42", { record: false });
+    const current = (await listSupervisorItems("Ada")).find(
+      (i) => i.id === item.id,
+    )!;
+    expect(current.updatedAt).not.toBe(item.updatedAt);
+    await answerSupervisorItem("Ada", item.id, "1", "owner", {
+      ...ADA,
+      revision: current.updatedAt,
+    });
+    expect((await record(proposalId)).approval).toBeUndefined();
+    expect(await readLedger(await leadGoal())).not.toContain("Approved:");
+  });
+
+  test("without a recorded proposal the answer stays in the ledger", async () => {
+    const { item } = await proposed("PR 42", { record: false });
+    await answerSupervisorItem("Ada", item.id, "1", "owner", {
+      ...ADA,
+      revision: item.updatedAt,
+    });
+    expect(await listForProject(PROJECT)).toEqual([]);
+    const ledger = await readLedger(await leadGoal());
+    expect(ledger).toContain("Owner answered");
+    expect(ledger).toContain("Watch stage: nothing was applied.");
+    expect(ledger).not.toContain("Approved:");
+  });
+
+  test("any other option voids the item's proposal", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    await answerSupervisorItem("Ada", item.id, "2", "owner", {
+      ...ADA,
+      revision: item.updatedAt,
+    });
+    const after = await record(proposalId);
+    expect(after.approval).toBeUndefined();
+    expect(after.proposal).toMatchObject({
+      voidedAt: clock,
+      voidReason: "declined",
+    });
+  });
+
+  test("answering again changes nothing", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    const context = { ...ADA, revision: item.updatedAt };
+    const answered = await answerSupervisorItem(
+      "Ada",
+      item.id,
+      "1",
+      "owner",
+      context,
+    );
+    if (!answered.ok) throw new Error(answered.error);
+    const first = (await record(proposalId)).approval;
+    expect(first?.state).toBe("ready");
+    clock += 60_000;
+    expect(
+      await answerSupervisorItem("Ada", item.id, "1", "owner", context),
+    ).toEqual({ ok: false, error: "closed" });
+    await handleLeadAnswer(answered.item, "Merge it", "owner", context);
+    expect((await record(proposalId)).approval).toEqual(first);
+    expect(await listForProject(PROJECT)).toHaveLength(1);
   });
 });
 

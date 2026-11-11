@@ -263,9 +263,20 @@ describe("validation", () => {
       input({ itemId: "" }),
       input({ itemRevision: -1 }),
       input({ steps: [] }),
+      input({ condition: { kind: "pr-merged", ghRepo: "acme" } }),
+      input({ expiresAt: -1 }),
       { ...input(), extra: 1 },
     ])
       expect(A.validateProposalInput(bad).ok).toBe(false);
+  });
+
+  test("a proposal may carry the approval's condition and expiry", async () => {
+    const condition = { kind: "pr-merged", ghRepo: "acme/api", number: 41 };
+    const proposal = await propose({ condition, expiresAt: clock + DAY });
+    expect(proposal).toMatchObject({ condition, expiresAt: clock + DAY });
+    expect((await A.getRecord("acme", proposal.id))?.proposal).toEqual(
+      proposal,
+    );
   });
 
   test("approval expiry: 7 days by default, at most 30", () => {
@@ -512,6 +523,33 @@ describe("approve", () => {
       }),
     ).toEqual({ ok: false, error: "voided" });
     expect((await A.listForProject("acme"))[0]?.proposal.id).toBe(second.id);
+  });
+});
+
+describe("proposalForItem", () => {
+  test("the item's standing proposal, unapproved or live, never a voided one", async () => {
+    expect(await A.proposalForItem("acme", "si-1")).toBeUndefined();
+    const first = await propose();
+    expect((await A.proposalForItem("acme", "si-1"))?.proposal.id).toBe(
+      first.id,
+    );
+    const second = await propose({ itemRevision: 2000 });
+    expect((await A.proposalForItem("acme", "si-1"))?.proposal.id).toBe(
+      second.id,
+    );
+    await A.approve({
+      project: "acme",
+      proposalId: second.id,
+      approvedBy: "Ada",
+      login: "ada-example",
+    });
+    expect((await A.proposalForItem("acme", "si-1"))?.approval?.state).toBe(
+      "ready",
+    );
+    await A.voidFor("acme", () => true, "test");
+    expect(await A.proposalForItem("acme", "si-1")).toBeUndefined();
+    expect(await A.proposalForItem("acme", "si-2")).toBeUndefined();
+    expect(await A.proposalForItem("other", "si-1")).toBeUndefined();
   });
 });
 

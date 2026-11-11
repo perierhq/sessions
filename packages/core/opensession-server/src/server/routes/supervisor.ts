@@ -7,7 +7,7 @@
  *
  *   POST /api/supervisor/ensure                 { user } → { sessionId, previousSessionIds, session }
  *   GET  /api/supervisor/items?user=&state=&kind=&since=&limit=
- *   POST /api/supervisor/items/:id/answer       { user, answer }
+ *   POST /api/supervisor/items/:id/answer       { user, answer, revision? }
  *   POST /api/supervisor/items/:id/dismiss      { user }
  *   GET  /api/supervisor/prefs?user=
  *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle?, watch?: { enabled?, everyMinutes?, activeStart?, activeEnd? }, memoryWriter? }
@@ -111,8 +111,24 @@ export async function handleSupervisorRoutes(
       const answer = typeof body?.answer === "string" ? body.answer : "";
       if (!answer.trim())
         return Response.json({ error: "missing answer" }, { status: 400 });
+      // The item's updatedAt as the client showed it. Optional: older
+      // clients send none, and their answers approve nothing.
+      const revision: unknown = body?.revision;
+      if (
+        revision !== undefined &&
+        (typeof revision !== "number" ||
+          !Number.isSafeInteger(revision) ||
+          revision < 0)
+      )
+        return Response.json({ error: "invalid revision" }, { status: 400 });
+      // Only a signed-in person's login: never a claimed name or an
+      // automation's.
+      const login = verifiedPerson(ctx) ? ctx.authUser?.login : undefined;
       return closeResponse(
-        await answerSupervisorItem(user, id, answer, "owner"),
+        await answerSupervisorItem(user, id, answer, "owner", {
+          ...(login ? { login } : {}),
+          ...(revision !== undefined ? { revision } : {}),
+        }),
       );
     }
     return closeResponse(await dismissSupervisorItem(user, id));

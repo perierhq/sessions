@@ -757,12 +757,24 @@ export async function listSupervisorItems(
 
 // ── Answering ───────────────────────────────────────────────────────────────
 
+/** What the answering request proved, beyond who answered. */
+export interface SupervisorAnswerContext {
+  /** The GitHub login of the signed-in person who answered; absent for a
+   *  claimed name, an automation or the supervisor. */
+  login?: string;
+  /** The item revision (its `updatedAt`) the answer was given to. Handed to
+   *  handlers only when it was the item's current revision as it closed:
+   *  absent when the client sent none or the item had changed since. */
+  revision?: number;
+}
+
 /** `answeredBy` says whose decision it is: only `owner` came from the owner
  *  directly; `supervisor` is the supervisor's record of what they said. */
 export type AnswerHandler = (
   item: SupervisorItem,
   answer: string,
   answeredBy: SupervisorAnswerer,
+  context: SupervisorAnswerContext,
 ) => void | Promise<void>;
 
 const answerHandlers: Array<{ prefix: string; handler: AnswerHandler }> = [];
@@ -840,14 +852,20 @@ async function closeItem(
 /** The owner's answer, given by them (`owner`: Blob, the web) or recorded
  *  by the supervisor from the conversation (`supervisor`). It reaches the
  *  supervisor's next turn (briefing) and every `onSupervisorAnswer` handler
- *  whose prefix matches the source. */
+ *  whose prefix matches the source. `context` carries the answerer's
+ *  verified login and the revision they saw; the revision reaches handlers
+ *  only when it matched the item as it closed. */
 export async function answerSupervisorItem(
   user: string,
   id: string,
   answer: string,
   answeredBy: SupervisorAnswerer,
+  context: SupervisorAnswerContext = {},
 ): Promise<CloseResult> {
+  // Set on the compare-and-set's last run, the one that committed.
+  let seen: number | undefined;
   const result = await closeItem(user, id, (item, now) => {
+    seen = item.updatedAt;
     const resolved = resolveAnswer(
       item,
       typeof answer === "string" ? answer : "",
@@ -865,10 +883,19 @@ export async function answerSupervisorItem(
     return next;
   });
   if (result.ok) {
+    const handed: SupervisorAnswerContext = {};
+    if (context.login) handed.login = context.login;
+    if (context.revision !== undefined && context.revision === seen)
+      handed.revision = context.revision;
     for (const { prefix, handler } of [...answerHandlers]) {
       if (!result.item.source.startsWith(prefix)) continue;
       try {
-        await handler(result.item, result.item.answer ?? "", answeredBy);
+        await handler(
+          result.item,
+          result.item.answer ?? "",
+          answeredBy,
+          handed,
+        );
       } catch (error) {
         console.warn(
           `[supervisor-inbox] answer handler for ${prefix} failed:`,

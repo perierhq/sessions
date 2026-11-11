@@ -318,6 +318,35 @@ describe("answering and dismissing", () => {
     });
   });
 
+  test("handlers get the login, and the revision only when it was the item's", async () => {
+    const heard: unknown[] = [];
+    inbox.onSupervisorAnswer("lead:acme", (_item, _answer, _by, context) => {
+      heard.push(context);
+    });
+    const a = await needsYou({ dedupeKey: "a" });
+    clock += 1000;
+    await inbox.answerSupervisorItem("Ada", a.item.id, "1", "owner", {
+      login: "ada",
+      revision: a.item.updatedAt,
+    });
+    // The item changed after the client read it: a stale revision.
+    const b = await needsYou({ dedupeKey: "b" });
+    const seen = b.item.updatedAt;
+    clock += 1000;
+    await needsYou({ dedupeKey: "b", body: "Errors tripled." });
+    await inbox.answerSupervisorItem("Ada", b.item.id, "1", "owner", {
+      login: "ada",
+      revision: seen,
+    });
+    const c = await needsYou({ dedupeKey: "c" });
+    await inbox.answerSupervisorItem("Ada", c.item.id, "1", "supervisor");
+    expect(heard).toEqual([
+      { login: "ada", revision: a.item.updatedAt },
+      { login: "ada" },
+      {},
+    ]);
+  });
+
   test("a handler that throws never fails the answer", async () => {
     inbox.onSupervisorAnswer("lead:", () => {
       throw new Error("boom");
@@ -878,6 +907,46 @@ describe("routes", () => {
         )
       )?.status,
     ).toBe(200);
+  });
+
+  test("an answer passes its revision, and a login only when signed in", async () => {
+    const heard: unknown[] = [];
+    inbox.onSupervisorAnswer("lead:acme", (_item, _answer, _by, context) => {
+      heard.push(context);
+    });
+    const answer = async (
+      body: Record<string, unknown>,
+      authUser?: { login: string; name: string },
+    ) => {
+      const { item } = await needsYou({ dedupeKey: `k-${heard.length}` });
+      const response = await call(
+        "POST",
+        `/api/supervisor/items/${item.id}/answer`,
+        { user: "Ada", answer: "1", revision: item.updatedAt, ...body },
+        authUser,
+      );
+      return { status: response?.status, revision: item.updatedAt };
+    };
+    const ada = { login: "ada", name: "Ada Lovelace" };
+    const signedIn = await answer({}, ada);
+    const claimed = await answer({});
+    const automation = await answer({}, {
+      ...ada,
+      automation: true,
+    } as never);
+    const old = await answer({ revision: undefined }, ada);
+    expect([signedIn, claimed, automation, old].map((r) => r.status)).toEqual([
+      200, 200, 200, 200,
+    ]);
+    expect(heard).toEqual([
+      { login: "ada", revision: signedIn.revision },
+      { revision: claimed.revision },
+      { revision: automation.revision },
+      { login: "ada" },
+    ]);
+    for (const revision of ["1", -1, 1.5, null])
+      expect((await answer({ revision }, ada)).status).toBe(400);
+    expect(heard).toHaveLength(4);
   });
 
   test("refuses a request with no user or no answer", async () => {

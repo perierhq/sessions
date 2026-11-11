@@ -96,6 +96,10 @@ export interface ActProposal {
   itemId: string;
   itemRevision: number;
   steps: LeadStep[];
+  /** What the approval will wait for, and when it lapses; the owner's
+   *  answer approves the proposal with both as they are here. */
+  condition?: LeadCondition;
+  expiresAt?: number;
   createdAt: number;
   /** Voided before it ran: superseded, its subject or level changed, or
    *  expired unapproved. Never approved after this. */
@@ -484,6 +488,8 @@ export interface ActProposalInput {
   itemId: string;
   itemRevision: number;
   steps: unknown;
+  condition?: unknown;
+  expiresAt?: number;
 }
 
 export type ValidProposalInput = Omit<
@@ -502,8 +508,10 @@ export function validateProposalInput(
       "itemId",
       "itemRevision",
       "steps",
+      "condition",
+      "expiresAt",
     ]);
-    return {
+    const proposal: ValidProposalInput = {
       project: projectOf(raw.project),
       category: categoryOf(raw.category),
       subject: line(raw.subject, "subject", SUBJECT_LEN),
@@ -511,6 +519,11 @@ export function validateProposalInput(
       itemRevision: time(raw.itemRevision, "itemRevision"),
       steps: stepsOf(raw.steps),
     };
+    if (raw.condition !== undefined)
+      proposal.condition = conditionOf(raw.condition);
+    if (raw.expiresAt !== undefined)
+      proposal.expiresAt = time(raw.expiresAt, "expiresAt");
+    return proposal;
   });
 }
 
@@ -918,8 +931,8 @@ export interface ApproveInput {
   condition?: unknown;
   expiresAt?: number;
   /** The inbox item revision the owner answered; refused when it is not the
-   *  proposal's. TODO(act PR 5/10): required once answers carry the revision
-   *  (PR 5) and the iOS app sends it (PR 10). */
+   *  proposal's. The owner's answer always passes it (leads/goal.ts).
+   *  TODO(act PR 10): required once the iOS app sends it. */
   itemRevision?: number;
 }
 
@@ -1174,6 +1187,18 @@ export async function listForProject(project: string): Promise<LeadRecord[]> {
   const key = projectKey(project);
   if (!key) return [];
   return expireRecords((await readDocument(key)).records, deps.now()).records;
+}
+
+/** The proposal raised as inbox item `itemId` that is still standing: not
+ *  voided, and unapproved or with its approval waiting or ready. A newer
+ *  proposal for the item supersedes older ones, so there is at most one. */
+export async function proposalForItem(
+  project: string,
+  itemId: string,
+): Promise<LeadRecord | undefined> {
+  return (await listForProject(project)).find(
+    (record) => record.proposal.itemId === itemId && voidable(record),
+  );
 }
 
 /** One record, with expiry applied to the view. */
