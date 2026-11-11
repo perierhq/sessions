@@ -865,6 +865,129 @@ describe("briefing", () => {
   });
 });
 
+describe("repetition", () => {
+  const HOUR = 3_600_000;
+
+  test("unseen items come first; ones shown in the last day are marked", async () => {
+    const a = await needsYou({ title: "Old question", dedupeKey: "a" });
+    clock += 1000;
+    const b = await needsYou({ title: "New question", dedupeKey: "b" });
+    const first = (await inbox.supervisorInboxContext("Ada"))!;
+    expect(first.shown).toEqual([b.item.id, a.item.id]);
+    // A turn completed with both listed; then a third arrives.
+    await inbox.markSupervisorItemsShown("Ada", first.shown);
+    clock += 2 * HOUR;
+    const c = await needsYou({ title: "Third question", dedupeKey: "c" });
+    const second = (await inbox.supervisorInboxContext("Ada"))!;
+    expect(second.shown[0]).toBe(c.item.id);
+    expect(second.context.indexOf("Third question")).toBeLessThan(
+      second.context.indexOf("New question"),
+    );
+    expect(second.context).toContain(
+      `[${b.item.id}] New question (acme, lead:acme) (shown to the owner 2 h ago)`,
+    );
+    // A day later the earlier ones rank with unseen ones again, newest
+    // first, still saying when they were last shown.
+    await inbox.markSupervisorItemsShown("Ada", [c.item.id]);
+    clock += 24 * HOUR;
+    const later = (await inbox.supervisorInboxContext("Ada"))!;
+    expect(later.shown).toEqual([c.item.id, b.item.id, a.item.id]);
+    expect(later.context).toContain(
+      "New question (acme, lead:acme) (shown to the owner 26 h ago)",
+    );
+  });
+
+  test("shown three times folds into one line; a change brings it back", async () => {
+    const a = await needsYou({ dedupeKey: "a" });
+    for (let i = 0; i < 3; i++) {
+      await inbox.markSupervisorItemsShown("Ada", [a.item.id]);
+      clock += HOUR;
+    }
+    const items = await inbox.listSupervisorItems("Ada");
+    expect(items[0]).toMatchObject({ shownCount: 3 });
+    const folded = (await inbox.supervisorInboxContext("Ada"))!;
+    expect(folded.shown).toEqual([]);
+    expect(folded.context).not.toContain("Roll back the deploy?");
+    expect(folded.context).toContain(
+      "- 1 older decisions still waiting, already shown 3+ times",
+    );
+    // The lead updates it: it is news again, and its count starts over.
+    clock += 1000;
+    await needsYou({ dedupeKey: "a", title: "Roll back now?" });
+    const back = (await inbox.supervisorInboxContext("Ada"))!;
+    expect(back.shown).toEqual([a.item.id]);
+    expect(back.context).toContain("Roll back now?");
+    await inbox.markSupervisorItemsShown("Ada", back.shown);
+    expect((await inbox.listSupervisorItems("Ada"))[0]).toMatchObject({
+      shownCount: 1,
+    });
+  });
+
+  test("older than a week and unchanged since shown parks; never shown stays", async () => {
+    const shown = await needsYou({ title: "Seen once", dedupeKey: "s" });
+    const never = await needsYou({ title: "Never seen", dedupeKey: "n" });
+    await inbox.markSupervisorItemsShown("Ada", [shown.item.id]);
+    clock += 8 * 24 * HOUR;
+    const brief = (await inbox.supervisorInboxContext("Ada"))!;
+    expect(brief.shown).toEqual([never.item.id]);
+    expect(brief.context).not.toContain("Seen once");
+    expect(brief.context).toContain(
+      "- Parked: 1 decisions older than 7 days and unchanged",
+    );
+  });
+
+  test("a down item is always listed in full", async () => {
+    const a = await needsYou({ urgency: "down", dedupeKey: "d" });
+    for (let i = 0; i < 4; i++)
+      await inbox.markSupervisorItemsShown("Ada", [a.item.id]);
+    const brief = (await inbox.supervisorInboxContext("Ada"))!;
+    expect(brief.shown).toEqual([a.item.id]);
+    expect(brief.context).not.toContain("shown to the owner");
+  });
+
+  test("fyi items fold the same way; closed and unknown ids aren't marked", async () => {
+    const f = await fyi("CI repaired");
+    const closed = await needsYou();
+    await inbox.dismissSupervisorItem("Ada", closed.item.id);
+    expect(
+      await inbox.markSupervisorItemsShown("Ada", [
+        f.item.id,
+        closed.item.id,
+        "si-nope",
+      ]),
+    ).toBe(1);
+    await inbox.markSupervisorItemsShown("Ada", [f.item.id]);
+    await inbox.markSupervisorItemsShown("Ada", [f.item.id]);
+    const brief = (await inbox.supervisorInboxContext("Ada"))!;
+    expect(brief.context).toContain(
+      "- 1 older fyi items still waiting, already shown 3+ times",
+    );
+  });
+
+  test("Blob marks what it showed through the route", async () => {
+    const { handleSupervisorRoutes } = await import("./routes/supervisor");
+    const a = await needsYou();
+    const post = (body: unknown) =>
+      handleSupervisorRoutes({
+        req: new Request("http://localhost/api/supervisor/items/shown", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+        path: "/api/supervisor/items/shown",
+        url: new URL("http://localhost/api/supervisor/items/shown"),
+      } as never);
+    const ok = await post({ user: "Ada", ids: [a.item.id] });
+    expect(await ok!.json()).toEqual({ marked: 1 });
+    expect((await inbox.listSupervisorItems("Ada"))[0]).toMatchObject({
+      shownAt: clock,
+      shownCount: 1,
+    });
+    expect((await post({ user: "Ada", ids: [] }))?.status).toBe(400);
+    expect((await post({ user: "Ada", ids: [1] }))?.status).toBe(400);
+    expect((await post({ ids: [a.item.id] }))?.status).toBe(400);
+  });
+});
+
 describe("routes", () => {
   async function call(
     method: string,
@@ -1292,10 +1415,13 @@ describe("opensession-supervisor", () => {
       "blob_open_issue",
       "blob_review",
       "dismiss_item",
+      "incidents",
       "list_items",
+      "owner_memory",
       "post_item",
       "read_ledger",
       "reply_in_thread",
+      "support_waiting",
       "watch_for",
     ]);
     const posted = await tools.post_item!.handler(

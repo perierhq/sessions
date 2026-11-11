@@ -56,6 +56,7 @@ export type ContextSource =
   | "supervisor-inbox"
   | "supervisor-report-style"
   | "supervisor-clock"
+  | "supervisor-status"
   | "supervisor-seed"
   | "blob-mention"
   | "session"
@@ -82,6 +83,7 @@ const SOURCES = new Set<string>([
   "supervisor-inbox",
   "supervisor-report-style",
   "supervisor-clock",
+  "supervisor-status",
   "supervisor-seed",
   "blob-mention",
   "session",

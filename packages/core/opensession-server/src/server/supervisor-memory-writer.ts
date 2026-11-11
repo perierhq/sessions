@@ -125,6 +125,43 @@ interface WriterDeps {
    *  any state, and nothing was written. */
   write(input: EntryInput): Promise<boolean>;
   sessionLink(sessionId: string): Promise<string>;
+  /** Active entries in the scope, newest first, with their ids. */
+  entries(scopeKey: string, limit: number): Promise<OwnerMemoryEntry[]>;
+  /** One entry by id, in any scope; null when unknown. */
+  get(id: string): Promise<OwnerMemoryEntry | null>;
+  /** Rewrite one entry in place (memory-repo service updateEntry). */
+  update(
+    id: string,
+    patch: { text: string; kind: MemoryKind; expires: string | null },
+  ): Promise<void>;
+}
+
+/** A memory entry as the supervisor's memory tool sees it. */
+export interface OwnerMemoryEntry {
+  id: string;
+  scopeKey: string;
+  summary: string;
+  kind: MemoryKind;
+  state: string;
+  expiresAt?: string;
+}
+
+function ownerEntry(record: {
+  id: string;
+  scopeKey: string;
+  summary: string;
+  kind: MemoryKind;
+  state: string;
+  expiresAt?: string;
+}): OwnerMemoryEntry {
+  return {
+    id: record.id,
+    scopeKey: record.scopeKey,
+    summary: record.summary,
+    kind: record.kind,
+    state: record.state,
+    ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}),
+  };
 }
 
 const defaultDeps: WriterDeps = {
@@ -191,6 +228,32 @@ const defaultDeps: WriterDeps = {
   },
   sessionLink: async (sessionId) =>
     (await import("./run-instructions")).sessionLink(sessionId),
+  entries: async (scopeKey, limit) => {
+    const { memoryRepo } = await import("./memory-repo/client");
+    const { reposForScopes } = await import("./memory-repo/layout");
+    await memoryRepo.service("fresh", reposForScopes([scopeKey]));
+    const page = await memoryRepo.index(
+      "list",
+      { scopeKeys: [scopeKey], states: ["active"] },
+      { limit },
+    );
+    return page.items.map(ownerEntry);
+  },
+  get: async (id) => {
+    const { memoryRepo } = await import("./memory-repo/client");
+    const record = await memoryRepo.index("get", id);
+    return record ? ownerEntry(record) : null;
+  },
+  update: async (id, patch) => {
+    const { memoryRepo } = await import("./memory-repo/client");
+    await memoryRepo.service(
+      "updateEntry",
+      id,
+      patch,
+      undefined,
+      `Correct memory: ${patch.text.slice(0, 60)}`,
+    );
+  },
 };
 
 function sameFact(a: string, b: string): boolean {
@@ -580,33 +643,184 @@ export function parseWriterFacts(
       ? Reflect.get(parsed, "facts")
       : undefined;
   if (!Array.isArray(list)) return null;
-  const today = new Date(now).toISOString().slice(0, 10);
   const facts: WriterFact[] = [];
   for (const item of list) {
     if (facts.length >= WRITER_MAX_FACTS) break;
     if (!item || typeof item !== "object") continue;
-    const rawText = Reflect.get(item, "text");
-    const kind = Reflect.get(item, "kind");
-    const rawExpires = Reflect.get(item, "expires");
-    if (typeof rawText !== "string") continue;
-    const text = rawText.replace(/\s+/g, " ").trim();
-    if (!text || text.length > WRITER_FACT_CHARS) continue;
-    if (!WRITER_KINDS.includes(kind as WriterKind)) continue;
-    const expires =
-      typeof rawExpires === "string" &&
-      ISO_DAY.test(rawExpires) &&
-      Number.isFinite(Date.parse(rawExpires)) &&
-      rawExpires > today
-        ? rawExpires
-        : undefined;
-    if (kind === "status" && !expires) continue;
-    if (EMAIL.test(text) || PHONE.test(text) || findSecrets(text).length > 0)
-      continue;
-    facts.push({
-      text,
-      kind: kind as WriterKind,
-      ...(expires ? { expires } : {}),
-    });
+    const checked = checkWriterFact(
+      {
+        text: Reflect.get(item, "text"),
+        kind: Reflect.get(item, "kind"),
+        expires: Reflect.get(item, "expires"),
+      },
+      now,
+    );
+    if (typeof checked !== "string") facts.push(checked);
   }
   return facts;
+}
+
+/**
+ * One fact checked the way every supervisor write is: one line under
+ * WRITER_FACT_CHARS, a known kind, a future expiry when given (required
+ * for `status`; a past or malformed one is dropped), and no credentials,
+ * emails or phone numbers. The fact, or why it was refused.
+ */
+export function checkWriterFact(
+  raw: { text: unknown; kind: unknown; expires?: unknown },
+  now: number,
+): WriterFact | string {
+  if (typeof raw.text !== "string") return "The fact is empty.";
+  const text = raw.text.replace(/\s+/g, " ").trim();
+  if (!text) return "The fact is empty.";
+  if (text.length > WRITER_FACT_CHARS)
+    return `Too long: keep a fact under ${WRITER_FACT_CHARS} characters.`;
+  if (!WRITER_KINDS.includes(raw.kind as WriterKind))
+    return `Unknown kind: use one of ${WRITER_KINDS.join(", ")}.`;
+  const today = new Date(now).toISOString().slice(0, 10);
+  const expires =
+    typeof raw.expires === "string" &&
+    ISO_DAY.test(raw.expires) &&
+    Number.isFinite(Date.parse(raw.expires)) &&
+    raw.expires > today
+      ? raw.expires
+      : undefined;
+  if (raw.kind === "status" && !expires)
+    return "A status fact needs a future expiry (YYYY-MM-DD).";
+  if (EMAIL.test(text) || PHONE.test(text))
+    return "No email addresses or phone numbers in memory.";
+  if (findSecrets(text).length > 0)
+    return "That looks like a secret: not saved.";
+  return {
+    text,
+    kind: raw.kind as WriterKind,
+    ...(expires ? { expires } : {}),
+  };
+}
+
+// ── The supervisor's own memory tool ────────────────────────────────────────
+//
+// The supervisor runs in read-only Ask mode, so it can't edit a memory
+// checkout. These back its `owner_memory` tool (supervisor-mcp.ts): list,
+// add and correct facts in the owner's personal scope only, through the
+// same addEntry/updateEntry paths and the same checks (checkWriterFact,
+// the service's secret scan) the writer uses. Team and project memory stay
+// out of reach.
+
+/** Entries `owner_memory list` returns. */
+export const OWNER_MEMORY_LIST = 40;
+
+export interface OwnerMemoryResult {
+  ok: boolean;
+  message: string;
+}
+
+function refused(message: string): OwnerMemoryResult {
+  return { ok: false, message };
+}
+
+function ownerScope(user: string): string | OwnerMemoryResult {
+  if (!deps.enabled())
+    return refused("Memory isn't kept in repositories on this server.");
+  return personalScopeKey(user) ?? refused("The owner has no personal memory.");
+}
+
+function writeFailure(error: unknown): OwnerMemoryResult {
+  const message = error instanceof Error ? error.message : String(error);
+  return refused(
+    permanentWriteError(error)
+      ? `Not saved: ${message}`
+      : `Memory is unavailable right now: ${message}`,
+  );
+}
+
+/** The owner's active personal facts, newest first, with ids to correct. */
+export async function listOwnerMemory(
+  user: string,
+): Promise<OwnerMemoryResult> {
+  const scope = ownerScope(user);
+  if (typeof scope !== "string") return scope;
+  let entries: OwnerMemoryEntry[];
+  try {
+    entries = await deps.entries(scope, OWNER_MEMORY_LIST);
+  } catch (error) {
+    return refused(
+      `Memory is unavailable right now: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!entries.length)
+    return { ok: true, message: "The owner's memory is empty." };
+  return {
+    ok: true,
+    message: entries
+      .map(
+        (e) =>
+          `- [${e.id}] (${e.kind}${e.expiresAt ? `, until ${e.expiresAt.slice(0, 10)}` : ""}) ${oneLine(e.summary, 300)}`,
+      )
+      .join("\n"),
+  };
+}
+
+/** Add one fact to the owner's personal memory. */
+export async function addOwnerMemory(
+  user: string,
+  input: { text: string; kind: string; expires?: string },
+  sessionId?: string,
+): Promise<OwnerMemoryResult> {
+  const scope = ownerScope(user);
+  if (typeof scope !== "string") return scope;
+  const fact = checkWriterFact(input, deps.now());
+  if (typeof fact === "string") return refused(fact);
+  try {
+    const added = await deps.write({
+      scopeKey: scope,
+      text: fact.text,
+      kind: fact.kind,
+      ...(sessionId ? { source: await deps.sessionLink(sessionId) } : {}),
+      by: user,
+      via: "supervisor",
+      tags: ["supervisor"],
+      ...(fact.expires ? { expires: fact.expires } : {}),
+    });
+    return added
+      ? { ok: true, message: `Remembered: ${fact.text}` }
+      : { ok: true, message: "Already remembered." };
+  } catch (error) {
+    return writeFailure(error);
+  }
+}
+
+/** Rewrite one fact in the owner's personal memory: only an active entry
+ *  in their own scope. The kind and expiry stay unless given. */
+export async function correctOwnerMemory(
+  user: string,
+  id: string,
+  input: { text: string; kind?: string; expires?: string },
+): Promise<OwnerMemoryResult> {
+  const scope = ownerScope(user);
+  if (typeof scope !== "string") return scope;
+  const record = await deps.get(id).catch(() => null);
+  if (!record || record.scopeKey !== scope || record.state !== "active")
+    return refused(
+      "No active entry with that id in the owner's personal memory. Team and project memory can't be changed from here: add a personal fact that corrects it instead.",
+    );
+  const fact = checkWriterFact(
+    {
+      text: input.text,
+      kind: input.kind ?? record.kind,
+      expires: input.expires ?? record.expiresAt?.slice(0, 10),
+    },
+    deps.now(),
+  );
+  if (typeof fact === "string") return refused(fact);
+  try {
+    await deps.update(id, {
+      text: fact.text,
+      kind: fact.kind,
+      expires: fact.expires ?? null,
+    });
+    return { ok: true, message: `Corrected [${id}]: ${fact.text}` };
+  } catch (error) {
+    return writeFailure(error);
+  }
 }
