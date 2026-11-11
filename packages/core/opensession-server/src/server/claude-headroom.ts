@@ -24,9 +24,9 @@
  * from being asked again on the next tick. The backoff lives in this
  * process only; a restart forgets it.
  *
- * localClaudeAccounts decides on the shared accounts it has data for:
- * those that report a usage window or are sidelined (the sideline file,
- * account-wide or for this route's model). One of them that isn't
+ * localClaudeAccounts looks at every shared account: sidelined ones (the
+ * sideline file, account-wide or for this route's model) and ones that
+ * report a usage window are measured; the rest are unknown. One of them that isn't
  * sidelined and leaves at least BACKGROUND_FIVE_HOUR_HEADROOM and
  * BACKGROUND_WEEKLY_HEADROOM percent (utilization at most 80% and 90%) is
  * room. A window that has reset since the last poll counts as room, as the
