@@ -1147,15 +1147,22 @@ describe("the owner's answer approves the proposal it saw", () => {
     );
   });
 
-  test("an item that changed since the owner read it approves nothing", async () => {
+  test("an item that changed since the owner read it approves nothing and stays open", async () => {
     const { item, proposalId } = await proposed("PR 42");
     // The lead updates the item; the owner answers what they saw before.
     await proposed("PR 42", { record: false });
-    await answerSupervisorItem("Ada", item.id, "1", "owner", {
-      ...ADA,
-      revision: item.updatedAt,
-    });
+    expect(
+      await answerSupervisorItem("Ada", item.id, "1", "owner", {
+        ...ADA,
+        revision: item.updatedAt,
+      }),
+    ).toEqual({ ok: false, error: "changed" });
     expect((await record(proposalId)).approval).toBeUndefined();
+    const current = (await listSupervisorItems("Ada")).find(
+      (i) => i.id === item.id,
+    );
+    expect(current?.state).toBe("open");
+    expect(await readLedger(await leadGoal())).not.toContain("Owner answered");
   });
 
   test("a proposal recorded for an earlier revision of the item approves nothing", async () => {

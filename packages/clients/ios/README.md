@@ -784,10 +784,14 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   proposal with steps carries a structured `act` (server:
   `leads/item-acts.ts`); below the body, after a hairline, Blob draws it as
   its own section (`BlobActSection`): the numbered steps, "Runs when …",
-  "Expires in …" and, once approved, the state ("Waiting for PR #556 in
-  acme/app to merge", "Ready to apply", "Applied"). The body drops the
-  server's own lines for them, exactly the `act.bodySuffix` the server
-  names, never by matching text.
+  and "Expires in …". Blob shows only open items, so it draws no approval
+  state; `act.stateLine` is decoded for clients that show approved ones.
+  The body drops the server's own lines for the steps, exactly the
+  `act.bodySuffix` the server names, never by matching text, and only when
+  the section is drawn. An answer to a card that changed since it was read
+  gets a 409 `changed` and closes nothing: Blob says "This changed. Have
+  another look." and shows the new card, which is keyed on id and revision,
+  read aloud again and holds its options for 0.6 s.
 - Asks (`Blob/BlobAsk.swift`): when the supervisor's run stops on a
   question (`ask_question`) or a force merge to confirm
   (`force_merge_pull_request`), Blob shows it where replies render, before
@@ -829,8 +833,7 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   an iPad simulator (the Blob target is iPhone-only, so build it for one
   with `TARGETED_DEVICE_FAMILY=1,2` on the command line).
   `BLOB_DEMO_DECISIONS=1` shows three canned decisions, the first with
-  steps; `BLOB_DEMO_ACT_STATE=waiting` (or `ready`, `applied`) shows its
-  steps as approved.
+  steps.
   `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
   `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking, and
   `BLOB_DEMO_TYPING=1` for text mode.

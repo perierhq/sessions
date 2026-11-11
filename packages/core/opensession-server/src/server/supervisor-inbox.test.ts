@@ -327,7 +327,7 @@ describe("answering and dismissing", () => {
     });
   });
 
-  test("handlers get the login, and the revision only when it was the item's", async () => {
+  test("handlers get the login and the revision the answer named", async () => {
     const heard: unknown[] = [];
     inbox.onSupervisorAnswer("lead:acme", (_item, _answer, _by, context) => {
       heard.push(context);
@@ -338,22 +338,51 @@ describe("answering and dismissing", () => {
       login: "ada",
       revision: a.item.updatedAt,
     });
-    // The item changed after the client read it: a stale revision.
+    const c = await needsYou({ dedupeKey: "c" });
+    await inbox.answerSupervisorItem("Ada", c.item.id, "1", "supervisor");
+    expect(heard).toEqual([{ login: "ada", revision: a.item.updatedAt }, {}]);
+  });
+
+  test("a stale revision answers nothing and leaves the item open", async () => {
+    const heard: unknown[] = [];
+    inbox.onSupervisorAnswer("lead:acme", (_item, _answer, _by, context) => {
+      heard.push(context);
+    });
+    // The item changed after the client read it.
     const b = await needsYou({ dedupeKey: "b" });
     const seen = b.item.updatedAt;
     clock += 1000;
-    await needsYou({ dedupeKey: "b", body: "Errors tripled." });
-    await inbox.answerSupervisorItem("Ada", b.item.id, "1", "owner", {
-      login: "ada",
-      revision: seen,
+    const rewritten = await needsYou({
+      dedupeKey: "b",
+      body: "Errors tripled.",
     });
-    const c = await needsYou({ dedupeKey: "c" });
-    await inbox.answerSupervisorItem("Ada", c.item.id, "1", "supervisor");
-    expect(heard).toEqual([
-      { login: "ada", revision: a.item.updatedAt },
-      { login: "ada" },
-      {},
-    ]);
+    expect(rewritten.revision).not.toBe(seen);
+    expect(
+      await inbox.answerSupervisorItem("Ada", b.item.id, "1", "owner", {
+        login: "ada",
+        revision: seen,
+      }),
+    ).toEqual({ ok: false, error: "changed" });
+    const [still] = await inbox.listSupervisorItems("Ada");
+    expect(still).toMatchObject({ id: b.item.id, state: "open" });
+    expect(still?.answer).toBeUndefined();
+    expect(heard).toEqual([]);
+    // Answering the card as it is now still works, as does no revision.
+    expect(
+      (
+        await inbox.answerSupervisorItem("Ada", b.item.id, "1", "owner", {
+          login: "ada",
+          revision: rewritten.revision,
+        })
+      ).ok,
+    ).toBe(true);
+    expect(heard).toEqual([{ login: "ada", revision: rewritten.revision }]);
+    const d = await needsYou({ dedupeKey: "d" });
+    clock += 1000;
+    await needsYou({ dedupeKey: "d", body: "Moved on." });
+    expect(
+      (await inbox.answerSupervisorItem("Ada", d.item.id, "1", "owner")).ok,
+    ).toBe(true);
   });
 
   test("a handler that throws never fails the answer", async () => {
@@ -956,6 +985,39 @@ describe("routes", () => {
     for (const revision of ["1", -1, 1.5, null])
       expect((await answer({ revision }, ada)).status).toBe(400);
     expect(heard).toHaveLength(4);
+  });
+
+  test("an answer to a card that changed is a 409 and closes nothing", async () => {
+    const heard: unknown[] = [];
+    inbox.onSupervisorAnswer("lead:acme", (_item, _answer, _by, context) => {
+      heard.push(context);
+    });
+    const { item } = await needsYou({ dedupeKey: "stale" });
+    clock += 1000;
+    const rewritten = await needsYou({
+      dedupeKey: "stale",
+      body: "Errors tripled.",
+    });
+    const ada = { login: "ada", name: "Ada Lovelace" };
+    const response = await call(
+      "POST",
+      `/api/supervisor/items/${item.id}/answer`,
+      { user: "Ada", answer: "1", revision: item.updatedAt },
+      ada,
+    );
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toEqual({ error: "changed" });
+    const [still] = await inbox.listSupervisorItems("Ada");
+    expect(still).toMatchObject({ id: item.id, state: "open" });
+    expect(heard).toEqual([]);
+    const fresh = await call(
+      "POST",
+      `/api/supervisor/items/${item.id}/answer`,
+      { user: "Ada", answer: "1", revision: rewritten.revision },
+      ada,
+    );
+    expect(fresh?.status).toBe(200);
+    expect(heard).toEqual([{ login: "ada", revision: rewritten.revision }]);
   });
 
   test("lists each item's revision, and a lead item's recorded steps", async () => {

@@ -2488,11 +2488,17 @@ enum OS1API {
         var isOpen: Bool { state == "open" }
         var created: Date? { createdAt.map { Date(timeIntervalSince1970: $0 / 1000) } }
 
-        /// The body without the server's own lines for the steps when `act`
-        /// shows them: exactly the ending the server names, else the whole
-        /// body.
+        /// This card as shown: the item at this revision. A re-raised item
+        /// (same id, new revision) is a new card.
+        var cardKey: String { "\(id)@\(revision.map(String.init) ?? "")" }
+
+        /// The body without the server's own lines for the steps when the
+        /// steps section is drawn (`act` with steps): exactly the ending the
+        /// server names, else the whole body.
         var shownBody: String {
-            guard let suffix = act?.bodySuffix, !suffix.isEmpty else { return body }
+            guard let act, !act.steps.isEmpty,
+                  let suffix = act.bodySuffix, !suffix.isEmpty
+            else { return body }
             let tail = Array(suffix.utf8)
             guard body.utf8.count > tail.count, body.utf8.suffix(tail.count).elementsEqual(tail)
             else { return body }
@@ -2552,6 +2558,8 @@ enum OS1API {
         /// `applied`, `failed` or `partial`.
         let state: String
         /// The state in the server's words once approved: "Ready to apply".
+        /// Blob shows only open items, so it never draws this; decoded for
+        /// clients that show approved ones.
         let stateLine: String?
         /// The server's lines the body ends with, for `shownBody`.
         let bodySuffix: String?

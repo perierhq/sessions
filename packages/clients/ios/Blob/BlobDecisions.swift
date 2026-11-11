@@ -33,8 +33,12 @@ final class BlobDecisions {
     /// Opened from a `blob://item/<id>` link: shown first, even if it was
     /// skipped or is not a needs-you item.
     private var focused: Item?
-    /// Items Blob has already read aloud, so each is read once.
+    /// Cards (`cardKey`) Blob has already read aloud, so each is read once;
+    /// a re-raised item is read again.
     private var spoken: Set<String> = []
+    /// Items whose revision changed while Blob had them, so their new card
+    /// holds its options for a moment (`BlobDecisionView`).
+    private var revised: Set<String> = []
 
     /// The items still to show, first one current.
     var pending: [Item] {
@@ -70,6 +74,7 @@ final class BlobDecisions {
               let fetched = try? await OS1API.supervisorItems(kind: "needs-you")
         else { return }
         let open = fetched.filter { $0.needsYou && $0.isOpen }
+        noteRevisions(open)
         items = Self.ordered(open)
         // A linked needs-you item that is no longer open was settled elsewhere.
         if let focused, focused.needsYou {
@@ -118,14 +123,30 @@ final class BlobDecisions {
         focused = item
     }
 
-    /// True the first time an item comes up, so Blob reads it once.
+    /// True the first time a card comes up, so Blob reads it once, and
+    /// again when the item is re-raised with a new revision.
     func shouldSpeak(_ item: Item) -> Bool {
-        spoken.insert(item.id).inserted
+        spoken.insert(item.cardKey).inserted
+    }
+
+    /// The item was rewritten while Blob had it: a tap meant for the old
+    /// card must not land on this one.
+    func isRevised(_ item: Item) -> Bool { revised.contains(item.id) }
+
+    private func noteRevisions(_ fresh: [Item]) {
+        let known = items + [focused].compactMap { $0 }
+        for item in fresh {
+            if known.contains(where: { $0.id == item.id && $0.revision != item.revision }) {
+                revised.insert(item.id)
+            }
+        }
     }
 
     /// Sends the answer with the revision of the item as it is shown, so
-    /// approving binds to exactly what was on screen. Success, or the item already closed elsewhere,
-    /// moves on; any other failure keeps it on screen with a reason.
+    /// approving binds to exactly what was on screen. Success, or the item
+    /// already closed elsewhere, moves on. An item rewritten since it was
+    /// read stays open on the server: Blob says so and shows the new card.
+    /// Any other failure keeps it on screen with a reason.
     func answer(_ item: Item, with option: String) async {
         guard sending == nil else { return }
         sending = item.id
@@ -145,7 +166,10 @@ final class BlobDecisions {
             answered += 1
             say("Done. I\u{2019}ll pass it on.")
         } catch {
-            if Self.alreadyClosed(error) {
+            if Self.changed(error) {
+                say("This changed. Have another look.")
+                await reload(item)
+            } else if Self.alreadyClosed(error) {
                 closed.insert(item.id)
                 handled()
                 say("That one was already settled.")
@@ -153,6 +177,18 @@ final class BlobDecisions {
                 say("I couldn\u{2019}t send that. Try again in a moment.")
             }
         }
+    }
+
+    /// Reads the item again after the server said it changed: the queue,
+    /// and a linked item the queue does not hold.
+    private func reload(_ item: Item) async {
+        await refresh()
+        guard let focused, focused.id == item.id, focused.revision == item.revision,
+              let fetched = try? await OS1API.supervisorItems()
+        else { return }
+        let fresh = fetched.first { $0.id == item.id && $0.isOpen }
+        if let fresh { noteRevisions([fresh]) }
+        self.focused = fresh
     }
 
     /// Closes the item on the server without an answer.
@@ -181,6 +217,12 @@ final class BlobDecisions {
         }
     }
 
+    /// The item was rewritten after it was read (409 `changed`).
+    private static func changed(_ error: Error) -> Bool {
+        if case .server("changed")? = error as? OS1API.APIError { return true }
+        return false
+    }
+
     private static func alreadyClosed(_ error: Error) -> Bool {
         switch error as? OS1API.APIError {
         case .server(let message): message == "already closed" || message == "not found"
@@ -193,8 +235,7 @@ final class BlobDecisions {
 #if DEBUG
 extension BlobDecisions {
     /// Three canned decisions for screenshots without a server:
-    /// `BLOB_DEMO_DECISIONS=1`. The first has steps; `BLOB_DEMO_ACT_STATE`
-    /// (`waiting`, `ready`, `applied`) shows it as approved.
+    /// `BLOB_DEMO_DECISIONS=1`. The first has steps.
     static var demoEnabled: Bool { ProcessInfo.processInfo.environment["BLOB_DEMO_DECISIONS"] != nil }
 
     static let demo: [Item] = {
@@ -212,13 +253,6 @@ extension BlobDecisions {
 
         Expires: 17 November 2026, 12:00 UTC
         """
-        let state = ProcessInfo.processInfo.environment["BLOB_DEMO_ACT_STATE"] ?? "proposed"
-        let stateLine: String? = switch state {
-        case "waiting": "Waiting for PR #556 in acme/app to merge"
-        case "ready": "Ready to apply"
-        case "applied": "Applied"
-        default: nil
-        }
         return [
             Item(
                 id: "demo-act",
@@ -241,8 +275,6 @@ extension BlobDecisions {
                     ],
                     runsWhen: "PR #556 in acme/app is merged",
                     expiresAt: expires,
-                    state: state,
-                    stateLine: stateLine,
                     bodySuffix: suffix
                 )
             ),

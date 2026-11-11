@@ -59,6 +59,10 @@ function closeResponse(result: CloseResult): Response {
     return Response.json({ error: "not found" }, { status: 404 });
   if (result.error === "closed")
     return Response.json({ error: "already closed" }, { status: 409 });
+  // The item was rewritten after the client read it: it stays open, and
+  // the client shows the new version.
+  if (result.error === "changed")
+    return Response.json({ error: "changed" }, { status: 409 });
   return Response.json({ error: "missing answer" }, { status: 400 });
 }
 
@@ -116,7 +120,8 @@ export async function handleSupervisorRoutes(
       if (!answer.trim())
         return Response.json({ error: "missing answer" }, { status: 400 });
       // The item's updatedAt as the client showed it. Optional: older
-      // clients send none, and their answers approve nothing.
+      // clients send none, and their answers approve nothing. A revision
+      // the item no longer has answers nothing (409 `changed`).
       const revision: unknown = body?.revision;
       if (
         revision !== undefined &&
