@@ -211,8 +211,55 @@ describe("validation", () => {
       "bad conversation",
       { kind: "support-send", conversationId: "", draftId: "d-1" },
     ],
+    [
+      "pin without addresses",
+      {
+        kind: "support-send",
+        conversationId: "sc_1",
+        draftId: "d-1",
+        pin: { to: [], answersMessageId: null },
+      },
+    ],
+    [
+      "pin with an extra field",
+      {
+        kind: "support-send",
+        conversationId: "sc_1",
+        draftId: "d-1",
+        pin: {
+          to: [{ name: null, address: "a@example.test" }],
+          answersMessageId: null,
+          extra: 1,
+        },
+      },
+    ],
+    [
+      "pin with an empty message id",
+      {
+        kind: "support-send",
+        conversationId: "sc_1",
+        draftId: "d-1",
+        pin: {
+          to: [{ name: null, address: "a@example.test" }],
+          answersMessageId: "",
+        },
+      },
+    ],
   ])("rejects a step: %s", (_name, step) => {
     expect(A.validateLeadStep(step).ok).toBe(false);
+  });
+
+  test("keeps a support-send step's pin", () => {
+    const step = {
+      kind: "support-send" as const,
+      conversationId: "sc_1",
+      draftId: "d-1",
+      pin: {
+        to: [{ name: "C", address: "c@example.test" }],
+        answersMessageId: "m-1@example.test",
+      },
+    };
+    expect(A.validateLeadStep(step)).toEqual({ ok: true, value: step });
   });
 
   test("bounds the step list", () => {

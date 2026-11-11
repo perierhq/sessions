@@ -10,7 +10,11 @@ import type { Incident, Signal } from "../../shared/incidents";
 import type { Goal } from "../goals";
 import { isOpenIncident } from "../../shared/incidents";
 import type { ProjectSettingsDocument } from "../../shared/project-settings";
-import type { InboxConfig, SupportIndexRow } from "../../shared/support";
+import type {
+  InboxConfig,
+  SupportConversation,
+  SupportIndexRow,
+} from "../../shared/support";
 import { configuredRepos } from "../config";
 import { spendInMonth } from "../incidents/response/ledger";
 import {
@@ -48,6 +52,8 @@ export interface LeadOverviewDeps {
   listInboxes(): Promise<InboxConfig[]>;
   /** Index rows of these inboxes' conversations that are open or waiting. */
   openSupportRows(inboxIds: readonly string[]): Promise<SupportIndexRow[]>;
+  /** One support conversation, for a support-send step's pin. */
+  getConversation(id: string): Promise<SupportConversation | null>;
   /** Open pull requests across projects, or null with no indexed source. */
   openPrs(): Promise<OverviewPr[] | null>;
   getGoal(id: string): Promise<Goal | null>;
@@ -175,6 +181,8 @@ const liveDeps: LeadOverviewDeps = {
       inboxIds,
       status: ["open", "waiting"],
     }),
+  getConversation: async (id) =>
+    (await import("../support/store")).getConversation(id),
   openPrs: async () => (await import("../pr-cache")).getOpenPrSummaries(),
   getGoal: async (id) => (await import("../goals")).getGoal(id),
   projectLabel: (project) => configuredRepos()[project]?.label || project,

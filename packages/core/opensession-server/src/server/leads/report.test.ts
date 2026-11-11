@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import type { LeadStep } from "./approvals";
 import {
+  type LeadActContext,
   actBodyRefusal,
   actLines,
   checkLeadAct,
@@ -11,12 +12,13 @@ import {
   proposalLead,
   ruleCopy,
   stepCopy,
+  supportDrafts,
 } from "./report";
 
 const SHA = "abc1234".padEnd(40, "0");
 const NOW = Date.parse("2026-11-10T12:00:00.000Z");
 const DAY = 86_400_000;
-const ctx = {
+const ctx: LeadActContext = {
   project: "acme",
   now: NOW,
   repos: ["acme/app"],
@@ -24,6 +26,16 @@ const ctx = {
     { id: "sig-status", name: "Status page", project: "acme" },
     { id: "sig-up", name: "Upstream\nAPI", project: "example" },
   ],
+  drafts: {
+    "sc-1": {
+      project: "acme",
+      draft: {
+        id: "d-1",
+        to: [{ name: "Customer", address: "customer@example.test" }],
+        answersMessageId: "m-1@example.test",
+      },
+    },
+  },
 };
 const merge = {
   kind: "merge-pr",
@@ -72,7 +84,7 @@ describe("checkLeadAct", () => {
     ["merge-pr", "public-release", true],
     ["autofix-pr", "fix-verified", false],
     ["autofix-pr", "ci-repair", true],
-    ["spawn-worker", "fix-verified", true],
+    ["spawn-worker", "fix-verified", false],
     ["spawn-worker", "support-routine-reply", false],
     ["support-send", "support-routine-reply", true],
     ["support-send", "ci-repair", false],
@@ -97,7 +109,83 @@ describe("checkLeadAct", () => {
     };
     const result = checkLeadAct({ category, steps: [steps[kind]] }, ctx);
     expect(result.ok).toBe(fits);
-    if (!result.ok) expect(result.error).toContain(`${kind} doesn't fit`);
+    if (!result.ok)
+      expect(result.error).toContain(
+        kind === "spawn-worker" && category === "fix-verified"
+          ? "starting a worker is not available yet"
+          : `${kind} doesn't fit`,
+      );
+  });
+
+  test("supportDrafts reads each named conversation once", async () => {
+    const reads: string[] = [];
+    const to = [{ name: null, address: "c@example.test" }];
+    const drafts = await supportDrafts(
+      [
+        { kind: "support-send", conversationId: "sc-1", draftId: "d-1" },
+        { kind: "support-send", conversationId: "sc-1", draftId: "d-1" },
+        { kind: "support-send", conversationId: "sc-gone", draftId: "d-1" },
+        { kind: "merge-pr", conversationId: "sc-2" },
+      ],
+      async (id) => {
+        reads.push(id);
+        return id === "sc-1"
+          ? ({
+              project: "acme",
+              draft: { id: "d-1", to, answersMessageId: null, text: "Hi" },
+            } as never)
+          : null;
+      },
+    );
+    expect(reads).toEqual(["sc-1", "sc-gone"]);
+    expect(drafts).toEqual({
+      "sc-1": {
+        project: "acme",
+        draft: { id: "d-1", to, answersMessageId: null },
+      },
+    });
+  });
+
+  test("a support-send step is pinned to its draft's target, read now", () => {
+    const send = {
+      kind: "support-send",
+      conversationId: "sc-1",
+      draftId: "d-1",
+      // The lead's own pin is dropped.
+      pin: {
+        to: [{ name: null, address: "x@example.test" }],
+        answersMessageId: null,
+      },
+    };
+    const category = "support-routine-reply" as const;
+    const result = checkLeadAct({ category, steps: [send] }, ctx);
+    expect(result.ok && result.value.steps).toEqual([
+      {
+        kind: "support-send",
+        conversationId: "sc-1",
+        draftId: "d-1",
+        pin: {
+          to: [{ name: "Customer", address: "customer@example.test" }],
+          answersMessageId: "m-1@example.test",
+        },
+      },
+    ]);
+    const refused = (drafts: LeadActContext["drafts"]) => {
+      const r = checkLeadAct({ category, steps: [send] }, { ...ctx, drafts });
+      return r.ok ? "" : r.error;
+    };
+    expect(refused(undefined)).toContain(
+      "sc-1 is not a support conversation of this project",
+    );
+    expect(
+      refused({ "sc-1": { ...ctx.drafts!["sc-1"]!, project: "other" } }),
+    ).toContain("is not a support conversation of this project");
+    expect(
+      refused({ "sc-1": { project: "acme", draft: { id: "d-2" } } }),
+    ).toContain("d-1 is not the conversation's current draft");
+    expect(
+      refused({ "sc-1": { project: "acme", draft: { id: "d-1" } } }),
+    ).toContain("has no recipient yet");
   });
 
   test("refuses a repository outside the project, in steps and conditions", () => {

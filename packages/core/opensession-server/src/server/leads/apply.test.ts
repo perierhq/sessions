@@ -10,6 +10,7 @@ import type { PrSnapshot } from "../../shared/incident-response";
 import type { Signal } from "../../shared/incidents";
 import type { LeadCategory } from "../../shared/project-lead";
 import type { SupportConversation } from "../../shared/support";
+import { RULES } from "../support/policy";
 import type { PrRef } from "../../agents/github/review";
 import {
   defaultProjectDocument,
@@ -31,11 +32,13 @@ import {
   type AutofixPr,
   FORCE_MERGE_LINE,
   type LeadApplyDeps,
-  type WorkerInput,
-  type WorkerResult,
+  COORDINATE_STEPS,
+  WORKER_UNAVAILABLE,
   __setLeadApplyDepsForTest,
   applyGate,
   leadApply,
+  personStepped,
+  samePin,
   signalHolds,
 } from "./apply";
 import type { ConditionResult } from "./conditions";
@@ -72,8 +75,6 @@ let fakes: Partial<LeadApplyDeps> = {};
 let autofixPrs: Map<string, AutofixPr>;
 let autofixStarts: PrRef[] = [];
 let autofixRunning = false;
-let workers: WorkerInput[] = [];
-let workerResult: (input: WorkerInput) => WorkerResult;
 let conversations: Map<string, SupportConversation>;
 let sends: unknown[][] = [];
 let sendResult:
@@ -82,6 +83,8 @@ let sendResult:
 
 const CONV = "sc_0001";
 const DRAFT = "sd_0001";
+const TO = [{ name: "Customer", address: "customer@example.test" }];
+const ANSWERS = "m-in-1@example.test";
 
 function conversation(
   over: Partial<SupportConversation> = {},
@@ -90,7 +93,16 @@ function conversation(
     id: CONV,
     project: "acme",
     messages: [],
-    draft: { id: DRAFT, text: "Thanks, it's fixed.", state: "veto" },
+    events: [],
+    draft: {
+      id: DRAFT,
+      text: "Thanks, it's fixed.",
+      state: "veto",
+      rule: "Sends when the veto window ends",
+      decidedBy: null,
+      to: TO,
+      answersMessageId: ANSWERS,
+    },
     ...over,
   } as never;
 }
@@ -193,12 +205,6 @@ beforeEach(() => {
   ]);
   autofixStarts = [];
   autofixRunning = false;
-  workers = [];
-  workerResult = (input) => ({
-    ok: true,
-    sessionId: `ses-${input.requestId}`,
-    already: false,
-  });
   conversations = new Map([[CONV, conversation()]]);
   sends = [];
   sendResult = { ok: true };
@@ -255,10 +261,6 @@ beforeEach(() => {
       autofixStarts.push(ref);
       return "started";
     },
-    spawnWorker: async (input) => {
-      workers.push(input);
-      return workerResult(input);
-    },
     getConversation: async (id) =>
       structuredClone(conversations.get(id) ?? null),
     sendDraft: (async (...args: unknown[]) => {
@@ -305,6 +307,7 @@ const supportStep = () => ({
   kind: "support-send",
   conversationId: CONV,
   draftId: DRAFT,
+  pin: { to: TO, answersMessageId: ANSWERS },
 });
 
 const patchStep = (over: Record<string, unknown> = {}) => ({
@@ -443,7 +446,8 @@ describe("applyGate", () => {
     });
   });
 
-  test("coordinate: the rules run workers and autofix alone, nothing else", () => {
+  test("coordinate: the rules run autofix alone, nothing else", () => {
+    expect(COORDINATE_STEPS).toEqual(["autofix-pr"]);
     withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
     const autofix = {
       kind: "autofix-pr" as const,
@@ -451,13 +455,8 @@ describe("applyGate", () => {
       number: 12,
       headSha: SHA,
     };
-    const worker = { kind: "spawn-worker" as const, prompt: "Fix the test." };
     expect(
-      applyGate(
-        doc,
-        fakeRecord("ci-repair", undefined, [autofix, worker]),
-        NOW,
-      ),
+      applyGate(doc, fakeRecord("ci-repair", undefined, [autofix]), NOW),
     ).toMatchObject({ ok: true, mode: "alone" });
     // A merge among them still needs the owner, and approved runs wait.
     const merge = applyGate(
@@ -798,71 +797,38 @@ describe("leadApply", () => {
     expect(autofixStarts).toHaveLength(0);
   });
 
-  test("starts a worker from the lead's goal, for the owner, with the prompt as approved", async () => {
-    withLead({
-      goalId: "goal-1",
-    } as never);
-    const prompt = "Fix the flaky search test.\nOpen a PR.";
-    const p = await approved("fix-verified", [
-      { kind: "spawn-worker", prompt },
-    ]);
-    expect(await leadApply("acme", p.id)).toMatchObject({ ok: true });
-    expect(workers).toEqual([
-      {
-        project: "acme",
-        goalId: "goal-1",
-        owner: "Ada",
-        prompt,
-        requestId: `lead-apply:${p.id}:1`,
-      },
-    ]);
-    expect(audits).toContainEqual(
-      expect.objectContaining({
-        step: 1,
-        phase: "result",
-        result: "spawned",
-        sessionId: `ses-lead-apply:${p.id}:1`,
-        promptDigest: expect.any(String),
-      }),
+  test("a worker step never runs: not available yet, alone or approved", async () => {
+    const worker = { kind: "spawn-worker", prompt: "Fix it." };
+    const p = await approved("fix-verified", [worker]);
+    const result = await leadApply("acme", p.id);
+    expect(result.ok).toBe(false);
+    expect(result.text).toStartWith(WORKER_UNAVAILABLE);
+    // Refused before the claim: nothing ran and the approval still stands.
+    expect(await state(p.id)).toBe("ready");
+
+    withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
+    const alone = await propose("ci-repair", [autofixStep(), worker]);
+    expect((await leadApply("acme", alone.id)).text).toStartWith(
+      WORKER_UNAVAILABLE,
     );
-    expect(JSON.stringify(audits)).not.toContain("flaky search");
-  });
-
-  test("a worker that exists already counts as done; a refused spawn fails in fixed copy", async () => {
-    workerResult = (input) => ({
-      ok: true,
-      sessionId: `ses-${input.requestId}`,
-      already: true,
-    });
-    const again = await approved("fix-verified", [
-      { kind: "spawn-worker", prompt: "Fix it." },
-    ]);
-    expect(await leadApply("acme", again.id)).toMatchObject({ ok: true });
-    expect(String(posts.at(-1)!.body)).toContain("(already done)");
-
-    const RAW = "spawn_task refused: depth 2";
-    workerResult = () => ({ ok: false, error: RAW });
-    const warn = console.warn;
-    console.warn = () => {};
-    try {
-      const refused = await approved("fix-verified", [
-        { kind: "spawn-worker", prompt: "Fix it." },
-      ]);
-      const result = await leadApply("acme", refused.id);
-      expect(result).toMatchObject({ ok: false, state: "failed" });
-      expect(result.text).toContain("The worker could not be started");
-      expect(result.text).not.toContain(RAW);
-      expect(JSON.stringify(audits)).not.toContain(RAW);
-    } finally {
-      console.warn = warn;
-    }
+    expect(autofixStarts).toHaveLength(0);
+    expect((await getRecord("acme", alone.id))?.approval).toBeUndefined();
   });
 
   test("sends an approved support reply as the approver", async () => {
     const p = await approved("support-routine-reply", [supportStep()]);
     expect(await leadApply("acme", p.id)).toMatchObject({ ok: true });
     expect(sends).toEqual([
-      [CONV, DRAFT, { kind: "person", name: "Ada", login: "ada-example" }],
+      [
+        CONV,
+        DRAFT,
+        {
+          kind: "person",
+          name: "Ada",
+          login: "ada-example",
+          approvedVia: "lead",
+        },
+      ],
     ]);
     expect(audits).toContainEqual(
       expect.objectContaining({
@@ -936,19 +902,108 @@ describe("leadApply", () => {
     expect(sends).toHaveLength(1);
   });
 
-  test("coordinate: the rules start a worker and autofix without an approval", async () => {
-    withLead({ stage: "coordinate", goalId: "goal-1" } as never, {
-      "ci-repair": "alone",
-    });
-    const p = await propose("ci-repair", [
-      { kind: "spawn-worker", prompt: "Fix CI." },
-      autofixStep(),
-    ]);
+  test("a support reply goes only to the target pinned at proposal time", async () => {
+    const moved = [
+      {
+        ...conversation().draft,
+        to: [{ name: null, address: "x@example.test" }],
+      },
+      { ...conversation().draft, answersMessageId: "m-in-2@example.test" },
+    ];
+    for (const draft of moved) {
+      conversations.set(CONV, conversation({ draft } as never));
+      const p = await approved("support-routine-reply", [supportStep()]);
+      const result = await leadApply("acme", p.id);
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+      expect(result.text).toContain(
+        `The recipient of the reply in support conversation ${CONV} changed since this was proposed`,
+      );
+    }
+    // A step recorded without a pin never sends.
+    conversations.set(CONV, conversation());
+    const { pin: _, ...unpinned } = supportStep();
+    const old = await approved("support-routine-reply", [unpinned]);
+    expect((await leadApply("acme", old.id)).text).toContain(
+      "changed since this was proposed",
+    );
+    expect(sends).toHaveLength(0);
+  });
+
+  test("a person who stopped the draft or acted after the approval wins", async () => {
+    const base = conversation().draft!;
+    const cases: Array<Partial<SupportConversation>> = [
+      { draft: { ...base, state: "needs-person", rule: RULES.personStopped } },
+      {
+        draft: {
+          ...base,
+          state: "needs-person",
+          decidedBy: { kind: "person", name: "Grace" },
+        },
+      },
+      {
+        events: [
+          {
+            at: new Date(NOW + 1000).toISOString(),
+            kind: "note",
+            actor: { kind: "person", name: "Grace" },
+            detail: "Took it over",
+          },
+        ],
+      },
+    ];
+    for (const over of cases) {
+      conversations.set(CONV, conversation(over));
+      const p = await approved("support-routine-reply", [supportStep()]);
+      clock = NOW + 2000;
+      const result = await leadApply("acme", p.id);
+      clock = NOW;
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+      expect(result.text).toContain(
+        "A person stopped or answered the reply in support conversation",
+      );
+    }
+    expect(sends).toHaveLength(0);
+    // A person's action before the approval doesn't stop it.
+    expect(
+      personStepped(
+        conversation({
+          events: [
+            {
+              at: new Date(NOW - 1000).toISOString(),
+              kind: "note",
+              actor: { kind: "person", name: "Grace" },
+              detail: "Read it",
+            },
+          ],
+        }),
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  test("samePin compares addresses case-insensitively and in order", () => {
+    const pin = { to: TO, answersMessageId: ANSWERS };
+    expect(samePin({ to: TO, answersMessageId: ANSWERS }, pin)).toBe(true);
+    expect(
+      samePin(
+        {
+          to: [{ name: "Customer", address: "CUSTOMER@example.test" }],
+          answersMessageId: ANSWERS,
+        },
+        pin,
+      ),
+    ).toBe(true);
+    expect(samePin({ to: TO, answersMessageId: null }, pin)).toBe(false);
+    expect(samePin({ answersMessageId: ANSWERS }, pin)).toBe(false);
+  });
+
+  test("coordinate: the rules ask the autofix agent without an approval", async () => {
+    withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
+    const p = await propose("ci-repair", [autofixStep()]);
     expect(await leadApply("acme", p.id)).toMatchObject({
       ok: true,
       state: "applied",
     });
-    expect(workers).toHaveLength(1);
     expect(autofixStarts).toHaveLength(1);
     expect((await getRecord("acme", p.id))?.approval).toMatchObject({
       state: "applied",
@@ -958,20 +1013,22 @@ describe("leadApply", () => {
 
   test("coordinate: the rules tightened before a step stop the run: partial", async () => {
     withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
+    autofixPrs.set("acme/web#13", { ...autofixPrs.get("acme/web#12")! });
     const p = await propose("ci-repair", [
-      { kind: "spawn-worker", prompt: "Fix CI." },
       autofixStep(),
+      autofixStep({ number: 13 }),
     ]);
-    workerResult = (input) => {
+    const start = fakes.startAutofix!;
+    fakes.startAutofix = async (ref) => {
       withLead({ stage: "coordinate" }, { "ci-repair": "asks-first" });
-      return { ok: true, sessionId: `ses-${input.requestId}`, already: false };
+      return start(ref);
     };
     const result = await leadApply("acme", p.id);
     expect(result).toMatchObject({ ok: false, state: "partial" });
     expect(result.text).toContain(
       "The lead's rules no longer let this run without the owner",
     );
-    expect(autofixStarts).toHaveLength(0);
+    expect(autofixStarts).toHaveLength(1);
     expect(audits).toContainEqual(
       expect.objectContaining({ step: 2, phase: "stopped" }),
     );

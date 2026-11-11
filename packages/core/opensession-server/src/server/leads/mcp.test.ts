@@ -53,6 +53,7 @@ beforeEach(() => {
     now: () => clock,
     projectDocument: async () => doc,
     listSignals: async () => SIGNALS,
+    getConversation: async () => null,
     listIncidents: async () => fixtureIncidents(),
     listInboxes: async () => [],
     openSupportRows: async () => [],

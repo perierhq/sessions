@@ -305,6 +305,12 @@ function logEvent(
   return { at: iso(now), kind, actor, detail };
 }
 
+/** A send a person approved through their project lead, which the server
+ *  then made: the approval is theirs, the send is the persona's. */
+function approvedViaLead(name: string): string {
+  return `Approved by ${name}, sent by ${personaName()}`;
+}
+
 /** The event-log line of a stored send. */
 function sentDetail(
   draft: SupportDraft,
@@ -312,6 +318,7 @@ function sentDetail(
   edited: boolean,
 ): string {
   if (by.kind !== "person") return "Sent on its own";
+  if (by.approvedVia === "lead") return approvedViaLead(by.name);
   if (draft.author.kind === "person") return `${by.name} replied`;
   return `${by.name} sent the draft ${edited ? "edited" : "unchanged"}`;
 }
@@ -1115,7 +1122,11 @@ async function claimAndDeliver(
           failure = fail(409, "This draft can't be sent");
           return null;
       }
-      if (by.kind === "person") rule = `Sent by ${by.name}`;
+      if (by.kind === "person")
+        rule =
+          by.approvedVia === "lead"
+            ? approvedViaLead(by.name)
+            : `Sent by ${by.name}`;
     }
     originalDigest = null;
     if (editText !== null && editText !== d.text) {
@@ -1317,8 +1328,13 @@ async function deliverInFlight(
     messageId: ourId,
   });
   // Only what a person approved counts as "sent unchanged"; sends that
-  // went out on their own are counted apart.
-  if (draft.author.kind === "agent" && draft.purpose !== "fixed-note")
+  // went out on their own are counted apart. One approved through the
+  // project lead is counted nowhere: nobody read it again at send time.
+  if (
+    draft.author.kind === "agent" &&
+    draft.purpose !== "fixed-note" &&
+    !(by.kind === "person" && by.approvedVia === "lead")
+  )
     await recordDraftOutcome(
       c.inboxId,
       automatic

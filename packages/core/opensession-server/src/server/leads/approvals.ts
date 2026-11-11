@@ -23,6 +23,7 @@
 import { randomUUIDv7 } from "bun";
 import { LEAD_CATEGORIES, type LeadCategory } from "../../shared/project-lead";
 import type { SignalRule } from "../../shared/incidents";
+import type { MailAddress } from "../../shared/support";
 import { catalogDocuments, isValidCatalogKey } from "../catalog-documents";
 import { validateRule } from "../incidents/signal-validation";
 import type { LeadCondition } from "./conditions";
@@ -82,7 +83,22 @@ export type LeadStep =
       before: SignalPatchBefore;
       after: SignalPatchAfter;
     }
-  | { kind: "support-send"; conversationId: string; draftId: string };
+  | {
+      kind: "support-send";
+      conversationId: string;
+      draftId: string;
+      /** The draft's target when the lead proposed it, written by the
+       *  server (report.ts checkLeadAct), never taken from the lead: the
+       *  send refuses when the draft's target moved since. */
+      pin?: SupportSendPin;
+    };
+
+/** Where a support draft goes: its one address and the message it
+ *  answers (shared/support.ts SupportDraft). */
+export interface SupportSendPin {
+  to: MailAddress[];
+  answersMessageId: string | null;
+}
 
 export type LeadStepKind = LeadStep["kind"];
 
@@ -344,6 +360,34 @@ function patchBefore(
   return before;
 }
 
+const ADDRESS_LEN = 320;
+const MAX_PIN_ADDRESSES = 10;
+
+function pinOf(value: unknown): SupportSendPin {
+  const raw = object(value, "pin", ["to", "answersMessageId"]);
+  if (
+    !Array.isArray(raw.to) ||
+    !raw.to.length ||
+    raw.to.length > MAX_PIN_ADDRESSES
+  )
+    fail(`pin.to must list 1 to ${MAX_PIN_ADDRESSES} addresses`);
+  const to = raw.to.map((entry): MailAddress => {
+    const a = object(entry, "pin.to[]", ["name", "address"]);
+    if (a.name !== null && typeof a.name !== "string")
+      fail("pin.to[].name must be a string or null");
+    return {
+      name: a.name as string | null,
+      address: line(a.address, "pin.to[].address", ADDRESS_LEN),
+    };
+  });
+  if (
+    raw.answersMessageId !== null &&
+    (typeof raw.answersMessageId !== "string" || !raw.answersMessageId)
+  )
+    fail("pin.answersMessageId must be a message id or null");
+  return { to, answersMessageId: raw.answersMessageId as string | null };
+}
+
 function stepOf(value: unknown): LeadStep {
   if (!isRecord(value)) fail("step must be an object");
   switch (value.kind) {
@@ -410,11 +454,13 @@ function stepOf(value: unknown): LeadStep {
         "kind",
         "conversationId",
         "draftId",
+        "pin",
       ]);
       return {
         kind: "support-send",
         conversationId: id(raw.conversationId, "conversationId"),
         draftId: id(raw.draftId, "draftId"),
+        ...(raw.pin !== undefined ? { pin: pinOf(raw.pin) } : {}),
       };
     }
     default:
