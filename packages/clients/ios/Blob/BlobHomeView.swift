@@ -74,12 +74,15 @@ struct BlobHomeView: View {
             // stream, and what a turn has taken stays taken until its
             // reply settles (`turnRoom`), so Blob moves once per reply.
             let latched = turnRoom.sends == text.sends && text.replying
+            // What you say and Blob's notices go in a band at the bottom
+            // (`captions`), so they take no pane: Blob stays where it is
+            // while you talk.
             let room = panes.flatMap { panes in
-                historyRevealed ? nil : BlobRoom.find(in: panes.free(
+                historyRevealed ? nil : panes.room(
                     in: Self.blobArea(in: geo.size, insets: insets),
                     leadingTaken: hasContent || (latched && turnRoom.leading),
                     trailingTaken: side || streamingVisuals || (latched && turnRoom.trailing)
-                ))
+                )
             }
             let talkCenter = CGPoint(x: columns.centered.midX, y: geo.size.height * 0.4)
             // Only where Blob is going, never its voice level, so the body
@@ -149,26 +152,18 @@ struct BlobHomeView: View {
                 )
 
                 if !hasContent && !historyRevealed {
-                    if let beside = Self.captionBeside(spot: spot, panes: panes, room: room, columns: columns) {
-                        // Blob sits across a physical fold, so nothing it
-                        // says can go under it: the captions go beside it,
-                        // in the leading pane, level with Blob and ending
-                        // short of it and of the fold.
-                        captionLines(hint: .trailing, alignment: .trailing)
-                            .frame(width: beside.width, alignment: .trailing)
-                            .position(x: beside.midX, y: spot.position.y)
-                            .transition(.opacity)
-                    } else {
-                        // The hint sits under Blob: in the middle while Blob
-                        // is in the middle of a flat surface, toward the fold
-                        // beside one, and toward the corner on one column.
-                        captions(
-                            insets: insets,
-                            column: columns.centered,
-                            hint: room != nil && panes?.physical == false ? .center : .trailing
-                        )
-                        .transition(.opacity)
-                    }
+                    // A band at the bottom, never beside Blob. Beside a
+                    // physical fold the centered column is the leading
+                    // pane's, so the band ends at the fold; the hint keeps
+                    // toward it there, to the middle on a flat wide surface
+                    // and toward the corner on one column.
+                    captions(
+                        insets: insets,
+                        column: columns.centered,
+                        hint: room != nil && panes?.physical == false ? .center : .trailing,
+                        wide: panes != nil
+                    )
+                    .transition(.opacity)
                 }
 
                 if showsLatest {
@@ -286,6 +281,9 @@ struct BlobHomeView: View {
                 }
             }
             if BlobExchange.demoReveal != nil { revealHistory() }
+            if let heard = ProcessInfo.processInfo.environment["BLOB_DEMO_HEARD"] {
+                text.demoHeard(heard, waiting: ProcessInfo.processInfo.environment["BLOB_DEMO_THINKING"] != nil)
+            }
         }
         .task {
             guard ProcessInfo.processInfo.environment["BLOB_DEMO_REPLY"] == "cycle" else { return }
@@ -1023,26 +1021,19 @@ struct BlobHomeView: View {
         }
     }
 
-    /// The last line said, under Blob while you talk. Nothing at all when quiet,
+    /// The last line said, at the bottom while you talk. Nothing at all when quiet,
     /// apart from a one-time hint and any reason a call failed. What is read
     /// (replies, questions, decisions) goes on the page instead.
-    /// `hint`: where the one-time hint sits in the column, under Blob.
-    private func captions(insets: EdgeInsets, column: BlobColumns.Span, hint: Alignment) -> some View {
-        captionLines(hint: hint, alignment: .leading)
+    /// `hint`: where the one-time hint sits in the column.
+    /// `wide`: two panes, where Blob is not under the captions but in the
+    /// middle of the surface. The band then stays put above the keyboard
+    /// and bell, whatever Blob is doing, and what you say keeps its last
+    /// three lines. Notices, errors and hints then keep to the trailing
+    /// side, with the owner's words.
+    private func captions(insets: EdgeInsets, column: BlobColumns.Span, hint: Alignment, wide: Bool) -> some View {
+        captionLines(hint: hint, alignment: wide ? .trailing : .leading, wide: wide)
             .blobColumn(column)
-            .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : talking ? 28 : 60))
-    }
-
-    /// Where the captions go when Blob sits across a physical fold (the open
-    /// Duo with nothing to read): beside Blob in the leading pane, from the
-    /// leading column's start to just short of Blob and of the fold. Nil
-    /// anywhere else, or when that leaves too little room.
-    private static func captionBeside(spot: (position: CGPoint, size: Double), panes: BlobPanes?, room: BlobRoom?, columns: BlobColumns) -> BlobColumns.Span? {
-        guard let panes, panes.physical, room != nil, let leading = columns.leading else { return nil }
-        // Blob's body is 0.4 of its size across its radius.
-        let end = min(spot.position.x - spot.size * 0.4 - 16, panes.fold.minX - 16)
-        guard end - leading.x >= 120 else { return nil }
-        return BlobColumns.Span(x: leading.x, width: end - leading.x)
+            .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : talking && !wide ? 28 : 60))
     }
 
     /// The trailing margin of the write bar: 16 pt on one column; beside two
@@ -1055,17 +1046,17 @@ struct BlobHomeView: View {
     /// The captions' lines; `alignment` for the lines that don't set their
     /// own side (an error, a notice).
     @ViewBuilder
-    private func captionLines(hint: Alignment, alignment: Alignment) -> some View {
+    private func captionLines(hint: Alignment, alignment: Alignment, wide: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if text.active {
-                textCaptions(alignment: alignment)
+                textCaptions(alignment: alignment, wide: wide)
             } else if engine.active, let caption = engine.caption, !caption.text.isEmpty {
                 Text(caption.text)
                     .font(caption.role == .assistant ? .title3 : .callout)
                     .foregroundStyle(caption.role == .assistant ? OS1VisualStyle.text : OS1VisualStyle.textFaint)
                     .frame(maxWidth: .infinity, alignment: caption.role == .assistant ? .leading : .trailing)
                     .multilineTextAlignment(caption.role == .assistant ? .leading : .trailing)
-                    .lineLimit(4)
+                    .blobLines(wide ? 3 : 4, fromEnd: wide, font: caption.role == .assistant ? .title3 : .callout)
                     .transition(.opacity)
             } else if engine.state == .error, let message = engine.errorMessage {
                 Text(message)
@@ -1189,15 +1180,17 @@ struct BlobHomeView: View {
 
     /// Text mode before there is anything to read: what you are saying.
     /// That Blob is working on it is its thought (`BlobThinkingLayer`).
+    /// `wide`: past three lines the start goes, so the newest words show
+    /// (`blobLines`).
     @ViewBuilder
-    private func textCaptions(alignment: Alignment) -> some View {
+    private func textCaptions(alignment: Alignment, wide: Bool) -> some View {
         if !text.heard.isEmpty {
             Text(text.heard)
                 .font(.callout)
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .multilineTextAlignment(.trailing)
-                .lineLimit(3)
+                .blobLines(3, fromEnd: wide, font: .callout)
         } else if text.listener.preparing {
             Text("Getting my ears ready\u{2026}")
                 .font(.footnote)
@@ -1325,6 +1318,37 @@ struct BlobHomeView: View {
             proxy.scrollTo(id, anchor: .center)
         } else {
             withAnimation(.smooth(duration: 0.45)) { proxy.scrollTo(id, anchor: .center) }
+        }
+    }
+}
+
+private extension View {
+    /// At most `count` lines of this text, set in `font`. `fromEnd`: the
+    /// last ones, with the start cut off above them, so the newest words of
+    /// something still being said stay in view; the box is always `count`
+    /// lines tall, so the band it sits in never moves. The text's bottom is
+    /// pinned to the box, whose height is whole lines, so no half line shows;
+    /// the top line fades out to say the start is cut (a mask, not a
+    /// material, so Reduce Transparency changes nothing). Otherwise the
+    /// first lines, ending in an ellipsis.
+    @ViewBuilder
+    func blobLines(_ count: Int, fromEnd: Bool, font: Font) -> some View {
+        if fromEnd {
+            Text(Array(repeating: " ", count: count).joined(separator: "\n"))
+                .font(font)
+                .hidden()
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .bottom) { fixedSize(horizontal: false, vertical: true) }
+                .clipped()
+                .mask {
+                    VStack(spacing: 0) {
+                        LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 14)
+                        Color.black
+                    }
+                }
+        } else {
+            lineLimit(count)
         }
     }
 }

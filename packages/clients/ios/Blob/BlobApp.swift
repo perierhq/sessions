@@ -39,6 +39,7 @@ struct BlobRoot: View {
         let env = ProcessInfo.processInfo.environment
         return BlobDecisions.demoEnabled || env["BLOB_DEMO_HISTORY"] != nil || env["BLOB_DEMO_REPLY"] != nil
             || env["BLOB_DEMO_REPLY_FILE"] != nil || env["BLOB_DEMO_THINKING"] != nil
+            || env["BLOB_DEMO_HEARD"] != nil
         #else
         false
         #endif

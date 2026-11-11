@@ -11,8 +11,8 @@ struct BlobPanes: Equatable {
     var fold: CGRect
     var width: CGFloat
     /// The device's own fold (the open Duo), not just the gap this app keeps
-    /// between two panes on a wide flat surface. Nothing that has to stay
-    /// whole (text, Blob's face, a control) may cross it.
+    /// between two panes on a wide flat surface. No text or control may
+    /// cross it; Blob's face may sit on it only when nothing is shown.
     var physical: Bool
 
     /// The trailing pane's width: what is left after the fold.
@@ -32,6 +32,20 @@ struct BlobPanes: Equatable {
             free.append(CGRect(x: fold.maxX, y: area.minY, width: max(0, area.maxX - fold.maxX), height: area.height))
         }
         return free
+    }
+
+    /// Where Blob goes in `area` (`BlobRoom.find` over `free`). With nothing
+    /// taken, Blob is in the middle of the whole surface, the system strip
+    /// included, so it looks centred on the screen even with the open Duo's
+    /// rail on one side; it may sit on the fold then.
+    func room(in area: CGRect, leadingTaken: Bool, trailingTaken: Bool) -> BlobRoom? {
+        guard var room = BlobRoom.find(in: free(in: area, leadingTaken: leadingTaken, trailingTaken: trailingTaken))
+        else { return nil }
+        if !leadingTaken && !trailingTaken {
+            let half = room.size / 2 + BlobRoom.margin
+            room.center.x = min(max(width / 2, area.minX + half), area.maxX - half)
+        }
+        return room
     }
 
     /// The panes for a full-bleed proxy, or nil for one column. The Duo

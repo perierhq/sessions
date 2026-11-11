@@ -783,15 +783,20 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   goes where it can (`BlobRoom`: the largest region the page leaves free,
   with a 24 pt margin, never over text, cards or the write bar). With
   nothing to read (idle, listening, thinking) Blob sits in the middle of
-  the whole surface, across the fold if there is one. A reply, a question
+  the whole surface, the system strip included (`BlobPanes.room`), so it
+  looks centred on the open Duo with its rail on the side, across the fold
+  if there is one. A reply, a question
   or a decision takes the leading pane and Blob moves to the middle of the
   trailing one. A reply with visual blocks (metrics, tables, charts,
   slides, images, the rest of the block catalog), or with a decision
   waiting beside it, puts those in the trailing pane, top-aligned with
   their own scroll, and Blob goes to its slot. Text never crosses a
-  physical fold, and Blob's thought stays in Blob's region. While Blob
-  sits across the open Duo's fold, its captions (the first-run hint,
-  listening, a notice) go beside it in the leading pane, level with it.
+  physical fold, and Blob's thought stays in Blob's region. Captions (what
+  you are saying, "Listening", a notice, the first-run hint) never go
+  beside Blob and never move it: with two panes they sit in a band at the
+  bottom of the centered column, above the keyboard and bell, right-aligned
+  toward the fold and ending before it. What you say keeps its last three
+  lines there, the start cut off above them (`blobLines`).
   With two panes the write bar stays in the leading pane, ending before
   the fold. Blob travels
   on its spring and the text column keeps its width, so nothing re-wraps;
@@ -869,7 +874,9 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   again every 15 s.
   `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
   `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking, and
-  `BLOB_DEMO_TYPING=1` for text mode.
+  `BLOB_DEMO_TYPING=1` for text mode. `BLOB_DEMO_HEARD=<words>` holds
+  Blob listening with those words heard; with `BLOB_DEMO_THINKING=1`,
+  thinking about them.
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 
