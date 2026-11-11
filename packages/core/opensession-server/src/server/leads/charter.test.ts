@@ -159,10 +159,10 @@ describe("leadCharter", () => {
     );
   });
 
-  test("at coordinate, alone workers run and approvals wait for act", () => {
+  test("at coordinate, alone autofix runs and approvals wait for act", () => {
     const text = charter({ stage: "coordinate" });
     expect(text).toContain(
-      "propose them with spawn-worker or autofix-pr steps and run them with lead_apply",
+      "propose them with autofix-pr steps and run them with lead_apply",
     );
     expect(text).toContain(
       "What the owner approves waits until the project moves to the act stage.",

@@ -545,6 +545,81 @@ command output. The reason agents stopped is shown only on the incident page
 and its inbox row, behind sign-in. Pushed text is stripped of control and
 bidirectional characters.
 
+## Project leads
+
+A project lead (`adrs/supervisor-and-leads.md`) is a goal bound to one
+project. It changes the project only through `lead_apply`
+(`packages/core/opensession-server/src/server/leads/apply.ts`), which runs
+the steps of a proposal the server recorded, and only when the lead's rules
+or the owner's approval allow it. The lead passes a proposal id, never the
+steps. Paths below are under `packages/core/opensession-server/src/`.
+
+- **No owner token, ever.** No step uses the owner's GitHub token or any
+  other credential of theirs. Each step acts under its own identity:
+  - **Merges** go through `mergePinnedPr` as the GitHub App, pinned to the
+    approved head SHA (`server/incidents/response/merge.ts`). Branch
+    protection is checked first (`assessAutoMerge`) and GitHub's own refusal
+    is final, so a lead never bypasses it. A blocked merge fails and the
+    owner is told that merging anyway is a force merge they ask Blob for
+    (`server/force-merge.ts`), which only a person can confirm and which
+    runs with that person's token. The merge comment names the approver:
+    `Merged by Sessions. @<login> approved <sha>.`
+  - **Autofix** calls `fireAutoFix` with the lead's actor
+    (`PROJECT_LEAD_ACTOR`), which is not on the roster, so the loop commits
+    as the App's fallback identity and never as a person. It starts only
+    while the pull request is open, comes from the project's own repository
+    and is still at the approved head.
+  - **Signal patches** are written by `Blob (lead), approved by <login>`,
+    or `Blob (lead), by the project's lead rules` for a run the rules
+    allowed (`patchWriter`). The write happens only while the stored fields
+    equal the proposal's `before`, checked again inside the store's write.
+  - **Support replies** approved by the owner are sent for them, marked
+    approved through the lead and logged `Approved by <name>, sent by Blob` (the
+    instance's persona name, `server/support/reply.ts`). They stay out of
+    the "sent unchanged" counts, since nobody read them again at send time.
+    A reply the rules allow is sent as Sessions, so the inbox's `decideReply`
+    rules and autonomy decide as for any automatic send. The recipient is
+    pinned by the server when the lead proposes, and a person who stopped
+    the draft or acted on the conversation since wins.
+  - **Starting a worker** (`spawn-worker`) is refused. `spawn_task` would
+    start a fully trusted session for the owner (interactive trust, their
+    user, AWS credentials, interactive-only MCP servers), and the restricted
+    path the incident fix loop uses needs an automation's coordinator
+    session that a lead doesn't have yet. It fails closed until one exists.
+- **Only the owner approves.** An approval binds to one recorded proposal,
+  the inbox item revision the owner saw, and the owner's verified GitHub
+  login (`server/leads/goal.ts` `approveFromAnswer`). The login comes from
+  the signed-in person (`verifiedPerson`), never a claimed name or an
+  automation, and must be the lead owner's on the team roster. An answer to
+  a card that changed since it was read gets a 409 `changed` and closes
+  nothing (`server/routes/supervisor.ts`). An approval expires after 7 days
+  by default and at most 30, and a condition it waits on is re-checked when
+  it runs; a condition that can't be read is unknown, never met
+  (`server/leads/conditions.ts`).
+- **Only-you categories are only prepared.** Refunds, pricing, disputes,
+  tax and legal, contracts and writes to production data are pinned to the
+  owner (`PINNED_ONLY_YOU`, `shared/project-lead.ts`); settings can't lower
+  them. `propose` takes them only as a needs-you item the lead prepared, no
+  step kind serves them (`STEP_CATEGORIES`, `server/leads/approvals.ts`),
+  and `lead_apply` refuses any only-you category and voids what still
+  stands for the proposal.
+- **The kill switch is re-checked before each step.** The lead being off or
+  the project's `agentsPaused` refuses `lead_apply` first, again right
+  before the record is claimed, and again before every step
+  (`runStillAllowed`), together with the stage and the category's level. A
+  run they no longer allow stops there.
+- **One run per proposal.** A compare-and-set claim moves an approval to
+  applying, each step's intent is audited before it runs, the first failure
+  stops the run, and nothing re-runs, interrupted or not.
+- **Raw errors never reach the lead.** The lead and the owner's inbox get
+  fixed copy only. Raw text from GitHub, the signal store, support or a
+  condition check is logged on the server and audited as a digest.
+- **The steps the owner reads are the server's.** The server writes the
+  lines saying what runs, when and until when, and refuses a lead's text
+  that imitates them (`actBodyRefusal`, `server/leads/report.ts`). Blob draws
+  the steps from structured fields read from the record, apart from the
+  lead's prose (`server/leads/item-acts.ts`).
+
 ## Mac Keychain requests
 
 The interactive-only `opensession-keychain` server can request one macOS Keychain
