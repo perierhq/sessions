@@ -15,6 +15,7 @@ import { startDiskGc } from "./src/server/disk-gc";
 import { installUnhandledRejectionGuard } from "./src/server/process-guards";
 import { startWorktreeReaper } from "./src/server/worktree-reaper";
 import { startArchiveSweep } from "./src/server/archive-sweep";
+import { isBarkSoundPath } from "./src/server/bark-sound";
 import { startMemoryRepoMaintenance } from "./src/server/memory-repo/maintenance";
 import { startPortalReaper } from "./src/server/portal-supervisor";
 import { startRunnerPortalReaper } from "./src/server/runner-portals";
@@ -617,6 +618,10 @@ const server: import("bun").Server<WSClientData> = hotServe({
         (path === "/api/runners/register" ||
           path === "/api/runners/heartbeat") &&
         req.method === "POST";
+      // Bark downloads a push's spoken sound with a plain client. The
+      // content hash in the path is the capability (bark-sound.ts); the
+      // route serves only sounds the server itself pushed.
+      const openBarkSound = req.method === "GET" && isBarkSoundPath(path);
       // The retired keychain broker URL answers anyone with why it is gone
       // and what to use instead (routes/keychain.ts). It serves nothing.
       const retiredKeychainBroker = isRetiredKeychainBrokerPath(path);
@@ -627,6 +632,7 @@ const server: import("bun").Server<WSClientData> = hotServe({
         !keypadBearer &&
         !openOs1Update &&
         !openRunnerAuth &&
+        !openBarkSound &&
         ((path.startsWith("/api/") && !path.startsWith("/api/auth/")) ||
           path === "/ws" ||
           // Agent-published apps (src/server/deploys.ts). Explicitly

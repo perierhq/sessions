@@ -18,8 +18,16 @@
  *
  * Without encryption Bark's server and APNs see the message, so kinds whose
  * row text people or agents wrote (mentions, comments, reminders, reviews)
- * travel as fixed generic copy; incident, support and supervisor rows already
- * push fixed copy (notifications.ts `pushFor`).
+ * travel as fixed generic copy with no subtitle; incident, support and
+ * supervisor rows already push fixed copy (notifications.ts `pushFor`).
+ * The subtitle is the row's project. Only a sealed push may carry the
+ * event's `sealedMarkdown` (the digest's item titles).
+ *
+ * A supervisor push wears Blob's icon, sets the badge to the open needs-you
+ * items, keeps its `ttl` to the item's expiry, rings on (`call`) only when
+ * critical, and, with "speak" on, plays Blob reading its fixed copy
+ * (bark-sound.ts). A row marked done is retracted (`retractBarkNotifications`,
+ * from notifications.ts `markNotifications`).
  *
  * Encryption mirrors the Bark app at Finb/Bark@e681a1dc:
  * - Model/Algorithm.swift L24-33: AES128/192/256 take a key of 16/24/32
@@ -37,11 +45,28 @@
  *   JSON object whose keys (lowercased) replace the push's fields, so the
  *   whole message is sealed and sent as `ciphertext` with its `iv`.
  * ECB (no IV) is left out on purpose: it leaks repeated blocks.
+ *
+ * `id` and `delete`, checked against bark-server@a365aa9d and
+ * Finb/Bark@9d006ab1:
+ * - bark-server route_push.go L220-222 reads `id` in clear as the APNs
+ *   collapse id (apns.go L143); the notification's identifier on the phone.
+ * - CiphertextProcessor.swift L56-57 replaces the push's fields with the
+ *   decrypted ones, so a sealed push repeats `id` inside the ciphertext:
+ *   ArchiveProcessor.swift L29 and L50 file the history entry under it.
+ * - apns.go L37-40 and L112-116: `delete` must be in clear, as it makes the
+ *   server send a silent background push; AppDelegate.swift L108-122 then
+ *   removes the notification and the history entry by the clear `id`. A
+ *   retract therefore sends only the device key, `id` and `delete`, never
+ *   anything sealed, and works the same with and without encryption.
+ * - A silent push runs no notification extension, so it cannot set the
+ *   badge (BadgeProcessor.swift): the badge is set by the next supervisor
+ *   push, and Bark clears it when it opens (SceneDelegate.swift L50-51).
  */
 import { createCipheriv, randomBytes, type CipherGCM } from "node:crypto";
 import { configuredServer } from "./config";
 import {
   hasFixedPush,
+  pushSafeText,
   type NotificationDelivery,
   type NotificationEvent,
   type NotificationKind,
@@ -55,7 +80,11 @@ import {
   pinnedFetch,
   type PinnedFetchDeps,
 } from "./shared/pinned-fetch";
-import { readSupervisorBark, updateSupervisorBark } from "./supervisor-inbox";
+import { BLOB_NOTIFICATION_ICON_PATH, isBlobActor } from "./session-actors";
+import {
+  readSupervisorBarkState,
+  updateSupervisorBark,
+} from "./supervisor-inbox";
 import {
   deleteWorkspaceSecretAsync,
   putWorkspaceSecretAsync,
@@ -88,10 +117,22 @@ export interface BarkMessage {
   title: string;
   body: string;
   subtitle?: string;
+  /** Shown instead of `body` (Bark ignores `body` when it is set); `body`
+   *  stays as the fallback. */
+  markdown?: string;
   level: BarkLevel;
+  /** `"1"` rings for 30 seconds; only with `level: "critical"`. */
+  call?: "1";
   group: string;
   url?: string;
   icon?: string;
+  /** The app badge, set to this number. */
+  badge?: string;
+  /** Seconds Bark keeps the push in its history and Notification Center. */
+  ttl?: string;
+  /** A sound file to play (bark-sound.ts), with `sound` as its fallback. */
+  soundUrl?: string;
+  sound?: string;
   isArchive: "1";
 }
 
@@ -99,6 +140,8 @@ interface BarkRecord {
   enabled: boolean;
   serverUrl: string;
   openIn: BarkOpenIn;
+  /** Supervisor pushes play Blob reading their fixed copy (bark-sound.ts). */
+  speak: boolean;
   deviceKeyRef?: string;
   /** The key's last four characters, so Settings can show which one. */
   deviceKeyHint?: string;
@@ -113,6 +156,9 @@ export interface BarkSettingsView {
   enabled: boolean;
   serverUrl: string;
   openIn: BarkOpenIn;
+  speak: boolean;
+  /** Whether this server can make the spoken sound at all (bark-sound.ts). */
+  speakAvailable: boolean;
   /** Masked, e.g. `••••gRA4`; null when none is set. */
   deviceKey: string | null;
   encryption: { algorithm: BarkAlgorithm; mode: BarkMode } | null;
@@ -122,6 +168,7 @@ export interface BarkPatch {
   enabled?: boolean;
   serverUrl?: string;
   openIn?: BarkOpenIn;
+  speak?: boolean;
   /** A new key; null removes it. */
   deviceKey?: string | null;
   /** New settings; `key` may be left out to keep the stored one when the
@@ -197,9 +244,11 @@ function cleanRecord(value: unknown): BarkRecord {
     enabled: false,
     serverUrl: BARK_DEFAULT_SERVER,
     openIn: "blob",
+    speak: false,
   };
   if (!isRecord(value)) return record;
   record.enabled = value.enabled === true;
+  record.speak = value.speak === true;
   // Kept as saved: a server that no longer passes is refused at send time,
   // never swapped for the default, which would get the device key.
   if (typeof value.serverUrl === "string" && value.serverUrl)
@@ -233,11 +282,13 @@ function cleanRecord(value: unknown): BarkRecord {
   return record;
 }
 
-function view(record: BarkRecord): BarkSettingsView {
+function view(record: BarkRecord, speakAvailable: boolean): BarkSettingsView {
   return {
     enabled: record.enabled,
     serverUrl: record.serverUrl,
     openIn: record.openIn,
+    speak: record.speak,
+    speakAvailable,
     deviceKey: record.deviceKeyRef ? `••••${record.deviceKeyHint ?? ""}` : null,
     encryption: record.encryption
       ? {
@@ -278,6 +329,11 @@ export function validateBarkPatch(
   if ("openIn" in body) {
     if (!isOpenIn(body.openIn)) return { error: "openIn must be blob or web" };
     patch.openIn = body.openIn;
+  }
+  if ("speak" in body) {
+    if (typeof body.speak !== "boolean")
+      return { error: "speak must be true or false" };
+    patch.speak = body.speak;
   }
   if ("deviceKey" in body) {
     if (body.deviceKey === null || body.deviceKey === "")
@@ -325,8 +381,20 @@ export function validateBarkPatch(
 
 // ── Settings ────────────────────────────────────────────────────────────────
 
+async function speakAvailable(): Promise<boolean> {
+  try {
+    return await (await import("./bark-sound")).barkSoundAvailable();
+  } catch {
+    return false;
+  }
+}
+
 export async function getBarkSettings(user: string): Promise<BarkSettingsView> {
-  return view(cleanRecord(await readSupervisorBark(user)));
+  const [{ bark }, available] = await Promise.all([
+    readSupervisorBarkState(user),
+    speakAvailable(),
+  ]);
+  return view(cleanRecord(bark), available);
 }
 
 function refsOf(record: BarkRecord): string[] {
@@ -383,6 +451,7 @@ export async function setBarkSettings(
       const next: BarkRecord = { ...current };
       if (patch.serverUrl !== undefined) next.serverUrl = patch.serverUrl;
       if (patch.openIn !== undefined) next.openIn = patch.openIn;
+      if (patch.speak !== undefined) next.speak = patch.speak;
       if (patch.deviceKey === null) {
         delete next.deviceKeyRef;
         delete next.deviceKeyHint;
@@ -431,7 +500,10 @@ export async function setBarkSettings(
   );
   if (results.some((result) => result.status === "rejected"))
     console.warn("[bark] could not delete a replaced key");
-  return { ok: true, settings: view(outcome.record) };
+  return {
+    ok: true,
+    settings: view(outcome.record, await speakAvailable()),
+  };
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────
@@ -441,11 +513,13 @@ function publicBase(): string {
   return configuredServer().publicBaseUrl.replace(/\/+$/, "");
 }
 
-/** The instance icon, when the instance is reachable over https. */
-function iconUrl(base: string): string | undefined {
-  return base.startsWith("https://")
-    ? `${base}/apple-touch-icon.png`
-    : undefined;
+/** The push's icon, when the instance is reachable over https: Blob's for
+ *  a push from Blob, the instance's for anything else. */
+function iconUrl(base: string, blob = false): string | undefined {
+  if (!base.startsWith("https://")) return undefined;
+  return blob
+    ? `${base}${BLOB_NOTIFICATION_ICON_PATH}`
+    : `${base}/apple-touch-icon.png`;
 }
 
 function absoluteUrl(
@@ -489,18 +563,53 @@ const GENERIC_TITLE: Partial<Record<NotificationKind, string>> = {
 };
 export const BARK_GENERIC_BODY = "Open Sessions to see it";
 
+/** Bounds on `ttl`: long enough to be seen, never past Bark's own month. */
+const TTL_MIN_SECONDS = 60;
+const TTL_MAX_SECONDS = 30 * 24 * 60 * 60;
+/** Longest `markdown` sent; the sealed payload must fit APNs' 4 KB. */
+const MARKDOWN_MAX = 1000;
+/** The ringtone a spoken push falls back to when its sound can't load. */
+export const BARK_FALLBACK_SOUND = "minuet";
+
+/** Seconds from `now` until `expiresAt`, within the bounds above. */
+export function barkTtl(expiresAt: number, now: number): string {
+  const seconds = Math.round((expiresAt - now) / 1000);
+  return String(Math.min(TTL_MAX_SECONDS, Math.max(TTL_MIN_SECONDS, seconds)));
+}
+
+/** Text that actually uses Markdown: emphasis, code, a link or a list. */
+function hasMarkdown(text: string): boolean {
+  return /\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\)|^\s*(?:[-*+]|\d+\.)\s/m.test(
+    text,
+  );
+}
+
+export interface BarkMessageOptions {
+  sealed: boolean;
+  openIn?: BarkOpenIn;
+  base?: string;
+  now?: number;
+  /** Open needs-you items: the app badge on a supervisor push. */
+  badge?: number;
+  /** Blob reading the push aloud (bark-sound.ts). */
+  soundUrl?: string;
+}
+
 /**
  * The Bark message for a notification, from the Web Push payload `pushFor`
- * built. Sent in clear, a kind without fixed push copy says only its kind.
- * A supervisor decision opens the item in Blob when the person chose that;
- * anything else opens its web page.
+ * built. Sent in clear, a kind without fixed push copy says only its kind,
+ * with no subtitle. A supervisor decision opens the item in Blob when the
+ * person chose that; anything else opens its web page. A push from the
+ * supervisor wears Blob's icon and sets the badge to the open needs-you
+ * items; a count of 0 is left out, as Bark's 0 also clears its Notification
+ * Center, this push included.
  */
 export function barkMessageFor(
   thread: NotificationThread,
   event: NotificationEvent,
   delivery: Exclude<NotificationDelivery, "quiet">,
   payload: PushPayload,
-  options: { sealed: boolean; openIn?: BarkOpenIn; base?: string },
+  options: BarkMessageOptions,
 ): BarkMessage {
   const base = options.base ?? publicBase();
   const fixed = hasFixedPush(thread.subject.type);
@@ -510,18 +619,39 @@ export function barkMessageFor(
     (options.openIn ?? "blob") === "blob"
       ? `blob://item/${encodeURIComponent(thread.subject.id)}`
       : absoluteUrl(base, thread.url);
-  const icon = iconUrl(base);
   const supervisor = thread.subject.type === "supervisor";
+  const icon = iconUrl(base, supervisor || isBlobActor(thread.actor));
+  const level = barkLevel(thread, event, delivery);
+  const subtitle = plain ? "" : pushSafeText(thread.subject.context ?? "");
+  const expiresAt = fixed ? event.push?.expiresAt : undefined;
+  // Agent text a sealed push may list; only when it is Markdown at all.
+  const sealedMarkdown =
+    options.sealed && fixed ? event.push?.sealedMarkdown?.trim() : undefined;
+  const markdown =
+    sealedMarkdown && hasMarkdown(sealedMarkdown)
+      ? sealedMarkdown.slice(0, MARKDOWN_MAX)
+      : undefined;
   return {
     title: plain
       ? (GENERIC_TITLE[thread.kind] ?? "New notification")
       : payload.title,
+    ...(subtitle ? { subtitle } : {}),
     body: plain ? BARK_GENERIC_BODY : (payload.body ?? ""),
-    level: barkLevel(thread, event, delivery),
-    group:
-      (!plain && thread.subject.context) || (supervisor ? "Blob" : "Sessions"),
+    ...(markdown ? { markdown } : {}),
+    level,
+    ...(level === "critical" ? { call: "1" as const } : {}),
+    group: (!plain && subtitle) || (supervisor ? "Blob" : "Sessions"),
     ...(url ? { url } : {}),
     ...(icon ? { icon } : {}),
+    ...(supervisor && options.badge
+      ? { badge: String(Math.max(0, Math.floor(options.badge))) }
+      : {}),
+    ...(expiresAt !== undefined
+      ? { ttl: barkTtl(expiresAt, options.now ?? Date.now()) }
+      : {}),
+    ...(options.soundUrl
+      ? { soundUrl: options.soundUrl, sound: BARK_FALLBACK_SOUND }
+      : {}),
     isArchive: "1",
   };
 }
@@ -557,7 +687,8 @@ export function encryptForBark(
 /**
  * The JSON body for `POST <server>/push`. With encryption the whole message
  * travels as `ciphertext` + `iv`; only the device key and the collapse id,
- * a hash, stay in clear.
+ * a hash, stay in clear. The id is sealed in as well: the app files the
+ * history entry under the decrypted fields (see the file header).
  */
 export function barkRequestBody(
   deviceKey: string,
@@ -566,7 +697,12 @@ export function barkRequestBody(
 ): Record<string, string> {
   const body: Record<string, string> = { device_key: deviceKey };
   if (options.encryption) {
-    const sealed = encryptForBark(JSON.stringify(message), options.encryption);
+    const sealed = encryptForBark(
+      JSON.stringify(
+        options.collapseId ? { ...message, id: options.collapseId } : message,
+      ),
+      options.encryption,
+    );
     body.ciphertext = sealed.ciphertext;
     body.iv = sealed.iv;
   } else
@@ -576,12 +712,25 @@ export function barkRequestBody(
   return body;
 }
 
+/** The body that retracts the push filed under `collapseId`: always in
+ *  clear, encrypted or not, as bark-server must see `delete` to send it as
+ *  a silent push (see the file header). Says nothing but the hash. */
+export function barkDeleteBody(
+  deviceKey: string,
+  collapseId: string,
+): Record<string, string> {
+  return { device_key: deviceKey, id: collapseId, delete: "1" };
+}
+
 // ── Sending ─────────────────────────────────────────────────────────────────
 
 interface BarkTarget {
   serverUrl: string;
   deviceKey: string;
   openIn: BarkOpenIn;
+  speak: boolean;
+  /** Open needs-you items when the settings were read. */
+  openNeedsYou: number;
   encryption?: BarkEncryption;
 }
 
@@ -589,7 +738,8 @@ async function barkTarget(
   user: string,
   { requireEnabled }: { requireEnabled: boolean },
 ): Promise<BarkTarget | null> {
-  const record = cleanRecord(await readSupervisorBark(user));
+  const state = await readSupervisorBarkState(user);
+  const record = cleanRecord(state.bark);
   if (!record.deviceKeyRef || (requireEnabled && !record.enabled)) return null;
   // Never fall back to sending in clear what was meant to be sealed.
   if (record.encryptionUnusable) {
@@ -623,6 +773,8 @@ async function barkTarget(
     serverUrl,
     deviceKey,
     openIn: record.openIn,
+    speak: record.speak,
+    openNeedsYou: state.openNeedsYou,
     ...(encryption ? { encryption } : {}),
   };
 }
@@ -655,12 +807,20 @@ async function postBark(
   message: BarkMessage,
   collapseId?: string,
 ): Promise<BarkSendResult> {
-  const body = JSON.stringify(
+  return postBarkBody(
+    target,
     barkRequestBody(target.deviceKey, message, {
       ...(target.encryption ? { encryption: target.encryption } : {}),
       ...(collapseId ? { collapseId } : {}),
     }),
   );
+}
+
+async function postBarkBody(
+  target: BarkTarget,
+  fields: Record<string, string>,
+): Promise<BarkSendResult> {
+  const body = JSON.stringify(fields);
   const attempts = timing.retryDelaysMs.length + 1;
   let error = "Bark did not answer";
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -718,17 +878,91 @@ export async function sendBarkNotification(
   try {
     const target = await barkTarget(user, { requireEnabled: true });
     if (!target) return;
+    const base = publicBase();
+    const soundUrl =
+      target.speak && delivery === "alert"
+        ? await spokenSoundUrl(thread, event, base)
+        : undefined;
     await postBark(
       target,
       barkMessageFor(thread, event, delivery, payload, {
         sealed: Boolean(target.encryption),
         openIn: target.openIn,
+        base,
+        badge: target.openNeedsYou,
+        ...(soundUrl ? { soundUrl } : {}),
       }),
       collapseId,
     );
   } catch (error) {
     console.warn(
       "[bark] push failed:",
+      error instanceof Error ? error.message : "unknown error",
+    );
+  }
+}
+
+/** Kinds Blob may read aloud: their push says only fixed copy. */
+const SPOKEN_KINDS = new Set<NotificationKind>([
+  "supervisor_needs_you",
+  "supervisor_digest",
+]);
+const SPOKEN_MAX = 200;
+
+/** What Blob says for a push, or nothing: only a supervisor kind with fixed
+ *  wording (its reason and the event's fixed push body), never the row. */
+export function barkSpokenText(
+  thread: Pick<NotificationThread, "kind" | "reason" | "subject">,
+  event: Pick<NotificationEvent, "push">,
+): string | undefined {
+  if (!SPOKEN_KINDS.has(thread.kind) || thread.subject.type !== "supervisor")
+    return undefined;
+  const body = event.push?.body;
+  if (!body) return undefined;
+  const text = pushSafeText(`${thread.reason}. ${body}`);
+  return text.slice(0, SPOKEN_MAX);
+}
+
+/** The spoken sound's URL, when the push may speak and the server can make
+ *  it. Never throws and never waits for the audio itself. */
+async function spokenSoundUrl(
+  thread: NotificationThread,
+  event: NotificationEvent,
+  base: string,
+): Promise<string | undefined> {
+  const text = barkSpokenText(thread, event);
+  if (!text || !base.startsWith("https://")) return undefined;
+  try {
+    return await (await import("./bark-sound")).barkSoundUrl(text, base);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Most pushes one mark retracts: marking everything done never turns into
+ *  a burst of hundreds of requests. */
+export const BARK_RETRACT_MAX = 20;
+
+/**
+ * Take the pushes filed under these collapse ids off the person's iPhone
+ * (Notification Center and Bark's history), when Bark is on. Best-effort:
+ * never throws, so callers start it without waiting. Needs Background App
+ * Refresh on for Bark, as the command is a silent push.
+ */
+export async function retractBarkNotifications(
+  user: string,
+  collapseIds: string[],
+): Promise<void> {
+  try {
+    const ids = [...new Set(collapseIds)].slice(0, BARK_RETRACT_MAX);
+    if (!ids.length) return;
+    const target = await barkTarget(user, { requireEnabled: true });
+    if (!target) return;
+    for (const id of ids)
+      await postBarkBody(target, barkDeleteBody(target.deviceKey, id));
+  } catch (error) {
+    console.warn(
+      "[bark] retract failed:",
       error instanceof Error ? error.message : "unknown error",
     );
   }

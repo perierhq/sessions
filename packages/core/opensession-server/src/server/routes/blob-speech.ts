@@ -5,7 +5,9 @@
  * `status`, `key` and `settings` mirror the Desk voice settings routes
  * (routes/desk-voice.ts). `POST /api/blob/speech` streams the mp3 straight
  * from Fish to the device. Like every /api route, these sit behind the
- * gateway's sign-in gate.
+ * gateway's sign-in gate, except `GET /api/blob/speech/caf/<hash>.caf`, the
+ * spoken sound of a Bark push (bark-sound.ts), which Bark downloads without
+ * a session: its hash is the capability.
  */
 
 import type { RouteContext } from "./context";
@@ -18,6 +20,7 @@ import {
   speechText,
   synthesizeBlobSpeech,
 } from "../blob-speech";
+import { serveBarkSound } from "../bark-sound";
 
 async function statusResponse(): Promise<Response> {
   return Response.json(await blobSpeechStatus(), {
@@ -31,6 +34,11 @@ export async function handleBlobSpeechRoutes(
   const { req, path } = ctx;
   if (path !== "/api/blob/speech" && !path.startsWith("/api/blob/speech/"))
     return undefined;
+
+  if (req.method === "GET") {
+    const sound = await serveBarkSound(path);
+    if (sound) return sound;
+  }
 
   if (path === "/api/blob/speech/status" && req.method === "GET")
     return statusResponse();

@@ -23,6 +23,9 @@ export const barkSettingsSchema = z.object({
   enabled: z.boolean(),
   serverUrl: z.string(),
   openIn: z.enum(BARK_OPEN_IN),
+  speak: z.boolean().default(false),
+  /** Whether the server can make Blob's spoken sound (ffmpeg, Fish key). */
+  speakAvailable: z.boolean().default(false),
   deviceKey: z.string().nullable(),
   encryption: z
     .object({ algorithm: z.enum(BARK_ALGORITHMS), mode: z.enum(BARK_MODES) })
@@ -34,6 +37,7 @@ export interface BarkPatch {
   enabled?: boolean;
   serverUrl?: string;
   openIn?: BarkOpenIn;
+  speak?: boolean;
   deviceKey?: string | null;
   encryption?: {
     algorithm: BarkAlgorithm;

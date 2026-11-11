@@ -461,6 +461,9 @@ function needsYouEvent(
     push: {
       body: copy.body,
       ...(item.urgency === "down" ? { urgency: "high" as const } : {}),
+      // An unanswered item expires then (pruneSupervisorItems), so its
+      // push need not outlive it.
+      expiresAt: item.updatedAt + NEEDS_YOU_TTL_MS,
     },
   };
 }
@@ -979,6 +982,26 @@ export async function readSupervisorBark(
   return (await readDocument(user)).bark;
 }
 
+/** The person's raw Bark settings record and how many needs-you items are
+ *  open for them (the Bark badge), from one read. */
+export async function readSupervisorBarkState(user: string): Promise<{
+  bark: Record<string, unknown> | undefined;
+  openNeedsYou: number;
+}> {
+  if (!validUser(user)) return { bark: undefined, openNeedsYou: 0 };
+  const doc = await readDocument(user);
+  const now = deps.now();
+  return {
+    bark: doc.bark,
+    openNeedsYou: doc.items.filter(
+      (item) =>
+        item.kind === "needs-you" &&
+        item.state === "open" &&
+        now - item.updatedAt < NEEDS_YOU_TTL_MS,
+    ).length,
+  };
+}
+
 /** Compare-and-set the person's Bark settings record. `mutate` may run more
  *  than once; its last run committed. Returning undefined removes it. */
 export async function updateSupervisorBark(
@@ -1076,11 +1099,40 @@ function digestEvent(
     eventKey: `digest:${day}`,
     at: now,
     delivery: "quiet",
-    // Should a digest ever push, the lock screen gets the count, not titles.
+    // Should a digest ever push, the lock screen gets the count, not titles;
+    // only a push sealed end to end (encrypted Bark) lists them.
     push: {
       body: `${count} ${count === 1 ? "thing" : "things"} happened`,
+      expiresAt: now + DAY_MS,
+      sealedMarkdown: digestMarkdown(fyi),
     },
   };
+}
+
+const DIGEST_MARKDOWN_ITEMS = 5;
+const DIGEST_MARKDOWN_TITLE = 80;
+
+/** Characters that would turn an agent's title into markup. */
+function escapeMarkdown(text: string): string {
+  return text.replace(/[\\`*_~[\]()<>#!|]/g, (char) => `\\${char}`);
+}
+
+/** The digest's items as a Markdown list of bold titles, for a sealed push:
+ *  one line each, a few at most. */
+export function digestMarkdown(
+  fyi: Array<Pick<SupervisorItem, "title">>,
+): string {
+  const lines = fyi.slice(0, DIGEST_MARKDOWN_ITEMS).map((item) => {
+    const title = pushSafeText(item.title);
+    const short =
+      title.length > DIGEST_MARKDOWN_TITLE
+        ? `${title.slice(0, DIGEST_MARKDOWN_TITLE - 1).trimEnd()}…`
+        : title;
+    return `- **${escapeMarkdown(short || "Untitled")}**`;
+  });
+  const more = fyi.length - lines.length;
+  if (more > 0) lines.push(`- and ${more} more`);
+  return lines.join("\n");
 }
 
 let sweeping: Promise<{ pushed: number; digested: number }> | null = null;

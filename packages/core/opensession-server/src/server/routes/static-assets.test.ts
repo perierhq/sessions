@@ -54,6 +54,27 @@ test("serves Blob's picture where the people directory points", async () => {
   expect((await response?.arrayBuffer())?.byteLength).toBeGreaterThan(0);
 });
 
+test("serves Blob's notification icon: opaque, 512px, cached for good", async () => {
+  const { BLOB_NOTIFICATION_ICON_PATH } = await import("../session-actors");
+  expect(BLOB_NOTIFICATION_ICON_PATH).toMatch(/-v\d+\.png$/);
+  const url = new URL(`http://127.0.0.1${BLOB_NOTIFICATION_ICON_PATH}`);
+  const response = await handleStaticAssetsRoutes({
+    req: new Request(url),
+    url,
+    path: BLOB_NOTIFICATION_ICON_PATH,
+    publicPrefix: "",
+  });
+  expect(response?.status).toBe(200);
+  expect(response?.headers.get("content-type")).toBe("image/png");
+  expect(response?.headers.get("cache-control")).toContain("immutable");
+  const png = new Uint8Array(await response!.arrayBuffer());
+  const header = new DataView(png.buffer, png.byteOffset);
+  // IHDR: width, height, then bit depth and color type 2 (RGB, no alpha).
+  expect(header.getUint32(16)).toBe(512);
+  expect(header.getUint32(20)).toBe(512);
+  expect(png[25]).toBe(2);
+});
+
 test("returns a real 404 for a retired hashed asset", async () => {
   const path = "/Settings-retired123.js";
   const url = new URL(`http://127.0.0.1${path}`);

@@ -190,6 +190,12 @@ export interface NotificationPush {
   requireInteraction?: boolean;
   ttlSeconds?: number;
   urgency?: PushUrgency;
+  /** When the subject stops mattering (ms epoch). Bark keeps the push in
+   *  its history and Notification Center until then (bark.ts `ttl`). */
+  expiresAt?: number;
+  /** Markdown for a push sealed end to end to the device: encrypted Bark
+   *  only (bark.ts). Never sent in clear, never used by Web Push. */
+  sealedMarkdown?: string;
 }
 
 export interface NotificationEvent {
