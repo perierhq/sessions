@@ -52,6 +52,7 @@ import type { PiAccountWalk } from "./pi-account-walk";
 import { piCodemodeExtension } from "./pi-steering";
 import type { PiRunAuthority } from "./pi-run-authority";
 import { piToolScopeRecord, type PiSteerBoundary } from "./pi-tools";
+import { supervisorBriefingTrimExtension } from "./supervisor-briefing-trim";
 
 const PROVIDER = PI_PROVIDER;
 
@@ -167,6 +168,42 @@ export function piSessionSettings(input: {
   };
 }
 
+/**
+ * What a turn loads from its checkout and the instance besides pi's base
+ * prompt and the run instructions: skill directories, the checkout's
+ * AGENTS.md files and its local instructions (AGENTS.local.md).
+ *
+ * The supervisor (supervisor.ts) gets none of them. It is a repo-less chat
+ * agent that delegates all code work, so the coding skills catalog (dozens of
+ * entries on a real instance) and repository rules were only weight in every
+ * request. Its charter comes in the session note (session-repos.ts).
+ * Every other session is unchanged.
+ */
+export function piResourceSet(input: {
+  dir: string;
+  supervisor: boolean;
+  projectSkillsOnly: boolean;
+}): {
+  skillPaths: string[];
+  contextFiles: boolean;
+  localInstructions: string | undefined;
+} {
+  if (input.supervisor)
+    return {
+      skillPaths: [],
+      contextFiles: false,
+      localInstructions: undefined,
+    };
+  return {
+    // A support session loads its project's skills only (projectSkillsOnly).
+    skillPaths: skillSearchPaths(input.dir, {
+      projectOnly: input.projectSkillsOnly,
+    }),
+    contextFiles: true,
+    localInstructions: readLocalInstructions(input.dir),
+  };
+}
+
 /** The commit a checkout is on, or null when it is not a git checkout. */
 export async function readBaseCommit(dir: string): Promise<BaseCommit | null> {
   const format = "%h%x00%cI";
@@ -220,6 +257,12 @@ export async function preparePiResources(input: PiResourcesInput) {
         piRemoteContextDir(unifiedSessionId || runKey),
       )
     : { dir: cwd, toRemote: (path: string) => path };
+  const supervisor = opts.supervisor === true;
+  const resources = piResourceSet({
+    dir: context.dir,
+    supervisor,
+    projectSkillsOnly: opts.projectSkillsOnly === true,
+  });
   const instructions = buildRunInstructions({
     isAsk,
     isScratch,
@@ -233,7 +276,7 @@ export async function preparePiResources(input: PiResourcesInput) {
     // push-the-branch instructions instead of `gh pr create`.
     repoHost: isScratch ? undefined : cwdRepo?.host,
     publicRepo,
-    localInstructions: readLocalInstructions(context.dir),
+    localInstructions: resources.localInstructions,
     stripeApprovalsNote: stripeApprovals
       ? stripeApprovalsNote(policy.unattended)
       : undefined,
@@ -278,7 +321,7 @@ export async function preparePiResources(input: PiResourcesInput) {
   const settingsManager = sdk.SettingsManager.inMemory(
     piSessionSettings({
       usesOpenaiOAuth: binding.usesOpenaiOAuth,
-      supervisor: opts.supervisor === true,
+      supervisor,
     }),
   );
   const workspaceRoot = resolve(context.dir);
@@ -286,12 +329,14 @@ export async function preparePiResources(input: PiResourcesInput) {
     cwd: context.dir,
     agentDir,
     settingsManager,
-    // No discovered or built-in extensions. The one inline factory is pi's
-    // codemode tool (piCodemodeExtension).
+    // No discovered or built-in extensions. The inline factories are pi's
+    // codemode tool (piCodemodeExtension) and, for the supervisor, the
+    // trim that keeps only its newest briefing (supervisor-briefing-trim.ts).
     noExtensions: true,
-    extensionFactories: codemode
-      ? [piCodemodeExtension(sdk, () => boundary.pending)]
-      : [],
+    extensionFactories: [
+      ...(codemode ? [piCodemodeExtension(sdk, () => boundary.pending)] : []),
+      ...(supervisor ? [supervisorBriefingTrimExtension] : []),
+    ],
     // Pi's own skill resolution stays off, like extensions and themes. A
     // turn loads the allowlist in skill-paths.ts: what this server ships,
     // plus the session checkout's own skills, never whatever the host
@@ -299,10 +344,9 @@ export async function preparePiResources(input: PiResourcesInput) {
     // with no additionalSkillPaths loaded nothing at all, which left every
     // shipped skill dead in the product.
     noSkills: true,
-    // A support session loads its project's skills only (projectSkillsOnly).
-    additionalSkillPaths: skillSearchPaths(context.dir, {
-      projectOnly: opts.projectSkillsOnly === true,
-    }),
+    // piResourceSet: none for the supervisor, the project's own for a
+    // support session.
+    additionalSkillPaths: resources.skillPaths,
     // The pstack family stays loaded but invisible to the model until the
     // session turns pstack mode on (composer toggle or /pstack). A mirrored
     // Sandbox skill is presented at its Sandbox path; its local copy only
@@ -332,9 +376,11 @@ export async function preparePiResources(input: PiResourcesInput) {
     // (plus the agentDir global) — an AGENTS.md dropped in /home/ubuntu
     // would silently join every pi system prompt on the box. Bound it to
     // the workspace: keep only cwd-level files (previous runner parity).
+    // The supervisor loads none (piResourceSet).
     agentsFilesOverride: ({ agentsFiles }) => ({
       agentsFiles: agentsFiles
         .filter((f) => {
+          if (!resources.contextFiles) return false;
           const p = resolve(f.path);
           return p === workspaceRoot || p.startsWith(workspaceRoot + sep);
         })

@@ -1269,6 +1269,9 @@ function answerLine(item: SupervisorItem): string {
   return `${briefLine(item)}: "${pushSafeText(item.answer ?? "")}"${by}`;
 }
 
+/** The whole inbox block when nothing is open or newly answered. */
+export const INBOX_EMPTY = "Inbox: nothing waiting.";
+
 export interface SupervisorBriefing {
   /** Wrapped context for the turn's message. */
   context: string;
@@ -1280,8 +1283,10 @@ export interface SupervisorBriefing {
 /**
  * The supervisor's per-turn view of its inbox, wrapped as context: open
  * needs-you items with their options, fyi items since the last digest, and
- * answers the owner gave that no completed turn has seen yet. Bounded;
- * undefined when there is nothing to say. Reading changes nothing.
+ * answers the owner gave that no completed turn has seen yet. Bounded.
+ * With nothing to say it is one line, `INBOX_EMPTY`, so this turn's block
+ * replaces an older one that still listed items (supervisor-briefing-trim.ts).
+ * Undefined only for an invalid user. Reading changes nothing.
  */
 export async function supervisorInboxContext(
   user: string | null | undefined,
@@ -1303,7 +1308,11 @@ export async function supervisorInboxContext(
   const answered = items
     .filter((item) => item.state === "answered" && item.briefedAt === undefined)
     .slice(0, BRIEF_MAX);
-  if (!needsYou.length && !fyi.length && !answered.length) return undefined;
+  if (!needsYou.length && !fyi.length && !answered.length)
+    return {
+      context: wrapContext(INBOX_EMPTY, "supervisor-inbox"),
+      answered: [],
+    };
 
   const sections = ["## Your inbox", BRIEFING_UNTRUSTED_NOTE];
   if (answered.length)
