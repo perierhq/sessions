@@ -2,17 +2,48 @@ import SwiftUI
 
 /// A ```metrics fence as a grid of cards: the value big and tabular, the
 /// label under it, the delta beside the value coloured by its direction.
-/// The cards share the width in equal columns (`EqualColumnsLayout`), as
-/// many as fit at `minCard`, which grows with the text size.
+/// The columns follow the web's rule (`styles/blocks/metrics.css`): as many
+/// as fit at `minCard` (150, the web's minimum, grown with the text size),
+/// and two on a phone. They share the width equally (`EqualColumnsLayout`).
 struct MetricsBlockView: View {
     let metrics: [Metric]
 
-    @ScaledMetric(relativeTo: .title2) private var minCard: CGFloat = 104
+    @ScaledMetric(relativeTo: .title2) private var minCard: CGFloat = 150
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.dynamicTypeSize) private var typeSize
+    #endif
+    /// Per card with a delta: the width its content has, and the width the
+    /// value and delta need side by side.
+    @State private var available: [Int: CGFloat] = [:]
+    @State private var inline: [Int: CGFloat] = [:]
+
+    /// The web's phone rule, two across. At the accessibility text sizes
+    /// the cards fall back to `minCard`, so a value keeps its room.
+    private var phoneColumns: Int? {
+        #if os(iOS)
+        sizeClass == .compact && !typeSize.isAccessibilitySize ? 2 : nil
+        #else
+        nil
+        #endif
+    }
+
+    /// One placement for the whole block: if any card's delta doesn't fit
+    /// beside its value, every card puts its delta under the value, so the
+    /// figures stay on one line across the row.
+    private var stackDeltas: Bool {
+        metrics.indices.contains { index in
+            guard metrics[index].delta != nil,
+                  let need = inline[index], let room = available[index] else { return false }
+            return need > room + 0.5
+        }
+    }
 
     var body: some View {
-        EqualColumnsLayout(minWidth: minCard, spacing: 8) {
-            ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
-                card(metric)
+        let stacked = stackDeltas
+        EqualColumnsLayout(minWidth: minCard, spacing: 8, fixedColumns: phoneColumns) {
+            ForEach(Array(metrics.enumerated()), id: \.offset) { index, metric in
+                card(metric, index: index, stacked: stacked)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -20,18 +51,28 @@ struct MetricsBlockView: View {
         .accessibilityLabel("Metrics")
     }
 
-    private func card(_ metric: Metric) -> some View {
+    private func card(_ metric: Metric, index: Int, stacked: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            // The delta goes under the value when a narrow column has no
-            // room for it beside, rather than breaking across lines.
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    valueLine(metric)
-                    deltaText(metric).padding(.leading, 2)
+            Group {
+                if stacked {
+                    VStack(alignment: .leading, spacing: 1) {
+                        valueLine(metric)
+                        deltaText(metric)
+                    }
+                } else {
+                    inlineRow(metric)
                 }
-                VStack(alignment: .leading, spacing: 1) {
-                    valueLine(metric)
-                    deltaText(metric)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { available[index] = $0 }
+            .background(alignment: .topLeading) {
+                // The side-by-side row at its own width, measured and never
+                // shown, so the choice doesn't depend on the one on screen.
+                if metric.delta != nil {
+                    inlineRow(metric)
+                        .fixedSize()
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { inline[index] = $0 }
                 }
             }
             Text(metric.label)
@@ -51,6 +92,13 @@ struct MetricsBlockView: View {
         .accessibilityValue(
             [metric.value, metric.unit, metric.delta].compactMap { $0 }.joined(separator: " ")
         )
+    }
+
+    private func inlineRow(_ metric: Metric) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            valueLine(metric)
+            deltaText(metric).padding(.leading, 2)
+        }
     }
 
     private func valueLine(_ metric: Metric) -> some View {
@@ -90,13 +138,15 @@ struct MetricsBlockView: View {
     }
 }
 
-/// Cards in equal columns that fill the width: as many columns as fit at
-/// `minWidth`, and the rows balanced, so the cards wrap as 3, 2 + 2 or
-/// 3 + 2 and never leave one wide card beside narrow ones. Every card in a
+/// Cards in equal columns that fill the width: `fixedColumns` when set,
+/// otherwise as many as fit at `minWidth`, and the rows balanced, so the
+/// cards wrap as 3, 2 + 2 or 3 + 2 and never leave one wide card beside
+/// narrow ones. Every card in a
 /// row gets the row's height.
 struct EqualColumnsLayout: Layout {
     var minWidth: CGFloat
     var spacing: CGFloat
+    var fixedColumns: Int? = nil
 
     /// The column count for `count` cards across `width`.
     static func columns(count: Int, width: CGFloat, minWidth: CGFloat, spacing: CGFloat) -> Int {
@@ -124,7 +174,8 @@ struct EqualColumnsLayout: Layout {
             let widest = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
             width = CGFloat(count) * max(widest, minWidth) + CGFloat(count - 1) * spacing
         }
-        let columns = Self.columns(count: count, width: width, minWidth: minWidth, spacing: spacing)
+        let columns = fixedColumns.map { max(1, $0) }
+            ?? Self.columns(count: count, width: width, minWidth: minWidth, spacing: spacing)
         let columnWidth = max(0, (width - CGFloat(columns - 1) * spacing) / CGFloat(columns))
         let rowHeights = stride(from: 0, to: count, by: columns).map { start in
             subviews[start..<min(start + columns, count)]

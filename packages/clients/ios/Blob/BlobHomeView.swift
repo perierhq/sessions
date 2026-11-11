@@ -274,6 +274,11 @@ struct BlobHomeView: View {
             if ProcessInfo.processInfo.environment["BLOB_DEMO_TYPING"] != nil {
                 draft = "what shipped this week?"
                 typing = true
+                // Focused, so a software keyboard comes up as it would.
+                Task {
+                    try? await Task.sleep(for: .milliseconds(600))
+                    fieldFocused = true
+                }
             }
             if BlobExchange.demoReveal != nil { revealHistory() }
         }

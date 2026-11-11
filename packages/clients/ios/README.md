@@ -241,9 +241,10 @@ Pure SwiftUI with SwiftStreamingMarkdown for CommonMark/GFM rendering. See
   heading with captions, a before/after compare control, Swift Charts for a
   Vega-Lite subset, locked artifact/SVG frames, slide decks, palettes, data
   grids, JSON trees, ANSI output, washed diffs, display math, callouts and
-  metric cards (equal columns that fill the width, as many as fit at
-  104 pt, more as the text size grows, the rows balanced so no card is
-  wider than the rest). Every parser lives in `Models/` and falls back to the plain
+  metric cards (the web's columns: as many as fit at 150 pt, which grows
+  with the text size, and two on a phone; equal widths that fill the row,
+  the rows balanced so no card is wider than the rest; if one delta doesn't
+  fit beside its value, every card puts its delta under the value). Every parser lives in `Models/` and falls back to the plain
   fence when it refuses the source, so a streaming block stays readable.
   JSON trees reject values deeper than 64 levels. Sortable table headers share
   the body column widths and scroll with the rows when the table overflows.

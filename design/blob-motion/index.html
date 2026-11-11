@@ -260,6 +260,7 @@
       </div>
       <div class="group" id="speeds"></div>
       <label><input type="checkbox" id="reduce" /> Reduced motion</label>
+      <label><input type="checkbox" id="typing" /> Typing</label>
       <p class="meta">seek(ms) is on window for frame checks.</p>
     </div>
 
@@ -433,6 +434,7 @@
       el("reduce").onchange = (e) => {
         blob.st.reduce = e.target.checked;
       };
+      el("typing").onchange = (e) => blob.set({ typing: e.target.checked });
       function syncButtons() {
         stEl
           .querySelectorAll("button")

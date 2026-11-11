@@ -1,12 +1,15 @@
 /* ─────────────────────────────────────────────────────────────
    Quick replies: a ```choices fence rendered by lib/choices-block.ts.
 
-   A wrapping row of chips. Each chip wears the surface an ask card's
-   option row wears (lib/ask-card-classes.ts: bg-control, the 12px
-   control corner, the hover wash, the accent focus ring), so a reply
-   offered by the agent reads as the same kind of thing as an answer it
-   asked for. Built as DOM inside injected markdown, which is why these
-   live here rather than as utilities on JSX.
+   A wrapping row of chips, drawn as the native app draws them
+   (ChoicesBlockView.swift): an open chip is the accent's wash with a
+   light accent edge and the page's ink, so it reads as live without
+   putting the accent on text; a closed one is a panel fill with a
+   hairline and --text-dim, quieter but still read (about 5:1 in light,
+   6:1 in dark). The 12px control corner, hover wash and accent focus
+   ring are an ask card's option row's (lib/ask-card-classes.ts). Built as
+   DOM inside injected markdown, which is why these live here rather than
+   as utilities on JSX.
    ───────────────────────────────────────────────────────────── */
 .md-choices {
   display: flex;
@@ -24,7 +27,8 @@
   border: 0;
   border-radius: calc(12px * var(--rf));
   corner-shape: var(--cs);
-  background: var(--control-surface);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
   color: var(--text);
   font: inherit;
   font-size: var(--type-label);
@@ -35,9 +39,8 @@
   cursor: pointer;
   transition: background-color 120ms ease;
 }
-/* The hover wash is translucent ink laid over the control surface, not in
-   place of it: a chip sits on the page's own fill, where swapping the
-   surface for the wash would step it the wrong way in one theme. */
+/* The hover wash is translucent ink laid over the accent wash, not in
+   place of it, so the chip keeps its tint while pressed. */
 .md-choice::before {
   content: "";
   position: absolute;
@@ -59,11 +62,12 @@
   outline-offset: 2px;
 }
 /* Answered, or nowhere to send: the chips stay as a record of what was
-   offered, at the weight of a note rather than a control. */
+   offered, quieter than a control but still legible. --text-faint measured
+   under 3:1 on the page. */
 .md-choices[data-quiet] .md-choice {
-  background: transparent;
+  background: var(--bg-panel);
   box-shadow: inset 0 0 0 1px var(--divider);
-  color: var(--text-faint);
+  color: var(--text-dim);
   cursor: default;
 }
 .md-choices[data-quiet] .md-choice::before {

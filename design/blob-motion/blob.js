@@ -50,7 +50,16 @@
 
   function createBlob(svg, halo, at) {
     const $ = (id) => svg.querySelector("#" + id);
-    const st = { mode: "quiet", at, look: null, reduce: false, tilt: 0 }; // tilt: degrees, for hinge effects
+    // tilt: degrees, for hinge effects · typing: no halo, as in the app, so
+    // the ring doesn't sit behind Blob for every keystroke.
+    const st = {
+      mode: "quiet",
+      at,
+      look: null,
+      reduce: false,
+      tilt: 0,
+      typing: false,
+    };
     const sp = {
       x: new Spring(at.x, 120, 17),
       y: new Spring(at.y, 120, 17),
@@ -77,7 +86,7 @@
       sp.open.target = m.open;
       sp.smile.target = m.smile;
       sp.energy.target = m.energy;
-      sp.halo.target = m.halo;
+      sp.halo.target = st.typing ? 0 : m.halo;
       sp.x.target = st.at.x;
       sp.y.target = st.at.y;
       sp.size.target = st.at.size;
