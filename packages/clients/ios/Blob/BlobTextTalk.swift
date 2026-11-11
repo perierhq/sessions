@@ -61,9 +61,8 @@ final class BlobTextTalk {
     @ObservationIgnored private var sentAt: ContinuousClock.Instant?
     /// The reply was logged as anchored for this message.
     @ObservationIgnored private var anchoredLogged = false
-    /// How the last listen ended and who wrote its text, for `BlobMetrics`.
+    /// How the last listen ended, for `BlobMetrics`.
     @ObservationIgnored private var endOfSpeech = BlobMetrics.EndOfSpeech.tap
-    @ObservationIgnored private var transcribedBy = BlobMetrics.Transcriber.apple
 
     /// Each step of a turn, with ids, lengths and times only: never what was said.
     static let log = Logger(subsystem: "pl.sessions.blob", category: "talk")
@@ -540,12 +539,15 @@ final class BlobTextTalk {
             guard isCurrent(listen) else { return }
             // Apple's text first, then the better transcript in its place.
             heard = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let text = await finalText(said)
+            let final = await finalText(said, stopMs: Self.ms(since: started))
             guard isCurrent(listen) else { return }
+            let text = final.text
             if !text.isEmpty {
                 BlobMetrics.shared.began(
-                    .voice, inputChars: text.count, transcriber: transcribedBy,
-                    transcribeMs: Self.ms(since: started), endOfSpeech: endOfSpeech
+                    .voice, inputChars: text.count, transcriber: final.transcriber,
+                    transcribeMs: final.ms, transcriberReason: final.reason,
+                    parakeetLoadMs: final.parakeetLoadMs, parakeetLoad: final.parakeetLoad,
+                    endOfSpeech: endOfSpeech
                 )
             }
             await deliver(text)
@@ -574,42 +576,97 @@ final class BlobTextTalk {
     /// Longest wait for Fish, on its own budget after Parakeet's.
     static let fishDeadline: Double = 6
 
+    /// The text a voice turn sends, who wrote it and why, for `BlobMetrics`.
+    struct Final {
+        var text: String
+        var transcriber: BlobMetrics.Transcriber
+        var reason: BlobMetrics.TranscriberReason
+        /// Time spent in the transcriber that wrote `text`; for Apple, how
+        /// long it took to finish its last phrase after you stopped.
+        var ms: Int
+        /// How long Parakeet's load took, or had taken when it was given up on.
+        var parakeetLoadMs: Int?
+        /// Which Parakeet load that was (`BlobParakeet.load`).
+        var parakeetLoad: Int?
+    }
+
+    /// What Parakeet did with the recording, when it answered in time.
+    private enum ParakeetAttempt: Sendable {
+        case text(String)
+        case error
+    }
+
     /// The transcriber you picked, then Apple: the first that answers in
     /// time. Fish hears the recording only when you picked it, or picked
     /// Parakeet with Fish until it is ready (`BlobTranscriber.fishUntilParakeetKey`).
-    private func finalText(_ said: BlobListener.Heard) async -> String {
-        let started = ContinuousClock.now
-        func used(_ source: String, _ text: String) -> String {
-            transcribedBy = BlobMetrics.Transcriber(rawValue: String(source.prefix { $0 != " " })) ?? .apple
-            Self.log.info("transcriber used=\(source, privacy: .public) ms=\(Self.ms(since: started), privacy: .public) chars=\(text.count, privacy: .public)")
-            return text
+    private func finalText(_ said: BlobListener.Heard, stopMs: Int) async -> Final {
+        let appleText = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var parakeetLoadMs: Int?
+        var parakeetLoad: Int?
+        func used(
+            _ transcriber: BlobMetrics.Transcriber, _ reason: BlobMetrics.TranscriberReason, _ text: String, ms: Int
+        ) -> Final {
+            // A load given up on that finished meanwhile (during Fish's
+            // wait): its full time. One still running reports it later.
+            let parakeet = BlobParakeet.shared
+            if let parakeetLoad, parakeetLoad == parakeet.load, parakeet.state == .ready {
+                parakeetLoadMs = parakeet.loadMs
+            }
+            Self.log.info("transcriber used=\(transcriber.rawValue, privacy: .public) reason=\(reason.rawValue, privacy: .public) ms=\(ms, privacy: .public) chars=\(text.count, privacy: .public) parakeetLoadMs=\(parakeetLoadMs ?? -1, privacy: .public)")
+            return Final(
+                text: text, transcriber: transcriber, reason: reason, ms: ms,
+                parakeetLoadMs: parakeetLoadMs, parakeetLoad: parakeetLoad
+            )
         }
-        let apple = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        func apple(_ reason: BlobMetrics.TranscriberReason) -> Final { used(.apple, reason, appleText, ms: stopMs) }
         let choice = BlobTranscriber.current
-        guard choice != .apple, said.samples.count >= Int(BlobCapture.sampleRate * 0.3) else { return used("apple", apple) }
+        if choice == .apple { return apple(.appleChosen) }
+        guard said.samples.count >= Int(BlobCapture.sampleRate * 0.3) else { return apple(.tooShort) }
         let samples = said.samples
         if choice == .parakeet {
             let parakeet = BlobParakeet.shared
+            let missed: BlobMetrics.TranscriberReason
             if await parakeet.ready(within: Self.parakeetLoadWait) {
+                parakeetLoadMs = parakeet.loadMs
                 let language = Self.languageHint
-                if let text = await Self.within(Self.parakeetDeadline, {
-                    try? await parakeet.transcribe(samples, language: language)
-                }), !text.isEmpty {
-                    return used("parakeet", text)
+                let began = ContinuousClock.now
+                let attempt = await Self.within(Self.parakeetDeadline) { () -> ParakeetAttempt? in
+                    do { return .text(try await parakeet.transcribe(samples, language: language)) } catch { return .error }
                 }
+                switch attempt {
+                case .text(let text) where !text.isEmpty: return used(.parakeet, .parakeet, text, ms: Self.ms(since: began))
+                case .text: missed = .parakeetEmpty
+                case .error: missed = .parakeetError
+                case nil: missed = .parakeetDeadline
+                }
+            } else {
+                parakeetLoadMs = parakeet.loadMs
+                if parakeet.state == .loading { parakeetLoad = parakeet.load }
+                missed = Self.missReason(parakeet.state)
             }
-            guard BlobTranscriber.fishUntilParakeet else {
-                return used("apple (parakeet \(String(describing: parakeet.state)))", apple)
-            }
+            guard BlobTranscriber.fishUntilParakeet, speaker.server?.transcribe == true else { return apple(missed) }
         }
-        guard speaker.server?.transcribe == true else { return used("apple", apple) }
+        guard speaker.server?.transcribe == true else { return apple(.fishMissed) }
+        let began = ContinuousClock.now
         // No language hint: Fish detects the language itself.
-        let text = await Self.within(Self.fishDeadline) {
+        let text = await Self.within(Self.fishDeadline) { () -> String? in
             let wav = await Task.detached(priority: .userInitiated) { BlobWAV.encode(samples) }.value
             return try? await OS1API.blobTranscribe(wav: wav)
         }
-        if let text, !text.isEmpty { return used("fish", text) }
-        return used("apple (fish missed)", apple)
+        if let text, !text.isEmpty { return used(.fish, .fish, text, ms: Self.ms(since: began)) }
+        return apple(.fishMissed)
+    }
+
+    /// Why Parakeet wasn't ready to hear the recording.
+    private static func missReason(_ state: BlobParakeet.State) -> BlobMetrics.TranscriberReason {
+        switch state {
+        case .absent: .parakeetAbsent
+        case .downloading, .paused: .parakeetDownloading
+        case .failed: .parakeetFailed
+        // Still loading after the wait, or let go (background, memory
+        // warning) and not loaded again in time.
+        case .loading, .downloaded, .ready: .parakeetLoadingTimeout
+        }
     }
 
     /// `pl` or `en` from the preferred languages; no hint for anything else.
@@ -621,14 +678,16 @@ final class BlobTextTalk {
         return code
     }
 
+    /// Resumes a continuation once: with `work`'s answer or at the deadline.
+    private final class Once<T: Sendable> {
+        var continuation: CheckedContinuation<T?, Never>?
+        func resume(_ value: T?) { continuation?.resume(returning: value); continuation = nil }
+    }
+
     /// `work`'s answer, or nil once `seconds` pass without one. Returns at
     /// the deadline even when `work` ignores cancellation.
-    private static func within(_ seconds: Double, _ work: @escaping @MainActor () async -> String?) async -> String? {
-        final class Once {
-            var continuation: CheckedContinuation<String?, Never>?
-            func resume(_ value: String?) { continuation?.resume(returning: value); continuation = nil }
-        }
-        let once = Once()
+    private static func within<T: Sendable>(_ seconds: Double, _ work: @escaping @MainActor () async -> T?) async -> T? {
+        let once = Once<T>()
         return await withCheckedContinuation { continuation in
             once.continuation = continuation
             let job = Task { @MainActor in once.resume(await work()) }

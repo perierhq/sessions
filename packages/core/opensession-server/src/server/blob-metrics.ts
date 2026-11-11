@@ -42,6 +42,23 @@ const MAX_BLOCK_KINDS = 16;
 
 export const INPUT_MODES = ["voice", "typed", "chip", "ask"] as const;
 export const TRANSCRIBERS = ["parakeet", "fish", "apple"] as const;
+/** Why a voice turn's text came from the transcriber it came from
+ *  (BlobTextTalk.finalText). `parakeet-*` other than `parakeet` say why
+ *  Parakeet was picked but did not write the text. */
+export const TRANSCRIBER_REASONS = [
+  "parakeet",
+  "parakeet-absent",
+  "parakeet-downloading",
+  "parakeet-loading-timeout",
+  "parakeet-failed",
+  "parakeet-error",
+  "parakeet-empty",
+  "parakeet-deadline",
+  "fish",
+  "fish-missed",
+  "apple-chosen",
+  "too-short",
+] as const;
 export const END_OF_SPEECH = ["auto", "tap"] as const;
 export const INTERRUPTIONS = ["hush", "tap"] as const;
 export const OUTCOMES = ["answered", "failed", "abandoned"] as const;
@@ -49,6 +66,7 @@ export const POSTURES = ["closed", "open"] as const;
 
 export type BlobInputMode = (typeof INPUT_MODES)[number];
 export type BlobTranscriber = (typeof TRANSCRIBERS)[number];
+export type BlobTranscriberReason = (typeof TRANSCRIBER_REASONS)[number];
 export type BlobEndOfSpeech = (typeof END_OF_SPEECH)[number];
 export type BlobInterruption = (typeof INTERRUPTIONS)[number];
 export type BlobOutcome = (typeof OUTCOMES)[number];
@@ -61,7 +79,13 @@ export interface BlobTurnMetric {
   startedAt: number;
   input: BlobInputMode;
   transcriber?: BlobTranscriber;
+  /** Time spent in the transcriber that wrote the text; for Apple, how long
+   *  it took to finish its last phrase after the owner stopped. */
   transcribeMs?: number;
+  transcriberReason?: BlobTranscriberReason;
+  /** How long Parakeet's load took, from `warm()` to ready, for the load
+   *  that served this turn or that it gave up waiting for. */
+  parakeetLoadMs?: number;
   endOfSpeech?: BlobEndOfSpeech;
   speechMs?: number;
   sendToAcceptedMs?: number;
@@ -168,6 +192,11 @@ export function cleanTurnMetric(
   };
   set("transcriber", oneOf(TRANSCRIBERS, get("transcriber")));
   set("transcribeMs", duration(get("transcribeMs")));
+  set(
+    "transcriberReason",
+    oneOf(TRANSCRIBER_REASONS, get("transcriberReason")),
+  );
+  set("parakeetLoadMs", duration(get("parakeetLoadMs")));
   set("endOfSpeech", oneOf(END_OF_SPEECH, get("endOfSpeech")));
   set("speechMs", duration(get("speechMs")));
   set("sendToAcceptedMs", duration(get("sendToAcceptedMs")));

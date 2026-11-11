@@ -336,6 +336,8 @@ function appStats(metrics: BlobTurnMetric[]) {
       sendToFirstToken: distribution(defined(metrics.map(firstTokenMs))),
     },
     transcribers,
+    transcriberReasons: tally(voice.map((turn) => turn.transcriberReason)),
+    parakeetLoadMs: distribution(defined(voice.map((t) => t.parakeetLoadMs))),
     endOfSpeech: tally(voice.map((turn) => turn.endOfSpeech)),
     voices: tally(metrics.map((turn) => turn.voice)),
     sentencesSpoken: distribution(
