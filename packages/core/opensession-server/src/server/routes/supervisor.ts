@@ -10,6 +10,7 @@
  *                                               → { items: [{ ...item, revision, act? }] }
  *   POST /api/supervisor/items/:id/answer       { user, answer, revision? }
  *   POST /api/supervisor/items/:id/dismiss      { user }
+ *   GET  /api/supervisor/leads                  → { leads: LeadRosterEntry[] }, every project's lead
  *   GET  /api/supervisor/prefs?user=
  *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle?, watch?: { enabled?, everyMinutes?, activeStart?, activeEnd? }, memoryWriter? }
  *   GET  /api/supervisor/bark                    keys masked; signed in only
@@ -39,6 +40,7 @@ import {
 } from "../supervisor-inbox";
 import { validatePrefsPatch } from "../supervisor-quiet-hours";
 import { withItemActs } from "../leads/item-acts";
+import { listLeadRoster } from "../leads/roster";
 
 const ITEM_ACTION = /^\/api\/supervisor\/items\/([^/]+)\/(answer|dismiss)$/;
 const STATES: readonly SupervisorItemState[] = [
@@ -142,6 +144,11 @@ export async function handleSupervisorRoutes(
     }
     return closeResponse(await dismissSupervisorItem(user, id));
   }
+
+  // Read only: each project's lead from its stored settings document
+  // (leads/roster.ts), for Settings, Members.
+  if (path === "/api/supervisor/leads" && req.method === "GET")
+    return Response.json({ leads: await listLeadRoster() });
 
   if (path === "/api/supervisor/prefs" && req.method === "GET") {
     const user = requestUser(ctx, url.searchParams.get("user"));

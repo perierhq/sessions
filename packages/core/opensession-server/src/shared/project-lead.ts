@@ -132,6 +132,18 @@ export interface ProjectLeadPatch {
   owner?: string | null;
 }
 
+/** One project's lead as GET /api/supervisor/leads lists it: the summary
+ *  Settings, Members shows under Blob. */
+export interface LeadRosterEntry {
+  project: string;
+  /** The project as people know it. */
+  label: string;
+  enabled: boolean;
+  stage: LeadStage;
+  /** Who the lead answers to; absent when nobody does. */
+  owner?: string;
+}
+
 export function defaultLeadSettings(): ProjectLeadSettings {
   return {
     enabled: false,
