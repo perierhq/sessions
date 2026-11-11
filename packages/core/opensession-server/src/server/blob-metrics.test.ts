@@ -193,6 +193,29 @@ describe("cleanTurnMetric", () => {
       ).toBe(reason);
   });
 
+  test("keeps why Parakeet missed next to Fish, and nowhere else", () => {
+    for (const parakeetMiss of metrics.PARAKEET_MISSES)
+      for (const transcriberReason of ["fish", "fish-missed"])
+        expect(
+          metrics.cleanTurnMetric(
+            turn({ transcriberReason, parakeetMiss }),
+            NOW,
+          )!.parakeetMiss,
+        ).toBe(parakeetMiss);
+    for (const [transcriberReason, parakeetMiss] of [
+      ["fish", "parakeet"],
+      ["fish", "fish-missed"],
+      ["fish", 3],
+      ["parakeet-absent", "parakeet-absent"],
+      ["apple-chosen", "parakeet-deadline"],
+      [undefined, "parakeet-deadline"],
+    ])
+      expect(
+        metrics.cleanTurnMetric(turn({ transcriberReason, parakeetMiss }), NOW)!
+          .parakeetMiss,
+      ).toBeUndefined();
+  });
+
   test("a turn without a transcriber reason is still valid", () => {
     const clean = metrics.cleanTurnMetric(turn(), NOW)!;
     expect(clean.transcriber).toBe("apple");

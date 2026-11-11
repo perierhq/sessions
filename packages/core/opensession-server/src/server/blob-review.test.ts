@@ -220,7 +220,22 @@ describe("aggregateBlobReview", () => {
           transcriber: "apple",
           transcriberReason: "too-short",
         }),
-        voice("old", 4000, { transcriber: "apple" }),
+        voice("f1", 3500, {
+          transcriber: "fish",
+          transcribeMs: 900,
+          transcriberReason: "fish",
+          parakeetMiss: "parakeet-loading-timeout",
+        }),
+        voice("f2", 3600, {
+          transcriber: "apple",
+          transcriberReason: "fish-missed",
+          parakeetMiss: "parakeet-absent",
+        }),
+        voice("old", 4000, {
+          transcriber: "apple",
+          transcribeMs: 7000,
+          parakeetLoadMs: 8000,
+        }),
         metric({
           turnId: "typed",
           startedAt: base + 5000,
@@ -233,7 +248,18 @@ describe("aggregateBlobReview", () => {
       parakeet: 2,
       "parakeet-loading-timeout": 1,
       "too-short": 1,
+      fish: 1,
+      "fish-missed": 1,
     });
+    expect(stt.app.parakeetMisses).toEqual({
+      "parakeet-loading-timeout": 2,
+      "parakeet-absent": 1,
+    });
+    // The old build's whole-chain timing stays out of the timings.
+    expect(stt.app.untimedVoiceTurns).toBe(1);
+    expect(stt.app.transcribers.apple!.turns).toBe(4);
+    expect(stt.app.transcribers.apple!.ms.max).not.toBe(7000);
+    expect(stt.app.latencyMs.transcribe.max).toBe(900);
     expect(stt.app.parakeetLoadMs).toMatchObject({
       n: 3,
       p50: 2000,

@@ -546,7 +546,7 @@ final class BlobTextTalk {
                 BlobMetrics.shared.began(
                     .voice, inputChars: text.count, transcriber: final.transcriber,
                     transcribeMs: final.ms, transcriberReason: final.reason,
-                    parakeetLoadMs: final.parakeetLoadMs, parakeetLoad: final.parakeetLoad,
+                    parakeetMiss: final.parakeetMiss, parakeetLoadMs: final.parakeetLoadMs, parakeetLoad: final.parakeetLoad,
                     endOfSpeech: endOfSpeech
                 )
             }
@@ -584,9 +584,13 @@ final class BlobTextTalk {
         /// Time spent in the transcriber that wrote `text`; for Apple, how
         /// long it took to finish its last phrase after you stopped.
         var ms: Int
-        /// How long Parakeet's load took, or had taken when it was given up on.
+        /// Why Parakeet, picked, did not write the text when Fish was asked
+        /// in its place (`reason` is then `fish` or `fish-missed`).
+        var parakeetMiss: BlobMetrics.TranscriberReason?
+        /// How long Parakeet's load took, on the first turn that used it.
         var parakeetLoadMs: Int?
-        /// Which Parakeet load that was (`BlobParakeet.load`).
+        /// The Parakeet load still running when this turn gave up on it
+        /// (`BlobParakeet.load`); its time is recorded if it finishes.
         var parakeetLoad: Int?
     }
 
@@ -601,6 +605,7 @@ final class BlobTextTalk {
     /// Parakeet with Fish until it is ready (`BlobTranscriber.fishUntilParakeetKey`).
     private func finalText(_ said: BlobListener.Heard, stopMs: Int) async -> Final {
         let appleText = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var parakeetMiss: BlobMetrics.TranscriberReason?
         var parakeetLoadMs: Int?
         var parakeetLoad: Int?
         func used(
@@ -608,14 +613,14 @@ final class BlobTextTalk {
         ) -> Final {
             // A load given up on that finished meanwhile (during Fish's
             // wait): its full time. One still running reports it later.
-            let parakeet = BlobParakeet.shared
-            if let parakeetLoad, parakeetLoad == parakeet.load, parakeet.state == .ready {
-                parakeetLoadMs = parakeet.loadMs
+            if let load = parakeetLoad, let loaded = BlobParakeet.shared.takeLoadMs(of: load) {
+                parakeetLoadMs = loaded
+                parakeetLoad = nil
             }
-            Self.log.info("transcriber used=\(transcriber.rawValue, privacy: .public) reason=\(reason.rawValue, privacy: .public) ms=\(ms, privacy: .public) chars=\(text.count, privacy: .public) parakeetLoadMs=\(parakeetLoadMs ?? -1, privacy: .public)")
+            Self.log.info("transcriber used=\(transcriber.rawValue, privacy: .public) reason=\(reason.rawValue, privacy: .public) parakeetMiss=\(parakeetMiss?.rawValue ?? "-", privacy: .public) ms=\(ms, privacy: .public) chars=\(text.count, privacy: .public) parakeetLoadMs=\(parakeetLoadMs ?? -1, privacy: .public)")
             return Final(
                 text: text, transcriber: transcriber, reason: reason, ms: ms,
-                parakeetLoadMs: parakeetLoadMs, parakeetLoad: parakeetLoad
+                parakeetMiss: parakeetMiss, parakeetLoadMs: parakeetLoadMs, parakeetLoad: parakeetLoad
             )
         }
         func apple(_ reason: BlobMetrics.TranscriberReason) -> Final { used(.apple, reason, appleText, ms: stopMs) }
@@ -627,7 +632,7 @@ final class BlobTextTalk {
             let parakeet = BlobParakeet.shared
             let missed: BlobMetrics.TranscriberReason
             if await parakeet.ready(within: Self.parakeetLoadWait) {
-                parakeetLoadMs = parakeet.loadMs
+                parakeetLoadMs = parakeet.takeLoadMs()
                 let language = Self.languageHint
                 let began = ContinuousClock.now
                 let attempt = await Self.within(Self.parakeetDeadline) { () -> ParakeetAttempt? in
@@ -640,11 +645,13 @@ final class BlobTextTalk {
                 case nil: missed = .parakeetDeadline
                 }
             } else {
-                parakeetLoadMs = parakeet.loadMs
+                // A load still running: its time goes on this turn if it
+                // finishes while the turn is open, never the part waited.
                 if parakeet.state == .loading { parakeetLoad = parakeet.load }
                 missed = Self.missReason(parakeet.state)
             }
             guard BlobTranscriber.fishUntilParakeet, speaker.server?.transcribe == true else { return apple(missed) }
+            parakeetMiss = missed
         }
         guard speaker.server?.transcribe == true else { return apple(.fishMissed) }
         let began = ContinuousClock.now

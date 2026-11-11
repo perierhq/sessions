@@ -45,8 +45,8 @@ export const TRANSCRIBERS = ["parakeet", "fish", "apple"] as const;
 /** Why a voice turn's text came from the transcriber it came from
  *  (BlobTextTalk.finalText). `parakeet-*` other than `parakeet` say why
  *  Parakeet was picked but did not write the text. */
-export const TRANSCRIBER_REASONS = [
-  "parakeet",
+/** Why Parakeet, picked, did not write a voice turn's text. */
+export const PARAKEET_MISSES = [
   "parakeet-absent",
   "parakeet-downloading",
   "parakeet-loading-timeout",
@@ -54,6 +54,10 @@ export const TRANSCRIBER_REASONS = [
   "parakeet-error",
   "parakeet-empty",
   "parakeet-deadline",
+] as const;
+export const TRANSCRIBER_REASONS = [
+  "parakeet",
+  ...PARAKEET_MISSES,
   "fish",
   "fish-missed",
   "apple-chosen",
@@ -67,6 +71,7 @@ export const POSTURES = ["closed", "open"] as const;
 export type BlobInputMode = (typeof INPUT_MODES)[number];
 export type BlobTranscriber = (typeof TRANSCRIBERS)[number];
 export type BlobTranscriberReason = (typeof TRANSCRIBER_REASONS)[number];
+export type BlobParakeetMiss = (typeof PARAKEET_MISSES)[number];
 export type BlobEndOfSpeech = (typeof END_OF_SPEECH)[number];
 export type BlobInterruption = (typeof INTERRUPTIONS)[number];
 export type BlobOutcome = (typeof OUTCOMES)[number];
@@ -83,8 +88,12 @@ export interface BlobTurnMetric {
    *  it took to finish its last phrase after the owner stopped. */
   transcribeMs?: number;
   transcriberReason?: BlobTranscriberReason;
-  /** How long Parakeet's load took, from `warm()` to ready, for the load
-   *  that served this turn or that it gave up waiting for. */
+  /** With Parakeet picked and Fish asked until it is ready (reason `fish`
+   *  or `fish-missed`): why Parakeet did not write the text. */
+  parakeetMiss?: BlobParakeetMiss;
+  /** How long a Parakeet load took, from `warm()` to ready. Only on the
+   *  first turn that used that load or waited for it; never a partial time
+   *  of a load given up on or let go. */
   parakeetLoadMs?: number;
   endOfSpeech?: BlobEndOfSpeech;
   speechMs?: number;
@@ -196,6 +205,12 @@ export function cleanTurnMetric(
     "transcriberReason",
     oneOf(TRANSCRIBER_REASONS, get("transcriberReason")),
   );
+  // A Parakeet miss only says something next to the Fish it fell back to.
+  if (
+    turn.transcriberReason === "fish" ||
+    turn.transcriberReason === "fish-missed"
+  )
+    set("parakeetMiss", oneOf(PARAKEET_MISSES, get("parakeetMiss")));
   set("parakeetLoadMs", duration(get("parakeetLoadMs")));
   set("endOfSpeech", oneOf(END_OF_SPEECH, get("endOfSpeech")));
   set("speechMs", duration(get("speechMs")));

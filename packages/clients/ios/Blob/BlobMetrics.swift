@@ -62,6 +62,7 @@ final class BlobMetrics {
         var transcriber: String?
         var transcribeMs: Int?
         var transcriberReason: String?
+        var parakeetMiss: String?
         var parakeetLoadMs: Int?
         var endOfSpeech: String?
         var speechMs: Int?
@@ -134,6 +135,7 @@ final class BlobMetrics {
         transcriber: Transcriber? = nil,
         transcribeMs: Int? = nil,
         transcriberReason: TranscriberReason? = nil,
+        parakeetMiss: TranscriberReason? = nil,
         parakeetLoadMs: Int? = nil,
         parakeetLoad: Int? = nil,
         endOfSpeech: EndOfSpeech? = nil
@@ -145,6 +147,7 @@ final class BlobMetrics {
         turn.transcriber = transcriber?.rawValue
         turn.transcribeMs = transcribeMs
         turn.transcriberReason = transcriberReason?.rawValue
+        turn.parakeetMiss = parakeetMiss?.rawValue
         turn.parakeetLoadMs = parakeetLoadMs
         turn.endOfSpeech = endOfSpeech?.rawValue
         if input == .voice { turn.speechMs = speechMs }
@@ -204,12 +207,14 @@ final class BlobMetrics {
 
     /// Parakeet finished load number `load`, `ms` after `warm()` began it.
     /// The open turn that fell back because that load was still running
-    /// gets the full load time in place of the part it had waited for.
-    func parakeetLoaded(ms: Int, load: Int) {
-        guard current != nil, awaitedLoad == load else { return }
+    /// records its time. False when no open turn waited for it.
+    @discardableResult
+    func parakeetLoaded(ms: Int, load: Int) -> Bool {
+        guard current != nil, awaitedLoad == load else { return false }
         awaitedLoad = nil
         // `close()` buffers the turn with it.
         current?.parakeetLoadMs = ms
+        return true
     }
 
     /// Blob's speech is about to be stopped by you: counted when it was

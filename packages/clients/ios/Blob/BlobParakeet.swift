@@ -53,12 +53,15 @@ final class BlobParakeet {
     private var stopping: Stop?
     private var network: NWPathMonitor?
     /// When the load under way began, and how long the load that left the
-    /// model ready took (`loadMs`, for `BlobMetrics`).
+    /// model ready took (`takeLoadMs`, for `BlobMetrics`).
     private var loadStartedAt: ContinuousClock.Instant?
     private var readyLoadMs: Int?
     /// Counts loads, so a turn that gave up on one can be told when that
     /// same load finished.
     private(set) var load = 0
+    /// The last load whose time a turn has recorded: each load's time goes
+    /// on one turn only.
+    private var reportedLoad = 0
     /// FluidAudio reports each model file as its own pass from 0 to 1.
     private var pass = 0
     private var passFraction = 0.0
@@ -181,9 +184,10 @@ final class BlobParakeet {
                     let ms = loadStartedAt.map { BlobMetrics.elapsedMs(since: $0) }
                     readyLoadMs = ms
                     state = .ready
-                    if let ms { BlobMetrics.shared.parakeetLoaded(ms: ms, load: load) }
+                    if let ms, BlobMetrics.shared.parakeetLoaded(ms: ms, load: load) { reportedLoad = load }
                 } else {
                     // Unloaded while it loaded: background or memory warning.
+                    // Its time is no load time; no turn records it.
                     await manager.cleanup()
                     state = .downloaded
                 }
@@ -206,14 +210,13 @@ final class BlobParakeet {
         Task { await manager.cleanup() }
     }
 
-    /// How long the model took to load: the load that left it ready, or the
-    /// one still running so far. Nil when nothing is loaded or loading.
-    var loadMs: Int? {
-        switch state {
-        case .ready: readyLoadMs
-        case .loading: loadStartedAt.map { BlobMetrics.elapsedMs(since: $0) }
-        default: nil
-        }
+    /// How long the load that left the model ready took, for the first turn
+    /// that uses it or waited for it; nil after that, or when not ready.
+    /// With `load`, only when that is the load that left it ready.
+    func takeLoadMs(of load: Int? = nil) -> Int? {
+        guard state == .ready, load == nil || load == self.load, reportedLoad != self.load else { return nil }
+        reportedLoad = self.load
+        return readyLoadMs
     }
 
     /// True once the model is loaded, waiting up to `seconds` for a load
