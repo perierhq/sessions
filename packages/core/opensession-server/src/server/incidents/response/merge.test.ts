@@ -368,7 +368,7 @@ test("mergePinnedPr merges the pinned SHA as the App and comments who approved",
     [
       "acme/web",
       12,
-      "Merged by Sessions at abc1234, approved by @acme-owner.",
+      "Merged by Sessions. @acme-owner approved abc1234; merge commit 9f9f9f9.",
       { kind: "service", principal: "service", env: { GH_TOKEN: "app" } },
     ],
   ]);
@@ -399,6 +399,16 @@ test("mergePinnedPr reports an already merged PR without merging", async () => {
       gh,
     ),
   ).toEqual({ kind: "already-merged" });
+  expect(
+    await mergePinnedPr(
+      {
+        pr: pr({ state: "MERGED", headSha: "fff9999" }),
+        headSha: SHA,
+        title: "x",
+      },
+      gh,
+    ),
+  ).toEqual({ kind: "merged-elsewhere", mergedSha: "fff9999" });
   expect(merges).toEqual([]);
 });
 
@@ -414,6 +424,21 @@ test("mergePinnedPr stops when the head moved, before or during the merge", asyn
     reason: "PR #12 changed after verification",
   });
   expect(merges).toEqual([]);
+  // A moved head wins over any other blocker.
+  expect(
+    await mergePinnedPr(
+      {
+        pr: pr({
+          headSha: "fff9999",
+          reviewDecision: "CHANGES_REQUESTED",
+          failingChecks: ["test"],
+        }),
+        headSha: SHA,
+        title: "x",
+      },
+      gh,
+    ),
+  ).toMatchObject({ kind: "head-moved" });
   const raced = github({
     merge: async () => ({
       ok: false,
@@ -427,7 +452,7 @@ test("mergePinnedPr stops when the head moved, before or during the merge", asyn
     kind: "head-moved",
     method: "squash",
     reason:
-      "GitHub refused the merge: Head branch was modified. Review and try the merge again. Sessions never bypasses branch protection, so this needs you.",
+      "GitHub refused the merge: Head branch was modified. Review and try the merge again. The head of PR #12 changed since abc1234 was approved.",
   });
 });
 

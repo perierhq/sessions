@@ -369,11 +369,14 @@ export type PinnedMergeResult =
       commented?: boolean;
     }
   | { kind: "already-merged" }
+  /** Merged, but at a different head than the pinned one. */
+  | { kind: "merged-elsewhere"; mergedSha: string }
   | { kind: "blocked"; reason: string; method?: MergeMethod }
   | { kind: "head-moved"; reason: string; method?: MergeMethod }
   | { kind: "error"; message: string; method?: MergeMethod };
 
-/** Who approved the merge; the comment also names the merged head SHA. */
+/** Who approved the merge; the comment also names the approved head SHA
+ *  and, when GitHub returns it, the merge commit. */
 export interface PinnedMergeComment {
   approvedBy: string;
 }
@@ -381,8 +384,10 @@ export interface PinnedMergeComment {
 export function pinnedMergeComment(
   comment: PinnedMergeComment,
   headSha: string,
+  mergedSha?: string,
 ): string {
-  return `Merged by Sessions at ${headSha}, approved by @${comment.approvedBy}.`;
+  const approved = `Merged by Sessions. @${comment.approvedBy} approved ${headSha}`;
+  return mergedSha ? `${approved}; merge commit ${mergedSha}.` : `${approved}.`;
 }
 
 /** Merges one PR as the GitHub App, pinned to `headSha`, or says why not.
@@ -402,15 +407,27 @@ export async function mergePinnedPr(
   >,
 ): Promise<PinnedMergeResult> {
   const { pr, headSha } = input;
+  if (pr.state === "MERGED")
+    return pr.headSha === headSha
+      ? { kind: "already-merged" }
+      : { kind: "merged-elsewhere", mergedSha: pr.headSha };
+  if (pr.state === "OPEN" && !pr.draft && pr.headSha !== headSha)
+    return {
+      kind: "head-moved",
+      reason: `PR #${pr.number} changed after verification`,
+    };
   const assessment = assessAutoMerge(pr, headSha);
-  if (assessment.kind === "merged") return { kind: "already-merged" };
   if (assessment.kind !== "ready") {
     // Defence in depth: no merge call is ever made unless ready.
-    const reason =
-      assessment.kind === "wait" ? assessment.detail : assessment.reason;
-    return pr.state === "OPEN" && !pr.draft && pr.headSha !== headSha
-      ? { kind: "head-moved", reason }
-      : { kind: "blocked", reason };
+    return {
+      kind: "blocked",
+      reason:
+        assessment.kind === "merged"
+          ? `PR #${pr.number} is already merged`
+          : assessment.kind === "wait"
+            ? assessment.detail
+            : assessment.reason,
+    };
   }
   let method: MergeMethod | undefined;
   try {
@@ -428,11 +445,18 @@ export async function mergePinnedPr(
     if (!response.ok) {
       const message =
         response.message.trim().replace(/\.$/, "") || `HTTP ${response.status}`;
-      const reason = `GitHub refused the merge: ${message}. Sessions never bypasses branch protection, so this needs you.`;
       // 409: GitHub saw a different head than the pinned SHA.
-      return response.status === 409
-        ? { kind: "head-moved", reason, method }
-        : { kind: "blocked", reason, method };
+      if (response.status === 409)
+        return {
+          kind: "head-moved",
+          reason: `GitHub refused the merge: ${message}. The head of PR #${pr.number} changed since ${headSha} was approved.`,
+          method,
+        };
+      return {
+        kind: "blocked",
+        reason: `GitHub refused the merge: ${message}. Sessions never bypasses branch protection, so this needs you.`,
+        method,
+      };
     }
     const merged = {
       kind: "merged" as const,
@@ -444,7 +468,7 @@ export async function mergePinnedPr(
       await github.comment(
         pr.ghRepo,
         pr.number,
-        pinnedMergeComment(input.comment, headSha),
+        pinnedMergeComment(input.comment, headSha, response.sha),
         credential,
       );
       return { ...merged, commented: true };
@@ -494,11 +518,12 @@ export async function mergeIncidentPr(
       : {
           ...base,
           status: "refused",
-          ...(result.kind !== "already-merged" && result.method
+          ...("method" in result && result.method
             ? { method: result.method }
             : {}),
           detail:
-            result.kind === "already-merged"
+            result.kind === "already-merged" ||
+            result.kind === "merged-elsewhere"
               ? `PR #${pr.number} is already merged`
               : result.kind === "error"
                 ? result.message
