@@ -211,6 +211,7 @@ describe("aggregateBlobReview", () => {
           transcriberReason: "parakeet",
           parakeetLoadMs: 2000,
           parakeetWaitMs: 1500,
+          glossaryFixes: 2,
         }),
         voice("a1", 2000, {
           transcriber: "apple",
@@ -221,6 +222,7 @@ describe("aggregateBlobReview", () => {
         voice("a2", 3000, {
           transcriber: "apple",
           transcriberReason: "too-short",
+          glossaryFixes: 1,
         }),
         voice("f1", 3500, {
           transcriber: "fish",
@@ -271,6 +273,7 @@ describe("aggregateBlobReview", () => {
     });
     // Old builds' waits stay out too.
     expect(stt.app.parakeetWaitMs).toMatchObject({ n: 2, max: 15000 });
+    expect(stt.app.glossaryFixes).toEqual({ turns: 2, words: 3 });
   });
 
   test("counts dropped voice turns apart from the ones that went out", () => {

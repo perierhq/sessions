@@ -659,17 +659,21 @@ final class BlobTextTalk {
                 dropVoice(.movedOn, final: nil, listen: listen)
                 return
             }
-            let text = final.text
-            guard !text.isEmpty else {
+            guard !final.text.isEmpty else {
                 dropVoice(atCap ? .noEndpoint : .nothingHeard, final: final, listen: listen)
                 return
             }
+            // Misheard names put right ("Butter Band" to BetterBahn), whoever
+            // wrote the text. Only the count is logged and measured.
+            let corrected = BlobGlossary.correct(final.text, glossary: BlobGlossary.terms)
+            let text = corrected.text
+            if corrected.fixes > 0 { Self.log.info("glossary fixes=\(corrected.fixes)") }
             BlobMetrics.shared.began(
                 .voice, inputChars: text.count, transcriber: final.transcriber,
                 transcribeMs: final.ms, transcriberReason: final.reason,
                 parakeetMiss: final.parakeetMiss, parakeetLoadMs: final.parakeetLoadMs,
                 parakeetWaitMs: final.parakeetWaitMs, parakeetLoad: final.parakeetLoad,
-                endOfSpeech: endOfSpeech
+                glossaryFixes: corrected.fixes, endOfSpeech: endOfSpeech
             )
             if transcribing == listen { transcribing = nil }
             await deliver(text)

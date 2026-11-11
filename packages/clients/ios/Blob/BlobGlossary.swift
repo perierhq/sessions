@@ -1,0 +1,396 @@
+import Foundation
+
+/// The words you say that a speech model can't know: project names, repos,
+/// teammates' first names, Pat and Blob, PR. The server builds the list
+/// (`GET /api/blob/glossary`, blob-glossary.ts); it is kept on the device and
+/// refreshed at most hourly, when you start talking.
+///
+/// It goes two places. Apple's transcriber gets it as contextual strings
+/// (`BlobListener`): Apple says only `DictationTranscriber` uses them for
+/// now, so the `SpeechTranscriber` captions may ignore them, while the
+/// `Dictation` fallback's `SFSpeechRecognizer` does use them. And the final
+/// text, whoever wrote it, goes through `correct`, which swaps a near miss
+/// for the word it missed ("Butter Band" for the BetterBahn project).
+///
+/// Parakeet gets no vocabulary: FluidAudio's boosting needs a second, 97.5 MB
+/// English-only CTC encoder on top of a model that already takes tens of
+/// seconds to load, and Fish's API takes no prompt or hotwords. Both rely on
+/// `correct`.
+enum BlobGlossary {
+    static let log = BlobLog(category: "glossary")
+    private static let termsKey = "blob.glossary.terms"
+    private static let fetchedKey = "blob.glossary.fetchedAt"
+    private static let refreshAfter: TimeInterval = 60 * 60
+
+    /// The last list the server sent; empty until the first fetch.
+    static var terms: [String] {
+        UserDefaults.standard.stringArray(forKey: termsKey) ?? []
+    }
+
+    /// Fetches the list when the one kept is older than an hour. Never
+    /// throws: a failed fetch keeps the old list.
+    @MainActor
+    static func refreshIfStale() {
+        let fetched = UserDefaults.standard.double(forKey: fetchedKey)
+        guard Date().timeIntervalSince1970 - fetched >= refreshAfter, !refreshing else { return }
+        refreshing = true
+        Task { @MainActor in
+            defer { refreshing = false }
+            guard let fresh = try? await OS1API.blobGlossary() else { return }
+            UserDefaults.standard.set(Array(fresh.prefix(100)), forKey: termsKey)
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: fetchedKey)
+            log.info("refreshed terms=\(fresh.count)")
+        }
+    }
+
+    @MainActor private static var refreshing = false
+
+    struct Correction: Equatable {
+        var text: String
+        /// How many places changed.
+        var fixes: Int
+    }
+
+    /// `text` with near misses of glossary terms replaced. Conservative on
+    /// purpose; a wrong fix is worse than a missed one:
+    ///
+    /// - Only a capitalized span changes, the way the transcribers write a
+    ///   name they don't know: one to three words joined by spaces or
+    ///   hyphens, with a capital on a word that doesn't start a sentence
+    ///   (where every word is capitalized).
+    /// - The span must sound like the term (`phonetic` keys at most one
+    ///   apart, none for short words, same first sound) and be spelled close
+    ///   to it (`allowedEdits`; a single word at most one change, two from
+    ///   nine letters). A span that is already a term stays; a plural of
+    ///   one is not a near miss. A one-word term heard as two words ("Better
+    ///   Bahn") is joined.
+    /// - A single word only becomes a term with a capital in it (a name),
+    ///   and words become a lowercase term only when there are several of
+    ///   them and it is at least six letters long ("Butter Band" to
+    ///   `betterbahn`), so common words in the glossary ("merge", "lead")
+    ///   are never what something changes into.
+    /// - Two terms equally close: nothing changes.
+    /// - "piers", "peers" and "pier" become PRs or PR only next to a PR
+    ///   word: a number after them ("piers #12"; a bare number only after
+    ///   the plural, so "Pier 39" stays), an action before them ("open
+    ///   piers", "merged pier") or a passive one after ("piers were
+    ///   opened").
+    /// - A lowercase word becomes a name ("have pet check" to "have Pat
+    ///   check") only right after an asking word (have, ask, tell, hey,
+    ///   thanks, ping) and before punctuation, the end or a verb, sounding
+    ///   the same and one letter off, so "have pet hair" stays.
+    static func correct(_ text: String, glossary: [String]) -> Correction {
+        let terms = glossary.compactMap(Term.init)
+        guard !terms.isEmpty else { return Correction(text: text, fixes: 0) }
+        let known = Set(terms.map(\.key))
+        let knownPhrases = Set(terms.filter(\.multiword).map(\.key))
+        let words = Self.words(in: text)
+        var out = ""
+        var cursor = text.startIndex
+        var fixes = 0
+        var i = 0
+        while i < words.count {
+            let spans = stride(from: min(3, words.count - i), through: 1, by: -1)
+                .map { Array(words[i..<(i + $0)]) }
+                .filter { Self.joined($0, in: text) }
+            // Already a term, as written: keep it whole. Words that spell a
+            // one-word term ("Better Bahn") are joined below instead.
+            if let exact = spans.first(where: {
+                ($0.count == 1 ? known : knownPhrases).contains(Self.key($0.map(\.core).joined()))
+            }) {
+                i += exact.count
+                continue
+            }
+            // The closest near miss over every span length here; the longer
+            // span when two are as close.
+            var best: (span: [Word], term: Term, edits: Int)?
+            for span in spans {
+                guard let found = Self.match(span, in: text, terms: terms, known: known),
+                      best.map({ found.edits < $0.edits }) ?? true
+                else { continue }
+                best = (span, found.term, found.edits)
+            }
+            if let best {
+                let last = best.span[best.span.count - 1]
+                out += text[cursor..<best.span[0].range.lowerBound]
+                out += best.term.text + last.possessive
+                cursor = last.range.upperBound
+                fixes += 1
+                i += best.span.count
+                continue
+            }
+            if let fix = Self.prFix(words, at: i, in: text, terms: terms)
+                ?? Self.nameFix(words, at: i, in: text, terms: terms) {
+                out += text[cursor..<words[i].range.lowerBound]
+                out += fix
+                cursor = words[i].range.upperBound
+                fixes += 1
+            }
+            i += 1
+        }
+        out += text[cursor...]
+        return Correction(text: out, fixes: fixes)
+    }
+
+    // MARK: - Matching
+
+    struct Term {
+        let text: String
+        /// Letters and digits, lowercased.
+        let key: String
+        let sound: String
+        let capitalized: Bool
+        let multiword: Bool
+
+        init?(_ raw: String) {
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = BlobGlossary.key(text)
+            guard key.count >= 2 else { return nil }
+            self.text = text
+            self.key = key
+            sound = BlobGlossary.phonetic(key)
+            capitalized = text.contains(where: \.isUppercase)
+            multiword = text.contains(" ")
+        }
+    }
+
+    struct Word {
+        let range: Range<String.Index>
+        /// The word without a trailing possessive.
+        let core: String
+        /// "'s" when the word had one, put back after a replacement.
+        let possessive: String
+    }
+
+    private static func words(in text: String) -> [Word] {
+        var words: [Word] = []
+        var index = text.startIndex
+        while index < text.endIndex {
+            guard text[index].isLetter || text[index].isNumber else {
+                index = text.index(after: index); continue
+            }
+            var end = index
+            while end < text.endIndex {
+                let c = text[end]
+                if c.isLetter || c.isNumber {
+                    end = text.index(after: end)
+                } else if c == "'" || c == "\u{2019}",
+                          text.index(after: end) < text.endIndex,
+                          text[text.index(after: end)].isLetter {
+                    end = text.index(after: end)
+                } else { break }
+            }
+            let raw = String(text[index..<end])
+            var core = raw, possessive = ""
+            for suffix in ["'s", "\u{2019}s"] where raw.lowercased().hasSuffix(suffix) && raw.count > 2 {
+                core = String(raw.dropLast(2))
+                possessive = String(raw.suffix(2))
+            }
+            words.append(Word(range: index..<end, core: core, possessive: possessive))
+            index = end
+        }
+        return words
+    }
+
+    /// The words follow each other with one space or hyphen between them,
+    /// and only the last may carry a possessive.
+    private static func joined(_ span: [Word], in text: String) -> Bool {
+        for (a, b) in zip(span, span.dropFirst()) {
+            guard a.possessive.isEmpty else { return false }
+            let gap = text[a.range.upperBound..<b.range.lowerBound]
+            guard gap == " " || gap == "-" else { return false }
+        }
+        return true
+    }
+
+    private static func sentenceStart(_ word: Word, in text: String) -> Bool {
+        let before = text[..<word.range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = before.last else { return true }
+        return ".!?:\n\"\u{201C}".contains(last)
+    }
+
+    private static func match(_ span: [Word], in text: String, terms: [Term], known: Set<String>) -> (term: Term, edits: Int)? {
+        // A capital the transcriber chose: not the one every sentence starts with.
+        let capitals = span.filter { $0.core.first?.isUppercase == true && !sentenceStart($0, in: text) }
+        guard !capitals.isEmpty else { return nil }
+        let spanKey = key(span.map(\.core).joined(separator: " "))
+        // A one-word name heard as words: "Better Bahn" is BetterBahn.
+        if span.count > 1, let whole = terms.first(where: { !$0.multiword && $0.key == spanKey }) {
+            return (whole, 0)
+        }
+        guard spanKey.count >= 3, !known.contains(spanKey) else { return nil }
+        // Each word on its own already a term: it was heard right.
+        if span.count > 1, span.contains(where: { known.contains(key($0.core)) }) { return nil }
+        let spanSound = phonetic(spanKey)
+        var best: (term: Term, edits: Int)?
+        var tied = false
+        for term in terms {
+            if span.count == 1 {
+                guard term.capitalized, !term.multiword else { continue }
+            } else {
+                guard term.capitalized || term.key.count >= 6 else { continue }
+            }
+            guard spanKey.first.map(firstSound) == term.key.first.map(firstSound) else { continue }
+            // A plural is the same word, not a near miss.
+            guard spanKey != term.key + "s", term.key != spanKey + "s" else { continue }
+            let longest = max(spanKey.count, term.key.count)
+            let edits = distance(spanKey, term.key)
+            let allowed = span.count == 1 ? min(allowedEdits(longest), longest >= 9 ? 2 : 1) : allowedEdits(longest)
+            guard edits > 0, edits <= allowed else { continue }
+            let soundGap = distance(spanSound, term.sound)
+            guard soundGap <= (longest < 5 ? 0 : 1) else { continue }
+            if longest < 5 { guard spanKey.count == term.key.count else { continue } }
+            if let current = best {
+                if edits < current.edits { best = (term, edits); tied = false }
+                else if edits == current.edits, current.term.key != term.key { tied = true }
+            } else {
+                best = (term, edits)
+            }
+        }
+        return tied ? nil : best
+    }
+
+    /// Spelling changes a near miss may need: one for a short word, three
+    /// for a long one, never more than three in ten letters.
+    static func allowedEdits(_ length: Int) -> Int {
+        switch length {
+        case ..<3: 0
+        case 3...5: 1
+        case 6...8: 2
+        default: min(3, length * 3 / 10)
+        }
+    }
+
+    // MARK: - PRs
+
+    private static let prSounds: [String: String] = ["piers": "PRs", "peers": "PRs", "pier": "PR"]
+    /// Words that make "piers" right before it mean PRs. Quantities ("two
+    /// peers") and "review" ("review peers") are English with peers too.
+    private static let prActions: Set<String> = [
+        "open", "opened", "opening", "merge", "merged", "merging", "approve", "approved",
+        "close", "closed", "land", "landed", "ship", "shipped", "draft", "stale", "failing",
+        "pending",
+    ]
+    /// "piers were opened": a form of be or get, then one of these.
+    private static let prAuxiliaries: Set<String> = ["is", "are", "was", "were", "got", "get", "been"]
+    private static let prPassives: Set<String> = [
+        "opened", "merged", "closed", "approved", "landed", "shipped", "reverted",
+    ]
+
+    private static func prFix(_ words: [Word], at i: Int, in text: String, terms: [Term]) -> String? {
+        let word = words[i]
+        guard word.possessive.isEmpty, let target = prSounds[word.core.lowercased()],
+              terms.contains(where: { $0.text == target })
+        else { return nil }
+        // A number right after: "piers #12", "piers 12", "piers number 12".
+        // A bare number after the singular is a real pier ("Pier 39").
+        let after = text[word.range.upperBound...].drop { $0 == " " }
+        let numbered = after.first == "#"
+            || (target == "PRs" && (after.first?.isNumber == true
+                || after.lowercased().hasPrefix("number ")))
+        // An action right before, joined by a space: "open piers".
+        let acted = i > 0 && spaced(words[i - 1], word, in: text)
+            && prActions.contains(words[i - 1].core.lowercased())
+        // A passive after: "piers were opened".
+        let passive = i + 2 < words.count
+            && spaced(word, words[i + 1], in: text) && spaced(words[i + 1], words[i + 2], in: text)
+            && prAuxiliaries.contains(words[i + 1].core.lowercased())
+            && prPassives.contains(words[i + 2].core.lowercased())
+        return numbered || acted || passive ? target : nil
+    }
+
+    // MARK: - Names said lowercase
+
+    /// Words that put a name right after them: "have Pat", "ask Ada".
+    private static let askingWords: Set<String> = ["have", "ask", "tell", "hey", "thanks", "ping"]
+    /// Words a name is followed by in "have Pat check it".
+    private static let nameFollowers: Set<String> = [
+        "check", "look", "merge", "handle", "review", "fix", "do", "take", "find", "know",
+        "and", "to", "please",
+    ]
+
+    private static func nameFix(_ words: [Word], at i: Int, in text: String, terms: [Term]) -> String? {
+        guard i > 0 else { return nil }
+        let word = words[i], previous = words[i - 1]
+        guard word.core.first?.isLowercase == true, spaced(previous, word, in: text),
+              askingWords.contains(previous.core.lowercased())
+        else { return nil }
+        let following = text[word.range.upperBound...].first
+        let ends = following == nil || ",.!?;:\u{2026}".contains(following!)
+        let followed = i + 1 < words.count && spaced(word, words[i + 1], in: text)
+            && nameFollowers.contains(words[i + 1].core.lowercased())
+        guard ends || followed else { return nil }
+        let spoken = key(word.core)
+        let sound = phonetic(spoken)
+        let names = terms.filter {
+            $0.capitalized && !$0.multiword && $0.text.first?.isUppercase == true
+                && $0.key.count == spoken.count && $0.key != spoken
+                && $0.key.first == spoken.first && $0.sound == sound
+                && distance($0.key, spoken) == 1
+        }
+        // Two names as close: leave it.
+        guard names.count == 1, let name = names.first else { return nil }
+        return name.text + word.possessive
+    }
+
+    /// One space between the two words.
+    private static func spaced(_ a: Word, _ b: Word, in text: String) -> Bool {
+        text[a.range.upperBound..<b.range.lowerBound] == " "
+    }
+
+    // MARK: - Strings
+
+    static func key(_ text: String) -> String {
+        String(text.lowercased().filter { $0.isLetter || $0.isNumber })
+    }
+
+    /// A rough sound key: each consonant's Soundex group, vowels and
+    /// h/w/y dropped, repeats collapsed. "betterbahn" and "butter band"
+    /// both start 1-3-6-1-5.
+    static func phonetic(_ key: String) -> String {
+        var out = ""
+        var last: Character?
+        for c in key {
+            let group = soundGroup(c)
+            if let group, group != last { out.append(group) }
+            if c != "h" && c != "w" { last = group }
+        }
+        return out
+    }
+
+    private static func soundGroup(_ c: Character) -> Character? {
+        switch c {
+        case "b", "f", "p", "v": "1"
+        case "c", "g", "j", "k", "q", "s", "x", "z": "2"
+        case "d", "t": "3"
+        case "l": "4"
+        case "m", "n": "5"
+        case "r": "6"
+        case let d where d.isNumber: d
+        default: nil
+        }
+    }
+
+    /// The first letter's sound: its consonant group, or the vowel itself.
+    private static func firstSound(_ c: Character) -> Character { soundGroup(c) ?? c }
+
+    /// Levenshtein distance.
+    static func distance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        guard !a.isEmpty else { return b.count }
+        guard !b.isEmpty else { return a.count }
+        var previous = Array(0...b.count)
+        var current = [Int](repeating: 0, count: b.count + 1)
+        for i in 1...a.count {
+            current[0] = i
+            for j in 1...b.count {
+                current[j] = min(
+                    previous[j] + 1, current[j - 1] + 1,
+                    previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1)
+                )
+            }
+            swap(&previous, &current)
+        }
+        return previous[b.count]
+    }
+}

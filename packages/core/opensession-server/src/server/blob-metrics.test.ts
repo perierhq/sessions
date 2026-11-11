@@ -240,6 +240,23 @@ describe("cleanTurnMetric", () => {
     ).toBe(60 * 60 * 1000);
   });
 
+  test("keeps a voice turn's glossary fix count, and nothing else", () => {
+    expect(
+      metrics.cleanTurnMetric(turn({ glossaryFixes: 2.7 }), NOW)!.glossaryFixes,
+    ).toBe(2);
+    expect(
+      metrics.cleanTurnMetric(turn({ glossaryFixes: 0 }), NOW)!.glossaryFixes,
+    ).toBe(0);
+    for (const glossaryFixes of [-1, Number.NaN, "2", null, ["Pat"]])
+      expect(
+        metrics.cleanTurnMetric(turn({ glossaryFixes }), NOW)!.glossaryFixes,
+      ).toBeUndefined();
+    expect(
+      metrics.cleanTurnMetric(turn({ input: "typed", glossaryFixes: 1 }), NOW)!
+        .glossaryFixes,
+    ).toBeUndefined();
+  });
+
   test("drops an unknown transcriber reason and a bad load time", () => {
     for (const [transcriberReason, parakeetLoadMs] of [
       ["parakeet maybe", -1],

@@ -363,6 +363,11 @@ function appStats(metrics: BlobTurnMetric[]) {
     parakeetMisses: tally(timed.map(parakeetMiss)),
     parakeetLoadMs: distribution(defined(timed.map((t) => t.parakeetLoadMs))),
     parakeetWaitMs: distribution(defined(timed.map((t) => t.parakeetWaitMs))),
+    // Voice turns whose text the glossary corrected, and the words it fixed.
+    glossaryFixes: {
+      turns: voice.filter((turn) => (turn.glossaryFixes ?? 0) > 0).length,
+      words: voice.reduce((sum, turn) => sum + (turn.glossaryFixes ?? 0), 0),
+    },
     // Voice turns from builds before transcriberReason, left out of the
     // transcribe timings above.
     untimedVoiceTurns: voice.length - timed.length,
