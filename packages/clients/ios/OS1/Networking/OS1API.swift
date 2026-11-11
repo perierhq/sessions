@@ -2568,14 +2568,21 @@ enum OS1API {
     struct SupervisorPrefs: Decodable, Sendable, Equatable {
         /// How Blob reports: `bluf`, `sbar` or `plain`.
         let reportStyle: String?
+        /// The IANA zone quiet hours, the digest and the watch run in.
+        /// Empty means none is set and the server falls back to its own.
+        let timezone: String?
 
-        private enum CodingKeys: String, CodingKey { case reportStyle }
+        private enum CodingKeys: String, CodingKey { case reportStyle, timezone }
 
-        init(reportStyle: String? = nil) { self.reportStyle = reportStyle }
+        init(reportStyle: String? = nil, timezone: String? = nil) {
+            self.reportStyle = reportStyle
+            self.timezone = timezone
+        }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             reportStyle = (try? c.decodeIfPresent(String.self, forKey: .reportStyle)) ?? nil
+            timezone = (try? c.decodeIfPresent(String.self, forKey: .timezone)) ?? nil
         }
     }
 
@@ -2583,11 +2590,25 @@ enum OS1API {
         let prefs: SupervisorPrefs?
     }
 
+    /// Reads the prefs. When the server has no timezone yet (an empty
+    /// string, not a missing field), it gets this device's zone, so quiet
+    /// hours and the digest follow the owner's clock. A zone already set
+    /// on the server is never replaced.
     static func supervisorPrefs() async throws -> SupervisorPrefs {
         var components = URLComponents()
         components.queryItems = [URLQueryItem(name: "user", value: ServerConfig.shared.userName)]
         let response: SupervisorPrefsResponse = try await get(
             "/api/supervisor/prefs?\(components.percentEncodedQuery ?? "")"
+        )
+        let prefs = response.prefs ?? SupervisorPrefs()
+        guard prefs.timezone == "" else { return prefs }
+        return (try? await setSupervisorTimezone(TimeZone.current.identifier)) ?? prefs
+    }
+
+    private static func setSupervisorTimezone(_ identifier: String) async throws -> SupervisorPrefs {
+        let response: SupervisorPrefsResponse = try await put(
+            "/api/supervisor/prefs",
+            body: ["user": ServerConfig.shared.userName, "timezone": identifier]
         )
         return response.prefs ?? SupervisorPrefs()
     }
