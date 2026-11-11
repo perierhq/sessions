@@ -321,9 +321,6 @@ struct BlobHomeView: View {
                 if !engine.shownOutsideApp { engine.stop() }
                 text.pause()
                 BlobMetrics.shared.background()
-                BlobParakeet.shared.unload()
-            } else if phase == .active, BlobTranscriber.current == .parakeet {
-                BlobParakeet.shared.warm()
             }
         }
     }
@@ -1197,12 +1194,10 @@ struct BlobHomeView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .multilineTextAlignment(.trailing)
                 .blobLines(3, fromEnd: wide, font: .callout)
-        } else if text.listener.preparing {
-            Text("Getting my ears ready\u{2026}")
-                .font(.footnote)
-                .foregroundStyle(OS1VisualStyle.textFaint)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        } else if text.phase == .listening {
+        }
+        if text.waitingForEars || (text.heard.isEmpty && text.listener.preparing) {
+            earsLine
+        } else if text.heard.isEmpty, text.phase == .listening {
             Text(text.listener.endsByItself ? "Listening\u{2026}" : "Listening\u{2026} tap when you\u{2019}re done")
                 .font(.footnote)
                 .foregroundStyle(OS1VisualStyle.textFaint)
@@ -1211,6 +1206,16 @@ struct BlobHomeView: View {
         if let notice = text.notice {
             noticeLine(notice, alignment: alignment)
         }
+    }
+
+    /// The mic is starting, or what you said waits for Parakeet to load
+    /// (`BlobTextTalk.waitingForEars`). It fades, so Reduce Motion keeps it.
+    private var earsLine: some View {
+        Text("Getting my ears ready\u{2026}")
+            .font(.footnote)
+            .foregroundStyle(OS1VisualStyle.textFaint)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .transition(.opacity)
     }
 
     /// An answered ask that didn't go through, like a refused merge.
@@ -1239,6 +1244,7 @@ struct BlobHomeView: View {
                     .multilineTextAlignment(.trailing)
                     .accessibilityLabel("You: \(text.heard)")
             }
+            if text.waitingForEars { earsLine }
             if text.active, let notice = text.notice {
                 noticeLine(notice)
             }

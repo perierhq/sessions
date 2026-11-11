@@ -31,6 +31,7 @@ struct BlobRoot: View {
     @State private var config = ServerConfig.shared
     @State private var authGate = AuthGate.shared
     @State private var connecting = !ServerConfig.shared.isConfigured && !Self.demoHome
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Demo decisions, history and replies need no server, so they go
     /// straight to the home.
@@ -69,6 +70,16 @@ struct BlobRoot: View {
                 }
             }
             .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
+            // Parakeet loads at launch and whenever the app is back in front,
+            // so it is ready before you talk; in the background it stays
+            // loaded for a while (`BlobParakeet.appBackgrounded`).
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                switch phase {
+                case .active: BlobParakeet.shared.appActive()
+                case .background: BlobParakeet.shared.appBackgrounded()
+                default: break
+                }
+            }
             .onChange(of: config.isConfigured) { _, configured in
                 if !configured { connecting = true }
             }

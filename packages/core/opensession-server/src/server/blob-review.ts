@@ -357,6 +357,7 @@ function appStats(metrics: BlobTurnMetric[]) {
     // parakeetMiss when Fish was asked in Parakeet's place.
     parakeetMisses: tally(timed.map(parakeetMiss)),
     parakeetLoadMs: distribution(defined(timed.map((t) => t.parakeetLoadMs))),
+    parakeetWaitMs: distribution(defined(timed.map((t) => t.parakeetWaitMs))),
     // Voice turns from builds before transcriberReason, left out of the
     // transcribe timings above.
     untimedVoiceTurns: voice.length - timed.length,

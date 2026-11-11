@@ -17,9 +17,22 @@ import UIKit
 /// downloaded once, from Settings or on first use over Wi-Fi, into
 /// Application Support (FluidAudio's default place), kept out of backups. A
 /// download that isn't allowed on cellular pauses when the network turns
-/// metered and resumes from where it stopped. The model loads when Blob needs
-/// it and stays loaded while the app is in front; it is unloaded in the
-/// background and on a memory warning, also when either comes mid-load.
+/// metered and resumes from where it stopped. The model loads as soon as the
+/// app is in front (`appActive`) and when you start talking, and stays
+/// loaded in the background, so a quick trip to another app costs nothing.
+/// It is let go on a memory warning, or after `backgroundKeep` in the
+/// background (`appBackgrounded`), also when either comes mid-load.
+///
+/// Why a load can take tens of seconds: the files are compiled Core ML
+/// models (`.mlmodelc`), so nothing is compiled from source on load, but
+/// loading the encoder for the Neural Engine runs Apple's ANE compiler on
+/// it. The system keeps the result in the app's caches (on a Mac,
+/// `~/Library/Caches/<app>/com.apple.e5rt.e5bundlecache/<OS build>/`), so
+/// the first load after the download, an OS update or a purge of the caches
+/// pays for it, and later loads, in this launch or the next, are quick (on
+/// an M-series Mac the encoder took 36 s cold and 0.1 s from that cache).
+/// Keeping the model loaded, and loading it before you talk, keeps the slow
+/// load out of a turn.
 @MainActor
 @Observable
 final class BlobParakeet {
@@ -40,6 +53,8 @@ final class BlobParakeet {
 
     nonisolated static let version: AsrModelVersion = .ultra
     static let sizeLabel = "about 630 MB"
+    /// How long the model stays loaded while the app is in the background.
+    static let backgroundKeep: Duration = .seconds(15 * 60)
 
     private(set) var state: State = .absent
     private var manager: AsrManager?
@@ -62,6 +77,9 @@ final class BlobParakeet {
     /// The last load whose time a turn has recorded: each load's time goes
     /// on one turn only.
     private var reportedLoad = 0
+    /// Lets the model go after `backgroundKeep` in the background;
+    /// cancelled when the app comes back.
+    private var backgroundUnload: Task<Void, Never>?
     /// FluidAudio reports each model file as its own pass from 0 to 1.
     private var pass = 0
     private var passFraction = 0.0
@@ -202,6 +220,30 @@ final class BlobParakeet {
         }
     }
 
+    /// The app is in front, at launch or back from the background: keeps
+    /// the model, and loads it when Parakeet is picked and downloaded.
+    func appActive() {
+        backgroundUnload?.cancel()
+        backgroundUnload = nil
+        if BlobTranscriber.current == .parakeet { warm() }
+    }
+
+    /// The app went to the background. The model stays loaded; after
+    /// `backgroundKeep` there it is let go. Blob for iPhone is suspended
+    /// soon after it leaves, so its timer may only run once the app runs
+    /// again: firing that late means you are coming back, and the model
+    /// stays.
+    func appBackgrounded() {
+        backgroundUnload?.cancel()
+        let due = ContinuousClock.now + Self.backgroundKeep
+        backgroundUnload = Task {
+            try? await Task.sleep(until: due, clock: .continuous)
+            guard !Task.isCancelled, ContinuousClock.now - due < .seconds(60) else { return }
+            backgroundUnload = nil
+            unload()
+        }
+    }
+
     func unload() {
         wanted = false
         guard state == .ready, let manager else { return }
@@ -220,10 +262,10 @@ final class BlobParakeet {
     }
 
     /// True once the model is loaded, waiting up to `seconds` for a load
-    /// already under way.
-    func ready(within seconds: Double) async -> Bool {
+    /// already under way, for as long as `waiting` holds.
+    func ready(within seconds: Double, while waiting: () -> Bool = { true }) async -> Bool {
         let deadline = ContinuousClock.now + .seconds(seconds)
-        while state == .loading, ContinuousClock.now < deadline, !Task.isCancelled {
+        while state == .loading, ContinuousClock.now < deadline, !Task.isCancelled, waiting() {
             try? await Task.sleep(for: .milliseconds(100))
         }
         return state == .ready

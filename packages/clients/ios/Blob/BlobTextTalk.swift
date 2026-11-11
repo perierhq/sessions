@@ -27,6 +27,11 @@ final class BlobTextTalk {
     private(set) var phase: Phase = .idle
     /// What you said, as dictation hears it.
     private(set) var heard = ""
+    /// The listen whose recording waits for Parakeet to finish loading.
+    private var earsFor: Int?
+    /// You have stopped and the recording waits for Parakeet to load: the
+    /// captions say Blob is getting its ears ready.
+    var waitingForEars: Bool { phase == .waiting && earsFor == generation }
     let listener = BlobListener()
     let speaker = BlobSpeaker()
     private(set) var desk: SessionViewModel?
@@ -546,7 +551,8 @@ final class BlobTextTalk {
                 BlobMetrics.shared.began(
                     .voice, inputChars: text.count, transcriber: final.transcriber,
                     transcribeMs: final.ms, transcriberReason: final.reason,
-                    parakeetMiss: final.parakeetMiss, parakeetLoadMs: final.parakeetLoadMs, parakeetLoad: final.parakeetLoad,
+                    parakeetMiss: final.parakeetMiss, parakeetLoadMs: final.parakeetLoadMs,
+                    parakeetWaitMs: final.parakeetWaitMs, parakeetLoad: final.parakeetLoad,
                     endOfSpeech: endOfSpeech
                 )
             }
@@ -570,7 +576,12 @@ final class BlobTextTalk {
     static let stopDeadline: Double = 2
 
     /// Longest wait for a Parakeet load already under way when you stop.
-    static let parakeetLoadWait: Double = 2
+    /// A first load can take tens of seconds (`BlobParakeet`); the
+    /// recording is kept meanwhile, and past this Apple's text goes.
+    static let parakeetLoadWait: Double = 15
+    /// The same wait with Fish asked until Parakeet is ready: Fish hears
+    /// the recording instead of the wait.
+    static let parakeetFishWait: Double = 2
     /// Longest Parakeet may take on the recording once loaded.
     static let parakeetDeadline: Double = 6
     /// Longest wait for Fish, on its own budget after Parakeet's.
@@ -589,6 +600,9 @@ final class BlobTextTalk {
         var parakeetMiss: BlobMetrics.TranscriberReason?
         /// How long Parakeet's load took, on the first turn that used it.
         var parakeetLoadMs: Int?
+        /// How long the recording waited for Parakeet's load after you
+        /// stopped; nil when it was loaded, or not loading, by then.
+        var parakeetWaitMs: Int?
         /// The Parakeet load still running when this turn gave up on it
         /// (`BlobParakeet.load`); its time is recorded if it finishes.
         var parakeetLoad: Int?
@@ -607,6 +621,7 @@ final class BlobTextTalk {
         let appleText = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
         var parakeetMiss: BlobMetrics.TranscriberReason?
         var parakeetLoadMs: Int?
+        var parakeetWaitMs: Int?
         var parakeetLoad: Int?
         func used(
             _ transcriber: BlobMetrics.Transcriber, _ reason: BlobMetrics.TranscriberReason, _ text: String, ms: Int
@@ -617,10 +632,11 @@ final class BlobTextTalk {
                 parakeetLoadMs = loaded
                 parakeetLoad = nil
             }
-            Self.log.info("transcriber used=\(transcriber.rawValue, privacy: .public) reason=\(reason.rawValue, privacy: .public) parakeetMiss=\(parakeetMiss?.rawValue ?? "-", privacy: .public) ms=\(ms, privacy: .public) chars=\(text.count, privacy: .public) parakeetLoadMs=\(parakeetLoadMs ?? -1, privacy: .public)")
+            Self.log.info("transcriber used=\(transcriber.rawValue, privacy: .public) reason=\(reason.rawValue, privacy: .public) parakeetMiss=\(parakeetMiss?.rawValue ?? "-", privacy: .public) ms=\(ms, privacy: .public) chars=\(text.count, privacy: .public) parakeetLoadMs=\(parakeetLoadMs ?? -1, privacy: .public) parakeetWaitMs=\(parakeetWaitMs ?? -1, privacy: .public)")
             return Final(
                 text: text, transcriber: transcriber, reason: reason, ms: ms,
-                parakeetMiss: parakeetMiss, parakeetLoadMs: parakeetLoadMs, parakeetLoad: parakeetLoad
+                parakeetMiss: parakeetMiss, parakeetLoadMs: parakeetLoadMs,
+                parakeetWaitMs: parakeetWaitMs, parakeetLoad: parakeetLoad
             )
         }
         func apple(_ reason: BlobMetrics.TranscriberReason) -> Final { used(.apple, reason, appleText, ms: stopMs) }
@@ -631,7 +647,20 @@ final class BlobTextTalk {
         if choice == .parakeet {
             let parakeet = BlobParakeet.shared
             let missed: BlobMetrics.TranscriberReason
-            if await parakeet.ready(within: Self.parakeetLoadWait) {
+            // Still loading: wait for it with the recording, saying so.
+            let waitBegan = ContinuousClock.now
+            let waits = parakeet.state == .loading
+            let listen = generation
+            if waits { earsFor = listen }
+            let fishWaiting = BlobTranscriber.fishUntilParakeet && speaker.server?.transcribe == true
+            let ready = await parakeet.ready(
+                within: fishWaiting ? Self.parakeetFishWait : Self.parakeetLoadWait
+            ) { self.generation == listen }
+            if waits {
+                parakeetWaitMs = Self.ms(since: waitBegan)
+                if earsFor == listen { earsFor = nil }
+            }
+            if ready {
                 parakeetLoadMs = parakeet.takeLoadMs()
                 let language = Self.languageHint
                 let began = ContinuousClock.now

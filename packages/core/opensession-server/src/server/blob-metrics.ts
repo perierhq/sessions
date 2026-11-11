@@ -95,6 +95,9 @@ export interface BlobTurnMetric {
    *  first turn that used that load or waited for it; never a partial time
    *  of a load given up on or let go. */
   parakeetLoadMs?: number;
+  /** How long the recording waited for a Parakeet load still under way
+   *  when the owner stopped talking; absent when it did not wait. */
+  parakeetWaitMs?: number;
   endOfSpeech?: BlobEndOfSpeech;
   speechMs?: number;
   sendToAcceptedMs?: number;
@@ -212,6 +215,7 @@ export function cleanTurnMetric(
   )
     set("parakeetMiss", oneOf(PARAKEET_MISSES, get("parakeetMiss")));
   set("parakeetLoadMs", duration(get("parakeetLoadMs")));
+  set("parakeetWaitMs", duration(get("parakeetWaitMs")));
   set("endOfSpeech", oneOf(END_OF_SPEECH, get("endOfSpeech")));
   set("speechMs", duration(get("speechMs")));
   set("sendToAcceptedMs", duration(get("sendToAcceptedMs")));

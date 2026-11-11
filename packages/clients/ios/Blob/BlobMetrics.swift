@@ -31,7 +31,8 @@ final class BlobMetrics {
         case parakeetAbsent = "parakeet-absent"
         /// Parakeet picked, still downloading or paused mid-download.
         case parakeetDownloading = "parakeet-downloading"
-        /// Parakeet on the device but not loaded within the wait after you stopped.
+        /// Parakeet on the device but not loaded within the wait after you
+        /// stopped (`BlobTextTalk.parakeetLoadWait`).
         case parakeetLoadingTimeout = "parakeet-loading-timeout"
         /// Parakeet's last download or load failed.
         case parakeetFailed = "parakeet-failed"
@@ -64,6 +65,7 @@ final class BlobMetrics {
         var transcriberReason: String?
         var parakeetMiss: String?
         var parakeetLoadMs: Int?
+        var parakeetWaitMs: Int?
         var endOfSpeech: String?
         var speechMs: Int?
         var sendToAcceptedMs: Int?
@@ -137,6 +139,7 @@ final class BlobMetrics {
         transcriberReason: TranscriberReason? = nil,
         parakeetMiss: TranscriberReason? = nil,
         parakeetLoadMs: Int? = nil,
+        parakeetWaitMs: Int? = nil,
         parakeetLoad: Int? = nil,
         endOfSpeech: EndOfSpeech? = nil
     ) {
@@ -149,6 +152,7 @@ final class BlobMetrics {
         turn.transcriberReason = transcriberReason?.rawValue
         turn.parakeetMiss = parakeetMiss?.rawValue
         turn.parakeetLoadMs = parakeetLoadMs
+        turn.parakeetWaitMs = parakeetWaitMs
         turn.endOfSpeech = endOfSpeech?.rawValue
         if input == .voice { turn.speechMs = speechMs }
         if let last, Date().timeIntervalSince(last.closedAt) <= Self.reaskWindow,
