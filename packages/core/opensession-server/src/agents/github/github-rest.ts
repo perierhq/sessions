@@ -37,6 +37,8 @@ export const REPLY_MARKER = "<!-- os-reply -->";
 export const AUTOFIX_MARKER = "<!-- os-autofix -->";
 export const SIMPLIFY_MARKER = "<!-- os-simplify -->";
 export const ADVERSARIAL_MARKER = "<!-- os-adversarial -->";
+/** Ends every post by Blob's GitHub machine user (server/github-blob.ts). */
+export const BLOB_MARKER = "<!-- os:blob -->";
 
 export const OWN_MARKERS = [
   REVIEW_MARKER,
@@ -45,6 +47,7 @@ export const OWN_MARKERS = [
   AUTOFIX_MARKER,
   SIMPLIFY_MARKER,
   ADVERSARIAL_MARKER,
+  BLOB_MARKER,
 ];
 
 /** Whether a comment is the unfinished review placeholder for this head. */

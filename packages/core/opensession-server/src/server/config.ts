@@ -1258,6 +1258,7 @@ export function githubBotLogins(): string[] {
   const appSlug =
     process.env.OPENSESSION_GITHUB_APP_SLUG?.trim() ||
     (typeof configSlug === "string" ? configSlug.trim() : "");
+  const blobLogin = blobGithubLogin();
   return [
     ...new Set(
       [
@@ -1266,9 +1267,25 @@ export function githubBotLogins(): string[] {
         // so the agent never treats its own App-posted comments as human
         // replies to answer.
         ...(appSlug ? [`${appSlug}[bot]`] : []),
+        // Blob's GitHub machine user (github-blob.ts) posts as itself.
+        ...(blobLogin ? [blobLogin] : []),
       ].map((login) => login.toLowerCase()),
     ),
   ];
+}
+
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/** The login of Blob's GitHub machine user (`integrations.github.blob.login`,
+ *  recorded by github-blob.ts when its token is saved), or "" when none is
+ *  set. Only the login: the token is github-blob.ts's alone. */
+export function blobGithubLogin(): string {
+  const blob = configuredIntegration("github").blob;
+  if (!blob || typeof blob !== "object" || Array.isArray(blob)) return "";
+  const login = (blob as Record<string, unknown>).login;
+  return typeof login === "string" && GITHUB_LOGIN.test(login.trim())
+    ? login.trim()
+    : "";
 }
 
 /** Is `login` one of our bot identities? Membership over the whole

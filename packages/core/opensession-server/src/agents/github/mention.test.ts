@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { BLOB_MARKER, OWN_MARKERS } from "./github-rest";
 import { githubMentionHandles } from "./mention";
 
 describe("GitHub mention handles", () => {
@@ -21,5 +22,12 @@ describe("GitHub mention handles", () => {
         environment: "@legacy, open-session-acme[bot]",
       }),
     ).toEqual(["os", "open-session-acme", "legacy"]);
+  });
+});
+
+describe("our own GitHub content", () => {
+  test("a post by Blob's GitHub account is ours", () => {
+    expect(OWN_MARKERS).toContain(BLOB_MARKER);
+    expect(BLOB_MARKER).toBe("<!-- os:blob -->");
   });
 });
