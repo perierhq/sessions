@@ -274,13 +274,31 @@ final class BlobListener {
     }
 
     /// Recording and speaking want different audio sessions; switching is cheap.
-    static func activateSession(record: Bool) throws {
+    ///
+    /// Speaking (replies, decisions, asks, the filler) uses `.soloAmbient`,
+    /// so the ring/silent switch holds: on silent Blob is quiet on the
+    /// built-in speaker and still speaks in headphones and AirPods (A2DP,
+    /// which the playback categories route to on their own). Apps can't read
+    /// the switch, so this category is the only way to respect it.
+    /// `.ambient` would respect it too, but it always mixes and can't duck
+    /// (`.duckOthers` is only for `.playback`, `.playAndRecord` and
+    /// `.multiRoute`), so Blob would talk over music at full volume; with
+    /// `.soloAmbient` other audio pauses while Blob has the floor. Its mode
+    /// stays `.default`: Apple lists `.spokenAudio` for `.playback` only.
+    /// `overSilent` keeps `.playback` for a sound you asked to hear (the
+    /// voice preview in Settings). Listening keeps `.playAndRecord`, with
+    /// A2DP allowed so a Bluetooth output stays where it is while the
+    /// built-in mic listens. The opt-in live call configures its own session
+    /// (`DeskVoiceEngine`).
+    static func activateSession(record: Bool, overSilent: Bool = false) throws {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         if record {
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .duckOthers])
-        } else {
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetoothA2DP, .duckOthers])
+        } else if overSilent {
             try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        } else {
+            try session.setCategory(.soloAmbient, mode: .default)
         }
         try session.setActive(true)
         #endif

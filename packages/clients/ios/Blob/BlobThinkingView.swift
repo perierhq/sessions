@@ -22,6 +22,7 @@ struct BlobThinkingLayer: View {
 
     @State private var turn = BlobThinkingTurn()
     @State private var showSteps = false
+    @AppStorage(BlobSpeaker.readAloudKey) private var readAloud = true
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -66,6 +67,7 @@ struct BlobThinkingLayer: View {
         .onChange(of: talk.replyEntry?.id, initial: true) { _, _ in turn.checkReply(talk: talk) }
         .onChange(of: entryKey) { _, _ in turn.update(talk: talk) }
         .onChange(of: talk.desk?.pendingQuestion != nil, initial: true) { _, asking in if asking { turn.questionShown() } }
+        .onChange(of: readAloud) { _, on in if !on { turn.readAloudOff() } }
     }
 
     /// The live thought, outside the demo: the supervisor is still working
@@ -458,6 +460,12 @@ final class BlobThinkingTurn {
 
     /// A question card came up: no filler over it.
     func questionShown() { quiet() }
+
+    /// Reading aloud went off: the filler stops at once and stays silent.
+    func readAloudOff() {
+        fillerTask?.cancel()
+        filler.stop()
+    }
 
     private func quiet() {
         fillerTask?.cancel()
