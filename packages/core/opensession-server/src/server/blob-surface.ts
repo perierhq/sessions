@@ -69,15 +69,22 @@ export const SAY_SHOW_LINES = [
   "Tables only when the owner asked for data. No paragraph recaps. Keep it to what fits; offer the rest as choices instead of writing it out.",
 ] as const;
 
-/** The context note for this turn, or nothing when Blob isn't the reader. */
+/** The whole block when the supervisor is written to from elsewhere (the
+ *  web), so it replaces an older Blob block (supervisor-briefing-trim.ts). */
+export const NOT_IN_BLOB =
+  "Not in Blob this turn: write a normal reply with no say fence.";
+
+/** The context note for this turn: where Blob shows the reply, or
+ *  `NOT_IN_BLOB`. Nothing for a session that isn't the supervisor. */
 export function blobSurfaceContext(
   session: Pick<UnifiedSession, "supervisor" | "blobSurface">,
   now: Date = new Date(),
 ): string | undefined {
+  if (!session.supervisor) return undefined;
   const s = session.blobSurface;
-  if (!session.supervisor || !s) return undefined;
-  const at = Date.parse(s.at);
-  if (!Number.isFinite(at) || now.getTime() - at > FRESH_MS) return undefined;
+  const at = s ? Date.parse(s.at) : NaN;
+  if (!s || !Number.isFinite(at) || now.getTime() - at > FRESH_MS)
+    return wrapContext(NOT_IN_BLOB, "blob-surface");
   const room =
     s.panes === 2
       ? "two panes side by side (an open foldable): a view may put a chart or table in one and the detail in the other"

@@ -679,7 +679,9 @@ describe("standing sessions", () => {
     );
     expect(note).toContain('("Checking Pat\'s review now.")');
     expect(note).toContain("within two seconds");
-    expect(note).toContain("that line is a short ```say fence");
+    expect(note).toContain(
+      "that line is a short ```say fence, at most once per turn: later checks in the same turn get a plain line.",
+    );
     expect(note).toContain(
       "Never state how Blob, Open Session or a tool behaves (what it shows, where a card appears, what it can or can't do) unless this turn's context, the charter or a tool result says so. Check first, or say you don't know.",
     );

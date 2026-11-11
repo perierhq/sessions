@@ -1,11 +1,13 @@
 /**
  * The supervisor's briefing trim: only the newest block of each per-turn
  * briefing kind reaches the model, older ones become a fixed one-line stub,
- * the owner's answers survive, and the request prefix changes only when a
- * turn's prompt adds a newer briefing.
+ * the owner's answers survive, an empty inbox or a web turn still replaces
+ * the older block, and the request prefix changes only when a turn's prompt
+ * adds a newer briefing.
  */
 import { describe, expect, test } from "bun:test";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import { NOT_IN_BLOB } from "./blob-surface";
 import { wrapContext } from "./prompt-context";
 import {
   STALE_BRIEFING_NOTE,
@@ -13,6 +15,7 @@ import {
   stubStaleBriefings,
   supervisorBriefingTrimExtension,
 } from "./supervisor-briefing-trim";
+import { INBOX_EMPTY } from "./supervisor-inbox";
 import {
   FIXTURE_TURNS,
   fixtureConversation,
@@ -116,6 +119,25 @@ describe("stubStaleBriefings", () => {
     const text = textOf(stubStaleBriefings([owner, wake])[0]!);
     expect(text).toContain("inbox");
     expect(text).toContain(STALE_BRIEFING_NOTE);
+  });
+
+  test("an empty inbox and a web turn still replace the older blocks", () => {
+    const blob = wrapContext("Shown in the Blob app.", "blob-surface");
+    const inbox = wrapContext(
+      "## Your inbox\n\nWaiting on the owner:\n- [item-2] Hold the release?",
+      "supervisor-inbox",
+    );
+    const owner = user(`${blob}\n\n${inbox}\n\nwhat's waiting?`);
+    // The next owner turn comes from the web with nothing open.
+    const web = user(
+      `${wrapContext(NOT_IN_BLOB, "blob-surface")}\n\n${wrapContext(INBOX_EMPTY, "supervisor-inbox")}\n\nanything new?`,
+    );
+    const out = stubStaleBriefings([owner, web]);
+    const text = textOf(out[0]!);
+    expect(text).not.toContain("Hold the release?");
+    expect(text).not.toContain("Shown in the Blob app.");
+    expect(text.split(STALE_BRIEFING_NOTE)).toHaveLength(3);
+    expect(out[1]).toBe(web);
   });
 
   test("the request prefix changes only when a new turn brings a newer briefing", () => {

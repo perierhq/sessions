@@ -3402,7 +3402,8 @@ async function runSessionPromptInner(
     );
   }
 
-  // Shown in the Blob app: say where, so the reply fits (blob-surface.ts).
+  // Shown in the Blob app: say where, so the reply fits; otherwise say it
+  // isn't, so an older Blob block is never the newest (blob-surface.ts).
   // Blob talks to the supervisor, not the Desk.
   if (session.supervisor) {
     const blob = blobSurfaceContext(session);

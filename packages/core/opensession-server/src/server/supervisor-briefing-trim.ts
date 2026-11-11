@@ -9,11 +9,17 @@
  * module the messages; every briefing block older than the newest one of its
  * kind becomes a one-line stub. The session file is unchanged.
  *
- * Prompt cache: a stub only replaces an older turn's block, and the newest
- * block of each kind belongs to the turn's own prompt. So the request
- * prefix changes once, when a turn's prompt adds a newer briefing, and stays
- * the same for every later request of that turn. A stub is the same text
- * every time, so a stubbed block never changes again.
+ * Every owner turn carries each kind, even with nothing to say: an empty
+ * inbox is "Inbox: nothing waiting." (supervisor-inbox.ts) and a web turn
+ * says it is not in Blob (blob-surface.ts). So the newest block of a kind
+ * is always this turn's, never a stale one an empty turn left standing.
+ *
+ * Prompt cache: a new turn's briefing stubs the previous turn's blocks, so
+ * on the turn's first request the cached prefix breaks at the previous
+ * turn's prompt, and everything from there (that prompt, its replies and
+ * tool results) is cached again. Later requests of the same turn keep the
+ * prefix. A stub is the same text every time, so a stubbed block never
+ * changes again and nothing before the previous turn breaks.
  */
 import type {
   ExtensionFactory,
@@ -96,7 +102,9 @@ function userTexts(message: unknown): string[] {
 /**
  * The messages with every briefing block that a later user message repeats
  * (by source) replaced by a stub. Messages without a stale block are
- * returned as they are; the input is never modified.
+ * returned as they are; the input is never modified. A kind no later
+ * message repeats stays in full, which is why owner turns always carry
+ * every kind (the header).
  */
 export function stubStaleBriefings<T>(messages: readonly T[]): T[] {
   const newest = new Map<string, number>();

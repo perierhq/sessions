@@ -786,7 +786,14 @@ describe("recent digests", () => {
 
 describe("briefing", () => {
   test("open decisions, fyi since the digest, and each answer until a turn completes", async () => {
-    expect(await inbox.supervisorInboxContext("Ada")).toBeUndefined();
+    // Nothing open: one line, so it replaces an older block that listed items.
+    const empty = await inbox.supervisorInboxContext("Ada");
+    expect(empty?.context).toBe(
+      `<opensession:context source="supervisor-inbox">\n${inbox.INBOX_EMPTY}\n</opensession:context>`,
+    );
+    expect(empty?.answered).toEqual([]);
+    expect(inbox.INBOX_EMPTY).toBe("Inbox: nothing waiting.");
+    expect(await inbox.supervisorInboxContext("  ")).toBeUndefined();
     const a = await needsYou();
     const b = await needsYou({ title: "Ban the spammer?", options: ["Ban"] });
     await fyi("CI repaired");

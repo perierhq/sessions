@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   blobSurfaceContext,
   maybePersistBlobSurface,
+  NOT_IN_BLOB,
   parseBlobSurface,
 } from "./blob-surface";
+import { wrapContext } from "./prompt-context";
 import type { UnifiedSession } from "./types";
 
 const now = new Date("2026-11-10T09:00:00.000Z");
@@ -98,7 +100,7 @@ describe("Blob surface", () => {
     expect(text).toContain("the cue itself is never read");
   });
 
-  test("says nothing outside the supervisor, without a surface, or once it is stale", () => {
+  test("says nothing outside the supervisor, and not in Blob without a fresh surface", () => {
     const fresh = {
       panes: 1 as const,
       width: "compact" as const,
@@ -107,7 +109,11 @@ describe("Blob surface", () => {
     expect(
       blobSurfaceContext({ supervisor: false, blobSurface: fresh }, now),
     ).toBeUndefined();
-    expect(blobSurfaceContext({ supervisor: true }, now)).toBeUndefined();
+    const notInBlob = wrapContext(NOT_IN_BLOB, "blob-surface");
+    expect(blobSurfaceContext({ supervisor: true }, now)).toBe(notInBlob);
+    expect(NOT_IN_BLOB).toBe(
+      "Not in Blob this turn: write a normal reply with no say fence.",
+    );
     // Blob no longer talks to the Desk.
     expect(
       blobSurfaceContext(
@@ -121,7 +127,7 @@ describe("Blob surface", () => {
     const later = new Date(now.getTime() + 31 * 60 * 1000);
     expect(
       blobSurfaceContext({ supervisor: true, blobSurface: fresh }, later),
-    ).toBeUndefined();
+    ).toBe(notInBlob);
   });
 
   test("records the surface only on a supervisor session", () => {
