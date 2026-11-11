@@ -3,6 +3,7 @@ import FluidAudio
 import Foundation
 import Network
 import Observation
+import os
 #if os(iOS)
 import UIKit
 #endif
@@ -17,9 +18,24 @@ import UIKit
 /// downloaded once, from Settings or on first use over Wi-Fi, into
 /// Application Support (FluidAudio's default place), kept out of backups. A
 /// download that isn't allowed on cellular pauses when the network turns
-/// metered and resumes from where it stopped. The model loads when Blob needs
-/// it and stays loaded while the app is in front; it is unloaded in the
-/// background and on a memory warning, also when either comes mid-load.
+/// metered and resumes from where it stopped. The model loads as soon as the
+/// app is in front (`appActive`) and when you start talking, and stays
+/// loaded in the background, so a quick trip to another app costs nothing.
+/// It is let go on a memory warning, also when one comes mid-load. Blob has
+/// no background modes, so iOS suspends it soon after it leaves and may end
+/// it while it holds the model; the next launch loads the model again, from
+/// the system's compiled-model cache below.
+///
+/// Why a load can take tens of seconds: the files are compiled Core ML
+/// models (`.mlmodelc`), so nothing is compiled from source on load, but
+/// loading the encoder for the Neural Engine runs Apple's ANE compiler on
+/// it. The system keeps the result in the app's caches (on a Mac,
+/// `~/Library/Caches/<app>/com.apple.e5rt.e5bundlecache/<OS build>/`), so
+/// the first load after the download, an OS update or a purge of the caches
+/// pays for it, and later loads, in this launch or the next, are quick (on
+/// an M-series Mac the encoder took 36 s cold and 0.1 s from that cache).
+/// Keeping the model loaded, and loading it before you talk, keeps the slow
+/// load out of a turn.
 @MainActor
 @Observable
 final class BlobParakeet {
@@ -40,13 +56,13 @@ final class BlobParakeet {
 
     nonisolated static let version: AsrModelVersion = .ultra
     static let sizeLabel = "about 630 MB"
+    static let log = Logger(subsystem: "pl.sessions.blob", category: "parakeet")
 
     private(set) var state: State = .absent
     private var manager: AsrManager?
     private var work: Task<Void, Never>?
     /// Someone wants the model loaded. `unload()` clears it, so a load that
-    /// finishes after the app went to the background, or after a memory
-    /// warning, lets the model go again.
+    /// finishes after a memory warning lets the model go again.
     private var wanted = false
     /// Why a running download is being stopped.
     private enum Stop { case user, network }
@@ -179,14 +195,15 @@ final class BlobParakeet {
                 let models = try await AsrModels.load(from: Self.directory, version: Self.version)
                 let manager = AsrManager(config: .default)
                 try await manager.loadModels(models)
+                let ms = loadStartedAt.map { BlobMetrics.elapsedMs(since: $0) }
+                Self.log.info("load done ms=\(ms ?? -1, privacy: .public) load=\(load, privacy: .public) kept=\(self.wanted, privacy: .public)")
                 if wanted {
                     self.manager = manager
-                    let ms = loadStartedAt.map { BlobMetrics.elapsedMs(since: $0) }
                     readyLoadMs = ms
                     state = .ready
                     if let ms, BlobMetrics.shared.parakeetLoaded(ms: ms, load: load) { reportedLoad = load }
                 } else {
-                    // Unloaded while it loaded: background or memory warning.
+                    // Unloaded while it loaded: a memory warning.
                     // Its time is no load time; no turn records it.
                     await manager.cleanup()
                     state = .downloaded
@@ -200,6 +217,13 @@ final class BlobParakeet {
             // Wanted again while the model was being let go.
             if wanted, state == .downloaded { warm() }
         }
+    }
+
+    /// The app is in front, at launch or back from the background: loads
+    /// the model when Parakeet is picked and downloaded. In the background
+    /// the model stays loaded.
+    func appActive() {
+        if BlobTranscriber.current == .parakeet { warm() }
     }
 
     func unload() {
@@ -220,10 +244,10 @@ final class BlobParakeet {
     }
 
     /// True once the model is loaded, waiting up to `seconds` for a load
-    /// already under way.
-    func ready(within seconds: Double) async -> Bool {
+    /// already under way, for as long as `waiting` holds.
+    func ready(within seconds: Double, while waiting: () -> Bool = { true }) async -> Bool {
         let deadline = ContinuousClock.now + .seconds(seconds)
-        while state == .loading, ContinuousClock.now < deadline, !Task.isCancelled {
+        while state == .loading, ContinuousClock.now < deadline, !Task.isCancelled, waiting() {
             try? await Task.sleep(for: .milliseconds(100))
         }
         return state == .ready

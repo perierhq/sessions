@@ -184,6 +184,7 @@ describe("cleanTurnMetric", () => {
       transcriber: "apple",
       transcriberReason: "parakeet-loading-timeout",
       parakeetLoadMs: 3400,
+      parakeetWaitMs: 15000,
     });
     expect(metrics.cleanTurnMetric(raw, NOW)).toEqual(raw as never);
     for (const reason of metrics.TRANSCRIBER_REASONS)
@@ -221,6 +222,22 @@ describe("cleanTurnMetric", () => {
     expect(clean.transcriber).toBe("apple");
     expect(clean.transcriberReason).toBeUndefined();
     expect(clean.parakeetLoadMs).toBeUndefined();
+    expect(clean.parakeetWaitMs).toBeUndefined();
+  });
+
+  test("keeps how long the recording waited for Parakeet, and drops a bad wait", () => {
+    expect(
+      metrics.cleanTurnMetric(turn({ parakeetWaitMs: 4200.4 }), NOW)!
+        .parakeetWaitMs,
+    ).toBe(4200);
+    for (const parakeetWaitMs of [-1, Number.NaN, "4200", null])
+      expect(
+        metrics.cleanTurnMetric(turn({ parakeetWaitMs }), NOW)!.parakeetWaitMs,
+      ).toBeUndefined();
+    expect(
+      metrics.cleanTurnMetric(turn({ parakeetWaitMs: 9e9 }), NOW)!
+        .parakeetWaitMs,
+    ).toBe(60 * 60 * 1000);
   });
 
   test("drops an unknown transcriber reason and a bad load time", () => {

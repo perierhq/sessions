@@ -210,11 +210,13 @@ describe("aggregateBlobReview", () => {
           transcriber: "parakeet",
           transcriberReason: "parakeet",
           parakeetLoadMs: 2000,
+          parakeetWaitMs: 1500,
         }),
         voice("a1", 2000, {
           transcriber: "apple",
           transcriberReason: "parakeet-loading-timeout",
           parakeetLoadMs: 5000,
+          parakeetWaitMs: 15000,
         }),
         voice("a2", 3000, {
           transcriber: "apple",
@@ -235,6 +237,7 @@ describe("aggregateBlobReview", () => {
           transcriber: "apple",
           transcribeMs: 7000,
           parakeetLoadMs: 8000,
+          parakeetWaitMs: 8000,
         }),
         metric({
           turnId: "typed",
@@ -266,6 +269,8 @@ describe("aggregateBlobReview", () => {
       p90: 5000,
       max: 5000,
     });
+    // Old builds' waits stay out too.
+    expect(stt.app.parakeetWaitMs).toMatchObject({ n: 2, max: 15000 });
   });
 
   test("reports transcript turns, tools and hours", () => {
