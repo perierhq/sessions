@@ -205,6 +205,8 @@ struct BlobHomeView: View {
         .task {
             text.connect()
             voiceConfigured = await BlobTextTalk.voiceConfigured()
+            // Gives the server this device's timezone when it has none.
+            _ = try? await OS1API.ensureSupervisorTimezone()
         }
         // Open decisions: on appear, when the app comes back, and every
         // minute while it is in front.
