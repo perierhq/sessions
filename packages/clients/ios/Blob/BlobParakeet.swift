@@ -3,6 +3,7 @@ import FluidAudio
 import Foundation
 import Network
 import Observation
+import os
 #if os(iOS)
 import UIKit
 #endif
@@ -20,8 +21,10 @@ import UIKit
 /// metered and resumes from where it stopped. The model loads as soon as the
 /// app is in front (`appActive`) and when you start talking, and stays
 /// loaded in the background, so a quick trip to another app costs nothing.
-/// It is let go on a memory warning, or after `backgroundKeep` in the
-/// background (`appBackgrounded`), also when either comes mid-load.
+/// It is let go on a memory warning, also when one comes mid-load. Blob has
+/// no background modes, so iOS suspends it soon after it leaves and may end
+/// it while it holds the model; the next launch loads the model again, from
+/// the system's compiled-model cache below.
 ///
 /// Why a load can take tens of seconds: the files are compiled Core ML
 /// models (`.mlmodelc`), so nothing is compiled from source on load, but
@@ -53,15 +56,13 @@ final class BlobParakeet {
 
     nonisolated static let version: AsrModelVersion = .ultra
     static let sizeLabel = "about 630 MB"
-    /// How long the model stays loaded while the app is in the background.
-    static let backgroundKeep: Duration = .seconds(15 * 60)
+    static let log = Logger(subsystem: "pl.sessions.blob", category: "parakeet")
 
     private(set) var state: State = .absent
     private var manager: AsrManager?
     private var work: Task<Void, Never>?
     /// Someone wants the model loaded. `unload()` clears it, so a load that
-    /// finishes after the app went to the background, or after a memory
-    /// warning, lets the model go again.
+    /// finishes after a memory warning lets the model go again.
     private var wanted = false
     /// Why a running download is being stopped.
     private enum Stop { case user, network }
@@ -77,9 +78,6 @@ final class BlobParakeet {
     /// The last load whose time a turn has recorded: each load's time goes
     /// on one turn only.
     private var reportedLoad = 0
-    /// Lets the model go after `backgroundKeep` in the background;
-    /// cancelled when the app comes back.
-    private var backgroundUnload: Task<Void, Never>?
     /// FluidAudio reports each model file as its own pass from 0 to 1.
     private var pass = 0
     private var passFraction = 0.0
@@ -197,14 +195,15 @@ final class BlobParakeet {
                 let models = try await AsrModels.load(from: Self.directory, version: Self.version)
                 let manager = AsrManager(config: .default)
                 try await manager.loadModels(models)
+                let ms = loadStartedAt.map { BlobMetrics.elapsedMs(since: $0) }
+                Self.log.info("load done ms=\(ms ?? -1, privacy: .public) load=\(load, privacy: .public) kept=\(self.wanted, privacy: .public)")
                 if wanted {
                     self.manager = manager
-                    let ms = loadStartedAt.map { BlobMetrics.elapsedMs(since: $0) }
                     readyLoadMs = ms
                     state = .ready
                     if let ms, BlobMetrics.shared.parakeetLoaded(ms: ms, load: load) { reportedLoad = load }
                 } else {
-                    // Unloaded while it loaded: background or memory warning.
+                    // Unloaded while it loaded: a memory warning.
                     // Its time is no load time; no turn records it.
                     await manager.cleanup()
                     state = .downloaded
@@ -220,28 +219,11 @@ final class BlobParakeet {
         }
     }
 
-    /// The app is in front, at launch or back from the background: keeps
-    /// the model, and loads it when Parakeet is picked and downloaded.
+    /// The app is in front, at launch or back from the background: loads
+    /// the model when Parakeet is picked and downloaded. In the background
+    /// the model stays loaded.
     func appActive() {
-        backgroundUnload?.cancel()
-        backgroundUnload = nil
         if BlobTranscriber.current == .parakeet { warm() }
-    }
-
-    /// The app went to the background. The model stays loaded; after
-    /// `backgroundKeep` there it is let go. Blob for iPhone is suspended
-    /// soon after it leaves, so its timer may only run once the app runs
-    /// again: firing that late means you are coming back, and the model
-    /// stays.
-    func appBackgrounded() {
-        backgroundUnload?.cancel()
-        let due = ContinuousClock.now + Self.backgroundKeep
-        backgroundUnload = Task {
-            try? await Task.sleep(until: due, clock: .continuous)
-            guard !Task.isCancelled, ContinuousClock.now - due < .seconds(60) else { return }
-            backgroundUnload = nil
-            unload()
-        }
     }
 
     func unload() {

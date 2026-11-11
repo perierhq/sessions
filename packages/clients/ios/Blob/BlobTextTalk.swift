@@ -544,8 +544,9 @@ final class BlobTextTalk {
             guard isCurrent(listen) else { return }
             // Apple's text first, then the better transcript in its place.
             heard = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let final = await finalText(said, stopMs: Self.ms(since: started))
-            guard isCurrent(listen) else { return }
+            guard let final = await finalText(said, stopMs: Self.ms(since: started), listen: listen),
+                  isCurrent(listen)
+            else { return }
             let text = final.text
             if !text.isEmpty {
                 BlobMetrics.shared.began(
@@ -617,7 +618,8 @@ final class BlobTextTalk {
     /// The transcriber you picked, then Apple: the first that answers in
     /// time. Fish hears the recording only when you picked it, or picked
     /// Parakeet with Fish until it is ready (`BlobTranscriber.fishUntilParakeetKey`).
-    private func finalText(_ said: BlobListener.Heard, stopMs: Int) async -> Final {
+    /// Nil once you moved on from `listen`: the recording goes nowhere else.
+    private func finalText(_ said: BlobListener.Heard, stopMs: Int, listen: Int) async -> Final? {
         let appleText = said.text.trimmingCharacters(in: .whitespacesAndNewlines)
         var parakeetMiss: BlobMetrics.TranscriberReason?
         var parakeetLoadMs: Int?
@@ -650,7 +652,6 @@ final class BlobTextTalk {
             // Still loading: wait for it with the recording, saying so.
             let waitBegan = ContinuousClock.now
             let waits = parakeet.state == .loading
-            let listen = generation
             if waits { earsFor = listen }
             let fishWaiting = BlobTranscriber.fishUntilParakeet && speaker.server?.transcribe == true
             let ready = await parakeet.ready(
@@ -660,6 +661,8 @@ final class BlobTextTalk {
                 parakeetWaitMs = Self.ms(since: waitBegan)
                 if earsFor == listen { earsFor = nil }
             }
+            // The wait ended because you moved on: drop the recording.
+            guard isCurrent(listen) else { return nil }
             if ready {
                 parakeetLoadMs = parakeet.takeLoadMs()
                 let language = Self.languageHint
@@ -683,12 +686,14 @@ final class BlobTextTalk {
             parakeetMiss = missed
         }
         guard speaker.server?.transcribe == true else { return apple(.fishMissed) }
+        guard isCurrent(listen) else { return nil }
         let began = ContinuousClock.now
         // No language hint: Fish detects the language itself.
         let text = await Self.within(Self.fishDeadline) { () -> String? in
             let wav = await Task.detached(priority: .userInitiated) { BlobWAV.encode(samples) }.value
             return try? await OS1API.blobTranscribe(wav: wav)
         }
+        guard isCurrent(listen) else { return nil }
         if let text, !text.isEmpty { return used(.fish, .fish, text, ms: Self.ms(since: began)) }
         return apple(.fishMissed)
     }
@@ -699,8 +704,8 @@ final class BlobTextTalk {
         case .absent: .parakeetAbsent
         case .downloading, .paused: .parakeetDownloading
         case .failed: .parakeetFailed
-        // Still loading after the wait, or let go (background, memory
-        // warning) and not loaded again in time.
+        // Still loading after the wait, or let go on a memory warning and
+        // not loaded again in time.
         case .loading, .downloaded, .ready: .parakeetLoadingTimeout
         }
     }
