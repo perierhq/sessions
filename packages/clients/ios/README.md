@@ -852,6 +852,31 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   the server voice's three fillers are fetched once per voice and model into
   `Caches/BlobFiller/<voiceId>/` and played from there; until then an Apple
   voice says it.
+- A voice turn is never dropped silently (`Blob/BlobTextTalk.swift`).
+  Listening ends when the VAD or the input level hears you stop, or when
+  Apple's live text has stood still for 2.5 s; on the `Dictation`
+  fallback, after 4 s of still text, the captions say "Tap when you're
+  done". A tap before the server has the message skips the Parakeet wait
+  and sends Apple's text now; going to the background sends what was
+  heard. With Apple's text empty the recording waits up to 45 s for a
+  Parakeet load (15 s otherwise). A turn that still can't go (no text, or
+  nothing heard before the app left) says "I didn't catch that." or
+  "Still getting my ears ready. Say it again in a moment." and is recorded
+  as an abandoned metric turn with `dropped` (`nothing-heard`, `moved-on`,
+  `backgrounded`, `no-endpoint`) and `parakeetState`.
+- Talk log (`Blob/BlobTalkLog.swift`): each step of a voice turn (listen
+  start, endpoint inputs and decision, stop, waits, transcriber used,
+  drops, VAD and Parakeet loads) goes to the unified log and to
+  `Library/Caches/blob-talk.log` on the device, the newest ~200 KB, written
+  off the main thread. Counts, reasons and times only, never what was said.
+  Copy it off a phone with:
+
+  ```sh
+  xcrun devicectl device copy from --device <id> --domain-type appDataContainer \
+    --domain-identifier pl.sessions.blob --source Library/Caches/blob-talk.log \
+    --destination ./blob-talk.log
+  ```
+
 - Links (`blob` URL scheme): `blob://item/<id>`, as Bark notifications open
   it, shows that item as the current decision, even after "Not now";
   `blob://` alone just opens Blob.

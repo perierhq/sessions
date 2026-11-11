@@ -248,6 +248,7 @@ function metricSample(turn: BlobTurnMetric, link: TranscriptTurn | undefined) {
     startedAt: new Date(turn.startedAt).toISOString(),
     input: turn.input,
     outcome: turn.outcome,
+    ...(turn.dropped ? { dropped: turn.dropped } : {}),
     timeToFirstTokenMs: firstTokenMs(turn),
     ...(link ? { sessionId: link.sessionId, entryId: link.entryId } : {}),
     ...(turn.replyEntryId ? { replyEntryId: turn.replyEntryId } : {}),
@@ -303,7 +304,11 @@ function parakeetMiss(turn: BlobTurnMetric): string | undefined {
 }
 
 function appStats(metrics: BlobTurnMetric[]) {
-  const voice = metrics.filter((turn) => turn.input === "voice");
+  // Voice turns that went out; the dropped ones are counted in `drops`.
+  const voice = metrics.filter(
+    (turn) => turn.input === "voice" && !turn.dropped,
+  );
+  const dropped = metrics.filter((turn) => turn.dropped);
   const spoken = metrics.filter(
     (turn) => turn.sentencesSpoken !== undefined && turn.sentencesSpoken > 0,
   );
@@ -362,6 +367,13 @@ function appStats(metrics: BlobTurnMetric[]) {
     // transcribe timings above.
     untimedVoiceTurns: voice.length - timed.length,
     endOfSpeech: tally(voice.map((turn) => turn.endOfSpeech)),
+    // Voice turns that never went out, and why: Blob said so on screen.
+    drops: {
+      count: dropped.length,
+      byReason: tally(dropped.map((turn) => turn.dropped)),
+      transcriberReasons: tally(dropped.map((turn) => turn.transcriberReason)),
+      parakeetStates: tally(dropped.map((turn) => turn.parakeetState)),
+    },
     voices: tally(metrics.map((turn) => turn.voice)),
     sentencesSpoken: distribution(
       defined(spoken.map((t) => t.sentencesSpoken)),

@@ -273,6 +273,58 @@ describe("aggregateBlobReview", () => {
     expect(stt.app.parakeetWaitMs).toMatchObject({ n: 2, max: 15000 });
   });
 
+  test("counts dropped voice turns apart from the ones that went out", () => {
+    const voice = (
+      turnId: string,
+      at: number,
+      fields: Partial<BlobTurnMetric>,
+    ): BlobTurnMetric =>
+      metric({ turnId, startedAt: base + at, input: "voice", ...fields });
+    const drops = aggregateBlobReview({
+      now: NOW,
+      days: 14,
+      timeZone: "UTC",
+      sessions: [],
+      items: [],
+      ledger: "",
+      metrics: [
+        voice("sent", 0, {
+          transcriber: "parakeet",
+          transcriberReason: "parakeet",
+        }),
+        voice("d1", 1000, {
+          outcome: "abandoned",
+          dropped: "nothing-heard",
+          transcriber: "apple",
+          transcriberReason: "parakeet-loading-timeout",
+          parakeetState: "loading",
+          parakeetWaitMs: 45000,
+        }),
+        voice("d2", 2000, {
+          outcome: "abandoned",
+          dropped: "backgrounded",
+          parakeetState: "loading",
+        }),
+        voice("d3", 3000, { outcome: "abandoned", dropped: "nothing-heard" }),
+      ],
+    });
+    expect(drops.app.drops).toEqual({
+      count: 3,
+      byReason: { "nothing-heard": 2, backgrounded: 1 },
+      transcriberReasons: { "parakeet-loading-timeout": 1 },
+      parakeetStates: { loading: 2 },
+    });
+    // What was never sent stays out of the transcriber stats.
+    expect(drops.app.transcriberReasons).toEqual({ parakeet: 1 });
+    expect(drops.app.parakeetWaitMs.n).toBe(0);
+    expect(drops.app.byOutcome).toEqual({ answered: 1, abandoned: 3 });
+    expect(drops.samples.failed.map((sample) => sample.dropped)).toEqual([
+      "nothing-heard",
+      "backgrounded",
+      "nothing-heard",
+    ]);
+  });
+
   test("reports transcript turns, tools and hours", () => {
     expect(review.transcript.ownerMessages).toBe(3);
     expect(review.transcript.unanswered).toBe(1);

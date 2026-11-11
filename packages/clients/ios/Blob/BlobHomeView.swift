@@ -269,7 +269,7 @@ struct BlobHomeView: View {
             guard let id = BlobLink.itemId(url) else { return }
             if historyRevealed { collapseHistory() }
             if typing && draft.isEmpty { typing = false; fieldFocused = false }
-            if text.phase != .listening { text.reset() }
+            text.letGo()
             Task { await decisions.focus(id: id) }
         }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: decisionKey)
@@ -672,11 +672,11 @@ struct BlobHomeView: View {
     }
 
     /// Tapping Blob goes back to the quiet home from history (and lets the
-    /// reply on screen go); otherwise it talks.
+    /// reply on screen go, never what you said); otherwise it talks.
     private func blobTapped() {
         if historyRevealed {
             collapseHistory()
-            if text.phase == .waiting { text.reset() }
+            if text.phase == .waiting { text.letGo() }
         } else {
             toggleTalk()
         }
@@ -1071,6 +1071,9 @@ struct BlobHomeView: View {
                     .font(.footnote)
                     .foregroundStyle(OS1VisualStyle.textDim)
                     .frame(maxWidth: .infinity, alignment: alignment)
+            } else if !text.active, let notice = text.notice {
+                // A voice turn that didn't go out says so (`BlobTextTalk.dropVoice`).
+                noticeLine(notice, alignment: alignment)
             } else if case .failed(let message) = text.phase, !usesVoice {
                 Text(message)
                     .font(.footnote)
@@ -1202,6 +1205,13 @@ struct BlobHomeView: View {
                 .font(.footnote)
                 .foregroundStyle(OS1VisualStyle.textFaint)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        } else if text.phase == .listening, text.listener.textStill {
+            // Your words have stood still and listening hasn't ended.
+            Text("Tap when you\u{2019}re done")
+                .font(.footnote)
+                .foregroundStyle(OS1VisualStyle.textFaint)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .transition(.opacity)
         }
         if let notice = text.notice {
             noticeLine(notice, alignment: alignment)

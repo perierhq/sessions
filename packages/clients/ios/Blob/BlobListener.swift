@@ -36,6 +36,26 @@ final class BlobListener {
     /// Called once when the endpointer decides: `.send` after you stop
     /// talking, `.giveUp` when nothing was said.
     var onEnd: ((BlobEndpointer.Decision) -> Void)?
+    /// Apple's text has not changed for `stillHint` seconds while you are
+    /// still being listened to: the captions ask for a tap.
+    private(set) var textStill = false
+    /// The last `.send` came from Apple's text standing still for
+    /// `stillEnd` seconds, not from the VAD or the input level.
+    private(set) var endedByStillText = false
+    /// The endpointer decided only at `BlobEndpointer.maxListen`: it never
+    /// heard you stop.
+    private(set) var endedAtCap = false
+
+    /// Seconds of unchanged text before the captions ask for a tap. Only
+    /// reached where the text doesn't end the listen (`stillEnd`): on the
+    /// `Dictation` fallback.
+    static let stillHint: Double = 4
+    /// Seconds of unchanged text that end the listen like a pause would,
+    /// once no speech is heard right now (`quiet`): for a listen the
+    /// endpointer may never end, when it counted too little of what you
+    /// said as speech, or noise keeps breaking its silence.
+    static let stillEnd: Double = 2.5
+    static let log = BlobLog(category: "listener")
 
     /// What `stop()` hands back: Apple's text and the recording behind it.
     struct Heard {
@@ -60,6 +80,9 @@ final class BlobListener {
     /// Off the main actor's level path once the VAD is deciding.
     private var usesVoiceActivity = false
     private var wasSpeaking = false
+    /// When Apple's text last changed, and the task watching it stand still.
+    private var wordsAt: ContinuousClock.Instant?
+    private var stillness: Task<Void, Never>?
 
     /// Input level above which a buffer counts as speech when the VAD isn't
     /// loaded. An assumption tuned by ear against `level`'s 0…1 scale.
@@ -81,6 +104,7 @@ final class BlobListener {
     func start() async throws {
         text = ""; finalized = ""; level = 0
         endpointer = BlobEndpointer(); ended = false; wasSpeaking = false
+        wordsAt = nil; textStill = false; endedByStillText = false; endedAtCap = false
         guard await AVAudioApplication.requestRecordPermission() else { throw ListenError.microphoneOff }
         guard SpeechTranscriber.isAvailable,
               let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current)
@@ -88,6 +112,7 @@ final class BlobListener {
 
         let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
         if let install = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            Self.log.info("speech model install")
             preparing = true
             defer { preparing = false }
             try await install.downloadAndInstall()
@@ -112,6 +137,8 @@ final class BlobListener {
         self.capture = capture
         if let vadState { startVoiceActivity(capture, state: vadState) }
         try startEngine(feeding: continuation, as: format, capture: capture)
+        Self.log.info("start vad=\(vadState != nil) endpoint=\(vadState != nil ? "vad" : "level")")
+        watchStillness()
     }
 
     /// Stops listening and returns everything heard, once the model has
@@ -121,6 +148,7 @@ final class BlobListener {
     func stop(within seconds: Double) async -> Heard {
         ended = true
         holdsSession = false
+        stillness?.cancel(); stillness = nil
         if let fallback {
             fallback.stop()
             self.fallback = nil
@@ -175,6 +203,7 @@ final class BlobListener {
     /// Drops everything without waiting for the model.
     func cancel() {
         holdsSession = false
+        stillness?.cancel(); stillness = nil
         fallback?.stop(); fallback = nil
         engine?.stop(); engine?.inputNode.removeTap(onBus: 0); engine = nil
         input?.finish(); input = nil
@@ -189,12 +218,60 @@ final class BlobListener {
 
     private func apply(_ result: SpeechTranscriber.Result) {
         let phrase = String(result.text.characters)
+        let before = text
         if result.isFinal {
             finalized += phrase
             text = finalized
         } else {
             text = finalized + phrase
         }
+        if text != before { heardWords() }
+    }
+
+    private func heardWords() {
+        wordsAt = .now
+        textStill = false
+    }
+
+    /// Ends the listen once Apple's text has stood still for `stillEnd`
+    /// seconds, whatever the endpointer thinks, and logs what the
+    /// endpointer is working from every 5 s.
+    private func watchStillness() {
+        stillness?.cancel()
+        stillness = Task { [weak self] in
+            var ticks = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled, !self.ended else { return }
+                ticks += 1
+                if ticks % 10 == 0 { self.logEndpointer("listening") }
+                guard let at = self.wordsAt,
+                      !self.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { continue }
+                let still = Double(BlobMetrics.elapsedMs(since: at)) / 1000
+                if still >= Self.stillHint, !self.textStill { self.textStill = true }
+                // The `Dictation` fallback ends with your tap, as it says.
+                // Never mid-sentence: only while no speech is heard.
+                if still >= Self.stillEnd, self.endsByItself, self.quiet {
+                    self.logEndpointer("still text")
+                    self.ended = true
+                    self.endedByStillText = true
+                    self.onEnd?(.send)
+                    return
+                }
+            }
+        }
+    }
+
+    /// No speech heard right now: the VAD says silence, or, while it isn't
+    /// deciding, the input level is below `speechLevel`.
+    private var quiet: Bool {
+        usesVoiceActivity ? !wasSpeaking : level <= Self.speechLevel
+    }
+
+    private func logEndpointer(_ event: String) {
+        let still = wordsAt.map { BlobMetrics.elapsedMs(since: $0) } ?? -1
+        Self.log.info("\(event) endpoint=\(fallback != nil ? "dictation" : usesVoiceActivity ? "vad" : "level") elapsed=\(Int(endpointer.elapsed * 1000)) speech=\(Int(endpointer.speech * 1000)) silence=\(Int(endpointer.silence * 1000)) level=\(String(format: "%.2f", level)) chars=\(text.count) stillMs=\(still)")
     }
 
     /// One endpointer frame; acts on its decision once.
@@ -202,6 +279,8 @@ final class BlobListener {
         guard !ended else { return }
         let decision = endpointer.feed(speaking: speaking, seconds: seconds)
         guard decision != .listen else { return }
+        endedAtCap = endpointer.elapsed >= BlobEndpointer.maxListen
+        logEndpointer("decision=\(decision)")
         ended = true
         onEnd?(decision)
     }
@@ -216,6 +295,7 @@ final class BlobListener {
             for await frame in frames {
                 guard let (probability, next) = await BlobVoiceActivity.shared.probability(frame, state: state) else {
                     // The model failed: the input level decides from here.
+                    Self.log.error("vad failed: level decides")
                     self?.usesVoiceActivity = false
                     return
                 }
@@ -233,7 +313,13 @@ final class BlobListener {
         holdsSession = true
         let dictation = Dictation()
         fallback = dictation
-        await dictation.start(base: "") { [weak self] heard in self?.text = heard }
+        Self.log.info("start endpoint=dictation")
+        watchStillness()
+        await dictation.start(base: "") { [weak self] heard in
+            guard let self else { return }
+            if heard != self.text { self.heardWords() }
+            self.text = heard
+        }
     }
 
     private func startEngine(
