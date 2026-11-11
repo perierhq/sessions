@@ -33,7 +33,13 @@ type Call = {
 };
 let calls: Call[];
 let audits: Record<string, unknown>[];
-let outcome: { ok: boolean; message: string; url?: string; bksId?: string };
+let outcome: {
+  ok: boolean;
+  message: string;
+  url?: string;
+  bksId?: string;
+  done?: Promise<unknown>;
+};
 
 beforeEach(() => {
   calls = [];
@@ -135,6 +141,19 @@ describe("askPat", () => {
       ["autofix", 9, undefined],
     ]);
     expect(audits.map((a) => a.action)).toEqual(["fix_ci", "auto_fix"]);
+  });
+
+  test("hands back the run's completion so a server caller can wait on it", async () => {
+    const done = Promise.resolve("finished");
+    outcome = { ...outcome, done };
+    const result = await askPat({
+      owner: "Ada",
+      action: "auto_fix",
+      repo: "web",
+      pr: 4,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.done).toBe(done);
   });
 
   test("an unregistered repo or a bad PR starts nothing and is audited", async () => {

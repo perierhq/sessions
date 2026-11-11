@@ -154,6 +154,9 @@ export class ForceMergeError extends Error {
   constructor(
     message: string,
     readonly status = 400,
+    /** "conflict": the PR conflicts with its base; updating the branch
+     *  (not a bypass) is what clears it. */
+    readonly code?: "conflict",
   ) {
     super(message);
   }
@@ -187,6 +190,8 @@ export function forceMergeBypasses(v: PrMergeVerdict): ForceMergeBypass[] {
   if (v.mergeable === "CONFLICTING")
     throw new ForceMergeError(
       `${label} has merge conflicts with ${v.pr.base}. A force merge cannot skip those; resolve them first.`,
+      400,
+      "conflict",
     );
   const bypass: ForceMergeBypass[] = [];
   for (const c of v.checks.failing)
@@ -323,6 +328,22 @@ function settle(
  */
 export async function requestForceMerge(
   sessionId: string,
+  input: Parameters<typeof openForceMerge>[1],
+  signal?: AbortSignal,
+  deps: ForceMergeDeps = defaultForceMergeDeps(),
+  ttlMs = FORCE_MERGE_TTL_MS,
+): Promise<ForceMergeOutcome> {
+  return (await openForceMerge(sessionId, input, signal, deps, ttlMs)).outcome;
+}
+
+/**
+ * Open a confirmation card without waiting for the answer: resolves once
+ * the card is in front of the driver, with the card and a promise of its
+ * outcome. Throws like requestForceMerge before any card appears. The
+ * confirmation itself is unchanged: only the driver, with their own token.
+ */
+export async function openForceMerge(
+  sessionId: string,
   input: {
     target: PrReadinessTarget;
     reason: unknown;
@@ -333,7 +354,10 @@ export async function requestForceMerge(
   signal?: AbortSignal,
   deps: ForceMergeDeps = defaultForceMergeDeps(),
   ttlMs = FORCE_MERGE_TTL_MS,
-): Promise<ForceMergeOutcome> {
+): Promise<{
+  request: ForceMergeRequest;
+  outcome: Promise<ForceMergeOutcome>;
+}> {
   if (!sessionId || !input.driver.login || !input.driver.name)
     throw new ForceMergeError(
       "A signed-in teammate must be driving this session to confirm a force merge.",
@@ -381,8 +405,14 @@ export async function requestForceMerge(
     opening.delete(sessionId);
   }
   if (signal?.aborted)
-    return { request, result: { status: "cancelled", by: "agent" } };
-  return new Promise<ForceMergeOutcome>((resolve) => {
+    return {
+      request,
+      outcome: Promise.resolve({
+        request,
+        result: { status: "cancelled", by: "agent" },
+      }),
+    };
+  const outcome = new Promise<ForceMergeOutcome>((resolve) => {
     const entry: Pending = {
       request,
       target: input.target,
@@ -413,6 +443,7 @@ export async function requestForceMerge(
     auditEvent(entry, "requested");
     announce(sessionId, request);
   });
+  return { request, outcome };
 }
 
 export function pendingForceMerge(

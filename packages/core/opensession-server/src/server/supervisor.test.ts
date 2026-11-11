@@ -699,13 +699,30 @@ describe("standing sessions", () => {
   test("the charter merges through the owner's confirm card, only on request", () => {
     const note = supervisor.supervisorNote("Pat");
     expect(note).toContain(
-      "When the owner asks to merge a pull request, use opensession-repos force_merge_pull_request.",
+      "raise the card yourself right away with opensession-repos force_merge_pull_request",
     );
-    expect(note).toContain("puts a confirm card in front of the owner");
+    expect(note).toContain("Their tap on the card is the confirmation");
+    expect(note).toContain("never relay a merge to a worker session");
     expect(note).toContain("merges with the owner's account");
     expect(note).toContain("Never merge on your own initiative.");
     expect(note).not.toContain("send_to_session). Use force_merge");
     expect(note).not.toMatch(/merge it \(send_to_session\)/);
+  });
+
+  test("the charter never waits on a merge card and raises a batch together", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain("The tool returns as soon as the card is up");
+    expect(note).toContain("arrives later as a message");
+    expect(note).toContain("raise all their cards in the same turn");
+    expect(note).toContain("goes to Pat to update its branch");
+  });
+
+  test("the charter claims nothing about what a client shows unchecked", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain(
+      "Never claim what Blob or another client shows or doesn't show unless you checked it this turn.",
+    );
+    expect(note).not.toContain("(Blob shows it)");
   });
 
   test("the charter answers an @Blob mention where it was asked", () => {

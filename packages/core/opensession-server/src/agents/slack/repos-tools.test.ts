@@ -224,6 +224,21 @@ describe("force_merge_pull_request", () => {
     expect(out).toContain("Bypassed: Check e2e failing (required).");
   });
 
+  test("a supervisor's raised card answers at once, in its own words", async () => {
+    const { server } = harness({
+      forceMerge: async () =>
+        "Card raised for acme/app#7; you'll hear when it's merged.",
+    });
+    const out = await call(server, "force_merge_pull_request", {
+      repo: "app",
+      number: 7,
+      reason: "r",
+    });
+    expect(out).toBe(
+      "Card raised for acme/app#7; you'll hear when it's merged.",
+    );
+  });
+
   test("a refusal comes back as a message", async () => {
     const { server } = harness({
       forceMerge: async () => {

@@ -322,6 +322,16 @@ check and review the merge would bypass, plus the agent's reason.
   without touching GitHub. Drafts and PRs with conflicts are refused.
 - Each step is audited as `pr_force_merge` with the confirmer, the bypassed
   checks and the reason, and a merged PR gets a comment saying the same.
+- In the Blob supervisor session the tool doesn't wait for the answer
+  (`server/supervisor-merge-queue.ts`). It returns once the card is up, and
+  how the card ended reaches the conversation later as a session notice.
+  Cards raised together open one at a time, in order. A PR that conflicts
+  with its base (usually after the one before it merged) goes to the
+  persona's auto-fix loop, the same one `ask_pat auto_fix` starts, and its
+  card comes back when that run finishes. After two such runs it leaves the
+  queue. Ending the supervisor's turn leaves the card up. Confirming is
+  unchanged: only the owner, with their own token. The queue is in memory,
+  so a restart drops it and merges nothing.
 
 Interactive code runs follow the repository's publication instructions,
 including direct pushes where a shared-main workflow permits them. GitHub

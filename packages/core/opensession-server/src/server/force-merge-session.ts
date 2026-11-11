@@ -9,6 +9,7 @@ import {
 } from "./force-merge";
 import type { MergeMethod } from "./pr-contract";
 import { findSession } from "./session-cache";
+import { raiseMergeCard } from "./supervisor-merge-queue";
 import { resolvePrReadinessTarget } from "./session-repos";
 import { trustedGithubTeammate } from "./shared/user-mappings";
 import { webAuthRequired } from "./web-auth";
@@ -38,16 +39,45 @@ export function forceMergeRefusal(
   return null;
 }
 
+type ForceMergeInput = {
+  url?: string;
+  repo?: string;
+  number?: number;
+  reason: string;
+  method?: MergeMethod;
+};
+
+/**
+ * The tool's call. A supervisor session raises the card and returns at
+ * once (supervisor-merge-queue.ts): the owner's answer arrives later as a
+ * notice, so the conversation is never held up waiting for a tap. Any other
+ * session waits for the answer as before.
+ */
+export async function forceMergeToolCall(
+  sessionId: string,
+  user: string | undefined,
+  input: ForceMergeInput,
+  signal?: AbortSignal,
+): Promise<ForceMergeOutcome | string> {
+  const session = findSession(sessionId);
+  if (!session?.supervisor)
+    return forceMergeForSession(sessionId, user, input, signal);
+  const refusal = forceMergeRefusal(session, user, webAuthRequired());
+  if (refusal) throw new ForceMergeError(refusal, 403);
+  const target = await resolvePrReadinessTarget(sessionId, input);
+  return raiseMergeCard(sessionId, {
+    target,
+    reason: input.reason,
+    ...(input.method ? { method: input.method } : {}),
+    driver: trustedGithubTeammate(user)!,
+    owner: user!,
+  });
+}
+
 export async function forceMergeForSession(
   sessionId: string,
   user: string | undefined,
-  input: {
-    url?: string;
-    repo?: string;
-    number?: number;
-    reason: string;
-    method?: MergeMethod;
-  },
+  input: ForceMergeInput,
   signal?: AbortSignal,
 ): Promise<ForceMergeOutcome> {
   const session = findSession(sessionId);

@@ -70,6 +70,7 @@ import type {
   SupervisorPrefsView,
 } from "./supervisor-inbox";
 import { supervisorInboxKey } from "./supervisor-inbox";
+import { MERGE_CARD_DELIVERY_PREFIX } from "./supervisor-merge-queue";
 import {
   inQuietHours,
   localClock,
@@ -759,6 +760,9 @@ export function backgroundDeliveryKind(
   user: string | undefined,
   deliveryId: string | undefined,
 ): WatchEventKind | null {
+  // How a merge card the owner answered ended: the conversation raised it
+  // and said they'd hear back (supervisor-merge-queue.ts).
+  if ((deliveryId ?? "").startsWith(MERGE_CARD_DELIVERY_PREFIX)) return null;
   if (/^<!--os:worker-report(?::[^\s>]+)?-->/.test(content.trimStart()))
     return "worker-report";
   if (isWorkerActor(user)) return "worker-report";

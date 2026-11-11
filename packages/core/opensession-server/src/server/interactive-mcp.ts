@@ -91,7 +91,7 @@ import {
 } from "./session-repos";
 import { sessionLink } from "./run-instructions";
 import { makeAskHandler } from "./asks";
-import { forceMergeForSession } from "./force-merge-session";
+import { forceMergeToolCall } from "./force-merge-session";
 import { createScheduleMcpServer } from "./schedule-mcp";
 import { activeSandboxFor } from "./session-sandbox";
 import { isSupportSession } from "./session-run-inputs";
@@ -313,9 +313,10 @@ export function interactiveMcpServers(
               labelPr: (input) => labelPr(sessionId, input),
               checkPrReady: (input) => checkPrMergeReadiness(sessionId, input),
               // Opens a card only the driver can confirm (force-merge.ts);
-              // the merge runs with their token, never the run's.
+              // the merge runs with their token, never the run's. A
+              // supervisor session doesn't wait for the tap.
               forceMerge: (input, signal) =>
-                forceMergeForSession(sessionId, createdBy, input, signal),
+                forceMergeToolCall(sessionId, createdBy, input, signal),
             }),
           // Durable repo/user/team memory, shared both ways with Slack's
           // channel memory. Write tools are

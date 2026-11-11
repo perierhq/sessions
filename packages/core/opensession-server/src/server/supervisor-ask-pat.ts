@@ -52,7 +52,7 @@ export interface AskPatDeps {
     requestedBy: string,
     steer: string | undefined,
     ghRepo: string,
-  ): Promise<Pick<TriggerResult, "ok" | "message" | "url" | "bksId">>;
+  ): Promise<Pick<TriggerResult, "ok" | "message" | "url" | "bksId" | "done">>;
   repos(): Record<string, Repo>;
   persona(): string;
   audit(event: Record<string, unknown>): void;
@@ -92,6 +92,8 @@ export function registeredGhRepo(
 export interface AskPatResult {
   ok: boolean;
   message: string;
+  /** Settles when the persona's run finishes (server callers only). */
+  done?: Promise<unknown>;
 }
 
 /** Hand one PR action to the persona on behalf of `owner`. */
@@ -160,6 +162,7 @@ export async function askPat(input: {
   ].filter(Boolean);
   return {
     ok: true,
+    ...(result.done ? { done: result.done } : {}),
     message: `Started: ${persona} ${VERB[input.action]} ${ghRepo}#${input.pr}. Results go on the PR as ${persona}${where.length ? ` (${where.join(", ")})` : ""}.`,
   };
 }
