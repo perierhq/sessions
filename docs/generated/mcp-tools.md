@@ -81,10 +81,10 @@ touches an in-process tool:
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
 | [`opensession-supervisor`](#opensession-supervisor) | 8 | interactive | Only on a supervisor session (session.supervisor). |
 | [`opensession-watch`](#opensession-watch) | 7 | goal wake | Only on a person's watch goal (goal.watchOwner). |
-| [`opensession-lead`](#opensession-lead) | 4 | goal wake | Only on a project lead's goal (goal.leadProject). |
+| [`opensession-lead`](#opensession-lead) | 5 | goal wake | Only on a project lead's goal (goal.leadProject). |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-43 servers, 215 tools.
+43 servers, 216 tools.
 
 ## opensession-sessions
 
@@ -1740,6 +1740,12 @@ Propose an action for example to its owner. Write the body as Blob presents it: 
 `mcp__opensession-lead__post_digest_note` · input: `text` (string, required)
 
 Write today's note on example for the owner's daily digest: what you saw, what you proposed, what is waiting. A later note today replaces this one, so include everything. Nobody is pushed for it.
+
+### `lead_apply`
+
+`mcp__opensession-lead__lead_apply` · input: `proposalId` (string, required)
+
+Run the steps recorded for one of example's proposals (propose returns its id), when the lead rules or the owner's approval allow it now. The server checks the rules, the approval, its expiry and its condition every time, runs the steps it recorded in order (merging a pull request as the GitHub App at the approved head; changing a signal only while it still has the proposed before values), stops at the first failure and tells the owner either way. A proposal runs at most once: whatever happens, never call it again for the same id; propose again instead.
 
 ## opensession-incident-access
 

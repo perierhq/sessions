@@ -105,6 +105,7 @@ async function approved(
     proposalId: proposal.id,
     approvedBy: "Ada",
     login: "ada-example",
+    itemRevision: proposal.itemRevision,
     ...approval,
   });
   if (!result.ok) throw new Error(result.error);
@@ -500,6 +501,7 @@ describe("approve", () => {
       proposalId: proposal.id,
       approvedBy: "Ada",
       login: "ada-example",
+      itemRevision: proposal.itemRevision,
     });
     expect(again).toEqual({ ok: true, approval, created: false });
 
@@ -509,11 +511,18 @@ describe("approve", () => {
       proposalId: other.id,
       approvedBy: "Ada",
       login: "ada-example",
+      itemRevision: 5,
     };
     expect(await A.approve({ ...base, itemRevision: 4 })).toEqual({
       ok: false,
       error: "stale",
     });
+    // No revision: the owner's answer can't be tied to what they saw.
+    const { itemRevision: _, ...noRevision } = base;
+    expect(
+      await A.approve(noRevision as import("./approvals").ApproveInput),
+    ).toMatchObject({ ok: false, error: "invalid" });
+    expect(await A.getRecord("acme", other.id)).not.toHaveProperty("approval");
     expect((await A.approve({ ...base, login: "-bad" })).ok).toBe(false);
     expect((await A.approve({ ...base, expiresAt: clock + 31 * DAY })).ok).toBe(
       false,
@@ -540,6 +549,7 @@ describe("approve", () => {
         proposalId: first.proposal.id,
         approvedBy: "Ada",
         login: "ada-example",
+        itemRevision: first.proposal.itemRevision,
       }),
     ).toEqual({ ok: false, error: "voided" });
     expect((await A.listForProject("acme"))[0]?.proposal.id).toBe(second.id);
@@ -562,6 +572,7 @@ describe("proposalForItem", () => {
       proposalId: second.id,
       approvedBy: "Ada",
       login: "ada-example",
+      itemRevision: second.itemRevision,
     });
     expect((await A.proposalForItem("acme", "si-1"))?.approval?.state).toBe(
       "ready",
@@ -737,6 +748,92 @@ describe("claimApply", () => {
     expect(conflicts).toBeGreaterThan(0);
     expect(results.filter((r) => r.ok)).toHaveLength(1);
     expect(results.filter((r) => !r.ok && r.error === "busy")).toHaveLength(4);
+  });
+});
+
+describe("claimAlone", () => {
+  test("an unapproved proposal is claimed once, by the rules, with no login", async () => {
+    const proposal = await propose();
+    const results = await Promise.all(
+      ["la-1", "la-2", "la-3"].map((claimId) =>
+        A.claimAlone("acme", proposal.id, claimId, "Alone: fixes"),
+      ),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const record = await A.getRecord("acme", proposal.id);
+    expect(record?.approval).toMatchObject({
+      state: "applying",
+      approvedBy: A.LEAD_RULES_APPROVER,
+      rule: "Alone: fixes",
+    });
+    expect(record?.approval?.login).toBeUndefined();
+    const claimId = record!.approval!.claimId!;
+    expect(
+      await A.transition("acme", proposal.id, "applied", { claimId }),
+    ).toMatchObject({ ok: true });
+    expect(
+      await A.claimAlone("acme", proposal.id, "la-4", "Alone: fixes"),
+    ).toEqual({ ok: false, error: "settled" });
+  });
+
+  test("refused once the owner approved, and for voided or expired proposals", async () => {
+    const { proposal } = await approved({ itemId: "si-a" });
+    expect(await A.claimAlone("acme", proposal.id, "la-1", "r")).toEqual({
+      ok: false,
+      error: "not-ready",
+    });
+    const old = await propose({ itemId: "si-b", expiresAt: clock + DAY });
+    clock += DAY;
+    expect(await A.claimAlone("acme", old.id, "la-2", "r")).toEqual({
+      ok: false,
+      error: "expired",
+    });
+    expect(await A.claimAlone("acme", old.id, "la-3", "r")).toEqual({
+      ok: false,
+      error: "voided",
+    });
+    expect((await A.getRecord("acme", old.id))?.proposal.voidReason).toBe(
+      "expired",
+    );
+  });
+
+  test("an approval by the rules that names a login doesn't read back", async () => {
+    await propose();
+    const { catalogDocuments } = await import("../catalog-documents");
+    const proposal = {
+      id: "lp-rules",
+      ...input({ itemId: "si-rules" }),
+      createdAt: clock,
+    };
+    const approval = {
+      proposalId: "lp-rules",
+      approvedBy: A.LEAD_RULES_APPROVER,
+      rule: "Alone: fixes",
+      at: clock,
+      expiresAt: clock + DAY,
+      state: "applying",
+      updatedAt: clock,
+    };
+    await catalogDocuments(A.LEAD_APPROVALS_NAMESPACE).update(
+      "acme",
+      (current) => {
+        const doc = current as { records: unknown[] };
+        return {
+          ...doc,
+          records: [
+            { proposal, approval },
+            {
+              proposal: { ...proposal, id: "lp-both", itemId: "si-both" },
+              approval: { ...approval, proposalId: "lp-both", login: "ada" },
+            },
+            ...doc.records,
+          ],
+        };
+      },
+    );
+    const ids = (await A.listForProject("acme")).map((r) => r.proposal.id);
+    expect(ids).toContain("lp-rules");
+    expect(ids).not.toContain("lp-both");
   });
 });
 
@@ -974,6 +1071,7 @@ describe("writes", () => {
         proposalId: "lp-x",
         approvedBy: "Ada",
         login: "ada-example",
+        itemRevision: 1,
       }),
     ).toEqual({ ok: false, error: "not-found" });
     expect(await A.expire()).toBe(0);

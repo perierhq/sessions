@@ -86,6 +86,27 @@ test("partial update keeps the rest and the redacted header", async () => {
   });
 });
 
+test("a precondition reads the stored record inside the write", async () => {
+  const s = await createSignal(http, "Ada");
+  if ("error" in s) throw new Error(s.error);
+  const seen: string[] = [];
+  const refused = await updateSignal(s.id, { provider: true }, "Bo", {
+    precondition: (stored) => {
+      seen.push(stored.name);
+      return "The signal changed";
+    },
+  });
+  expect(refused).toEqual({ error: "The signal changed" });
+  expect(seen).toContain("Search");
+  expect((await getSignal(s.id))?.provider).toBeUndefined();
+  const written = await updateSignal(s.id, { provider: true }, "Bo", {
+    precondition: () => null,
+  });
+  expect(written && !("error" in written) && written.provider).toBe(true);
+  const cleared = await updateSignal(s.id, { provider: false }, "Bo");
+  expect(cleared && !("error" in cleared) && cleared.provider).toBeUndefined();
+});
+
 test("a redacted header does not follow the signal to another address", async () => {
   const s = await createSignal(http, "Ada");
   if ("error" in s) throw new Error(s.error);

@@ -88,6 +88,10 @@ export interface SignalWriter {
   signedInPerson?: boolean;
   /** The built-in automation principal: it never owns a signal. */
   automation?: boolean;
+  /** An update writes only while the stored record passes this check,
+   *  read inside the compare-and-set; otherwise it is refused with the
+   *  returned error and nothing is written. */
+  precondition?: (stored: Signal) => string | null;
 }
 
 const OWNER_REQUIRED_ERROR = "Name a person to own this signal";
@@ -301,6 +305,11 @@ export async function updateSignal(
     if (value === null) return null;
     if (!isSignalRecord(value))
       throw new Error(`Signal ${id} record is malformed`);
+    const refusedNow = writer.precondition?.(value);
+    if (refusedNow) {
+      failure = { error: refusedNow };
+      return value;
+    }
     const merged = withRestoredSecrets(
       {
         ...value,

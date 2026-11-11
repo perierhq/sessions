@@ -120,6 +120,7 @@ describe("opensession-lead", () => {
     const { tools } = await c.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "flap_report",
+      "lead_apply",
       "post_digest_note",
       "project_overview",
       "propose",
@@ -645,6 +646,19 @@ describe("opensession-lead", () => {
         "Step 1: sig-elsewhere is not a signal of this project",
       );
       expect(await listSupervisorItems("Ada")).toEqual([]);
+    });
+
+    test("lead_apply runs nothing at the watch stage", async () => {
+      const { call } = await client();
+      await call("propose", { ...fix, steps: [merge] });
+      const result = await call("lead_apply", { proposalId: "lp-1" });
+      expect(result).toEqual({
+        isError: true,
+        text: "Watch stage: the lead proposes and nothing runs. Nothing ran.",
+      });
+      expect(
+        (await listForProject(PROJECT)).map((r) => r.approval?.state),
+      ).toEqual([undefined]);
     });
 
     test("a condition or expiry without steps is refused", async () => {
