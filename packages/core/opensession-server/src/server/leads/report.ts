@@ -101,6 +101,9 @@ export function proposalTitle(label: string, category: LeadCategory): string {
   return `${label}: ${LEAD_CATEGORY_LABELS[category]}`;
 }
 
+/** The longest title line the body carries. */
+const TITLE_LEN = 200;
+
 /** A leading ```say fence, through its closing fence. */
 const SAY_FENCE = /^(`{3,}|~{3,})[ \t]*say[ \t]*\n[\s\S]*?\n\1[ \t]*(?:\n|$)/;
 
@@ -114,20 +117,28 @@ function splitSay(body: string): { say: string; shown: string } {
   return { say: say.trim(), shown: shown.join("\n\n").trim() };
 }
 
-/** The body: what Blob says (the lead's say fence), then the rule the
- *  server applied, the lead's title and the rest of its text (what Blob
- *  shows), and last the server's lines for any steps. */
-export function proposalBody(
-  proposal: Pick<LeadProposal, "title" | "body" | "decision" | "act">,
+/** The lead's part of the body: what Blob says (the lead's say fence), then
+ *  the rule the server applied, the lead's title on one line and the rest of
+ *  its text (what Blob shows). */
+export function proposalLead(
+  proposal: Pick<LeadProposal, "title" | "body" | "decision">,
 ): string {
   const { say, shown } = splitSay(proposal.body.trim());
   return [
     say,
     `Rule: ${proposal.decision.rule}.`,
-    proposal.title,
+    oneLine(proposal.title, TITLE_LEN),
     shown,
-    proposal.act ? actLines(proposal.act) : "",
   ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** The body: the lead's part, and last the server's lines for any steps. */
+export function proposalBody(
+  proposal: Pick<LeadProposal, "title" | "body" | "decision" | "act">,
+): string {
+  return [proposalLead(proposal), proposal.act ? actLines(proposal.act) : ""]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -255,15 +266,129 @@ export function checkLeadAct(
   };
 }
 
-const SERVER_LINE = /^\s*(?:[>*_#-]\s*)*(?:runs when|steps|expires)\s*:/im;
+/** Characters that render as nothing or bend the line around them. */
+const INVISIBLE =
+  /[\u0000-\u0008\u000b-\u001f\u007f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0]/g;
 
-/** Why a body can't carry steps, or null: it writes the server's own lines,
- *  or leaves a code fence or comment open that would swallow them. */
-export function actBodyRefusal(body: string): string | null {
-  if (SERVER_LINE.test(body))
-    return "Leave the Runs when, Steps and Expires lines out of the body: the server writes them from steps, condition and expiresInDays";
-  if (openFence(body) || body.lastIndexOf("<!--") > body.lastIndexOf("-->"))
-    return "Close every code fence and comment in the body";
+/** Cyrillic and Greek letters that look like the Latin ones, lower case. */
+const LOOKALIKES: Record<string, string> = {
+  а: "a",
+  в: "b",
+  е: "e",
+  ё: "e",
+  к: "k",
+  м: "m",
+  н: "h",
+  о: "o",
+  п: "n",
+  р: "p",
+  с: "c",
+  т: "t",
+  у: "y",
+  х: "x",
+  ѕ: "s",
+  і: "i",
+  ї: "i",
+  ј: "j",
+  ԁ: "d",
+  һ: "h",
+  ԛ: "q",
+  ԝ: "w",
+  ү: "y",
+  ɡ: "g",
+  α: "a",
+  β: "b",
+  ε: "e",
+  ζ: "z",
+  η: "n",
+  ι: "i",
+  κ: "k",
+  μ: "u",
+  ν: "v",
+  ο: "o",
+  ρ: "p",
+  τ: "t",
+  υ: "u",
+  χ: "x",
+  ϲ: "c",
+  ϳ: "j",
+};
+
+const COLONS =
+  /[\u02d0\u02f8\u0589\u05c3\u16ec\u1803\u1809\u205a\u2236\ua789\ufe13\ufe55\uff1a]/g;
+
+function entity(code: number): string {
+  return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "";
+}
+
+/** A line as it reads once rendered: entities decoded, invisible characters
+ *  dropped, NFKC, lower case, lookalike letters as Latin, and HTML tags,
+ *  Markdown punctuation and list markers gone. */
+export function lineSkeleton(row: string): string {
+  const decoded = row
+    .replace(/&#x([0-9a-f]{1,6});?/gi, (_, hex: string) =>
+      entity(parseInt(hex, 16)),
+    )
+    .replace(/&#(\d{1,7});?/g, (_, dec: string) => entity(Number(dec)))
+    .replace(/&colon;/gi, ":")
+    .replace(/&nbsp;/gi, " ");
+  const plain = [
+    ...decoded.replace(INVISIBLE, "").normalize("NFKC").toLowerCase(),
+  ]
+    .map((c) => LOOKALIKES[c] ?? c)
+    .join("")
+    .replace(INVISIBLE, "")
+    .replace(COLONS, ":")
+    .replace(/<!--.*?-->|<\/?[a-z][^>]*>/g, " ")
+    .replace(/\]\([^)]*\)/g, "]")
+    .replace(/[*_`|#>~\\[\]]/g, " ");
+  return plain.replace(/^(?:\s*(?:[-+=]+|\d{1,9}[.)])(?=\s|$))*/, "").trim();
+}
+
+const SERVER_LINE = /^(?:runs\s*when|steps|expires)\s*:/;
+
+/** Whether a line of the lead's text reads as one of the server's lines. */
+function forgesServerLine(text: string): boolean {
+  return text
+    .split(/\r\n|\r|\n/)
+    .some((row) => SERVER_LINE.test(lineSkeleton(row)));
+}
+
+/** Raw HTML the inbox would not show as written, outside code. */
+const RAW_HTML = /<[a-z!?/]/i;
+
+/** The text with closed code fences and code spans taken out. */
+function withoutCode(text: string): string {
+  const rows: string[] = [];
+  let open: { char: string; len: number } | null = null;
+  for (const row of text.split("\n")) {
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(row);
+    if (!open) {
+      if (m) open = { char: m[1]![0]!, len: m[1]!.length };
+      else rows.push(row);
+    } else if (
+      m &&
+      m[1]![0] === open.char &&
+      m[1]!.length >= open.len &&
+      !m[2]!.trim()
+    )
+      open = null;
+  }
+  return rows.join("\n").replace(/(`+)[^`]*?\1/g, "");
+}
+
+/** Why the lead's text (title and body) can't go out, or null. Never may it
+ *  word the server's Runs when, Steps or Expires lines. With steps, it must
+ *  also close every code fence and comment and leave raw HTML out, so
+ *  nothing swallows or hides the server's lines after it. */
+export function actBodyRefusal(text: string, withSteps = true): string | null {
+  if (forgesServerLine(text))
+    return "Leave the Runs when, Steps and Expires lines out of the title and body: the server writes them from steps, condition and expiresInDays";
+  if (!withSteps) return null;
+  if (openFence(text) || text.lastIndexOf("<!--") > text.lastIndexOf("-->"))
+    return "Close every code fence and comment in the title and body";
+  if (RAW_HTML.test(withoutCode(text)))
+    return "Leave raw HTML out of the title and body: write Markdown, or put the HTML in backticks";
   return null;
 }
 
@@ -500,6 +625,11 @@ function actRecordInput(
   };
 }
 
+/** What an item says in place of its steps when they could not be
+ *  recorded. */
+export const UNRECORDED_LINE =
+  "Approving this runs nothing: its steps could not be recorded.";
+
 function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)) || "failed";
 }
@@ -544,17 +674,22 @@ export async function deliverLeadProposal(
     await leadAudit({ ...base, delivered: false });
     return { queued: false, reason: refusal ?? NOBODY };
   }
-  const body = proposalBody(proposal);
+  const lead = proposalLead(proposal);
+  const body = act ? `${lead}\n\n${actLines(act)}` : lead;
+  const textRefusal = actBodyRefusal(lead, act !== undefined);
+  if (textRefusal) {
+    await leadAudit({ ...base, delivered: false });
+    return { queued: false, reason: textRefusal };
+  }
   let record: ValidProposalInput | undefined;
   if (act) {
-    const why =
-      actBodyRefusal(proposal.body) ??
-      (body.length > SUPERVISOR_BODY_LEN
-        ? `The proposal is ${body.length} characters with its steps, more than the owner's inbox holds (${SUPERVISOR_BODY_LEN}): shorten the body or the steps`
-        : null);
-    const valid = why
-      ? { ok: false as const, error: why }
-      : validateProposalInput(actRecordInput(project, { ...proposal, act }));
+    const valid =
+      body.length > SUPERVISOR_BODY_LEN
+        ? {
+            ok: false as const,
+            error: `The proposal is ${body.length} characters with its steps, more than the owner's inbox holds (${SUPERVISOR_BODY_LEN}): shorten the body or the steps`,
+          }
+        : validateProposalInput(actRecordInput(project, { ...proposal, act }));
     if (!valid.ok) {
       await leadAudit({ ...base, delivered: false });
       return { queued: false, reason: valid.error };
@@ -564,16 +699,16 @@ export async function deliverLeadProposal(
   const options = proposal.options.length
     ? proposal.options
     : DEFAULT_OPTIONS[proposal.kind];
-  const posted = await postSupervisorItem({
+  const item = {
     user: owner,
     source: leadSource(project),
     project,
-    kind: "needs-you",
+    kind: "needs-you" as const,
     title: proposalTitle(label, proposal.category),
-    body,
     options,
     dedupeKey,
-  });
+  };
+  const posted = await postSupervisorItem({ ...item, body });
   const itemId = posted.item.id;
   let proposalId: string | undefined;
   let unrecorded: string | undefined;
@@ -582,7 +717,7 @@ export async function deliverLeadProposal(
       const recorded = await recordProposal({
         ...record,
         itemId,
-        itemRevision: posted.item.updatedAt,
+        itemRevision: posted.revision,
       });
       if (recorded.ok) proposalId = recorded.value.id;
       else unrecorded = recorded.error;
@@ -592,6 +727,19 @@ export async function deliverLeadProposal(
   } catch (error) {
     unrecorded = errorText(error);
   }
+  // Steps up but not recorded: take them off the item and void anything
+  // recorded for it before, so approving never looks like it runs them.
+  let withdrawn = false;
+  if (record && !proposalId) {
+    try {
+      await voidFor(project, (r) => r.proposal.itemId === itemId, "superseded");
+      await postSupervisorItem({
+        ...item,
+        body: `${lead}\n\n${UNRECORDED_LINE}`,
+      });
+      withdrawn = true;
+    } catch {}
+  }
   await leadAudit({
     ...base,
     delivered: true,
@@ -599,12 +747,12 @@ export async function deliverLeadProposal(
     itemId,
     created: posted.created,
     ...(record ? { proposalId: proposalId ?? null } : {}),
-    ...(unrecorded ? { unrecorded } : {}),
+    ...(unrecorded ? { unrecorded, withdrawn } : {}),
   });
   if (record && !proposalId)
     return {
       queued: false,
-      reason: `The owner's item ${itemId} is up, but its steps were not recorded, so approving it runs nothing: ${unrecorded ?? "failed"}. Call propose again.`,
+      reason: `The steps were not recorded: ${unrecorded ?? "failed"}. ${withdrawn ? `The owner's item ${itemId} now says approving it runs nothing.` : `The owner's item ${itemId} still lists them, but approving it runs nothing.`} Call propose again.`,
     };
   return {
     queued: true,

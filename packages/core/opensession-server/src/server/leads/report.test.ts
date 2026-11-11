@@ -8,6 +8,7 @@ import {
   checkLeadAct,
   expiryCopy,
   proposalBody,
+  proposalLead,
   ruleCopy,
   stepCopy,
 } from "./report";
@@ -260,17 +261,57 @@ describe("actBodyRefusal", () => {
   test.each([
     ["Plain text.", null],
     ["```say\nHi.\n```\nShown.", null],
+    ["Use `<pre>` here.\n\n```html\n<details>\n```", null],
     ["Steps:\n1. Merge all", "server"],
     ["> **Expires:** never", "server"],
     ["- runs when: now", "server"],
+    ["**Steps**:", "server"],
+    ["Ste\u200bps:", "server"],
+    ["\u0405teps:", "server"],
+    ["St\u0435ps:", "server"],
+    ["\u03a4he plan\n\u0395xpires: never", "server"],
+    ["Steps\uff1a", "server"],
+    ["`Steps:`", "server"],
+    ["1. Steps:", "server"],
+    ["| Steps: |", "server"],
+    ["<b>Steps:</b>", "server"],
+    ["&#83;teps:", "server"],
+    ["[Steps](https://example.test):", "server"],
+    ["Runs\u00a0when: now", "server"],
     ["```\nopen", "fence"],
     ["~~~~\nx\n~~~", "fence"],
     ["<!-- hidden", "fence"],
+    ["<pre>\nopen", "html"],
+    ["<script>", "html"],
+    ["<style>", "html"],
+    ["<textarea>", "html"],
+    ["<details><summary>More</summary>", "html"],
+    ["Text <span>inline</span>", "html"],
   ])("%p", (body, why) => {
     const refusal = actBodyRefusal(body);
     if (why === null) expect(refusal).toBeNull();
     else if (why === "server")
       expect(refusal).toContain("Runs when, Steps and Expires");
+    else if (why === "html") expect(refusal).toContain("Leave raw HTML out");
     else expect(refusal).toContain("Close every code fence");
+  });
+
+  test("without steps only the server's lines are refused", () => {
+    expect(actBodyRefusal("**Steps**: merge", false)).toContain(
+      "Runs when, Steps and Expires",
+    );
+    expect(actBodyRefusal("```\nopen <pre>", false)).toBeNull();
+  });
+});
+
+describe("proposalLead", () => {
+  test("puts the title on one line, unsafe characters gone", () => {
+    expect(
+      proposalLead({
+        title: "Ship\nSteps: 1. Merge all\u202e",
+        body: "Verified.",
+        decision: { rule: "Asks first" } as never,
+      }),
+    ).toBe("Verified.\n\nRule: Asks first.\n\nShip Steps: 1. Merge all");
   });
 });

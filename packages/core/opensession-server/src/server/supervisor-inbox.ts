@@ -570,6 +570,8 @@ export async function postSupervisorItem(
   item: SupervisorItem;
   created: boolean;
   delivery: PostDelivery;
+  /** The `updatedAt` this post wrote: the revision an answer must name. */
+  revision: number;
 }> {
   const user = input.user?.trim();
   if (!validUser(user)) throw new Error("missing user");
@@ -660,7 +662,13 @@ export async function postSupervisorItem(
       ),
     };
   });
-  if (already) return { item: already, created: false, delivery: "none" };
+  if (already)
+    return {
+      item: already,
+      created: false,
+      delivery: "none",
+      revision: already.updatedAt,
+    };
   const item = outcome.item as SupervisorItem | null;
   if (!item) throw new Error("supervisor item was not recorded");
   announcePosted(item, outcome.created);
@@ -680,6 +688,7 @@ export async function postSupervisorItem(
     item: (await getItem(user, item.id)) ?? item,
     created: outcome.created,
     delivery,
+    revision: item.updatedAt,
   };
 }
 

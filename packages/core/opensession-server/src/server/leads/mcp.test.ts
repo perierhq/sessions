@@ -520,6 +520,79 @@ describe("opensession-lead", () => {
       expect(await listForProject(PROJECT)).toHaveLength(1);
     });
 
+    test("the title can't open a fence, a comment or a server line", async () => {
+      const { call } = await client();
+      for (const title of ["~~~", "Fine <!-- hide"]) {
+        const refused = await call("propose", {
+          ...fix,
+          title,
+          steps: [merge],
+        });
+        expect(refused).toEqual({
+          isError: true,
+          text: "Close every code fence and comment in the title and body",
+        });
+      }
+      expect(await listSupervisorItems("Ada")).toEqual([]);
+      const ok = await call("propose", {
+        ...fix,
+        title: "Ship it\nSteps:\n1. Merge every PR",
+        steps: [merge],
+      });
+      expect(ok.isError).toBe(false);
+      const [item] = await listSupervisorItems("Ada");
+      expect(item!.body).toContain("\n\nShip it Steps: 1. Merge every PR\n\n");
+      expect(item!.body.match(/^Steps:/gm)).toHaveLength(1);
+    });
+
+    test("a forged line is refused without steps too", async () => {
+      const { call } = await client();
+      const refused = await call("propose", {
+        ...fix,
+        body: "Fine.\n\n**\u0405teps**\uff1a merge it all",
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("Runs when, Steps and Expires");
+      expect(await listSupervisorItems("Ada")).toEqual([]);
+    });
+
+    test("raw HTML is refused with steps", async () => {
+      const { call } = await client();
+      const refused = await call("propose", {
+        ...fix,
+        body: "Fine.\n\n<pre>\nlog",
+        steps: [merge],
+      });
+      expect(refused.text).toContain("Leave raw HTML out");
+      expect(await listSupervisorItems("Ada")).toEqual([]);
+    });
+
+    test("steps that fail to record come off the item", async () => {
+      const { call } = await client();
+      restoreApprovals();
+      restoreApprovals = __setLeadApprovalsDepsForTest({
+        now: () => clock,
+        newId: () => {
+          throw new Error("store down");
+        },
+      });
+      const result = await call("propose", { ...fix, steps: [merge] });
+      expect(result.isError).toBe(true);
+      expect(result.text).toStartWith(
+        "The steps were not recorded: store down.",
+      );
+      const [item] = await listSupervisorItems("Ada");
+      expect(item!.body).toEndWith(
+        "Checkout fix is verified\n\nApproving this runs nothing: its steps could not be recorded.",
+      );
+      expect(item!.body).not.toContain("Steps:");
+      expect(await listForProject(PROJECT)).toEqual([]);
+      expect(audits[0]).toMatchObject({
+        unrecorded: "store down",
+        withdrawn: true,
+      });
+    });
+
     test("a repository that isn't the project's is refused", async () => {
       const { call } = await client();
       const refused = await call("propose", {
