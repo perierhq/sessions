@@ -17,15 +17,18 @@ import { join } from "node:path";
 import { getConfigAsync } from "./config";
 import {
   BLOB_WRITES_PER_HOUR,
+  BLOB_WRITES_PER_INSTANCE_HOUR,
   BLOB_WRITES_PER_THREAD_HOUR,
   __setBlobGithubDepsForTest,
   blobComment,
   blobLabel,
   blobOpenIssue,
   blobReview,
+  blobSupervisorPoster,
   blobTextRefusal,
   checkBlobGithubExpiry,
   setBlobGithubSettings,
+  validateBlobGithubPatch,
   type BlobPoster,
 } from "./github-blob";
 import { __setOwnerRosterForTest } from "./incidents/owner";
@@ -45,6 +48,8 @@ const NOW = Date.parse("2026-11-11T09:00:00Z");
 const EXPIRES = "2027-02-09 12:00:00 UTC";
 const ADA = { name: "Ada Lovelace", email: "ada@example.test", github: "ada" };
 const NOLOGIN = { name: "Nell Example", email: "nell@example.test" };
+const BOB = { name: "Bob Example", email: "bob@example.test", github: "bob" };
+const CAT = { name: "Cat Example", email: "cat@example.test", github: "cat" };
 const ADA_POSTS: BlobPoster = { owner: "Ada", sessionId: "os-sup-ada" };
 
 const dir = mkdtempSync(join(tmpdir(), "github-blob-write-"));
@@ -59,7 +64,7 @@ const configPath = join(dir, "config.json");
 
 let restoreTeam = () => {};
 beforeAll(() => {
-  restoreTeam = __setIdentitiesForTest([ADA, NOLOGIN]);
+  restoreTeam = __setIdentitiesForTest([ADA, NOLOGIN, BOB, CAT]);
   __setOwnerRosterForTest([ADA] as never, "Ada");
 });
 afterAll(() => {
@@ -99,7 +104,8 @@ let previousStore: SessionKernelStore | undefined;
 
 /** A fresh instance: three GitHub repositories, Blob set up and on. */
 async function setup(
-  blob: { enabled?: boolean; publicRepos?: string[] } = {},
+  blob: { enabled?: boolean; publicRepos?: string[]; labels?: string[] } = {},
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
   writeFileSync(
     configPath,
@@ -112,7 +118,8 @@ async function setup(
         other: { repo: join(dir, "other"), ghRepo: "acme/other" },
       },
       integrations: { github: { appSlug: "acme-app" } },
-      identity: { team: [ADA, NOLOGIN] },
+      identity: { team: [ADA, NOLOGIN, BOB, CAT] },
+      ...extra,
     }),
   );
   writeFileSync(join(dir, "secrets.json"), JSON.stringify({ secrets: [] }));
@@ -132,6 +139,7 @@ async function setup(
       token: TOKEN,
       repos: ["acme/widget", "acme/docs", "acme/site"],
       publicRepos: blob.publicRepos ?? ["acme/docs"],
+      labels: blob.labels ?? ["bug", "triage", "made-up"],
       enabled: blob.enabled ?? true,
     },
     "Ada",
@@ -613,5 +621,194 @@ describe("token trouble", () => {
     } finally {
       for (const spy of spies) spy.mockRestore();
     }
+  });
+});
+
+describe("review findings", () => {
+  async function refused(
+    run: () => Promise<{ ok: boolean; message?: string }>,
+    pattern: RegExp,
+  ) {
+    const result = await run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(pattern);
+    expect(calls).toEqual([]);
+  }
+
+  test("only teammates are mentioned, and no line starts with a slash command", async () => {
+    await refused(() => comment("@dependabot rebase"), /@dependabot/);
+    await refused(() => comment("Ask @claude to look"), /@claude/);
+    await refused(() => comment("Hi @Blob"), /@Blob/);
+    await refused(() => comment("cc @acme/core"), /team @acme\/core/);
+    await refused(() => comment("cc @ada/core"), /team @ada\/core/);
+    await refused(() => comment("/deploy now"), /slash command/);
+    await refused(() => comment("Done.\n  /lgtm"), /slash command/);
+    await refused(
+      () =>
+        blobReview(ADA_POSTS, {
+          repo: "acme/widget",
+          pr: 4,
+          body: "fine",
+          comments: [{ path: "a", line: 1, body: "@renovate rebase" }],
+        }),
+      /@renovate/,
+    );
+    expect(
+      blobTextRefusal("Thanks @ada and @BOB, mail ada@example.test."),
+    ).toBeNull();
+    expect(
+      blobTextRefusal("Run it from a/b and see /tmp in the log."),
+    ).toBeNull();
+    expect((await comment("@ada and @Bob, this is ready.")).ok).toBe(true);
+  });
+
+  test("a public repository never gets private terms or internal hosts", async () => {
+    await setup(
+      {},
+      {
+        policy: { privateTerms: ["globex"] },
+        server: { publicBaseUrl: "https://sessions.example.test" },
+      },
+    );
+    const onDocs = (body: string) => comment(body, ADA_POSTS, "acme/docs");
+    await refused(
+      () => onDocs("Globex asked for this"),
+      /private term "globex"/,
+    );
+    await refused(
+      () => onDocs("See https://sessions.example.test/s/1"),
+      /instance's host sessions\.example\.test/,
+    );
+    await refused(() => onDocs("Logs on db1.internal"), /internal host/);
+    await refused(() => onDocs("It answers on 10.0.3.7"), /internal host/);
+    await refused(
+      () =>
+        blobOpenIssue(ADA_POSTS, {
+          repo: "acme/docs",
+          title: "Globex bug",
+          body: "x",
+        }),
+      /private term/,
+    );
+    await refused(
+      () =>
+        blobReview(ADA_POSTS, {
+          repo: "acme/docs",
+          pr: 4,
+          body: "fine",
+          comments: [{ path: "a", line: 1, body: "as globex wants" }],
+        }),
+      /private term/,
+    );
+    // A private repository may carry them.
+    expect((await comment("Globex asked, see db1.internal")).ok).toBe(true);
+  });
+
+  test("labels: only the owner's allowlist, off when empty", async () => {
+    answer = (call) =>
+      call.method === "GET"
+        ? Response.json({ name: "x" }, { status: 200 })
+        : Response.json([], { status: 200 });
+    const label = (add: string[], remove: string[] = []) =>
+      blobLabel(ADA_POSTS, { repo: "acme/widget", number: 12, add, remove });
+    await refused(() => label(["wontfix"]), /not on the owner's list/);
+    await refused(() => label([], ["wontfix"]), /not on the owner's list/);
+    expect((await label(["Bug"])).ok).toBe(true);
+    await setup({ labels: [] });
+    calls = [];
+    await refused(() => label(["bug"]), /Labelling is off/);
+    // A trigger label slipped onto the list by hand is still refused.
+    const raw = JSON.parse(readFileSync(configPath, "utf8"));
+    raw.integrations.github.blob.labels = ["os-auto-fix"];
+    writeFileSync(configPath, JSON.stringify(raw));
+    await getConfigAsync();
+    await refused(() => label(["os-auto-fix"]), /starts an agent loop/);
+  });
+
+  test("the allowlist is validated", () => {
+    expect(validateBlobGithubPatch({ labels: ["bug", " triage "] })).toEqual({
+      labels: ["bug", "triage"],
+    });
+    for (const labels of [[1], [""], "bug", ["x".repeat(101)], ["os-review"]])
+      expect(validateBlobGithubPatch({ labels })).toHaveProperty("error");
+  });
+
+  test("a label change that partly went through still counts", async () => {
+    answer = (call) =>
+      call.method === "DELETE"
+        ? Response.json({}, { status: 500 })
+        : Response.json({ name: "bug" }, { status: 200 });
+    const partial = await blobLabel(ADA_POSTS, {
+      repo: "acme/widget",
+      number: 12,
+      add: ["bug"],
+      remove: ["triage"],
+    });
+    expect(partial.ok).toBe(false);
+    answer = () => Response.json({}, { status: 201 });
+    for (let i = 1; i < BLOB_WRITES_PER_THREAD_HOUR; i++)
+      expect((await comment()).ok).toBe(true);
+    expect((await comment()).ok).toBe(false);
+  });
+
+  test("a teammate's supervisor posts on private repositories only", async () => {
+    expect(await blobSupervisorPoster("Ada", "os-sup-ada")).toEqual({
+      owner: "Ada",
+      sessionId: "os-sup-ada",
+    });
+    const bob = await blobSupervisorPoster("Bob");
+    expect(bob).toEqual({ owner: "Bob", privateOnly: true });
+    await refused(
+      () => comment("Hi", bob, "acme/docs"),
+      /only for the instance owner/,
+    );
+    expect((await comment("Hi", bob)).ok).toBe(true);
+    expect((await comment("Hi", ADA_POSTS, "acme/docs")).ok).toBe(true);
+  });
+
+  test(`${BLOB_WRITES_PER_INSTANCE_HOUR} writes an hour across owners; reviews count their inline comments`, async () => {
+    answer = () => Response.json({}, { status: 201 });
+    const many = async (owner: string, count: number) => {
+      for (let i = 0; i < count; i++)
+        expect(
+          (
+            await blobComment(
+              { owner },
+              { repo: "acme/widget", number: 100 + i, body: "x" },
+            )
+          ).ok,
+        ).toBe(true);
+    };
+    // A review with 10 inline comments counts as 3 writes.
+    const review = await blobReview(ADA_POSTS, {
+      repo: "acme/widget",
+      pr: 4,
+      body: "fine",
+      comments: Array.from({ length: 10 }, (_, i) => ({
+        path: "a",
+        line: i + 1,
+        body: "note",
+      })),
+    });
+    expect(review.ok).toBe(true);
+    await many("Ada", 27);
+    expect(
+      (
+        await blobComment(ADA_POSTS, {
+          repo: "acme/widget",
+          number: 1,
+          body: "x",
+        })
+      ).message,
+    ).toContain("for you this hour");
+    await many("Bob", 30);
+    const capped = await blobComment(
+      { owner: "Cat" },
+      { repo: "acme/widget", number: 1, body: "x" },
+    );
+    expect(capped).toEqual({
+      ok: false,
+      message: `Blob already wrote ${BLOB_WRITES_PER_INSTANCE_HOUR} times on GitHub for the team this hour. Try again later.`,
+    });
   });
 });

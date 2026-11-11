@@ -1,8 +1,8 @@
 /**
  * Blob's GitHub machine user (src/server/github-blob.ts), owner only.
  *
- *   GET    /api/blob/github         { login, expiresAt, repos, publicRepos, enabled, tokenSet }
- *   PUT    /api/blob/github         { token?, repos?, publicRepos?, enabled? } (token write-only)
+ *   GET    /api/blob/github         { login, expiresAt, repos, publicRepos, labels, enabled, tokenSet }
+ *   PUT    /api/blob/github         { token?, repos?, publicRepos?, labels?, enabled? } (token write-only)
  *   DELETE /api/blob/github/token   removes the token and turns posting off
  *
  * The owner is the verified instance owner (support/actor.ts: the signed-in

@@ -27,6 +27,7 @@ import { z } from "zod";
 import { personaName } from "./config";
 import { ASK_PAT_ACTIONS, askPat } from "./supervisor-ask-pat";
 import { blobGithubTools } from "./blob-github-tools";
+import { blobSupervisorPoster } from "./github-blob";
 import { createSdkMcpServer, tool } from "./inprocess-mcp";
 import {
   BLOB_ACTOR,
@@ -348,10 +349,7 @@ export function createSupervisorMcpServer(ctx: {
           };
         },
       ),
-      ...blobGithubTools(async () => ({
-        owner: user,
-        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
-      })),
+      ...blobGithubTools(() => blobSupervisorPoster(user, ctx.sessionId)),
     ],
   });
 }

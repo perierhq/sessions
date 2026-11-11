@@ -7,7 +7,7 @@
  * The settings are instance configuration, next to the GitHub App's, in
  * config.json under `integrations.github.blob`:
  *
- *   { login, tokenRef, repos[], publicRepos[], enabled, expiresAt }
+ *   { login, tokenRef, repos[], publicRepos[], labels[], enabled, expiresAt }
  *
  * The token is a workspace secret (workspace-secrets.ts, purpose
  * `github.blob`): the config holds only its ref. This module is the only
@@ -21,7 +21,8 @@
  * GitHub refuses, or one without an expiry, is not stored. `repos` lists the
  * registered GitHub repositories Blob may write on; `publicRepos` names the
  * public ones among them, since a public repository is refused unless it is
- * listed by name.
+ * listed by name. `labels` is the owner's allowlist for blob_label: empty
+ * (the default) turns labelling off.
  *
  * Removing the token keeps the login, so Blob's earlier posts still count as
  * ours (config.ts `githubBotLogins`) and nobody can take the name
@@ -37,7 +38,13 @@
  * I/O. Nothing runs at import.
  */
 import { auditAsync } from "./audit";
-import { configuredIdentity, configuredRepos, getConfigAsync } from "./config";
+import { privateTermIn } from "./command-policy";
+import {
+  configuredIdentity,
+  configuredRepos,
+  configuredServer,
+  getConfigAsync,
+} from "./config";
 import {
   persistRawConfigAsync,
   rawConfigAsync,
@@ -68,13 +75,20 @@ const EXPIRY_HEADER = "github-authentication-token-expiration";
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_TOKEN_LENGTH = 255;
 const MAX_REPOS = 100;
+const MAX_LABELS = 50;
+const MAX_LABEL_LENGTH = 100;
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const LABEL_TRIGGERS: readonly string[] = TRIGGER_LABELS;
+/** How old the App's word on a repository's visibility may be for a post:
+ *  a repository made public is noticed within this time. */
+export const BLOB_VISIBILITY_MAX_AGE_MS = 10 * 60_000;
 
 interface BlobGithubRecord {
   login?: string;
   tokenRef?: string;
   repos: string[];
   publicRepos: string[];
+  labels: string[];
   enabled: boolean;
   expiresAt?: string;
 }
@@ -86,6 +100,7 @@ export interface BlobGithubView {
   expiresAt: string | null;
   repos: string[];
   publicRepos: string[];
+  labels: string[];
   enabled: boolean;
   tokenSet: boolean;
 }
@@ -95,6 +110,7 @@ export interface BlobGithubPatch {
   token?: string;
   repos?: string[];
   publicRepos?: string[];
+  labels?: string[];
   enabled?: boolean;
 }
 
@@ -123,7 +139,8 @@ interface Deps {
 const defaultDeps: Deps = {
   fetch: (url, init) => fetchWithTimeout(url, init, FETCH_TIMEOUT_MS),
   now: Date.now,
-  repoIsPrivate,
+  repoIsPrivate: (ghRepo) =>
+    repoIsPrivate(ghRepo, { maxAgeMs: BLOB_VISIBILITY_MAX_AGE_MS }),
   audit: auditAsync,
   raise: async (item) => {
     const [{ instanceOwner }, { postSupervisorItem }] = await Promise.all([
@@ -179,6 +196,7 @@ function parseRecord(raw: unknown): BlobGithubRecord {
     tokenRef: str("tokenRef"),
     repos: strings(o.repos),
     publicRepos: strings(o.publicRepos),
+    labels: strings(o.labels).map((l) => l.trim()),
     enabled: o.enabled === true,
     expiresAt: str("expiresAt"),
   };
@@ -202,6 +220,7 @@ async function view(record: BlobGithubRecord): Promise<BlobGithubView> {
     expiresAt: record.expiresAt ?? null,
     repos: record.repos,
     publicRepos: record.publicRepos,
+    labels: record.labels,
     enabled: record.enabled,
     tokenSet,
   };
@@ -223,7 +242,7 @@ export function validateBlobGithubPatch(
   if (!o) return { error: "Invalid JSON body" };
   const patch: BlobGithubPatch = {};
   for (const key of Object.keys(o)) {
-    if (!["token", "repos", "publicRepos", "enabled"].includes(key))
+    if (!["token", "repos", "publicRepos", "labels", "enabled"].includes(key))
       return { error: `unknown field: ${key}` };
   }
   if ("token" in o) {
@@ -252,6 +271,31 @@ export function validateBlobGithubPatch(
         error: `${key}: must be a list of at most ${MAX_REPOS} owner/name strings`,
       };
     patch[key] = value as string[];
+  }
+  if ("labels" in o) {
+    const value = o.labels;
+    if (
+      !Array.isArray(value) ||
+      value.length > MAX_LABELS ||
+      value.some(
+        (v) =>
+          typeof v !== "string" ||
+          !v.trim() ||
+          v.trim().length > MAX_LABEL_LENGTH,
+      )
+    )
+      return {
+        error: `labels: must be a list of at most ${MAX_LABELS} label names`,
+      };
+    const labels = [...new Set((value as string[]).map((l) => l.trim()))];
+    const trigger = labels.find((l) =>
+      LABEL_TRIGGERS.includes(l.toLowerCase()),
+    );
+    if (trigger)
+      return {
+        error: `labels: ${trigger} starts an agent loop, so Blob never uses it`,
+      };
+    patch.labels = labels;
   }
   if ("enabled" in o) {
     if (typeof o.enabled !== "boolean")
@@ -474,6 +518,7 @@ export async function setBlobGithubSettings(
         tokenRef,
         repos,
         publicRepos,
+        labels: patch.labels ?? record.labels,
         enabled,
       };
       github.blob = {
@@ -543,13 +588,17 @@ function withoutUndefined(record: BlobGithubRecord): Record<string, unknown> {
 // only callers of the token. Every call fails closed, in this order:
 // posting is on, a token is set and not expired, the repository is
 // registered and on Blob's list, a lead's call is for its own project, the
-// repository is private per the App's metadata (repo-visibility.ts) or
-// named in `publicRepos` (a lead's must be private; unknown visibility
-// refuses), the owner has a GitHub login for the footer, the text carries
-// no trigger command, trigger label or hidden marker, and the owner is
-// under BLOB_WRITES_PER_HOUR writes an hour and BLOB_WRITES_PER_THREAD_HOUR
-// on that issue or pull request. Every attempt that reaches GitHub is
-// audited as Blob, for the owner, with the text as a digest.
+// repository is private per the App's metadata (repo-visibility.ts, at most
+// BLOB_VISIBILITY_MAX_AGE_MS old) or named in `publicRepos` (a lead's, and
+// a supervisor's for anyone but the instance owner, must be private;
+// unknown visibility refuses), the owner has a GitHub login for the footer,
+// the text carries no trigger command, trigger label, hidden marker, slash
+// command or @mention of anyone but a teammate, on a public repository no
+// private term or internal hostname, a label is on the owner's allowlist,
+// and the write fits BLOB_WRITES_PER_HOUR for the owner,
+// BLOB_WRITES_PER_THREAD_HOUR on that issue or pull request and
+// BLOB_WRITES_PER_INSTANCE_HOUR across owners. Every attempt that reaches
+// GitHub is audited as Blob, for the owner, with the text as a digest.
 //
 // A 401 turns posting off and raises one needs-you item to the instance
 // owner. `checkBlobGithubExpiry` (run by the supervisor inbox sweep) raises
@@ -562,6 +611,12 @@ const DAY_MS = 24 * HOUR_MS;
 export const BLOB_WRITES_PER_HOUR = 30;
 /** Writes Blob makes on one issue or pull request for one owner an hour. */
 export const BLOB_WRITES_PER_THREAD_HOUR = 5;
+/** Writes Blob makes an hour across every owner. */
+export const BLOB_WRITES_PER_INSTANCE_HOUR = 60;
+/** Inline comments in a review that count as one more write. */
+const REVIEW_COMMENTS_PER_WRITE = 5;
+/** The one catalog document holding every write of the last hour. */
+const WRITES_KEY = "all";
 /** Days before the token expires that the owner is told. */
 export const BLOB_EXPIRY_WARN_DAYS = 14;
 const SOURCE = "blob-github";
@@ -578,6 +633,31 @@ export interface BlobPoster {
   /** A project lead: only this project's repositories, and only private
    *  ones. */
   lead?: { project: string; repos: string[] };
+  /** Private repositories only: a teammate's supervisor, since nothing on
+   *  the instance says which public repositories they may speak on
+   *  (blobSupervisorPoster). */
+  privateOnly?: boolean;
+}
+
+/** Who a supervisor's Blob posts for. Anyone but the instance owner (by
+ *  GitHub login, since a first name can be shared) posts on private
+ *  repositories only: neither the roster nor the App's installation says
+ *  which repositories a teammate can reach, and every teammate may see a
+ *  private registered repository's sessions anyway. */
+export async function blobSupervisorPoster(
+  user: string,
+  sessionId?: string,
+): Promise<BlobPoster> {
+  const { instanceOwnerMember } = await import("./incidents/owner");
+  const login = githubLoginFor(user)?.toLowerCase();
+  const ownerLogin = instanceOwnerMember()?.github?.trim().toLowerCase();
+  return {
+    owner: user,
+    ...(sessionId ? { sessionId } : {}),
+    ...(login && ownerLogin && login === ownerLogin
+      ? {}
+      : { privateOnly: true }),
+  };
 }
 
 export type BlobWriteResult =
@@ -592,20 +672,46 @@ export interface BlobReviewComment {
   body: string;
 }
 
-const LABEL_TRIGGERS: readonly string[] = TRIGGER_LABELS;
 /** A slash command for one of our loops (`/os-auto-fix`, `/os review`). */
 const TRIGGER_COMMAND = /(^|[^\w/.~-])\/os(?:-[a-z-]+)?(?![\w/])/im;
 /** A hidden marker, which would pass the text off as one of our loops'. */
 const HIDDEN_MARKER = /<!--/;
+/** A line that starts with a slash command, for any bot or Action
+ *  (`/deploy`, `/lgtm`). */
+const SLASH_COMMAND = /^\s*\/\w/m;
+/** A GitHub @mention: a login, or `org/team` with the slash. GitHub only
+ *  links one that follows a non-word character, so emails don't count. */
+const MENTION = /(?:^|[^\w`])@([A-Za-z0-9][A-Za-z0-9-]*)(\/[\w.-]+)?/g;
+
+/** The roster's GitHub logins, lowercase. */
+function rosterLogins(): string[] {
+  return configuredIdentity()
+    .team.map((member) => member.github?.trim().toLowerCase())
+    .filter((login): login is string => !!login);
+}
 
 /**
  * Why `text` may not go out as Blob, or null. Blob's posts count as our own
  * bot's (OWN_MARKERS), so a body must never carry what starts or steers a
- * loop: a `/os…` command, a trigger label's name, or a hidden marker.
+ * loop: a `/os…` command, a trigger label's name, or a hidden marker. Nor
+ * may it drive anyone else's: a line starting with a slash command, or an
+ * @mention of anyone but a teammate on the roster (other bots such as
+ * dependabot answer to theirs), or of a team.
  */
-export function blobTextRefusal(text: string): string | null {
+export function blobTextRefusal(
+  text: string,
+  teammates: readonly string[] = rosterLogins(),
+): string | null {
   if (TRIGGER_COMMAND.test(text))
     return "The text contains a /os command. Blob never posts commands for the review or fix loops; quote the text without it.";
+  if (SLASH_COMMAND.test(text))
+    return "A line of the text starts with a slash command, which bots on GitHub may run. Reword it so no line starts with /.";
+  for (const [, login, team] of text.matchAll(MENTION)) {
+    if (team)
+      return `The text mentions the team @${login}${team}. Blob never mentions teams; write the name without @.`;
+    if (!teammates.includes(login!.toLowerCase()))
+      return `The text mentions @${login}, who isn't a teammate on the roster. Blob only mentions teammates; write the name without @.`;
+  }
   const lower = text.toLowerCase();
   const label = LABEL_TRIGGERS.find(
     (name) =>
@@ -627,6 +733,50 @@ export function blobFooter(
 ): string {
   const link = sessionUrl ? ` · [session](${sessionUrl})` : "";
   return `\n\n<sub>Blob, for @${ownerLogin}${link}</sub>${BLOB_MARKER}`;
+}
+
+/** Never written about the private network: the instance's own hostnames
+ *  come from its config, and these shapes name hosts that only exist
+ *  inside a network. */
+const INTERNAL_HOST =
+  /\b(?:[a-z0-9-]+\.)+(?:internal|local|lan|corp|intranet|home\.arpa|ts\.net)\b/i;
+const PRIVATE_ADDRESS =
+  /\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b/;
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0", ""]);
+
+/** The instance's own hostnames: where its UI, webhooks and previews are. */
+function instanceHosts(): string[] {
+  const server = configuredServer();
+  const hosts = [server.publicBaseUrl, server.webhookBaseUrl].map((url) => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return "";
+    }
+  });
+  return [...new Set([...hosts, server.previewHost])]
+    .map((host) => host.trim().toLowerCase())
+    .filter((host) => !LOOPBACK.has(host));
+}
+
+/** Why `text` may not go on a public repository, or null: a private
+ *  organization term (policy.privateTerms, matched as
+ *  privateTermsDenyReason does), the instance's hostname, or an internal
+ *  hostname or address. */
+export function blobPublicTextRefusal(
+  text: string,
+  terms: string[],
+): string | null {
+  const term = privateTermIn(text, { terms });
+  if (term !== undefined)
+    return `The repository is public and the text contains the private term "${term}" (policy.privateTerms). Rewrite it without private organization information.`;
+  const lower = text.toLowerCase();
+  const host = instanceHosts().find((h) => lower.includes(h));
+  if (host)
+    return `The repository is public and the text names this instance's host ${host}. Leave it out.`;
+  if (INTERNAL_HOST.test(text) || PRIVATE_ADDRESS.test(text))
+    return "The repository is public and the text names an internal host or address. Leave it out.";
+  return null;
 }
 
 interface Prepared {
@@ -704,6 +854,10 @@ async function prepare(
       return refuse(
         `${repo.ghRepo} is public or its visibility is unknown. A lead posts on private repositories only.`,
       );
+    if (poster.privateOnly)
+      return refuse(
+        `${repo.ghRepo} is public or its visibility is unknown. Blob posts on public repositories only for the instance owner.`,
+      );
     const listed = record.publicRepos.some(
       (r) => r.toLowerCase() === repo.ghRepo.toLowerCase(),
     );
@@ -719,8 +873,12 @@ async function prepare(
     return refuse(
       "The owner has no GitHub login on the team roster, so the post couldn't say who it is for.",
     );
+  const teammates = rosterLogins();
+  const terms = config.policy?.privateTerms ?? [];
   for (const text of texts) {
-    const refusal = blobTextRefusal(text);
+    const refusal =
+      blobTextRefusal(text, teammates) ??
+      (isPrivate ? null : blobPublicTextRefusal(text, terms));
     if (refusal) return refuse(refusal);
   }
   const footer = blobFooter(
@@ -739,6 +897,11 @@ interface WriteEntry {
   id: string;
   ts: number;
   thread: string;
+  /** canonicalName of the owner. */
+  owner: string;
+  /** How many writes it counts as: 1, more for a review with many inline
+   *  comments. */
+  weight: number;
 }
 
 function writeEntries(value: unknown): WriteEntry[] {
@@ -749,24 +912,30 @@ function writeEntries(value: unknown): WriteEntry[] {
       !!obj(e) &&
       typeof e.id === "string" &&
       typeof e.ts === "number" &&
-      typeof e.thread === "string",
+      typeof e.thread === "string" &&
+      typeof e.owner === "string" &&
+      typeof e.weight === "number",
   );
 }
 
-/** Count a write against the owner's limits under the catalog's
- *  compare-and-set; null when it fits, else why not. */
-async function claimWrite(
-  owner: string,
-  entry: WriteEntry,
-): Promise<string | null> {
+const weightOf = (entries: WriteEntry[]) =>
+  entries.reduce((sum, e) => sum + e.weight, 0);
+
+/** Count a write against the owner's and the instance's limits under the
+ *  catalog's compare-and-set, all in one document so one check covers
+ *  both; null when it fits, else why not. */
+async function claimWrite(entry: WriteEntry): Promise<string | null> {
   let refusal: string | null = null;
-  await writes.update(canonicalName(owner), (value) => {
+  await writes.update(WRITES_KEY, (value) => {
     const kept = writeEntries(value).filter((e) => entry.ts - e.ts < HOUR_MS);
+    const mine = kept.filter((e) => e.owner === entry.owner);
     refusal = null;
-    if (kept.length >= BLOB_WRITES_PER_HOUR)
+    if (weightOf(mine) + entry.weight > BLOB_WRITES_PER_HOUR)
       refusal = `Blob already wrote ${BLOB_WRITES_PER_HOUR} times on GitHub for you this hour. Try again later.`;
+    else if (weightOf(kept) + entry.weight > BLOB_WRITES_PER_INSTANCE_HOUR)
+      refusal = `Blob already wrote ${BLOB_WRITES_PER_INSTANCE_HOUR} times on GitHub for the team this hour. Try again later.`;
     else if (
-      kept.filter((e) => e.thread === entry.thread).length >=
+      mine.filter((e) => e.thread === entry.thread).length >=
       BLOB_WRITES_PER_THREAD_HOUR
     )
       refusal = `Blob already wrote ${BLOB_WRITES_PER_THREAD_HOUR} times on ${entry.thread} this hour. Try again later.`;
@@ -775,9 +944,9 @@ async function claimWrite(
   return refusal;
 }
 
-async function releaseWrite(owner: string, id: string): Promise<void> {
+async function releaseWrite(id: string): Promise<void> {
   await writes
-    .update(canonicalName(owner), (value) => ({
+    .update(WRITES_KEY, (value) => ({
       writes: writeEntries(value).filter((e) => e.id !== id),
     }))
     .catch(() => {});
@@ -786,10 +955,13 @@ async function releaseWrite(owner: string, id: string): Promise<void> {
 const digest = (text: string) =>
   new Bun.CryptoHasher("sha256").update(text).digest("hex");
 
-/** GitHub's status and body; status 0 when it couldn't be reached. */
+/** GitHub's status and body; status 0 when it couldn't be reached.
+ *  `applied` marks a failure after an earlier call of the same write went
+ *  through, so it still counts against the limits. */
 interface GithubAnswer {
   status: number;
   json: unknown;
+  applied?: boolean;
 }
 
 /** One call to GitHub's REST API with Blob's token. Never redirects, so
@@ -858,6 +1030,10 @@ interface WriteSpec {
   /** The issue or pull request; absent for a new issue. */
   number?: number;
   texts: string[];
+  /** How many writes it counts as; 1 by default. */
+  weight?: number;
+  /** A refusal that needs the settings, before the write is counted. */
+  check?(p: Prepared): string | null;
   run(p: Prepared): Promise<GithubAnswer | { refused: string }>;
   ok(json: unknown, p: Prepared): string;
 }
@@ -869,19 +1045,23 @@ async function write(
   const guard = await prepare(poster, spec.repo, spec.texts);
   if (!guard.ok) return guard;
   const p = guard.value;
+  const checked = spec.check?.(p);
+  if (checked) return refuse(checked);
   const thread = `${p.ghRepo}#${spec.number ?? "new"}`;
   const entry: WriteEntry = {
     id: crypto.randomUUID(),
     ts: deps.now(),
     thread,
+    owner: canonicalName(poster.owner),
+    weight: spec.weight ?? 1,
   };
-  const limited = await claimWrite(poster.owner, entry);
+  const limited = await claimWrite(entry);
   if (limited) return refuse(limited);
   const result = await spec.run(p);
   // A definite failure doesn't count against the limits; an unanswered
-  // call may have posted, so it does.
-  if ("refused" in result || result.status >= 300)
-    await releaseWrite(poster.owner, entry.id);
+  // call may have posted, and a partly applied one did, so they do.
+  if ("refused" in result || (result.status >= 300 && !result.applied))
+    await releaseWrite(entry.id);
   if (!("refused" in result))
     deps.audit({
       kind: "blob_github_write",
@@ -964,6 +1144,7 @@ export function blobReview(
     repo: input.repo,
     number: input.pr,
     texts: [input.body, ...input.comments.map((c) => c.body)],
+    weight: 1 + input.comments.length / REVIEW_COMMENTS_PER_WRITE,
     run: (p) =>
       githubCall(
         p.token,
@@ -985,8 +1166,9 @@ export function blobReview(
   });
 }
 
-/** Add and remove labels as Blob. Only labels the repository already has;
- *  never a trigger label. */
+/** Add and remove labels as Blob. Only labels on the owner's allowlist
+ *  (`labels`, empty turns labelling off) that the repository already has;
+ *  never a trigger label, even if listed. */
 export function blobLabel(
   poster: BlobPoster,
   input: { repo: string; number: number; add: string[]; remove: string[] },
@@ -1011,6 +1193,17 @@ export function blobLabel(
     repo: input.repo,
     number: input.number,
     texts: [],
+    check: (p) => {
+      if (!p.record.labels.length)
+        return "Labelling is off: the instance owner hasn't listed any labels for Blob (integrations.github.blob.labels).";
+      const allowed = new Set(p.record.labels.map((l) => l.toLowerCase()));
+      const outside = [...add, ...remove].find(
+        (l) => !allowed.has(l.toLowerCase()),
+      );
+      return outside
+        ? `${outside} is not on the owner's list of labels Blob may use.`
+        : null;
+    },
     run: async (p) => {
       const base = `/repos/${repoPath(p.ghRepo)}`;
       for (const label of add) {
@@ -1029,6 +1222,7 @@ export function blobLabel(
         status: 200,
         json: null,
       };
+      let applied = false;
       if (add.length) {
         last = await githubCall(
           p.token,
@@ -1037,6 +1231,7 @@ export function blobLabel(
           { labels: add },
         );
         if (last.status === 0 || last.status >= 300) return last;
+        applied = true;
       }
       for (const label of remove) {
         last = await githubCall(
@@ -1046,7 +1241,9 @@ export function blobLabel(
         );
         // Not on the issue: nothing to remove.
         if (last.status === 404) last = { status: 200, json: null };
-        if (last.status === 0 || last.status >= 300) return last;
+        if (last.status === 0 || last.status >= 300)
+          return { ...last, applied };
+        applied = true;
       }
       return last;
     },

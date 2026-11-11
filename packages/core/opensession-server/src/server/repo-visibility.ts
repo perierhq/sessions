@@ -9,30 +9,76 @@ import type { Repo } from "./config";
 // Capability URLs and PR text are unlisted, not access-controlled: once
 // posted on a PUBLIC repo, anyone reading the thread sees them. The registry
 // can contain PUBLIC repos, and the instance credential can post to them, so
-// callers MUST gate on visibility. Cached per ghRepo for the process lifetime.
-const repoVisibilityCache = new Map<string, boolean>();
+// callers MUST gate on visibility. Cached per ghRepo for the process lifetime,
+// unless a caller passes `maxAgeMs`: Blob's own posts (github-blob.ts) ask
+// again after 10 minutes, so a repository made public is noticed soon.
+const repoVisibilityCache = new Map<
+  string,
+  { isPrivate: boolean; at: number }
+>();
+
+interface VisibilityDeps {
+  now(): number;
+  token(ghRepo: string): Promise<string | null | undefined>;
+  fetch(url: string, init: RequestInit): Promise<Response>;
+}
+
+const defaultVisibilityDeps: VisibilityDeps = {
+  now: Date.now,
+  token: async (ghRepo) =>
+    (await import("./github-limit")).botGhToken({ repo: ghRepo }),
+  fetch: (url, init) => fetch(url, init),
+};
+let visibilityDeps = defaultVisibilityDeps;
+
+/** Swap the clock, token and network in tests; clears the cache. Returns a
+ *  restore function. */
+export function __setRepoVisibilityDepsForTest(
+  overrides: Partial<VisibilityDeps>,
+): () => void {
+  const previous = visibilityDeps;
+  visibilityDeps = { ...defaultVisibilityDeps, ...overrides };
+  repoVisibilityCache.clear();
+  return () => {
+    visibilityDeps = previous;
+    repoVisibilityCache.clear();
+  };
+}
 
 /** True = private, false = public, null = could not determine (treat as
- *  public / refuse). */
-export async function repoIsPrivate(ghRepo: string): Promise<boolean | null> {
+ *  public / refuse). An answer older than `maxAgeMs` is asked again. */
+export async function repoIsPrivate(
+  ghRepo: string,
+  options: { maxAgeMs?: number } = {},
+): Promise<boolean | null> {
   const cached = repoVisibilityCache.get(ghRepo);
-  if (cached !== undefined) return cached;
-  const { botGhToken } = await import("./github-limit");
-  const token = await botGhToken({ repo: ghRepo });
+  if (
+    cached &&
+    (options.maxAgeMs === undefined ||
+      visibilityDeps.now() - cached.at < options.maxAgeMs)
+  )
+    return cached.isPrivate;
+  const token = await visibilityDeps.token(ghRepo);
   if (!token) return null;
   try {
-    const res = await fetch(`https://api.github.com/repos/${ghRepo}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "opensession",
+    const res = await visibilityDeps.fetch(
+      `https://api.github.com/repos/${ghRepo}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "opensession",
+        },
+        signal: AbortSignal.timeout(10_000),
       },
-      signal: AbortSignal.timeout(10_000),
-    });
+    );
     if (!res.ok) return null;
     const data: any = await res.json().catch(() => null);
     if (typeof data?.private !== "boolean") return null;
-    repoVisibilityCache.set(ghRepo, data.private);
+    repoVisibilityCache.set(ghRepo, {
+      isPrivate: data.private,
+      at: visibilityDeps.now(),
+    });
     return data.private;
   } catch {
     return null;
