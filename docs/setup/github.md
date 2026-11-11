@@ -145,6 +145,69 @@ repository list and expiry short, and rotate it if it is ever exposed. Uploads
 are attributed to the token's account inside GitHub. A repository outside the
 token's grant fails the upload and falls back to media links.
 
+## Blob's GitHub account
+
+Blob, the supervisor and the project leads, gets a GitHub user account of
+its own, so it can comment, leave reviews with comments, add existing labels
+and open issues as itself. It never approves, pushes or merges. The policy is
+in [GitHub authority](../github-authority.md). The examples use the
+organization `acme`.
+
+The instance owner sets it up:
+
+1. Make an email alias for the account, for example `blob@example.test`.
+2. Sign up on GitHub with it as `acme-blob`, display name `Blob`, with Blob's
+   picture (`packages/core/opensession-server/src/frontend/blob-icon.png`) as the avatar.
+3. Turn on two-factor authentication for the account.
+4. Invite `acme-blob` to the `acme` organization as a Member, and accept.
+5. Create a team `Blob` with `acme-blob` in it, and give it the **Triage**
+   role on each repository Blob may write on. Triage only limits the account
+   when the organization's base permission is lower than Write.
+6. In the organization's settings, allow fine-grained personal access tokens
+   (Personal access tokens → Settings).
+7. Signed in as `acme-blob`, create a fine-grained personal access token:
+   - Resource owner: `acme`
+   - Repository access: only select repositories, the same ones as in step 5
+   - Repository permissions: Issues read and write, Pull requests read and
+     write, Contents read-only, Metadata read-only
+   - Expiration: 90 days
+8. Paste it in Settings → Members → Blob, and pick the repositories Blob may
+   write on. Name each public one among them as well: a public repository
+   that isn't listed is refused.
+
+Saving the token checks it with GitHub, which reports the account's login and
+the token's expiry. A token GitHub refuses, a classic token, or one without an
+expiry is not stored. Only the instance owner, signed in, can see or change
+these settings, and the token is never shown again.
+
+The settings live in `integrations.github.blob` in `config.json`; the token
+itself is a workspace secret the config refers to:
+
+```jsonc
+{
+  "integrations": {
+    "github": {
+      "blob": {
+        "login": "acme-blob",
+        "tokenRef": "wssec-…",
+        "repos": ["acme/widget", "acme/docs"],
+        "publicRepos": ["acme/docs"],
+        "enabled": true,
+        "expiresAt": "2027-02-09T12:00:00.000Z",
+      },
+    },
+  },
+}
+```
+
+The login counts as one of Open Session's own bots, so comments by it never
+start a reply, and no teammate can be added under it. It stays after the
+token is removed, so Blob's earlier posts keep counting as its own. A token
+for a different account is refused; to switch accounts, remove
+`integrations.github.blob` from `config.json` first. The login is never the
+review agent's own: `@acme-blob` does not start a review-agent reply, and
+the review agent does not resolve threads Blob started.
+
 ## Who holds which credential
 
 A code turn a connected person started acts as that person: their token is

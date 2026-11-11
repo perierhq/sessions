@@ -169,4 +169,23 @@ describe("Blob's name is reserved", () => {
       { name: "grace", github: "grace" },
     ]);
   });
+
+  test("the GitHub organization sync skips Blob's GitHub account", async () => {
+    const configPath = await writeConfig();
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.integrations.github.blob = { login: "acme-blob" };
+    writeFileSync(configPath, JSON.stringify(config));
+    await getConfigAsync();
+    globalThis.fetch = (async () =>
+      Response.json([
+        { login: "Acme-Blob", type: "User" },
+        { login: "grace", type: "User" },
+      ])) as unknown as typeof fetch;
+    const body = await (await handleSetupTeamRoutes(context()))?.json();
+    expect(body.added).toBe(1);
+    expect(body.members.map((m: { github: string }) => m.github)).toEqual([
+      "ada",
+      "grace",
+    ]);
+  });
 });

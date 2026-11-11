@@ -18,7 +18,12 @@
  */
 
 import { AUTO_CONTINUE_USER } from "./auto-continue";
-import { personaName, productMark, productName } from "./config";
+import {
+  blobGithubLogin,
+  personaName,
+  productMark,
+  productName,
+} from "./config";
 import { isNativeSessionId } from "./paths";
 import { gitIdentityFor } from "./shared/user-mappings";
 
@@ -85,12 +90,17 @@ export function isBlobActor(actor?: string | null): boolean {
 /** Whether a teammate's name, alias or GitHub login would collide with Blob.
  *  `gitIdentityFor` resolves a sender by name, first name, alias or login, so
  *  a teammate called "Blob" (or "Blob Smith") would make Blob's bare name
- *  resolve to a person. The roster refuses such entries (routes/setup-team.ts). */
+ *  resolve to a person. Blob's GitHub machine user (github-blob.ts) is Blob
+ *  too, so its login is reserved the same way. The roster refuses such
+ *  entries and the GitHub organization import skips them
+ *  (routes/setup-team.ts). */
 export function isReservedTeamName(value?: string | null): boolean {
   const lower = (value || "").trim().toLowerCase();
   if (!lower) return false;
   const blob = BLOB_ACTOR.toLowerCase();
-  return lower === blob || lower.split(/\s+/)[0] === blob;
+  if (lower === blob || lower.split(/\s+/)[0] === blob) return true;
+  const login = blobGithubLogin().toLowerCase();
+  return !!login && lower === login;
 }
 
 /** `createdBy` of a project lead's goal record (leads/goal.ts). The lead is
