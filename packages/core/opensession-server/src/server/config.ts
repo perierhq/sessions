@@ -1267,7 +1267,8 @@ export function githubBotLogins(): string[] {
         // so the agent never treats its own App-posted comments as human
         // replies to answer.
         ...(appSlug ? [`${appSlug}[bot]`] : []),
-        // Blob's GitHub machine user (github-blob.ts) posts as itself.
+        // Blob's GitHub machine user (github-blob.ts) posts as itself. Always
+        // last and never the primary: see reviewAgentBotLogin().
         ...(blobLogin ? [blobLogin] : []),
       ].map((login) => login.toLowerCase()),
     ),
@@ -1286,6 +1287,26 @@ export function blobGithubLogin(): string {
   return typeof login === "string" && GITHUB_LOGIN.test(login.trim())
     ? login.trim()
     : "";
+}
+
+/** Is `login` Blob's GitHub machine user? Case-insensitive. */
+export function isBlobGithubLogin(login: string | null | undefined): boolean {
+  const blob = blobGithubLogin();
+  return !!login && !!blob && login.toLowerCase() === blob.toLowerCase();
+}
+
+/** The review agent's own login (github-rest.ts `BOT_LOGIN`): the first of
+ *  githubBotLogins() that is not Blob's machine user, or "" when there is
+ *  none. Blob's login counts as ours but is never the review agent's, so
+ *  `@<blob-login>` is not a review-agent mention handle. */
+export function reviewAgentBotLogin(): string {
+  return githubBotLogins().find((login) => !isBlobGithubLogin(login)) || "";
+}
+
+/** Is `login` the review agent itself: one of our bot logins other than
+ *  Blob's machine user, whose threads are Blob's and not the agent's. */
+export function isReviewAgentLogin(login: string | null | undefined): boolean {
+  return isGithubBotLogin(login) && !isBlobGithubLogin(login);
 }
 
 /** Is `login` one of our bot identities? Membership over the whole

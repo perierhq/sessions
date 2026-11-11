@@ -2,7 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { getConfigAsync, githubBotLogins, isGithubBotLogin } from "./config";
+import { outdatedOwnThreadIds } from "../agents/github/review";
+import {
+  getConfigAsync,
+  githubBotLogins,
+  isGithubBotLogin,
+  isReviewAgentLogin,
+} from "./config";
 import { __setBlobGithubDepsForTest, parseTokenExpiry } from "./github-blob";
 import { handleBlobGithubRoutes } from "./routes/blob-github";
 import type { RouteContext } from "./routes/context";
@@ -281,6 +287,50 @@ describe("Blob's GitHub account settings", () => {
     expect(narrowed.body.blob.publicRepos).toEqual([]);
   });
 
+  test("a token for another account is refused while a login is recorded", async () => {
+    await setup();
+    github(200, { login: "acme-blob" });
+    await call(request("PUT", { token: TOKEN }));
+    const kept = storedBlob();
+    github(200, { login: "other-bot" });
+    const res = await call(request("PUT", { token: `${TOKEN}2` }));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(
+      "This token belongs to @other-bot, but Blob's account is @acme-blob; remove Blob's account first.",
+    );
+    expect(storedBlob()).toEqual(kept);
+    expect(storedSecrets().map((s) => s.value)).toEqual([TOKEN]);
+
+    // Also after the token was removed: the login stays Blob's.
+    await call(request("DELETE", undefined, "ada", "/api/blob/github/token"));
+    expect((await call(request("PUT", { token: TOKEN }))).status).toBe(400);
+    expect(storedSecrets()).toEqual([]);
+    // The same account, in any case, is fine.
+    github(200, { login: "Acme-Blob" });
+    expect((await call(request("PUT", { token: TOKEN }))).status).toBe(200);
+  });
+
+  test("the check never follows a redirect", async () => {
+    await setup();
+    let redirect: RequestRedirect | undefined;
+    restores.push(
+      __setBlobGithubDepsForTest({
+        now: () => Date.parse("2026-11-11T00:00:00Z"),
+        fetch: async (_url, init) => {
+          redirect = init.redirect;
+          return new Response(null, {
+            status: 302,
+            headers: { location: "https://example.test/user" },
+          });
+        },
+      }),
+    );
+    const res = await call(request("PUT", { token: TOKEN }));
+    expect(redirect).toBe("manual");
+    expect(res.status).toBe(502);
+    expect(storedSecrets()).toEqual([]);
+  });
+
   test("removing the token turns posting off and keeps the login", async () => {
     await setup();
     github(200, { login: "acme-blob" });
@@ -315,6 +365,27 @@ describe("Blob's GitHub login", () => {
     await setup({ login: "Acme-Blob", repos: [], enabled: false });
     expect(githubBotLogins()).toEqual(["acme-app[bot]", "acme-blob"]);
     expect(isGithubBotLogin("acme-blob")).toBe(true);
+  });
+
+  test("is not the review agent's, whose outdated threads alone are resolved", async () => {
+    await setup({ login: "acme-blob" });
+    expect(isReviewAgentLogin("acme-app[bot]")).toBe(true);
+    expect(isReviewAgentLogin("Acme-Blob")).toBe(false);
+    const thread = (id: string, rootAuthor: string, isOutdated = true) => ({
+      id,
+      rootAuthor,
+      isOutdated,
+      isResolved: false,
+    });
+    expect(
+      outdatedOwnThreadIds([
+        thread("agent", "acme-app[bot]"),
+        thread("blob", "acme-blob"),
+        thread("human", "ada"),
+        thread("current", "acme-app[bot]", false),
+        { ...thread("done", "acme-app[bot]"), isResolved: true },
+      ]),
+    ).toEqual(["agent"]);
   });
 
   test("is reserved for Blob on the roster", async () => {

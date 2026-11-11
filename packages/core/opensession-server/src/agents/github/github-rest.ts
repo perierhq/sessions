@@ -10,7 +10,8 @@
 import { fetchWithTimeout } from "../../server/shared/fetch-with-timeout";
 import {
   defaultRepo,
-  githubBotLogins,
+  reviewAgentBotLogin,
+  isReviewAgentLogin,
   isGithubBotLogin,
   personaName,
 } from "../../server/config";
@@ -28,8 +29,9 @@ import { noteGithubGraphqlCall } from "../../server/github-budget";
 import { isTrustedGithubLogin } from "../../server/shared/user-mappings";
 /** The PR agent's target — the instance's default repo (config-driven). */
 export const GITHUB_REPO = defaultRepo().ghRepo;
-/** The bot account our token posts as — used to recognise our own comments/events. */
-export const BOT_LOGIN = githubBotLogins()[0] || "";
+/** The bot account our token posts as — used to recognise our own comments/events.
+ *  Never Blob's machine user, even when it is our only bot login. */
+export const BOT_LOGIN = reviewAgentBotLogin();
 /** Hidden markers the agent stamps on the comments it posts. */
 export const REVIEW_MARKER = "<!-- os-review -->";
 const REVIEW_OUTDATED_MARKER = "<!-- os-review-outdated -->";
@@ -611,7 +613,7 @@ function threadWasFixed(t: ReviewThread): boolean {
  * in <sha>" reply left in the thread (which the fix prompt instructs it to post).
  * This ties resolution to a genuine fix reply, so "I intentionally didn't act" notes
  * (which don't say "Fixed in") are left open for a human. When `alsoOutdatedBotThreads`
- * is set, also resolves any still-open thread rooted by our own bot account that GitHub
+ * is set, also resolves any still-open thread rooted by the review agent (not Blob) that GitHub
  * already marked outdated (its finding moved/vanished with the diff) — safe cleanup
  * that never touches human threads. Idempotent: already-resolved threads are skipped.
  * Returns the number of threads resolved.
@@ -627,7 +629,9 @@ export async function resolveAddressedThreads(
   for (const t of threads) {
     if (t.isResolved) continue;
     const staleBot =
-      alsoOutdatedBotThreads && t.isOutdated && isGithubBotLogin(t.rootAuthor);
+      alsoOutdatedBotThreads &&
+      t.isOutdated &&
+      isReviewAgentLogin(t.rootAuthor);
     if (!threadWasFixed(t) && !staleBot) continue;
     if (await resolveReviewThread(t.id, ghRepo)) resolved++;
   }

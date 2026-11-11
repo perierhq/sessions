@@ -100,10 +100,14 @@ const MENTION_HANDLES = githubMentionHandles({
   configured: githubIntegration.mentionHandles,
   environment: process.env.GITHUB_MENTION_HANDLES,
 });
-const MENTION_RE = new RegExp(
-  `@(${MENTION_HANDLES.map((handle) => handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
-  "i",
-);
+/** Matches an `@handle` mention of any of `handles`. */
+export function githubMentionPattern(handles: readonly string[]): RegExp {
+  return new RegExp(
+    `@(${handles.map((handle) => handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
+    "i",
+  );
+}
+const MENTION_RE = githubMentionPattern(MENTION_HANDLES);
 
 function mentionsAgent(body: string): boolean {
   if (!body) return false;

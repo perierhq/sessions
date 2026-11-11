@@ -202,7 +202,11 @@ itself is a workspace secret the config refers to:
 
 The login counts as one of Open Session's own bots, so comments by it never
 start a reply, and no teammate can be added under it. It stays after the
-token is removed, so Blob's earlier posts keep counting as its own.
+token is removed, so Blob's earlier posts keep counting as its own. A token
+for a different account is refused; to switch accounts, remove
+`integrations.github.blob` from `config.json` first. The login is never the
+review agent's own: `@acme-blob` does not start a review-agent reply, and
+the review agent does not resolve threads Blob started.
 
 ## Who holds which credential
 

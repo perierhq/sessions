@@ -25,7 +25,13 @@
  *
  * Removing the token keeps the login, so Blob's earlier posts still count as
  * ours (config.ts `githubBotLogins`) and nobody can take the name
- * (session-actors.ts `isReservedTeamName`).
+ * (session-actors.ts `isReservedTeamName`). For the same reason a token for
+ * a different account than the recorded login is refused: switching
+ * accounts means removing Blob's account (`integrations.github.blob`) first.
+ *
+ * Never resolve the token anywhere else. Any other module that reads
+ * `integrations.github.blob` and calls `resolveWorkspaceSecret*` fails
+ * github-blob-boundary.test.ts; add what it needs here instead.
  *
  * Every config write runs under the shared config mutation lock with async
  * I/O. Nothing runs at import.
@@ -266,6 +272,9 @@ export async function verifyBlobGithubToken(token: string): Promise<Verified> {
   let res: Response;
   try {
     res = await deps.fetch(USER_URL, {
+      // A redirect would carry the token to another host; GET /user never
+      // redirects, so anything but a direct answer is refused below.
+      redirect: "manual",
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
@@ -360,6 +369,18 @@ export async function setBlobGithubSettings(
       const config = await rawConfigAsync();
       const github = githubSection(config);
       const record = parseRecord(github.blob);
+      // Blob's earlier posts are recognised by the recorded login, so the
+      // account can only change by removing it first.
+      if (
+        verified &&
+        record.login &&
+        record.login.toLowerCase() !== verified.login.toLowerCase()
+      )
+        return {
+          ok: false,
+          status: 400,
+          error: `This token belongs to @${verified.login}, but Blob's account is @${record.login}; remove Blob's account first.`,
+        } as const;
       const registered = registeredGithubRepos();
 
       let repos = record.repos;

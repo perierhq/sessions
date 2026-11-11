@@ -5,7 +5,11 @@
  * review carrying inline comments (GitHub auto-outdates stale ones across commits).
  * Deduped on head SHA so the same commit isn't reviewed twice.
  */
-import { isGithubBotLogin, personaName } from "../../server/config";
+import {
+  isGithubBotLogin,
+  isReviewAgentLogin,
+  personaName,
+} from "../../server/config";
 import { isShuttingDown } from "../../server/shutdown-state";
 import {
   getPrAutomationDetails,
@@ -1392,12 +1396,28 @@ async function postReview(
   // Auto-resolve our own inline threads GitHub has marked outdated — their code
   // moved or vanished with this push, so the finding no longer anchors anywhere
   // useful. Collapsing them keeps the PR clean without a human resolving by hand.
-  // Only ever touches bot-rooted threads; human threads are never resolved here.
-  for (const t of existingThreads) {
-    if (!t.isResolved && t.isOutdated && isGithubBotLogin(t.rootAuthor)) {
-      await resolveReviewThread(t.id, pr.ghRepo).catch(() => {});
-    }
+  // Only ever touches the review agent's threads; human and Blob threads are
+  // never resolved here.
+  for (const id of outdatedOwnThreadIds(existingThreads)) {
+    await resolveReviewThread(id, pr.ghRepo).catch(() => {});
   }
+}
+
+/** Open, outdated threads the review agent itself started. Blob's machine
+ *  user counts as ours elsewhere, but its threads are its own to close. */
+export function outdatedOwnThreadIds(
+  threads: readonly {
+    id: string;
+    isResolved: boolean;
+    isOutdated: boolean;
+    rootAuthor: string;
+  }[],
+): string[] {
+  return threads
+    .filter(
+      (t) => !t.isResolved && t.isOutdated && isReviewAgentLogin(t.rootAuthor),
+    )
+    .map((t) => t.id);
 }
 
 function fallbackSummary(rawText: string, runError?: string): string {
