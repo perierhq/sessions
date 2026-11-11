@@ -713,6 +713,29 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   says nothing aloud. Decisions split their body the same way. No test
   target compiles `Blob/`; the examples in `BlobReply`'s doc comment are
   the cases to check with a scratch `swiftc` run when the rule changes.
+- How a reply is drawn (`Blob/BlobShow.swift`, `Blob/BlobShowViews.swift`):
+  what it shows is read into Blob's elements, the same way while it streams
+  and once it settles, so settling changes nothing on screen. A reference
+  line (`[PR #12](url) · merged · CI green`), a bold-lead paragraph
+  (`**Release 533** · stuck · …`) or a short `Title · status · detail` line
+  is a status row: a mark in the status's colour (red stuck or failing,
+  amber running or open, green merged or ready, a ring otherwise), the
+  title, a short status beside it and the rest as one supporting line;
+  rows in a row are one list with hairlines, and a row with a link opens
+  it. Callouts are quiet insets with the kind's glyph; the first warning or
+  caution in a reply is warm, any later one quiet. A quote is dim italic
+  on a plate. Prose goes through the markdown renderer, links in the
+  accent; a reply that starts streaming keeps one streaming renderer per
+  prose run for its whole life. A fence the block catalog claims draws as
+  soon as it closes; until then, and while a row, callout or quote is still
+  being written, a quiet placeholder in its shape holds its space. Markers
+  not closed yet are left out (`**bo` reads `bo`), and cue anchors never
+  show. Callouts and quick replies take Blob's look from
+  `markdownLook = .blob`, set at Blob's root; the OS apps keep theirs.
+  Quick replies are soft chips, the first in the accent while it can be
+  sent, or full-width rows when a label runs past three words. No test
+  target compiles `Blob/`; `BlobShow`'s doc comment lists the cases to check
+  with a scratch `swiftc` run.
 - Streaming speech (`Blob/BlobSentenceStreamer.swift`): Blob reads the Say
   part sentence by sentence while the reply streams, each one as soon as it
   is complete, and reads whatever is left when the reply settles. A
@@ -833,7 +856,11 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   an iPad simulator (the Blob target is iPhone-only, so build it for one
   with `TARGETED_DEVICE_FAMILY=1,2` on the command line).
   `BLOB_DEMO_DECISIONS=1` shows three canned decisions, the first with
-  steps.
+  steps. `BLOB_DEMO_REPLY_FILE=<path>` shows that file's markdown as the
+  settled reply (a host path works in the simulator); add
+  `BLOB_DEMO_STREAM=1` to stream it in instead, in chunks of 12 to 40
+  characters about 8 times a second, settling at the end and starting
+  again every 15 s.
   `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
   `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking, and
   `BLOB_DEMO_TYPING=1` for text mode.

@@ -28,10 +28,27 @@ private struct MarkdownPresentationKey: EnvironmentKey {
     static let defaultValue = MarkdownPresentation.chat
 }
 
+/// Whose look the blocks take. The OS apps draw the transcript's; Blob sets
+/// `.blob` at its root, which draws callouts, quick replies and prose links
+/// the way its boards do (quiet notes, soft chips, links in the accent).
+enum MarkdownLook {
+    case transcript
+    case blob
+}
+
+private struct MarkdownLookKey: EnvironmentKey {
+    static let defaultValue = MarkdownLook.transcript
+}
+
 extension EnvironmentValues {
     var markdownPresentation: MarkdownPresentation {
         get { self[MarkdownPresentationKey.self] }
         set { self[MarkdownPresentationKey.self] = newValue }
+    }
+
+    var markdownLook: MarkdownLook {
+        get { self[MarkdownLookKey.self] }
+        set { self[MarkdownLookKey.self] = newValue }
     }
 
     var transcriptSessionId: String? {
@@ -66,6 +83,7 @@ struct MarkdownBody: View {
     @Environment(\.transcriptAnchorEntryId) private var anchorEntryId
     @Environment(\.transcriptPrChipsDrawn) private var prChipsDrawn
     @Environment(\.markdownPresentation) private var presentation
+    @Environment(\.markdownLook) private var look
 
     /// Whether fences, placed media, callouts and math become native blocks.
     /// Off inside a block that renders markdown of its own (a slide, a
@@ -202,7 +220,8 @@ struct MarkdownBody: View {
     private func markdownView(_ linkifiedValue: String) -> some View {
         let base = presentation == .document
             ? MarkdownRenderConfig.os1Document
-            : dimmed ? MarkdownRenderConfig.os1Dim : .os1Static
+            : dimmed ? MarkdownRenderConfig.os1Dim
+            : look == .blob ? .blob(animated: false) : .os1Static
         let config = quoteSelection == nil
             ? base
             : base.withTextContextMenu(value: .os1QuoteSelection)
@@ -296,6 +315,25 @@ struct MarkdownBody: View {
     }
 }
 
+extension AttributedString {
+    /// Inline markdown (emphasis, code, links) for a SwiftUI `Text`, line
+    /// breaks kept. Text that doesn't parse comes back as written. Without
+    /// `links`, links (an address the parser linked on its own too) are
+    /// plain words, for text inside something that is itself the tap target.
+    static func inlineMarkdown(_ markdown: String, links: Bool = true) -> AttributedString {
+        var text = (try? AttributedString(
+            markdown: markdown,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(markdown)
+        if !links {
+            for run in text.runs where run.link != nil {
+                text[run.range].link = nil
+            }
+        }
+        return text
+    }
+}
+
 /// Rewritten message prose, by everything the rewrite reads. Bounded like
 /// the block cache above it.
 @MainActor
@@ -355,17 +393,22 @@ final class MarkdownStreamSource: ObservableObject, StreamedMarkdownSource {
 /// URL arrives a few characters at a time, so linkifying each snapshot would
 /// mean repeatedly building a link to a truncated address. Links appear when
 /// the message settles into its durable row.
+///
+/// `config` is read once, when the view is made: the renderer parses every
+/// snapshot with the config it started with.
 struct StreamingMarkdownBody: View {
     let text: String
     @StateObject private var source: MarkdownStreamSource
+    @State private var config: MarkdownRenderConfig
 
-    init(_ text: String) {
+    init(_ text: String, config: MarkdownRenderConfig = .os1Streaming) {
         self.text = text
         _source = StateObject(wrappedValue: MarkdownStreamSource(initialText: text))
+        _config = State(initialValue: config)
     }
 
     var body: some View {
-        StreamedMarkdownView(source: source, config: .os1Streaming)
+        StreamedMarkdownView(source: source, config: config)
             .frame(maxWidth: .infinity, alignment: .leading)
             .onChange(of: text) { _, newText in
                 source.update(newText)
@@ -613,6 +656,23 @@ extension MarkdownRenderConfig {
 
     static let os1Streaming = os1Base
         .withShouldAnimateText(value: true)
+
+    /// Blob's prose: the chat metrics, links in the accent (never
+    /// underlined, as everywhere). `animated` fades text in as it streams.
+    static func blob(animated: Bool) -> MarkdownRenderConfig {
+        let inline = os1Base.inlineStyle
+        return os1Base
+            .withInlineStyle(value: .init(
+                boldTextColor: inline.boldTextColor,
+                linkTextFont: inline.linkTextFont,
+                linkTextColor: OS1VisualStyle.accentInk,
+                codeTextFont: inline.codeTextFont,
+                codeTextColor: inline.codeTextColor,
+                codeBackgroundColor: inline.codeBackgroundColor,
+                codeUnderlineColor: inline.codeUnderlineColor
+            ))
+            .withShouldAnimateText(value: animated)
+    }
 
     /// A Markdown file read as a page rather than a chat message: a real
     /// heading ramp, a taller body line, open rhythm between blocks and quiet

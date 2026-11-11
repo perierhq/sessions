@@ -45,6 +45,8 @@ struct BlobHomeView: View {
     #if DEBUG
     /// `BLOB_DEMO_REPLY=cycle`: which of its two replies is up.
     @State private var demoFlip = false
+    /// `BLOB_DEMO_STREAM=1`: the demo reply so far while it streams in.
+    @State private var demoStreamed: String? = BlobHomeView.demoStreams ? "" : nil
     #endif
     @AppStorage("blob.hasTalked") private var hasTalked = false
     @AppStorage(BlobSpeaker.readAloudKey) private var readAloud = true
@@ -292,6 +294,7 @@ struct BlobHomeView: View {
                 demoFlip.toggle()
             }
         }
+        .task { await streamDemoReply() }
         #endif
         #if os(macOS)
         .modifier(BlobMacKeys(space: spaceKey, escape: escapeKey))
@@ -506,6 +509,9 @@ struct BlobHomeView: View {
     /// `BLOB_DEMO_SCROLL=end` starts the page scrolled to its end.
     private var demoReply: String? {
         #if DEBUG
+        if let file = Self.demoFileReply {
+            return Self.demoStreams && demoStreamed != nil ? nil : file
+        }
         switch ProcessInfo.processInfo.environment["BLOB_DEMO_REPLY"] {
         case nil: return nil
         case "long": return Self.demoLongReply
@@ -520,6 +526,40 @@ struct BlobHomeView: View {
     }
 
     #if DEBUG
+    /// `BLOB_DEMO_REPLY_FILE=<path>`: that file's markdown as the settled
+    /// reply, read from the host in the simulator.
+    private static let demoFileReply: String? = ProcessInfo.processInfo.environment["BLOB_DEMO_REPLY_FILE"]
+        .flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// `BLOB_DEMO_STREAM=1` with a reply file: the reply streams in as the
+    /// supervisor's would, in chunks of 12 to 40 characters about 8 times a
+    /// second, then settles; every 15 s it starts again.
+    private static let demoStreams = ProcessInfo.processInfo.environment["BLOB_DEMO_STREAM"] != nil
+
+    private func streamDemoReply() async {
+        guard Self.demoStreams, let reply = Self.demoFileReply else { return }
+        let chars = Array(reply)
+        // The same chunks every run, so screenshots repeat.
+        var seed: UInt64 = 0x9E37_79B9
+        while !Task.isCancelled {
+            let started = ContinuousClock.now
+            var shown = 0
+            while shown < chars.count, !Task.isCancelled {
+                seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+                shown = min(chars.count, shown + 12 + Int(seed >> 33) % 29)
+                demoStreamed = String(chars[..<shown])
+                try? await Task.sleep(for: .milliseconds(125))
+            }
+            // Settled: the file's reply takes over (`demoReply`).
+            demoStreamed = nil
+            try? await Task.sleep(until: started + .seconds(15), clock: .continuous)
+            // A new turn: the page clears, then the reply streams again.
+            demoStreamed = ""
+            try? await Task.sleep(for: .milliseconds(400))
+        }
+    }
+
     private static let demoBlocksReply = """
     ```say
     [warm, unhurried] It was mostly refunds after the payout delay. {#stats} Nearly all of them are answered, {#topics} and two still need you.
@@ -594,7 +634,17 @@ struct BlobHomeView: View {
         #endif
     }
 
-    private var replyOnScreen: Bool { text.replyEntry != nil || text.answer != nil || demoReply != nil }
+    private var replyOnScreen: Bool { text.replyEntry != nil || text.answer != nil || demoReply != nil || demoAnswer != nil }
+
+    /// The demo reply while it streams (`BLOB_DEMO_STREAM`), as `text.answer`
+    /// is for a real one.
+    private var demoAnswer: String? {
+        #if DEBUG
+        demoStreamed.flatMap { $0.isEmpty ? nil : $0 }
+        #else
+        nil
+        #endif
+    }
 
     /// Something to read on the page: a reply, a question from the run, or a
     /// decision. It starts at the top, Blob docks in its slot, and its
@@ -1259,7 +1309,7 @@ struct BlobHomeView: View {
         if let content = settledReply {
             return BlobReply(split ? BlobReplySplit(content).conversation : content)
         }
-        guard ask == nil, let answer = text.answer else { return nil }
+        guard ask == nil, let answer = text.answer ?? demoAnswer else { return nil }
         return BlobReply(answer)
     }
 
