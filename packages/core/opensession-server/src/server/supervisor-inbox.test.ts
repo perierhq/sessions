@@ -669,8 +669,8 @@ describe("bounds", () => {
 describe("daily digest", () => {
   test("once a day at the digest time, quiet, with a count", async () => {
     clock = at("2026-07-01T08:30:00Z");
-    await fyi("CI repaired");
-    await fyi("Two support replies sent");
+    await fyi("CI repaired", { project: "acme" });
+    await fyi("Two support replies sent", { project: "acme" });
     expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
 
     clock = at("2026-07-01T09:00:00Z");
@@ -684,6 +684,12 @@ describe("daily digest", () => {
       url: "/session/os-sup-ada",
     });
     expect(sent[0]!.event.body).toStartWith("2 updates");
+    // The push, sealed or not, holds counts and projects, never titles.
+    expect(sent[0]!.event.push).toMatchObject({
+      body: "2 things happened",
+      sealedMarkdown: "- **acme**: 2 updates",
+    });
+    expect(JSON.stringify(sent[0]!.event.push)).not.toContain("CI repaired");
 
     // Not again the same day, even with something new.
     clock = at("2026-07-01T15:00:00Z");

@@ -263,6 +263,24 @@ export function BarkSection() {
           }
         />
         <SettingRow
+          title="Read pushes aloud in Blob's voice"
+          desc={
+            data?.speakAvailable === false && !data.speak
+              ? "Not available: this server needs ffmpeg and a Fish Audio key for Blob's voice."
+              : "Blob says which project needs you instead of the usual sound. If the clip can't load, Bark plays its Minuet sound."
+          }
+          control={
+            <Switch
+              aria-label="Read pushes aloud in Blob's voice"
+              checked={data?.speak === true}
+              disabled={
+                busy || (data?.speakAvailable !== true && data?.speak !== true)
+              }
+              onCheckedChange={(speak) => void save({ speak })}
+            />
+          }
+        />
+        <SettingRow
           title="Send a test"
           desc="Sends one push to check the key and server."
           control={

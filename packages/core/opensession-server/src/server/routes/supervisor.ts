@@ -13,7 +13,7 @@
  *   GET  /api/supervisor/prefs?user=
  *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle?, watch?: { enabled?, everyMinutes?, activeStart?, activeEnd? }, memoryWriter? }
  *   GET  /api/supervisor/bark                    keys masked; signed in only
- *   PUT  /api/supervisor/bark                    { enabled?, serverUrl?, openIn?, deviceKey?, encryption? }
+ *   PUT  /api/supervisor/bark                    { enabled?, serverUrl?, openIn?, speak?, deviceKey?, encryption? }
  *   POST /api/supervisor/bark/test
  */
 

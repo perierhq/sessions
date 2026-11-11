@@ -50,6 +50,12 @@ export const BLOB_ACTOR = "Blob";
  *  repository id can claim, unlike `/repo-icon/<repo>.png`. */
 export const BLOB_ICON_PATH = "/bot-icon/blob.png";
 
+/** Blob's notification icon for Bark (bark.ts): Blob's app icon as an
+ *  opaque 512px square (`src/frontend/blob-notification-v1.png`), which iOS
+ *  rounds itself. Bark caches an icon by its URL forever, so a redrawn icon
+ *  gets a new file and a new version here, never new bytes at this path. */
+export const BLOB_NOTIFICATION_ICON_PATH = "/bot-icon/blob-notification-v1.png";
+
 /** Sender for a message a supervisor session (Blob) sends another session.
  *  Like `agentActor`, it names the session it came from, so the target can
  *  link and reply to it; unlike it, every surface credits Blob. */

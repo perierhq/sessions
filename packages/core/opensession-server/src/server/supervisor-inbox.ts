@@ -461,6 +461,9 @@ function needsYouEvent(
     push: {
       body: copy.body,
       ...(item.urgency === "down" ? { urgency: "high" as const } : {}),
+      // An unanswered item expires then (pruneSupervisorItems), so its
+      // push need not outlive it.
+      expiresAt: item.updatedAt + NEEDS_YOU_TTL_MS,
     },
   };
 }
@@ -979,6 +982,26 @@ export async function readSupervisorBark(
   return (await readDocument(user)).bark;
 }
 
+/** The person's raw Bark settings record and how many needs-you items are
+ *  open for them (the Bark badge), from one read. */
+export async function readSupervisorBarkState(user: string): Promise<{
+  bark: Record<string, unknown> | undefined;
+  openNeedsYou: number;
+}> {
+  if (!validUser(user)) return { bark: undefined, openNeedsYou: 0 };
+  const doc = await readDocument(user);
+  const now = deps.now();
+  return {
+    bark: doc.bark,
+    openNeedsYou: doc.items.filter(
+      (item) =>
+        item.kind === "needs-you" &&
+        item.state === "open" &&
+        now - item.updatedAt < NEEDS_YOU_TTL_MS,
+    ).length,
+  };
+}
+
 /** Compare-and-set the person's Bark settings record. `mutate` may run more
  *  than once; its last run committed. Returning undefined removes it. */
 export async function updateSupervisorBark(
@@ -1076,11 +1099,51 @@ function digestEvent(
     eventKey: `digest:${day}`,
     at: now,
     delivery: "quiet",
-    // Should a digest ever push, the lock screen gets the count, not titles.
+    // Should a digest ever push, it never carries an item's title, sealed or
+    // not (as supervisorPushCopy): the lock screen gets the count, and only a
+    // push sealed end to end (encrypted Bark) adds the count per project.
     push: {
       body: `${count} ${count === 1 ? "thing" : "things"} happened`,
+      expiresAt: now + DAY_MS,
+      sealedMarkdown: digestMarkdown(fyi),
     },
   };
+}
+
+const DIGEST_MARKDOWN_PROJECTS = 5;
+const DIGEST_MARKDOWN_PROJECT = 60;
+
+/** Characters that would turn a project name into markup. */
+function escapeMarkdown(text: string): string {
+  return text.replace(/[\\`*_~[\]()<>#!|]/g, (char) => `\\${char}`);
+}
+
+/** The digest's counts per project as a Markdown list, for a sealed push:
+ *  one line each, the busiest first, a few at most. Never the titles. */
+export function digestMarkdown(
+  fyi: Array<Pick<SupervisorItem, "project">>,
+): string {
+  const counts = new Map<string, number>();
+  for (const item of fyi) {
+    const project = pushSafeText(item.project ?? "");
+    const name =
+      project.length > DIGEST_MARKDOWN_PROJECT
+        ? `${project.slice(0, DIGEST_MARKDOWN_PROJECT - 1).trimEnd()}…`
+        : project;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const ranked = [...counts].sort((a, b) => b[1] - a[1]);
+  const lines = ranked
+    .slice(0, DIGEST_MARKDOWN_PROJECTS)
+    .map(
+      ([name, n]) =>
+        `- **${escapeMarkdown(name || "No project")}**: ${n} ${n === 1 ? "update" : "updates"}`,
+    );
+  const more = ranked
+    .slice(DIGEST_MARKDOWN_PROJECTS)
+    .reduce((sum, [, n]) => sum + n, 0);
+  if (more > 0) lines.push(`- and ${more} more`);
+  return lines.join("\n");
 }
 
 let sweeping: Promise<{ pushed: number; digested: number }> | null = null;

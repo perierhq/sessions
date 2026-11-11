@@ -24,6 +24,7 @@ import {
 } from "../frontend-build";
 import { trimIconMargin } from "../png-trim";
 import { resolveRepoIcon } from "../repo-appearance";
+import { BLOB_NOTIFICATION_ICON_PATH } from "../session-actors";
 import {
   organizationIconBytes,
   organizationIconRevision,
@@ -286,6 +287,21 @@ export async function handleStaticAssetsRoutes(
   if (botIcon && req.method === "GET") {
     const served = await localIcon(frontendSourcePath(botIcon), botIcon);
     return served ?? new Response("Not found", { status: 404 });
+  }
+
+  // Blob's notification icon for Bark (session-actors.ts
+  // BLOB_NOTIFICATION_ICON_PATH). Served as drawn, not trimmed: it is a
+  // full-bleed square. Versioned by name, so it may be cached for good.
+  if (path === BLOB_NOTIFICATION_ICON_PATH && req.method === "GET") {
+    const file = frontendStaticFile("blob-notification-v1.png");
+    if (!file || !(await file.exists()))
+      return new Response("Not found", { status: 404 });
+    return new Response(file, {
+      headers: {
+        "Content-Type": "image/png",
+        "Cache-Control": "public, max-age=31536000, immutable",
+      },
+    });
   }
 
   const repoIcon = path.match(/^\/repo-icon\/([\w.-]+)\.png$/);

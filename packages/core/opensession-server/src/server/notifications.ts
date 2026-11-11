@@ -270,19 +270,56 @@ export async function deliverNotification(
   return thread;
 }
 
-/** Mark threads read, unread, done or not done, and tell the person's devices. */
+/** Threads `next` marks done that `before` had open and once alerted:
+ *  the ones whose push may still be on a phone. */
+function newlyDoneAlerted(
+  before: NotificationDocument,
+  next: NotificationDocument,
+): string[] {
+  const open = new Set(
+    before.threads
+      .filter((thread) => !thread.done && (thread.alerted?.length ?? 0) > 0)
+      .map((thread) => thread.id),
+  );
+  return next.threads
+    .filter((thread) => thread.done && open.has(thread.id))
+    .map((thread) => thread.id);
+}
+
+/** Take a handled thread's push off the person's iPhone through Bark
+ *  (bark.ts), without waiting: Bark never holds up a mark, nor fails it. */
+function retractFromBark(user: string, threadIds: string[]): void {
+  if (!threadIds.length) return;
+  void Promise.all(threadIds.map(topicFor))
+    .then(async (topics) =>
+      (await import("./bark")).retractBarkNotifications(user, topics),
+    )
+    .catch((error) => {
+      console.warn(
+        "[notifications] bark retract failed:",
+        error instanceof Error ? error.message : error,
+      );
+    });
+}
+
+/** Mark threads read, unread, done or not done, and tell the person's devices.
+ *  A thread marked done also leaves Bark, when the person uses it. */
 export async function markNotifications(
   user: string,
   mark: NotificationMark,
 ): Promise<number> {
   if (!validUser(user)) return 0;
   let changed = 0;
+  let done: string[] = [];
   await documents.update(inboxKey(user), (current) => {
-    const result = markNotificationThreads(cleanDocument(current), mark);
+    const doc = cleanDocument(current);
+    const result = markNotificationThreads(doc, mark);
     changed = result.changed;
+    done = mark.done === true ? newlyDoneAlerted(doc, result.doc) : [];
     return result.doc;
   });
   if (changed) await announceChanged(user);
+  retractFromBark(user, done);
   return changed;
 }
 

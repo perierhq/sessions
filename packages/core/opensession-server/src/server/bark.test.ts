@@ -17,7 +17,13 @@ import {
   test,
 } from "bun:test";
 import { createDecipheriv, createHash, type DecipherGCM } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -47,8 +53,16 @@ mock.module("./push", () => ({
 const { SessionKernelStore, __setSessionKernelStoreForTest } =
   await import("./session-kernel");
 const bark = await import("./bark");
-const { deliverNotification } = await import("./notifications");
-const { updateSupervisorBark } = await import("./supervisor-inbox");
+const barkSound = await import("./bark-sound");
+const { deliverNotification, markNotifications } =
+  await import("./notifications");
+const { handleBlobSpeechRoutes } = await import("./routes/blob-speech");
+const { stateDir } = await import("./paths");
+const {
+  updateSupervisorBark,
+  postSupervisorItem,
+  __setSupervisorInboxDepsForTest,
+} = await import("./supervisor-inbox");
 const { handleSupervisorRoutes } = await import("./routes/supervisor");
 
 /** A fake key of `length` characters, repeating `seed`. */
@@ -62,6 +76,7 @@ const KEYS = {
   AES256: fakeKey("0123456789abcdef", 32),
 } as const;
 const BASE = "https://sessions.example.test";
+const BLOB_ICON = `${BASE}/bot-icon/blob-notification-v1.png`;
 /** CryptoSwift 1.8.4 (Bark's pinned version) output for the GCM test below;
  *  the same program reproduces Bark's published CBC vector. */
 const GCM_VECTOR =
@@ -77,6 +92,10 @@ let answers: Array<number | Error> = [];
 let resolved: string[] = ["203.0.113.10"];
 let restoreTiming = () => {};
 let restoreNet = () => {};
+let restoreSound = () => {};
+let restoreInbox = () => {};
+/** Texts the fake speech service was asked to say. */
+let spoken: string[] = [];
 
 beforeEach(() => {
   rmSync(join(root, "secrets.json"), { force: true });
@@ -86,6 +105,19 @@ beforeEach(() => {
   answers = [];
   resolved = ["203.0.113.10"];
   webPushes.length = 0;
+  spoken = [];
+  // No ffmpeg, no Fish key: speech is unavailable unless a test says so.
+  restoreSound = barkSound.__setBarkSoundDepsForTest({
+    ffmpeg: "ffmpeg-missing-for-test",
+    speech: async () => ({ configured: false, voice: "test-voice" }),
+  });
+  // Pushes a posted item would start stay out of these tests.
+  restoreInbox = __setSupervisorInboxDepsForTest({
+    notify: async () => null,
+    markDone: async () => {},
+    supervisorSessionId: async () => "os-sup",
+    ensureWatch: async () => undefined,
+  });
   restoreTiming = bark.__setBarkTimingForTest({
     timeoutMs: 1_000,
     retryDelaysMs: [0, 0],
@@ -114,6 +146,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  restoreSound();
+  restoreInbox();
   restoreNet();
   restoreTiming();
   __setSessionKernelStoreForTest(previousStore);
@@ -209,11 +243,12 @@ describe("message mapping", () => {
     );
     expect(message).toEqual({
       title: "Needs you",
+      subtitle: "acme",
       body: "acme: a decision is waiting",
       level: "active",
       group: "acme",
       url: "blob://item/si-1",
-      icon: `${BASE}/apple-touch-icon.png`,
+      icon: BLOB_ICON,
       isArchive: "1",
     });
   });
@@ -422,6 +457,8 @@ describe("encryption", () => {
           encryption: { algorithm, mode, key: KEYS[algorithm] },
           collapseId: "abc",
         });
+        // The id rides inside too: Bark files the history entry under it.
+        const sealed = { ...message, id: "abc" };
         expect(Object.keys(body).sort()).toEqual([
           "ciphertext",
           "device_key",
@@ -432,7 +469,7 @@ describe("encryption", () => {
         // GCM is unpadded: ciphertext + 16-byte tag, no block rounding.
         if (mode === "GCM")
           expect(Buffer.from(body.ciphertext!, "base64").length).toBe(
-            Buffer.byteLength(JSON.stringify(message)) + 16,
+            Buffer.byteLength(JSON.stringify(sealed)) + 16,
           );
         expect(
           JSON.parse(
@@ -444,7 +481,8 @@ describe("encryption", () => {
               KEYS[algorithm],
             ),
           ),
-        ).toEqual(message);
+        ).toEqual(sealed);
+        expect(body.id).toBe("abc");
       });
 });
 
@@ -462,6 +500,8 @@ describe("settings", () => {
         enabled: true,
         serverUrl: "https://api.day.app",
         openIn: "blob",
+        speak: false,
+        speakAvailable: false,
         deviceKey: `••••${DEVICE_KEY.slice(-4)}`,
         encryption: { algorithm: "AES256", mode: "GCM" },
       },
@@ -609,7 +649,7 @@ describe("sending", () => {
           level: "active",
           group: "Blob",
           url: "blob://item/si-1",
-          icon: `${BASE}/apple-touch-icon.png`,
+          icon: BLOB_ICON,
           isArchive: "1",
           id: "collapse",
         },
@@ -731,7 +771,7 @@ describe("sending", () => {
 
   test("a slow Bark server does not hold up deliverNotification", async () => {
     await turnOn();
-    let release = () => {};
+    let release: (() => void) | undefined;
     restoreNet();
     restoreNet = bark.__setBarkNetForTest({
       resolve: async () => resolved,
@@ -755,6 +795,565 @@ describe("sending", () => {
     });
     expect(thread).not.toBeNull();
     expect(webPushes).toHaveLength(1);
-    release();
+    // Let the held send arrive and finish inside this test.
+    for (let i = 0; i < 200 && !release; i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    release?.();
+  });
+});
+
+/** Wait until `count` Bark requests went out (they run without waiting). */
+async function requestsSettle(count: number): Promise<void> {
+  for (let i = 0; i < 200 && requests.length < count; i++)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+describe("what each push carries", () => {
+  const turnOn = (extra: Record<string, unknown> = {}) =>
+    call("PUT", "/api/supervisor/bark", {
+      deviceKey: DEVICE_KEY,
+      enabled: true,
+      ...extra,
+    });
+  const supervisorThread = thread({
+    kind: "supervisor_needs_you",
+    subject: {
+      type: "supervisor",
+      id: "si-1",
+      title: "Agent title",
+      context: "acme",
+    },
+  });
+
+  test("Blob's icon on Blob's pushes, the instance's on the rest", () => {
+    const icon = (t: NotificationThread) =>
+      bark.barkMessageFor(t, event(t.kind), "alert", payload, opts).icon;
+    expect(icon(supervisorThread)).toBe(BLOB_ICON);
+    const session = thread({
+      id: "session:s-1",
+      kind: "mention",
+      subject: { type: "session", id: "s-1", title: "t" },
+      url: "/session/s-1",
+    });
+    expect(icon(session)).toBe(`${BASE}/apple-touch-icon.png`);
+    expect(icon({ ...session, actor: "Blob" })).toBe(BLOB_ICON);
+  });
+
+  test("the project is the subtitle; in clear a plain kind has none", () => {
+    const comment = thread({
+      id: "session:s-1",
+      kind: "comment",
+      subject: { type: "session", id: "s-1", title: "Plan", context: "acme" },
+      url: "/session/s-1",
+    });
+    const written = { title: "Bob commented", body: "The plan is…" };
+    const clear = bark.barkMessageFor(
+      comment,
+      event("comment"),
+      "alert",
+      written,
+      opts,
+    );
+    expect(clear.subtitle).toBeUndefined();
+    expect(clear.markdown).toBeUndefined();
+    expect(clear.ttl).toBeUndefined();
+    expect(clear.badge).toBeUndefined();
+    const sealed = bark.barkMessageFor(
+      comment,
+      event("comment"),
+      "alert",
+      written,
+      { ...opts, sealed: true },
+    );
+    expect(sealed.subtitle).toBe("acme");
+    const supervisor = bark.barkMessageFor(
+      supervisorThread,
+      event("supervisor_needs_you"),
+      "alert",
+      payload,
+      opts,
+    );
+    // The title stays the fixed one.
+    expect(supervisor).toMatchObject({ title: "Needs you", subtitle: "acme" });
+  });
+
+  test("the badge counts open needs-you items, on supervisor pushes only", () => {
+    const badge = (t: NotificationThread, count: number) =>
+      bark.barkMessageFor(t, event(t.kind), "alert", payload, {
+        ...opts,
+        badge: count,
+      }).badge;
+    expect(badge(supervisorThread, 3)).toBe("3");
+    // Bark's 0 also clears its Notification Center, this push included.
+    expect(badge(supervisorThread, 0)).toBeUndefined();
+    const session = thread({
+      id: "session:s-1",
+      kind: "mention",
+      subject: { type: "session", id: "s-1", title: "t" },
+      url: "/session/s-1",
+    });
+    expect(badge(session, 3)).toBeUndefined();
+  });
+
+  test("a push to Bark sets the badge from the person's open items", async () => {
+    for (const title of ["First", "Second"])
+      await postSupervisorItem({
+        user: "Ada",
+        source: "supervisor",
+        kind: "needs-you",
+        title,
+      });
+    await postSupervisorItem({
+      user: "Ada",
+      source: "supervisor",
+      kind: "fyi",
+      title: "Only news",
+    });
+    await turnOn();
+    await bark.sendBarkNotification(
+      "Ada",
+      supervisorThread,
+      event("supervisor_needs_you"),
+      "alert",
+      payload,
+    );
+    // A request a previous test left in flight may land first.
+    const sent = requests.find((r) => r.body.url === "blob://item/si-1");
+    expect(sent?.body.badge).toBe("2");
+  });
+
+  test("ttl follows the item's expiry, bounded; clear plain kinds have none", () => {
+    const now = 1_000_000;
+    const ttl = (expiresAt: number, t = supervisorThread) =>
+      bark.barkMessageFor(
+        t,
+        event(t.kind, { body: "x", expiresAt }),
+        "alert",
+        payload,
+        { ...opts, now },
+      ).ttl;
+    expect(ttl(now + 2 * 60 * 60 * 1000)).toBe(String(2 * 60 * 60));
+    expect(ttl(now + 365 * 24 * 60 * 60 * 1000)).toBe(
+      String(30 * 24 * 60 * 60),
+    );
+    expect(ttl(now - 5_000)).toBe("60");
+    const comment = thread({
+      id: "session:s-1",
+      kind: "comment",
+      subject: { type: "session", id: "s-1", title: "t" },
+      url: "/session/s-1",
+    });
+    expect(ttl(now + 60 * 60 * 1000, comment)).toBeUndefined();
+  });
+
+  test("a needs-you event carries its item's expiry", async () => {
+    const events: NotificationEvent[] = [];
+    restoreInbox();
+    restoreInbox = __setSupervisorInboxDepsForTest({
+      notify: async (_user, e) => {
+        events.push(e);
+        return null;
+      },
+      markDone: async () => {},
+      supervisorSessionId: async () => "os-sup",
+      ensureWatch: async () => undefined,
+      timeZone: () => "UTC",
+    });
+    const { item } = await postSupervisorItem({
+      user: "Ada",
+      source: "supervisor",
+      kind: "needs-you",
+      title: "Pick one",
+    });
+    const needsYou = events.find((e) => e.kind === "supervisor_needs_you");
+    expect(needsYou?.push?.expiresAt).toBe(
+      item.updatedAt + 30 * 24 * 60 * 60 * 1000,
+    );
+  });
+
+  test("markdown only when sealed and it is Markdown; body stays the fallback", () => {
+    const digest = thread({
+      id: "supervisor:digest-2026-01-02",
+      kind: "supervisor_digest",
+      subject: { type: "supervisor", id: "digest-2026-01-02", title: "Daily" },
+      reason: "Daily digest",
+    });
+    const hints = {
+      body: "2 things happened",
+      sealedMarkdown: "- **acme**: 2 updates",
+    };
+    const fixed = { title: "Daily digest", body: "2 things happened" };
+    const sealed = bark.barkMessageFor(
+      digest,
+      event("supervisor_digest", hints),
+      "alert",
+      fixed,
+      { ...opts, sealed: true },
+    );
+    expect(sealed.markdown).toBe(hints.sealedMarkdown);
+    expect(sealed.body).toBe("2 things happened");
+    const clear = bark.barkMessageFor(
+      digest,
+      event("supervisor_digest", hints),
+      "alert",
+      fixed,
+      opts,
+    );
+    expect(clear.markdown).toBeUndefined();
+    expect(JSON.stringify(clear)).not.toContain("acme");
+    const flat = bark.barkMessageFor(
+      digest,
+      event("supervisor_digest", { ...hints, sealedMarkdown: "just words" }),
+      "alert",
+      fixed,
+      { ...opts, sealed: true },
+    );
+    expect(flat.markdown).toBeUndefined();
+  });
+
+  test("the digest list counts per project and never holds a title", async () => {
+    const { digestMarkdown } = await import("./supervisor-inbox");
+    const projects = ["a*b", "a*b", "c", undefined, "d", "e", "f", "g", "g"];
+    const items = projects.map((project, i) => ({
+      project,
+      title: `Secret title ${i}`,
+    }));
+    const markdown = digestMarkdown(items);
+    expect(markdown).not.toContain("Secret");
+    expect(markdown.split("\n")).toEqual([
+      "- **a\\*b**: 2 updates",
+      "- **g**: 2 updates",
+      "- **c**: 1 update",
+      "- **No project**: 1 update",
+      "- **d**: 1 update",
+      "- and 2 more",
+    ]);
+  });
+
+  test("only a critical push rings on", () => {
+    const down = bark.barkMessageFor(
+      supervisorThread,
+      event("supervisor_needs_you", { body: "x", urgency: "high" }),
+      "alert",
+      payload,
+      opts,
+    );
+    expect(down).toMatchObject({ level: "critical", call: "1" });
+    const normal = bark.barkMessageFor(
+      supervisorThread,
+      event("supervisor_needs_you", { body: "x" }),
+      "alert",
+      payload,
+      opts,
+    );
+    expect(normal.call).toBeUndefined();
+  });
+});
+
+describe("retract when handled", () => {
+  const raise = (id: string) =>
+    deliverNotification("Ada", {
+      kind: "supervisor_needs_you",
+      subject: { type: "supervisor", id, title: "Customer wrote" },
+      reason: "Needs you",
+      url: `/session/os-sup?item=${id}`,
+      eventKey: `${id}:1`,
+      push: { body: "A decision is waiting" },
+    });
+
+  for (const encrypted of [false, true])
+    test(`done deletes the push by its id${encrypted ? ", encrypted too" : ""}`, async () => {
+      await call("PUT", "/api/supervisor/bark", {
+        deviceKey: DEVICE_KEY,
+        enabled: true,
+        ...(encrypted
+          ? {
+              encryption: {
+                algorithm: "AES256",
+                mode: "GCM",
+                key: KEYS.AES256,
+              },
+            }
+          : {}),
+      });
+      const raised = await raise("si-20");
+      await requestsSettle(1);
+      const pushed = requests[0]!.body;
+      expect(pushed.id).toBeTruthy();
+      expect(
+        await markNotifications("Ada", { ids: [raised!.id], done: true }),
+      ).toBe(1);
+      await requestsSettle(2);
+      // Always in clear: bark-server must see `delete` to send it silently.
+      expect(requests[1]!.body).toEqual({
+        device_key: DEVICE_KEY,
+        id: pushed.id!,
+        delete: "1",
+      });
+      // Done again changes nothing and sends nothing.
+      await markNotifications("Ada", { ids: [raised!.id], done: true });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(requests).toHaveLength(2);
+    });
+
+  test("nothing is retracted while Bark is off, or for a row never pushed", async () => {
+    await call("PUT", "/api/supervisor/bark", {
+      deviceKey: DEVICE_KEY,
+      enabled: false,
+    });
+    const raised = await raise("si-21");
+    await markNotifications("Ada", { ids: [raised!.id], done: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(requests).toHaveLength(0);
+    await call("PUT", "/api/supervisor/bark", { enabled: true });
+    await deliverNotification("Ada", {
+      kind: "supervisor_needs_you",
+      subject: { type: "supervisor", id: "si-22", title: "t" },
+      reason: "Needs you",
+      url: "/session/os-sup?item=si-22",
+      eventKey: "si-22:1",
+      delivery: "quiet",
+    });
+    await markNotifications("Ada", { ids: ["supervisor:si-22"], done: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(requests).toHaveLength(0);
+  });
+});
+
+describe("Blob's voice", () => {
+  const fakeFfmpeg = join(root, "fake-ffmpeg");
+  const fakeAudio = new TextEncoder().encode("fake mp3 bytes");
+  // Answers -version and "converts" by copying the input to the output.
+  writeFileSync(
+    fakeFfmpeg,
+    [
+      "#!/bin/sh",
+      `echo "$*" >> '${join(root, "ffmpeg-args")}'`,
+      'for a in "$@"; do [ "$a" = "-version" ] && exit 0; done',
+      'in=""; prev=""; for a in "$@"; do [ "$prev" = "-i" ] && in="$a"; prev="$a"; out="$a"; done',
+      'cp "$in" "$out"',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(fakeFfmpeg, 0o755);
+
+  const speakDeps = () =>
+    barkSound.__setBarkSoundDepsForTest({
+      ffmpeg: fakeFfmpeg,
+      speech: async () => ({ configured: true, voice: "test-voice" }),
+      synthesize: async (text) => {
+        spoken.push(text);
+        return {
+          ok: true,
+          body: new Blob([fakeAudio]).stream() as ReadableStream<Uint8Array>,
+        };
+      },
+    });
+
+  const get = async (path: string) => {
+    const url = new URL(`http://localhost${path}`);
+    return handleBlobSpeechRoutes({
+      req: new Request(url),
+      url,
+      path,
+      publicPrefix: "",
+      authUser: null,
+    });
+  };
+
+  const sendNeedsYou = () =>
+    bark.sendBarkNotification(
+      "Ada",
+      thread({ kind: "supervisor_needs_you" }),
+      event("supervisor_needs_you", { body: "acme: a decision is waiting" }),
+      "alert",
+      payload,
+    );
+
+  test("speak attaches a content-addressed .caf and keeps a fallback sound", async () => {
+    restoreSound();
+    restoreSound = speakDeps();
+    const put = await call("PUT", "/api/supervisor/bark", {
+      deviceKey: DEVICE_KEY,
+      enabled: true,
+      speak: true,
+    });
+    expect(put.json.bark).toMatchObject({ speak: true, speakAvailable: true });
+    await sendNeedsYou();
+    const body = requests[0]!.body;
+    const prefix = `${BASE}/api/blob/speech/caf/`;
+    expect(body.soundUrl?.startsWith(prefix)).toBe(true);
+    expect(body.soundUrl).toMatch(/\/[0-9a-f]{64}\.caf$/);
+    expect(body.sound).toBe(bark.BARK_FALLBACK_SOUND);
+    const path = body.soundUrl!.slice(BASE.length);
+    expect(barkSound.isBarkSoundPath(path)).toBe(true);
+    const response = await get(path);
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("content-type")).toBe("audio/x-caf");
+    expect(new Uint8Array(await response!.arrayBuffer())).toEqual(fakeAudio);
+    // ffmpeg reads only that file, only as mp3.
+    expect(readFileSync(join(root, "ffmpeg-args"), "utf8")).toMatch(
+      /-protocol_whitelist file -f mp3 -i \S+\.mp3 /,
+    );
+    // The same fixed copy is the same URL, spoken once.
+    await sendNeedsYou();
+    expect(requests[1]!.body.soundUrl).toBe(body.soundUrl);
+    expect((await get(path))?.status).toBe(200);
+    expect(spoken).toEqual(["Needs you. acme: a decision is waiting"]);
+    // Only a sound the server pushed is served.
+    expect(
+      (await get(`/api/blob/speech/caf/${"0".repeat(64)}.caf`))?.status,
+    ).toBe(404);
+  });
+
+  test("off, unavailable or not a supervisor kind: no sound at all", async () => {
+    await call("PUT", "/api/supervisor/bark", {
+      deviceKey: DEVICE_KEY,
+      enabled: true,
+      speak: true,
+    });
+    // beforeEach left speech unavailable (no ffmpeg, no key).
+    expect((await call("GET", "/api/supervisor/bark")).json.bark).toMatchObject(
+      { speak: true, speakAvailable: false },
+    );
+    await sendNeedsYou();
+    restoreSound();
+    restoreSound = speakDeps();
+    await call("PUT", "/api/supervisor/bark", { speak: false });
+    await sendNeedsYou();
+    await call("PUT", "/api/supervisor/bark", { speak: true });
+    await bark.sendBarkNotification(
+      "Ada",
+      thread({
+        id: "session:s-1",
+        kind: "mention",
+        subject: { type: "session", id: "s-1", title: "t" },
+        url: "/session/s-1",
+      }),
+      event("mention"),
+      "alert",
+      { title: "t", url: "/session/s-1" },
+    );
+    expect(requests).toHaveLength(3);
+    for (const request of requests) {
+      expect(request.body.soundUrl).toBeUndefined();
+      expect(request.body.sound).toBeUndefined();
+    }
+    expect(spoken).toEqual([]);
+  });
+
+  /** Deps that speak in `voice`, counting calls, failing when `fail`. */
+  const countingDeps = (
+    voice: string,
+    calls: string[],
+    fail = false,
+    now = () => Date.now(),
+  ) =>
+    barkSound.__setBarkSoundDepsForTest({
+      ffmpeg: fakeFfmpeg,
+      speech: async () => ({ configured: true, voice }),
+      now,
+      synthesize: async (text) => {
+        calls.push(text);
+        return fail
+          ? { ok: false, status: 500, error: "fish is down" }
+          : {
+              ok: true,
+              body: new Blob([
+                fakeAudio,
+              ]).stream() as ReadableStream<Uint8Array>,
+            };
+      },
+    });
+  const soundsDir = join(stateDir("blob"), "bark-sounds");
+
+  test("a failed sound is retried every 10 minutes, 3 times, then gone", async () => {
+    let clock = Date.now();
+    const calls: string[] = [];
+    restoreSound();
+    restoreSound = countingDeps("test-voice", calls, true, () => clock);
+    const url = await barkSound.barkSoundUrl("Fish is down today", BASE);
+    expect(url).toBeDefined();
+    const path = url!.slice(BASE.length);
+    expect((await get(path))?.status).toBe(404);
+    expect(calls).toHaveLength(1);
+    const hash = path.match(/([0-9a-f]{64})/)![1]!;
+    const entry = JSON.parse(
+      readFileSync(join(soundsDir, `${hash}.json`), "utf8"),
+    );
+    expect(entry).toMatchObject({ attempts: 1, failedAt: clock });
+    // Within 10 minutes: no new attempt.
+    clock += 9 * 60 * 1000;
+    expect((await get(path))?.status).toBe(404);
+    expect(calls).toHaveLength(1);
+    clock += 60 * 1000;
+    expect((await get(path))?.status).toBe(404);
+    expect(calls).toHaveLength(2);
+    clock += 10 * 60 * 1000;
+    expect((await get(path))?.status).toBe(410);
+    expect(calls).toHaveLength(3);
+    clock += 60 * 60 * 1000;
+    expect((await get(path))?.status).toBe(410);
+    expect(calls).toHaveLength(3);
+    // Pushed again, it carries no sound URL.
+    expect(await barkSound.barkSoundUrl("Fish is down today", BASE)).toBe(
+      undefined,
+    );
+    expect(calls).toHaveLength(3);
+  });
+
+  test("an entry must match its hash and the current voice", async () => {
+    const calls: string[] = [];
+    restoreSound();
+    restoreSound = countingDeps("voice-1", calls);
+    // A push makes the secret; its own sound is let finish.
+    const warm = await barkSound.barkSoundUrl("warm up", BASE);
+    await get(warm!.slice(BASE.length));
+    const secret = readFileSync(join(soundsDir, "secret"), "utf8").trim();
+    const write = (hash: string, text: string, voice: string) =>
+      writeFileSync(
+        join(soundsDir, `${hash}.json`),
+        JSON.stringify({ text, voice, createdAt: Date.now() }),
+      );
+    const said = barkSound.barkSoundHash(secret, "voice-1", "Said in one");
+    write(said, "Said in one", "voice-1");
+    // The voice changed since: refused, a new push gets a new URL.
+    restoreSound();
+    restoreSound = countingDeps("voice-2", calls);
+    calls.length = 0;
+    expect((await get(`/api/blob/speech/caf/${said}.caf`))?.status).toBe(404);
+    expect(calls).toEqual([]);
+    restoreSound();
+    restoreSound = countingDeps("voice-1", calls);
+    expect((await get(`/api/blob/speech/caf/${said}.caf`))?.status).toBe(200);
+    expect(calls).toEqual(["Said in one"]);
+    // Text that is not what the hash names is refused.
+    const forged = barkSound.barkSoundHash(secret, "voice-1", "Original");
+    write(forged, "Something else", "voice-1");
+    expect((await get(`/api/blob/speech/caf/${forged}.caf`))?.status).toBe(404);
+    expect(calls).toEqual(["Said in one"]);
+  });
+
+  test("speak must be a boolean", async () => {
+    const put = await call("PUT", "/api/supervisor/bark", { speak: "yes" });
+    expect(put).toEqual({
+      status: 400,
+      json: { error: "speak must be true or false" },
+    });
+  });
+
+  test("the sign-in gate opens exactly the sound path", () => {
+    const hash = "a".repeat(64);
+    expect(barkSound.isBarkSoundPath(`/api/blob/speech/caf/${hash}.caf`)).toBe(
+      true,
+    );
+    for (const path of [
+      `/api/blob/speech/caf/${hash}.mp3`,
+      `/api/blob/speech/caf/${hash.slice(1)}.caf`,
+      `/api/blob/speech/caf/../${hash}.caf`,
+      "/api/blob/speech",
+      "/api/blob/speech/status",
+    ])
+      expect(barkSound.isBarkSoundPath(path)).toBe(false);
   });
 });

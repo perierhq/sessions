@@ -93,6 +93,31 @@ The iOS App ID and provisioning profile must include Push Notifications. The
 widget extension needs no APNs credential: it renders ActivityKit state supplied
 by the host app and APNs.
 
+### Bark
+
+Each person sets up Bark in Settings, Notifications (`src/server/bark.ts`).
+The instance needs an `https://` public URL (`server.publicBaseUrl`) for the
+icon, the item links and the spoken sound. Nothing else is configured on the
+server, but some features depend on the phone and the Bark server:
+
+- Supervisor pushes use Blob's icon, `/bot-icon/blob-notification-v1.png`.
+  Bark caches an icon by its URL forever, so a new drawing needs a new file
+  name.
+- A notification marked done is deleted from the phone with Bark's `delete`.
+  That needs Bark 1.5.2 or later, bark-server 2.2.5 or later, and Background
+  App Refresh on for Bark. The delete push is always sent in clear, even with
+  encryption on, and carries only the device key and the notification's
+  hashed id.
+- The badge counts open needs-you items. Bark ignores a badge on a delete
+  push, so the badge updates with the next supervisor push or when Bark
+  opens.
+- "Read pushes aloud in Blob's voice" needs `ffmpeg` on the server's `PATH`
+  and a Fish Audio key (Blob speech settings). The sound is served without
+  sign-in at `/api/blob/speech/caf/<sha256>.caf`. The hash covers a server
+  secret, the voice and the text, and only text the server pushed is
+  spoken. Files are kept in `bark-sounds` in Blob's state directory and
+  expire 30 days after their last push.
+
 ## Compatibility literals
 
 Several old names are protocol or persisted-data compatibility, not instance
