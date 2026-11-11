@@ -110,6 +110,7 @@ describe("opensession-supervisor wiring", () => {
       "list_items",
       "post_item",
       "read_ledger",
+      "reply_in_thread",
       "watch_for",
     ]);
   });

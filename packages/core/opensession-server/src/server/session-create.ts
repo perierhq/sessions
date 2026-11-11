@@ -1840,7 +1840,23 @@ export async function openCreatedSession(
       // any other message: the session exists now, so the badge has a row
       // to land on. Scanned from the raw prompt, never the assembled one,
       // so a repo note or a handoff cannot invent a mention.
-      void notifyMentions(spec.titlePrompt, spec.user || "", bksId, "prompt");
+      // @Blob routes only from a person's own create in the app, never a
+      // Slack thread's or one an agent, Blob or an automation started.
+      void notifyMentions(
+        spec.titlePrompt,
+        spec.user || "",
+        bksId,
+        "prompt",
+        undefined,
+        {
+          blob:
+            !spec.slackOrigin &&
+            !spec.agentStarted &&
+            !spec.actedBy &&
+            !spec.spawnedBy &&
+            !spec.automationDescendantPolicy,
+        },
+      );
       // Projection is latency-sensitive; startup is capacity-sensitive.
       // Persist and announce every accepted session first, then wait for one of
       // the bounded startup slots. The slot is released on the opening run's

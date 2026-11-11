@@ -79,12 +79,12 @@ touches an in-process tool:
 | [`opensession-self`](#opensession-self) | 2 | automation | Only with the human-set `selfImprove` flag on that automation. |
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
-| [`opensession-supervisor`](#opensession-supervisor) | 8 | interactive | Only on a supervisor session (session.supervisor). |
+| [`opensession-supervisor`](#opensession-supervisor) | 9 | interactive | Only on a supervisor session (session.supervisor). |
 | [`opensession-watch`](#opensession-watch) | 7 | goal wake | Only on a person's watch goal (goal.watchOwner). |
 | [`opensession-lead`](#opensession-lead) | 5 | goal wake | Only on a project lead's goal (goal.leadProject). |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-43 servers, 216 tools.
+43 servers, 217 tools.
 
 ## opensession-sessions
 
@@ -1648,6 +1648,12 @@ Add one entry to your ledger, your own notes across conversations, dated for you
 `mcp__opensession-supervisor__watch_for` · input: `what` (string, required), `until` (string), `session_id` (string)
 
 Hand a background follow-up to the owner's watch instead of waiting for it here: what to look out for ("tell me when Pat's review of #10 finishes"), optionally by when, and the session doing the work when you know it. The watch follows it up in the background and reports through the inbox (an fyi, or needs-you when the owner must decide); nothing comes back into this conversation. Tell the owner you're watching it.
+
+### `reply_in_thread`
+
+`mcp__opensession-supervisor__reply_in_thread` · input: `session_id` (string, required), `thread_id` (string, required), `text` (string, required), `resolve` (boolean)
+
+Answer in a comment thread on a session, as Blob: where the owner mentioned you (@Blob) in a thread, the turn names its session_id and thread_id. resolve also resolves the thread, when the reply settles it. The people in the thread are notified. For a mention in a session itself, answer with send_to_session instead.
 
 ### `ask_pat`
 

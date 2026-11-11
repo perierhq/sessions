@@ -111,6 +111,10 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // (leads/approvals.ts). New, so its legacy directory is missing and
   // imports as empty.
   "lead-approvals",
+  // @Blob mentions each person had routed to their supervisor, for dedupe
+  // and the hourly cap, keyed by canonicalName(user) (blob-mentions.ts).
+  // New, so its legacy directory is missing and imports as empty.
+  "blob-mentions",
 ] as const;
 
 export type ApplicationCatalogNamespace =

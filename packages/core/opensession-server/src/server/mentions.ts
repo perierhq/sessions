@@ -140,7 +140,8 @@ export async function recordMentions(
  * that marks the row on every device the person has open, and the inbox
  * notification (src/server/notifications.ts), which also pushes. Every surface that can carry a
  * mention calls this rather than assembling the three itself, so a new
- * surface cannot ship two of them and forget the third.
+ * surface cannot ship two of them and forget the third. An @Blob mention
+ * goes to the sender's supervisor from here too (blob-mentions.ts).
  */
 export async function notifyMentions(
   text: string,
@@ -149,7 +150,26 @@ export async function notifyMentions(
   source: Mention["source"],
   /** Deep link for the notification; the session itself by default. */
   url?: string,
+  where: {
+    /** The comment thread it was written in. */
+    threadId?: string;
+    /** The comment's id, so a replay routes @Blob once. */
+    ref?: string;
+    /** False where the text is not the sender's own words in the app
+     *  (a Slack thread, an agent's or an automation's create). */
+    blob?: boolean;
+  } = {},
 ): Promise<string[]> {
+  if (where.blob !== false && text.includes("@"))
+    await routeBlobMentionSafely({
+      text,
+      sender,
+      sessionId,
+      source,
+      url,
+      threadId: where.threadId,
+      ref: where.ref,
+    });
   const { broadcastToAll } = await import("./ws-hub");
   const mentioned = await recordMentions(
     text,
@@ -175,6 +195,21 @@ export async function notifyMentions(
       url: url ?? sessionUrl(sessionId),
     });
   return mentioned;
+}
+
+/** A failed route never fails the mention's other effects. */
+async function routeBlobMentionSafely(
+  mention: Parameters<typeof import("./blob-mentions").routeBlobMention>[0],
+): Promise<void> {
+  try {
+    const { routeBlobMention } = await import("./blob-mentions");
+    await routeBlobMention(mention);
+  } catch (error) {
+    console.warn(
+      "[mentions] @Blob routing failed:",
+      error instanceof Error ? error.message : error,
+    );
+  }
 }
 
 /** The push body shares the mention's preview rule. */
