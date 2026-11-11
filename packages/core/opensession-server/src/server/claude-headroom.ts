@@ -24,14 +24,17 @@
  * from being asked again on the next tick. The backoff lives in this
  * process only; a restart forgets it.
  *
- * localClaudeAccounts decides on the shared accounts it has data for:
- * those that report a usage window or are sidelined (the sideline file,
- * account-wide or for this route's model). One of them that isn't
+ * localClaudeAccounts looks at every shared account: sidelined ones (the
+ * sideline file, account-wide or for this route's model) and ones that
+ * report a usage window are measured; the rest are unknown. One of them that isn't
  * sidelined and leaves at least BACKGROUND_FIVE_HOUR_HEADROOM and
  * BACKGROUND_WEEKLY_HEADROOM percent (utilization at most 80% and 90%) is
  * room. A window that has reset since the last poll counts as room, as the
- * picker treats it. Accounts with no data don't count either way, and when
- * none has data the source has no answer, so the work is allowed.
+ * picker treats it. An account that isn't sidelined but reports no usage
+ * (its usage login expired, or the poll failed) may have room, so it
+ * doesn't hold the work: the source has no answer and the work is allowed.
+ * If that account is in fact out, the run's usage limit sidelines it and
+ * the backoff above holds the provider, so an unknown pool can't loop.
  * Personal accounts (with an owner) don't count: background runs have no
  * user, so they run on the shared pool.
  *
@@ -128,13 +131,17 @@ export const localClaudeAccounts: HeadroomSource = {
       state as { exhaustedUntil?: Record<string, unknown> } | null
     )?.exhaustedUntil ?? {}) as Record<string, unknown>;
     let known = false;
+    let unknown = false;
     for (const a of shared) {
       const u = Object.hasOwn(usage, a.id) ? usage[a.id] : undefined;
       if (sidelined(until, a.id, model, now)) {
         known = true;
         continue;
       }
-      if (!reported(u?.fiveHour) && !reported(u?.sevenDay)) continue;
+      if (!reported(u?.fiveHour) && !reported(u?.sevenDay)) {
+        unknown = true;
+        continue;
+      }
       known = true;
       if (
         utilization(u?.fiveHour, now) <= 100 - BACKGROUND_FIVE_HOUR_HEADROOM &&
@@ -142,7 +149,7 @@ export const localClaudeAccounts: HeadroomSource = {
       )
         return true;
     }
-    return known ? false : null;
+    return known && !unknown ? false : null;
   },
 };
 

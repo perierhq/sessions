@@ -98,11 +98,23 @@ test("a sideline for the route's model holds that account", async () => {
   expect(await ok(NOW, "pi/anthropic/claude-other-5")).toBe(true);
 });
 
-test("accounts that report no usage don't count; with none reporting, allow", async () => {
+test("an account that reports no usage may have room, so it doesn't hold the work", async () => {
   write([{ id: "a" }, { id: "b" }], { a: [95, 20] });
-  expect(await ok()).toBe(false);
+  expect(await ok()).toBe(true);
   write([{ id: "a" }, { id: "b" }], { a: [null, null] });
   expect(await ok()).toBe(true);
+});
+
+test("usage logins expired everywhere and one account sidelined: still allowed", async () => {
+  // The live failure: every usage poll errors (no windows), one account is
+  // sidelined for its weekly limit. The others may well have room.
+  write([{ id: "a" }, { id: "b" }, { id: "c" }], {}, { a: NOW + 86_400_000 });
+  expect(await ok()).toBe(true);
+});
+
+test("every account measured over or sidelined: no room", async () => {
+  write([{ id: "a" }, { id: "b" }], { b: [95, 20] }, { a: NOW + 60_000 });
+  expect(await ok()).toBe(false);
 });
 
 test("a window that reset since the poll counts as room", async () => {
