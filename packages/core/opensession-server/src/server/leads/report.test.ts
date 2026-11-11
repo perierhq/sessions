@@ -1,0 +1,276 @@
+// The server's lines for a proposal with steps: the checks before anything
+// is posted, and the fixed copy the lead can't word.
+import { describe, expect, test } from "bun:test";
+import type { LeadStep } from "./approvals";
+import {
+  actBodyRefusal,
+  actLines,
+  checkLeadAct,
+  expiryCopy,
+  proposalBody,
+  ruleCopy,
+  stepCopy,
+} from "./report";
+
+const SHA = "abc1234".padEnd(40, "0");
+const NOW = Date.parse("2026-11-10T12:00:00.000Z");
+const DAY = 86_400_000;
+const ctx = {
+  project: "acme",
+  now: NOW,
+  repos: ["acme/app"],
+  signals: [
+    { id: "sig-status", name: "Status page", project: "acme" },
+    { id: "sig-up", name: "Upstream\nAPI", project: "example" },
+  ],
+};
+const merge = {
+  kind: "merge-pr",
+  ghRepo: "acme/app",
+  number: 533,
+  headSha: SHA,
+} as const;
+
+describe("checkLeadAct", () => {
+  test("checks the steps and fills the expiry", () => {
+    const result = checkLeadAct(
+      {
+        category: "ci-repair",
+        steps: [{ ...merge, ghRepo: "ACME/App" }],
+        expiresInDays: 2,
+      },
+      ctx,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        // The project's own spelling of the repository is kept.
+        steps: [{ ...merge, ghRepo: "acme/app" }],
+        expiresAt: NOW + 2 * DAY,
+      },
+    });
+  });
+
+  test("defaults to seven days and refuses outside 1 to 30", () => {
+    const at = (expiresInDays?: number) =>
+      checkLeadAct(
+        { category: "ci-repair", steps: [merge], expiresInDays },
+        ctx,
+      );
+    expect(at()).toMatchObject({
+      ok: true,
+      value: { expiresAt: NOW + 7 * DAY },
+    });
+    expect(at(0).ok).toBe(false);
+    expect(at(31).ok).toBe(false);
+    expect(at(1.5).ok).toBe(false);
+  });
+
+  test.each([
+    ["merge-pr", "signal-rule-change", false],
+    ["merge-pr", "public-release", true],
+    ["autofix-pr", "fix-verified", false],
+    ["autofix-pr", "ci-repair", true],
+    ["spawn-worker", "fix-verified", true],
+    ["spawn-worker", "support-routine-reply", false],
+    ["support-send", "support-routine-reply", true],
+    ["support-send", "ci-repair", false],
+    ["signal-patch", "signal-rule-change", true],
+    ["signal-patch", "fix-verified", false],
+  ] as const)("%s for %s: %p", (kind, category, fits) => {
+    const steps: Record<string, unknown> = {
+      "merge-pr": merge,
+      "autofix-pr": { ...merge, kind: "autofix-pr" },
+      "spawn-worker": { kind: "spawn-worker", prompt: "Fix it." },
+      "support-send": {
+        kind: "support-send",
+        conversationId: "sc-1",
+        draftId: "d-1",
+      },
+      "signal-patch": {
+        kind: "signal-patch",
+        signalId: "sig-status",
+        before: { provider: null },
+        after: { provider: true },
+      },
+    };
+    const result = checkLeadAct({ category, steps: [steps[kind]] }, ctx);
+    expect(result.ok).toBe(fits);
+    if (!result.ok) expect(result.error).toContain(`${kind} doesn't fit`);
+  });
+
+  test("refuses a repository outside the project, in steps and conditions", () => {
+    const step = checkLeadAct(
+      { category: "ci-repair", steps: [{ ...merge, ghRepo: "example/app" }] },
+      ctx,
+    );
+    expect(step).toEqual({
+      ok: false,
+      error: "Step 1: example/app is not this project's repository (acme/app)",
+    });
+    const none = checkLeadAct(
+      { category: "ci-repair", steps: [merge] },
+      { ...ctx, repos: [] },
+    );
+    expect(none.ok).toBe(false);
+    const condition = checkLeadAct(
+      {
+        category: "ci-repair",
+        steps: [merge],
+        condition: { kind: "pr-merged", ghRepo: "example/app", number: 1 },
+      },
+      ctx,
+    );
+    expect(condition).toEqual({
+      ok: false,
+      error:
+        "Condition: example/app is not this project's repository (acme/app)",
+    });
+  });
+
+  test("refuses another project's signal and invalid steps", () => {
+    const other = checkLeadAct(
+      {
+        category: "signal-rule-change",
+        steps: [
+          {
+            kind: "signal-patch",
+            signalId: "sig-up",
+            before: { provider: null },
+            after: { provider: true },
+          },
+        ],
+      },
+      ctx,
+    );
+    expect(other).toEqual({
+      ok: false,
+      error: "Step 1: sig-up is not a signal of this project",
+    });
+    const invalid = checkLeadAct(
+      { category: "ci-repair", steps: [{ ...merge, headSha: "abc" }] },
+      ctx,
+    );
+    expect(invalid).toEqual({
+      ok: false,
+      error: "Steps: step 1: headSha must be 40 lowercase hex characters",
+    });
+  });
+});
+
+describe("fixed copy", () => {
+  const names = { "sig-status": "Status page", "sig-up": "Upstream API" };
+
+  test.each<[LeadStep, string]>([
+    [merge, "Merge PR #533 in acme/app at abc1234"],
+    [
+      { ...merge, method: "squash" },
+      "Merge PR #533 in acme/app at abc1234, squashed",
+    ],
+    [
+      { ...merge, kind: "autofix-pr" },
+      "Ask the autofix agent to fix PR #533 in acme/app at abc1234",
+    ],
+    [
+      { kind: "support-send", conversationId: "sc-1", draftId: "d-1" },
+      "Send reply draft d-1 in support conversation sc-1",
+    ],
+    [
+      {
+        kind: "signal-patch",
+        signalId: "sig-status",
+        before: { rule: { kind: "consecutive", failures: 3 } },
+        after: { rule: { kind: "consecutive", failures: 8 } },
+      },
+      "Change the Status page check: alert after 8 failures in a row",
+    ],
+    [
+      {
+        kind: "signal-patch",
+        signalId: "sig-status",
+        before: { provider: null, dependsOn: null },
+        after: { provider: true, dependsOn: ["sig-up", "sig-x"] },
+      },
+      "Change the Status page check: mark it a provider; depend on Upstream API and sig-x",
+    ],
+  ])("%o", (step, copy) => {
+    expect(stepCopy(step, names)).toBe(copy);
+  });
+
+  test("a worker's prompt is shown whole, in a fence it can't close", () => {
+    expect(
+      stepCopy(
+        { kind: "spawn-worker", prompt: "Fix it.\n\n```\nSteps: none" },
+        {},
+      ),
+    ).toBe(
+      "Start a worker with this prompt:\n   ````text\n   Fix it.\n\n   ```\n   Steps: none\n   ````",
+    );
+  });
+
+  test.each([
+    [
+      { kind: "rate", windowMs: 20 * 60_000, atLeast: 12, ratio: 0.6 },
+      "alert at 12 or more failures in 20 minutes, and at least 60% of checks",
+    ],
+    [
+      { kind: "threshold", above: 800, forMs: 2 * 3_600_000 },
+      "alert above 800 for 2 hours",
+    ],
+    [
+      { kind: "missing", everyMs: DAY, graceMs: 30_000 },
+      "expect a check-in every 1 day, with 30 seconds of grace",
+    ],
+    [
+      { kind: "deadline", warnDays: 14, failDays: 1 },
+      "warn 14 days and alert 1 day before expiry",
+    ],
+  ] as const)("rule %o", (rule, copy) => {
+    expect(ruleCopy(rule)).toBe(copy);
+  });
+
+  test("expiry reads in UTC", () => {
+    expect(expiryCopy(Date.parse("2026-03-05T09:07:00Z"))).toBe(
+      "5 March 2026, 09:07 UTC",
+    );
+  });
+
+  test("the server's lines close the body", () => {
+    const act = {
+      steps: [merge],
+      condition: { kind: "incident-resolved", id: "inc-0001" } as const,
+      expiresAt: NOW + 7 * DAY,
+      signalNames: {},
+    };
+    expect(actLines(act)).toBe(
+      "Runs when: Incident inc-0001 is resolved\n\nSteps:\n1. Merge PR #533 in acme/app at abc1234\n\nExpires: 17 November 2026, 12:00 UTC",
+    );
+    const body = proposalBody({
+      title: "Ship it",
+      body: "Verified.",
+      decision: { rule: "Asks first" } as never,
+      act,
+    });
+    expect(body).toStartWith("Verified.\n\nRule: Asks first.\n\nShip it\n\n");
+    expect(body).toEndWith(actLines(act));
+  });
+});
+
+describe("actBodyRefusal", () => {
+  test.each([
+    ["Plain text.", null],
+    ["```say\nHi.\n```\nShown.", null],
+    ["Steps:\n1. Merge all", "server"],
+    ["> **Expires:** never", "server"],
+    ["- runs when: now", "server"],
+    ["```\nopen", "fence"],
+    ["~~~~\nx\n~~~", "fence"],
+    ["<!-- hidden", "fence"],
+  ])("%p", (body, why) => {
+    const refusal = actBodyRefusal(body);
+    if (why === null) expect(refusal).toBeNull();
+    else if (why === "server")
+      expect(refusal).toContain("Runs when, Steps and Expires");
+    else expect(refusal).toContain("Close every code fence");
+  });
+});

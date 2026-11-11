@@ -119,7 +119,9 @@ export const MAX_ITEMS = 200;
 export const MAX_LIST = 100;
 const DEFAULT_LIST = 50;
 const TITLE_LEN = 120;
-const BODY_LEN = 4000;
+/** The longest body an item keeps; the rest is cut. */
+export const SUPERVISOR_BODY_LEN = 4000;
+const BODY_LEN = SUPERVISOR_BODY_LEN;
 const SOURCE_LEN = 80;
 const PROJECT_LEN = 80;
 const DEDUPE_LEN = 200;

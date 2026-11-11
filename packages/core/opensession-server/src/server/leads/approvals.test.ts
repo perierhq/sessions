@@ -270,6 +270,24 @@ describe("validation", () => {
       expect(A.validateProposalInput(bad).ok).toBe(false);
   });
 
+  test("a step must fit the proposal's category", () => {
+    expect(
+      A.validateProposalInput(input({ category: "signal-rule-change" })),
+    ).toEqual({
+      ok: false,
+      error: "step 1: merge-pr does not fit signal-rule-change",
+    });
+    for (const [kind, categories] of Object.entries(A.STEP_CATEGORIES))
+      for (const category of categories)
+        expect(
+          A.stepFitsCategory(
+            kind as import("./approvals").LeadStepKind,
+            category,
+          ),
+        ).toBe(true);
+    expect(A.stepFitsCategory("autofix-pr", "fix-verified")).toBe(false);
+  });
+
   test("a proposal may carry the approval's condition and expiry", async () => {
     const condition = { kind: "pr-merged", ghRepo: "acme/api", number: 41 };
     const proposal = await propose({ condition, expiresAt: clock + DAY });
@@ -277,6 +295,8 @@ describe("validation", () => {
     expect((await A.getRecord("acme", proposal.id))?.proposal).toEqual(
       proposal,
     );
+    for (const expiresAt of [clock, clock + 30 * DAY + 1])
+      expect((await A.recordProposal(input({ expiresAt }))).ok).toBe(false);
   });
 
   test("approval expiry: 7 days by default, at most 30", () => {
@@ -768,6 +788,15 @@ describe("expiry", () => {
     expect((await A.getRecord("acme", proposal.id))?.approval?.state).toBe(
       "void",
     );
+  });
+});
+
+describe("proposal expiry", () => {
+  test("an unapproved proposal is void once its expiry passes", async () => {
+    const proposal = await propose({ expiresAt: clock + DAY });
+    clock += DAY;
+    const record = await A.getRecord("acme", proposal.id);
+    expect(record?.proposal.voidReason).toBe("expired");
   });
 });
 

@@ -8,6 +8,12 @@
 // without one, its first paragraph), what Blob says when it presents the
 // decision (say and show, blob-surface.ts); the rule, the lead's title and
 // the rest follow.
+//
+// A proposal may carry typed steps, a condition and an expiry (the lead act
+// stage, approvals.ts). The server checks them, records them bound to the
+// item and its revision, and ends the body with lines the lead can't word:
+// when the steps run, each step in fixed copy, and when they expire.
+import type { SignalRule } from "../../shared/incidents";
 import {
   LEAD_CATEGORY_LABELS,
   type LeadCategory,
@@ -24,10 +30,24 @@ import {
 } from "../incidents/owner";
 import { BLOB_ACTOR } from "../session-actors";
 import {
+  SUPERVISOR_BODY_LEN,
   listSupervisorItems,
   postSupervisorItem,
   type PostDelivery,
 } from "../supervisor-inbox";
+import {
+  type LeadStep,
+  type SignalPatchAfter,
+  type ValidProposalInput,
+  STEP_CATEGORIES,
+  recordProposal,
+  stepFitsCategory,
+  validateLeadCondition,
+  validateLeadSteps,
+  validateProposalInput,
+  voidFor,
+} from "./approvals";
+import { describeCondition, type LeadCondition } from "./conditions";
 
 /** `proposal`: something the lead suggests; `needs-you`: something only the
  *  owner may do, prepared by the lead. */
@@ -46,10 +66,19 @@ export interface LeadProposal {
   subject?: string;
   /** The rules' verdict on the action, with the rule that made it. */
   decision: LeadDecision;
+  /** What the owner's approval runs, checked by `checkLeadAct`. */
+  act?: LeadAct;
 }
 
 export type LeadDelivery =
-  | { queued: true; itemId: string; created: boolean; delivery: PostDelivery }
+  | {
+      queued: true;
+      itemId: string;
+      created: boolean;
+      delivery: PostDelivery;
+      /** The recorded proposal, when it carried steps. */
+      proposalId?: string;
+    }
   | { queued: false; reason: string };
 
 const NOBODY =
@@ -87,12 +116,306 @@ function splitSay(body: string): { say: string; shown: string } {
 
 /** The body: what Blob says (the lead's say fence), then the rule the
  *  server applied, the lead's title and the rest of its text (what Blob
- *  shows). */
+ *  shows), and last the server's lines for any steps. */
 export function proposalBody(
-  proposal: Pick<LeadProposal, "title" | "body" | "decision">,
+  proposal: Pick<LeadProposal, "title" | "body" | "decision" | "act">,
 ): string {
   const { say, shown } = splitSay(proposal.body.trim());
-  return [say, `Rule: ${proposal.decision.rule}.`, proposal.title, shown]
+  return [
+    say,
+    `Rule: ${proposal.decision.rule}.`,
+    proposal.title,
+    shown,
+    proposal.act ? actLines(proposal.act) : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// ── Steps, condition and expiry ─────────────────────────────────────────────
+
+const DAY_MS = 86_400_000;
+export const DEFAULT_EXPIRES_IN_DAYS = 7;
+export const MAX_EXPIRES_IN_DAYS = 30;
+
+/** A proposal's steps as the server checked them. */
+export interface LeadAct {
+  steps: LeadStep[];
+  condition?: LeadCondition;
+  expiresAt: number;
+  /** Signal names by id, for the steps' copy. */
+  signalNames: Record<string, string>;
+}
+
+export interface LeadActInput {
+  category: LeadCategory;
+  steps: unknown;
+  condition?: unknown;
+  expiresInDays?: number;
+}
+
+export interface LeadActContext {
+  now: number;
+  /** The project's GitHub repositories, `owner/name`. */
+  repos: readonly string[];
+  /** Every signal, so a dependency elsewhere still has a name. */
+  signals: ReadonlyArray<{ id: string; name: string; project: string }>;
+  project: string;
+}
+
+type Checked<T> = { ok: true; value: T } | { ok: false; error: string };
+
+function listOf(items: readonly string[], word = "or"): string {
+  if (items.length < 2) return items.join("");
+  return `${items.slice(0, -1).join(", ")} ${word} ${items[items.length - 1]}`;
+}
+
+function repoRefusal(
+  repo: string,
+  repos: readonly string[],
+): { error: string } | { repo: string } {
+  const match = repos.find((r) => r.toLowerCase() === repo.toLowerCase());
+  if (match) return { repo: match };
+  return {
+    error: repos.length
+      ? `${repo} is not this project's repository (${listOf(repos)})`
+      : `This project has no GitHub repository, so nothing can run on ${repo}`,
+  };
+}
+
+/** The proposal's steps, condition and expiry, checked for `ctx.project`:
+ *  each step valid and fit for the category, every pull request in one of
+ *  the project's repositories, every patched signal the project's own. */
+export function checkLeadAct(
+  input: LeadActInput,
+  ctx: LeadActContext,
+): Checked<LeadAct> {
+  const steps = validateLeadSteps(input.steps);
+  if (!steps.ok) return { ok: false, error: `Steps: ${steps.error}` };
+  const label = LEAD_CATEGORY_LABELS[input.category].toLowerCase();
+  const signalNames: Record<string, string> = {};
+  for (const s of ctx.signals) signalNames[s.id] = oneLine(s.name, 80) || s.id;
+  const checked: LeadStep[] = [];
+  for (const [index, step] of steps.value.entries()) {
+    const n = index + 1;
+    if (!stepFitsCategory(step.kind, input.category)) {
+      const fits = STEP_CATEGORIES[step.kind].map((c) =>
+        LEAD_CATEGORY_LABELS[c].toLowerCase(),
+      );
+      return {
+        ok: false,
+        error: `Step ${n}: ${step.kind} doesn't fit ${label}; it serves only ${listOf(fits)}`,
+      };
+    }
+    if (step.kind === "merge-pr" || step.kind === "autofix-pr") {
+      const repo = repoRefusal(step.ghRepo, ctx.repos);
+      if ("error" in repo)
+        return { ok: false, error: `Step ${n}: ${repo.error}` };
+      checked.push({ ...step, ghRepo: repo.repo });
+      continue;
+    }
+    if (
+      step.kind === "signal-patch" &&
+      !ctx.signals.some(
+        (s) => s.id === step.signalId && s.project === ctx.project,
+      )
+    )
+      return {
+        ok: false,
+        error: `Step ${n}: ${step.signalId} is not a signal of this project`,
+      };
+    checked.push(step);
+  }
+  let condition: LeadCondition | undefined;
+  if (input.condition !== undefined) {
+    const valid = validateLeadCondition(input.condition);
+    if (!valid.ok) return { ok: false, error: `Condition: ${valid.error}` };
+    condition = valid.value;
+    if (condition.kind !== "incident-resolved") {
+      const repo = repoRefusal(condition.ghRepo, ctx.repos);
+      if ("error" in repo)
+        return { ok: false, error: `Condition: ${repo.error}` };
+      condition = { ...condition, ghRepo: repo.repo };
+    }
+  }
+  const days = input.expiresInDays ?? DEFAULT_EXPIRES_IN_DAYS;
+  if (!Number.isInteger(days) || days < 1 || days > MAX_EXPIRES_IN_DAYS)
+    return {
+      ok: false,
+      error: `expiresInDays must be a whole number from 1 to ${MAX_EXPIRES_IN_DAYS}`,
+    };
+  return {
+    ok: true,
+    value: {
+      steps: checked,
+      ...(condition ? { condition } : {}),
+      expiresAt: ctx.now + days * DAY_MS,
+      signalNames,
+    },
+  };
+}
+
+const SERVER_LINE = /^\s*(?:[>*_#-]\s*)*(?:runs when|steps|expires)\s*:/im;
+
+/** Why a body can't carry steps, or null: it writes the server's own lines,
+ *  or leaves a code fence or comment open that would swallow them. */
+export function actBodyRefusal(body: string): string | null {
+  if (SERVER_LINE.test(body))
+    return "Leave the Runs when, Steps and Expires lines out of the body: the server writes them from steps, condition and expiresInDays";
+  if (openFence(body) || body.lastIndexOf("<!--") > body.lastIndexOf("-->"))
+    return "Close every code fence and comment in the body";
+  return null;
+}
+
+function openFence(text: string): boolean {
+  let open: { char: string; len: number } | null = null;
+  for (const row of text.split("\n")) {
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(row);
+    if (!m) continue;
+    const fence = m[1]!;
+    if (!open) open = { char: fence[0]!, len: fence.length };
+    else if (
+      fence[0] === open.char &&
+      fence.length >= open.len &&
+      !m[2]!.trim()
+    )
+      open = null;
+  }
+  return open !== null;
+}
+
+const UNSAFE =
+  /[\u0000-\u001f\u007f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]/g;
+
+function oneLine(text: string, max: number): string {
+  return text.replace(UNSAFE, " ").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** A duration in the largest whole unit. */
+function duration(ms: number): string {
+  if (ms >= DAY_MS && ms % DAY_MS === 0) return plural(ms / DAY_MS, "day");
+  if (ms >= 3_600_000 && ms % 3_600_000 === 0)
+    return plural(ms / 3_600_000, "hour");
+  if (ms >= 60_000 && ms % 60_000 === 0) return plural(ms / 60_000, "minute");
+  return plural(Math.round(ms / 1000), "second");
+}
+
+/** Fixed copy for a signal rule, lower case: what it alerts on. */
+export function ruleCopy(rule: SignalRule): string {
+  switch (rule.kind) {
+    case "consecutive":
+      return `alert after ${plural(rule.failures, "failure")} in a row${rule.recoveries ? `, clear after ${plural(rule.recoveries, "pass", "passes")} in a row` : ""}`;
+    case "rate":
+      return `alert at ${rule.atLeast} or more failures in ${duration(rule.windowMs)}${rule.ratio !== undefined ? `, and at least ${Math.round(rule.ratio * 100)}% of checks` : ""}`;
+    case "threshold":
+      return `alert above ${rule.above} for ${duration(rule.forMs)}`;
+    case "missing":
+      return rule.everyMs !== undefined
+        ? `expect a check-in every ${duration(rule.everyMs)}, with ${duration(rule.graceMs)} of grace`
+        : `expect a check-in on the schedule ${oneLine(rule.cron ?? "", 60)} (UTC), with ${duration(rule.graceMs)} of grace`;
+    case "deadline":
+      return `warn ${plural(rule.warnDays, "day")} and alert ${plural(rule.failDays, "day")} before expiry`;
+  }
+}
+
+function patchCopy(
+  after: SignalPatchAfter,
+  names: Record<string, string>,
+): string {
+  const parts: string[] = [];
+  if (after.rule) parts.push(ruleCopy(after.rule));
+  if (after.provider !== undefined)
+    parts.push(
+      after.provider ? "mark it a provider" : "stop marking it a provider",
+    );
+  if (after.dependsOn)
+    parts.push(
+      after.dependsOn.length
+        ? `depend on ${listOf(
+            after.dependsOn.map((id) => names[id] ?? id),
+            "and",
+          )}`
+        : "depend on no other signal",
+    );
+  return parts.join("; ");
+}
+
+function sha(headSha: string): string {
+  return headSha.slice(0, 7);
+}
+
+const METHOD_COPY = {
+  merge: "with a merge commit",
+  squash: "squashed",
+  rebase: "rebased",
+} as const;
+
+/** Fixed owner-facing copy for one step. A worker's prompt follows its line
+ *  in full, indented and fenced, so the owner reads what the worker gets. */
+export function stepCopy(
+  step: LeadStep,
+  names: Record<string, string>,
+): string {
+  switch (step.kind) {
+    case "merge-pr":
+      return `Merge PR #${step.number} in ${step.ghRepo} at ${sha(step.headSha)}${step.method ? `, ${METHOD_COPY[step.method]}` : ""}`;
+    case "autofix-pr":
+      return `Ask the autofix agent to fix PR #${step.number} in ${step.ghRepo} at ${sha(step.headSha)}`;
+    case "signal-patch":
+      return `Change the ${names[step.signalId] ?? step.signalId} check: ${patchCopy(step.after, names)}`;
+    case "support-send":
+      return `Send reply draft ${step.draftId} in support conversation ${step.conversationId}`;
+    case "spawn-worker": {
+      const longest = Math.max(
+        2,
+        ...(step.prompt.match(/`+/g) ?? []).map((run) => run.length),
+      );
+      const fence = "`".repeat(longest + 1);
+      const body = [`${fence}text`, ...step.prompt.split("\n"), fence]
+        .map((row) => (row ? `   ${row}` : ""))
+        .join("\n");
+      return `Start a worker with this prompt:\n${body}`;
+    }
+  }
+}
+
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/** A time as the owner reads it, in UTC. */
+export function expiryCopy(at: number): string {
+  const d = new Date(at);
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${hh}:${mm} UTC`;
+}
+
+/** The server's lines at the end of a proposal with steps. */
+export function actLines(act: LeadAct): string {
+  return [
+    act.condition ? `Runs when: ${describeCondition(act.condition)}` : "",
+    [
+      "Steps:",
+      ...act.steps.map((s, i) => `${i + 1}. ${stepCopy(s, act.signalNames)}`),
+    ].join("\n"),
+    `Expires: ${expiryCopy(act.expiresAt)}`,
+  ]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -159,9 +482,34 @@ export function proposalDedupeKey(
   return `${leadSource(project)}:${proposal.category}:${subjectKey(proposal.subject || proposal.title)}`;
 }
 
+/** The approvals record for an act proposal, checked before the item is
+ *  posted; the item id and revision are filled in after. */
+function actRecordInput(
+  project: string,
+  proposal: LeadProposal & { act: LeadAct },
+): ValidProposalInput {
+  return {
+    project,
+    category: proposal.category,
+    subject: oneLine(proposal.subject || proposal.title, 200),
+    itemId: "pending",
+    itemRevision: 0,
+    steps: proposal.act.steps,
+    ...(proposal.act.condition ? { condition: proposal.act.condition } : {}),
+    expiresAt: proposal.act.expiresAt,
+  };
+}
+
+function errorText(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)) || "failed";
+}
+
 /** Hand a proposal to the owner's supervisor inbox, unless the lead is
  *  off or paused. Its title and body may quote customers, so the audit
- *  keeps digests of them, never the text. */
+ *  keeps digests of them, never the text. With steps, the proposal is
+ *  recorded bound to the item and its revision; an update without steps
+ *  voids what was recorded for the item before, so an answer to the new
+ *  text never approves the old steps. */
 export async function deliverLeadProposal(
   project: string,
   doc: Pick<ProjectSettingsDocument, "lead" | "incidents">,
@@ -170,6 +518,7 @@ export async function deliverLeadProposal(
 ): Promise<LeadDelivery> {
   const owner = leadOwner(doc);
   const dedupeKey = proposalDedupeKey(project, proposal);
+  const act = proposal.act;
   const base = {
     kind: "lead_proposal",
     project,
@@ -182,11 +531,35 @@ export async function deliverLeadProposal(
     bodyDigest: digest(proposal.body),
     options: proposal.options.length,
     dedupeKey,
+    ...(act
+      ? {
+          steps: act.steps.map((s) => s.kind),
+          condition: act.condition?.kind ?? null,
+          expiresAt: act.expiresAt,
+        }
+      : {}),
   };
   const refusal = leadReportRefusal(doc);
   if (refusal || !owner) {
     await leadAudit({ ...base, delivered: false });
     return { queued: false, reason: refusal ?? NOBODY };
+  }
+  const body = proposalBody(proposal);
+  let record: ValidProposalInput | undefined;
+  if (act) {
+    const why =
+      actBodyRefusal(proposal.body) ??
+      (body.length > SUPERVISOR_BODY_LEN
+        ? `The proposal is ${body.length} characters with its steps, more than the owner's inbox holds (${SUPERVISOR_BODY_LEN}): shorten the body or the steps`
+        : null);
+    const valid = why
+      ? { ok: false as const, error: why }
+      : validateProposalInput(actRecordInput(project, { ...proposal, act }));
+    if (!valid.ok) {
+      await leadAudit({ ...base, delivered: false });
+      return { queued: false, reason: valid.error };
+    }
+    record = valid.value;
   }
   const options = proposal.options.length
     ? proposal.options
@@ -197,22 +570,48 @@ export async function deliverLeadProposal(
     project,
     kind: "needs-you",
     title: proposalTitle(label, proposal.category),
-    body: proposalBody(proposal),
+    body,
     options,
     dedupeKey,
   });
+  const itemId = posted.item.id;
+  let proposalId: string | undefined;
+  let unrecorded: string | undefined;
+  try {
+    if (record) {
+      const recorded = await recordProposal({
+        ...record,
+        itemId,
+        itemRevision: posted.item.updatedAt,
+      });
+      if (recorded.ok) proposalId = recorded.value.id;
+      else unrecorded = recorded.error;
+    } else if (!posted.created) {
+      await voidFor(project, (r) => r.proposal.itemId === itemId, "superseded");
+    }
+  } catch (error) {
+    unrecorded = errorText(error);
+  }
   await leadAudit({
     ...base,
     delivered: true,
     owner,
-    itemId: posted.item.id,
+    itemId,
     created: posted.created,
+    ...(record ? { proposalId: proposalId ?? null } : {}),
+    ...(unrecorded ? { unrecorded } : {}),
   });
+  if (record && !proposalId)
+    return {
+      queued: false,
+      reason: `The owner's item ${itemId} is up, but its steps were not recorded, so approving it runs nothing: ${unrecorded ?? "failed"}. Call propose again.`,
+    };
   return {
     queued: true,
-    itemId: posted.item.id,
+    itemId,
     created: posted.created,
     delivery: posted.delivery,
+    ...(proposalId ? { proposalId } : {}),
   };
 }
 
