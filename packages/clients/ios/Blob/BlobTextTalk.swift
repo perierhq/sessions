@@ -1,6 +1,9 @@
 import Foundation
 import Observation
 import os
+#if os(iOS)
+import UIKit
+#endif
 
 /// Talking to Blob when the server has no voice key: you speak, Apple's
 /// on-device recognizer (`BlobListener`) shows what it hears, and when you
@@ -78,6 +81,19 @@ final class BlobTextTalk {
     private var hurried: Int?
     /// The last listen recorded as dropped, so it is counted once.
     @ObservationIgnored private var droppedListen: Int?
+    /// The voice turn on its way to the outbox: from your stop until its
+    /// text is handed over or dropped. Unlike `transcribing` it lasts
+    /// through `deliver`.
+    @ObservationIgnored private var voiceInFlight: Int?
+    /// The voice turn whose background time ran out: its text is kept as
+    /// `unsent`, so its own task must not hand it to the outbox as well.
+    @ObservationIgnored private var expiredListen: Int?
+    #if os(iOS)
+    /// Background time asked for so a voice turn reaches the outbox after
+    /// the app leaves the screen, and the listen it is for.
+    @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    @ObservationIgnored private var backgroundListen: Int?
+    #endif
 
     /// Each step of a turn, with ids, lengths and times only: never what was said.
     static let log = BlobLog(category: "talk")
@@ -433,6 +449,9 @@ final class BlobTextTalk {
                 hurry()
             } else if !answeringAsk, acceptedEntry == nil {
                 Self.log.info("tap waiting: on its way outbox=\(sentId ?? "-")")
+            } else if let unsent {
+                // An earlier message that didn't go out (`keepEarlier`).
+                send(typed: unsent)
             } else {
                 reset()
             }
@@ -449,12 +468,19 @@ final class BlobTextTalk {
         case .listening: return
         case .failed where unsent != nil: return
         case .waiting where transcribing == generation: hurry()
-        default: reset()
+        default:
+            let kept = unsent
+            let shown = notice
+            reset()
+            // An earlier message that didn't go out stays to be tapped.
+            if let kept { keepUnsent(kept, reason: "Not sent.", notice: shown ?? Self.earlierNotice) }
         }
     }
 
-    /// Skips the waits for the text being written now (`hurried`).
+    /// Skips the waits for the text being written now (`hurried`), and
+    /// keeps the app running until it is in the outbox.
     private func hurry() {
+        if voiceInFlight == generation { beginBackgroundSend(generation) }
         guard hurried != generation else { return }
         hurried = generation
         Self.log.info("hurry parakeet=\(BlobParakeet.shared.state.wireName) ears=\(earsFor == generation)")
@@ -477,8 +503,14 @@ final class BlobTextTalk {
     /// until the server has it), and a failed one stays to be tapped again.
     /// Words heard so far go now, without waiting for Parakeet to load;
     /// with none heard the listen ends, and says so when you come back.
+    /// What you said that is still being written goes now too, with
+    /// Apple's text if Parakeet isn't loaded, instead of waiting while
+    /// the app is suspended.
     func pause() {
         guard phase == .listening else {
+            if phase == .waiting, voiceInFlight == generation {
+                if transcribing == generation { hurry() } else { beginBackgroundSend(generation) }
+            }
             stopReading()
             return
         }
@@ -589,7 +621,6 @@ final class BlobTextTalk {
             if listener.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 dropVoice(.nothingHeard, final: nil, listen: generation)
             } else {
-                endOfSpeech = .auto
                 send()
             }
         case .listen: break
@@ -602,9 +633,17 @@ final class BlobTextTalk {
         BlobMetrics.shared.speechEnded()
         let listen = generation
         transcribing = listen
-        if hurry { hurried = listen }
+        voiceInFlight = listen
+        if hurry {
+            hurried = listen
+            beginBackgroundSend(listen)
+        }
         let atCap = listener.endedAtCap
         Task {
+            defer {
+                if voiceInFlight == listen { voiceInFlight = nil }
+                endBackgroundSend(listen)
+            }
             let started = ContinuousClock.now
             let said = await listener.stop(within: Self.stopDeadline)
             Self.log.info("stop done ms=\(Self.ms(since: started)) finished=\(said.finished) chars=\(said.text.count) samples=\(said.samples.count) stillText=\(self.listener.endedByStillText) atCap=\(atCap)")
@@ -671,6 +710,66 @@ final class BlobTextTalk {
 
     static let missedNotice = "I didn\u{2019}t catch that."
     static let earsNotice = "Still getting my ears ready. Say it again in a moment."
+    static let backgroundNotice = "Not sent: Blob was closed before it went out. Tap to send it."
+    static let earlierNotice = "An earlier message didn\u{2019}t send. Tap to send it."
+
+    /// Asks for background time for `listen`'s trip to the outbox. Ended
+    /// by its send task on every way out (`endBackgroundSend`); if the time
+    /// runs out first, what was heard is kept to be sent by a tap.
+    private func beginBackgroundSend(_ listen: Int) {
+        #if os(iOS)
+        guard backgroundListen != listen else { return }
+        endBackgroundSend(backgroundListen)
+        backgroundListen = listen
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "blob-voice-send") { [weak self] in
+            MainActor.assumeIsolated { self?.backgroundExpired(listen) }
+        }
+        Self.log.info("background send start listen=\(listen) granted=\(self.backgroundTask != .invalid)")
+        #endif
+    }
+
+    private func endBackgroundSend(_ listen: Int?) {
+        #if os(iOS)
+        guard let listen, backgroundListen == listen else { return }
+        backgroundListen = nil
+        let task = backgroundTask
+        backgroundTask = .invalid
+        if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+        #endif
+    }
+
+    /// The background time ran out before `listen` reached the outbox:
+    /// what was heard stays as `unsent`, with a notice for when you come
+    /// back, and its task stops before the outbox.
+    private func backgroundExpired(_ listen: Int) {
+        endBackgroundSend(listen)
+        guard voiceInFlight == listen, isCurrent(listen) else { return }
+        let text = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        Self.log.error("background send expired listen=\(listen) chars=\(text.count) transcribing=\(self.transcribing == listen)")
+        guard !text.isEmpty else {
+            dropVoice(.backgrounded, final: nil, listen: listen)
+            return
+        }
+        let began = transcribing != listen
+        expiredListen = listen
+        // Kept, not dropped: its own task must not count it as moved on.
+        droppedListen = listen
+        voiceInFlight = nil
+        transcribing = nil
+        earsFor = nil
+        listener.cancel()
+        generation += 1
+        if began {
+            // `deliver` had started: the open metric turn is this one.
+            BlobMetrics.shared.failed()
+        } else {
+            BlobMetrics.shared.dropped(
+                .backgrounded, final: nil, heardChars: text.count, speechMs: BlobMetrics.shared.speechMs,
+                parakeetWaitMs: nil, endOfSpeech: endOfSpeech, parakeetState: BlobParakeet.shared.state
+            )
+        }
+        keepUnsent(text, reason: "Blob was closed before it went out.", notice: Self.backgroundNotice)
+    }
     /// How long a drop's notice stays while Blob is asleep.
     static let dropNoticeSeconds: Double = 8
 
@@ -899,11 +998,17 @@ final class BlobTextTalk {
         do {
             model = try await supervisorModel()
         } catch {
+            // Already kept as unsent when the background time ran out.
+            guard expiredListen != listen else { return }
             if isCurrent(listen) {
                 couldNotSend(text, error.localizedDescription)
             } else {
-                Self.log.error("deliver failed after moving on chars=\(text.count)")
+                keepEarlier(text, error.localizedDescription)
             }
+            return
+        }
+        guard expiredListen != listen else {
+            Self.log.info("deliver skipped: kept as unsent after background expiry chars=\(text.count)")
             return
         }
         let current = isCurrent(listen)
@@ -912,7 +1017,7 @@ final class BlobTextTalk {
             if current {
                 couldNotSend(text, "The outbox is full.")
             } else {
-                Self.log.error("deliver failed after moving on chars=\(text.count) reason=outbox-full")
+                keepEarlier(text, "The outbox is full.")
             }
             return
         }
@@ -925,10 +1030,34 @@ final class BlobTextTalk {
     private func couldNotSend(_ text: String, _ reason: String) {
         Self.log.error("deliver failed chars=\(text.count) reason=\(reason)")
         BlobMetrics.shared.failed()
+        keepUnsent(text, reason: reason, notice: "Couldn\u{2019}t send. Tap to try again.")
+    }
+
+    /// Blob asleep with `text` on screen, to be sent by a tap.
+    private func keepUnsent(_ text: String, reason: String, notice: String) {
         unsent = text
         heard = text
-        notice = "Couldn\u{2019}t send. Tap to try again."
+        self.notice = notice
         phase = .failed(reason)
+    }
+
+    /// A message that didn't go out after you moved on to another: never
+    /// only logged. Recorded as dropped, and kept to be sent by a tap: on
+    /// screen now when nothing else is, else beside the exchange there,
+    /// sent by the tap that would end it (`tap`, `letGo`).
+    private func keepEarlier(_ text: String, _ reason: String) {
+        Self.log.error("deliver failed after moving on chars=\(text.count) reason=\(reason)")
+        BlobMetrics.shared.dropped(
+            .movedOn, final: nil, heardChars: text.count, speechMs: nil,
+            parakeetWaitMs: nil, endOfSpeech: nil, parakeetState: BlobParakeet.shared.state
+        )
+        switch phase {
+        case .idle, .failed:
+            keepUnsent(text, reason: reason, notice: Self.earlierNotice)
+        case .listening, .waiting:
+            unsent = text
+            notice = Self.earlierNotice
+        }
     }
 
     private func follow(up text: String) { send(typed: text, as: .chip) }

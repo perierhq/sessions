@@ -50,10 +50,10 @@ final class BlobListener {
     /// reached where the text doesn't end the listen (`stillEnd`): on the
     /// `Dictation` fallback.
     static let stillHint: Double = 4
-    /// Seconds of unchanged text that end the listen like a pause would.
-    /// The VAD may still be loading on a fresh install (the Neural Engine
-    /// is busy with Parakeet), and the input level never goes quiet in a
-    /// noisy room, so neither may ever decide; the words you said have.
+    /// Seconds of unchanged text that end the listen like a pause would,
+    /// once no speech is heard right now (`quiet`): for a listen the
+    /// endpointer may never end, when it counted too little of what you
+    /// said as speech, or noise keeps breaking its silence.
     static let stillEnd: Double = 2.5
     static let log = BlobLog(category: "listener")
 
@@ -251,7 +251,8 @@ final class BlobListener {
                 let still = Double(BlobMetrics.elapsedMs(since: at)) / 1000
                 if still >= Self.stillHint, !self.textStill { self.textStill = true }
                 // The `Dictation` fallback ends with your tap, as it says.
-                if still >= Self.stillEnd, self.endsByItself {
+                // Never mid-sentence: only while no speech is heard.
+                if still >= Self.stillEnd, self.endsByItself, self.quiet {
                     self.logEndpointer("still text")
                     self.ended = true
                     self.endedByStillText = true
@@ -260,6 +261,12 @@ final class BlobListener {
                 }
             }
         }
+    }
+
+    /// No speech heard right now: the VAD says silence, or, while it isn't
+    /// deciding, the input level is below `speechLevel`.
+    private var quiet: Bool {
+        usesVoiceActivity ? !wasSpeaking : level <= Self.speechLevel
     }
 
     private func logEndpointer(_ event: String) {

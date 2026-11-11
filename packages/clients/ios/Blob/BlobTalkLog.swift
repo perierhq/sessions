@@ -42,9 +42,11 @@ enum BlobTalkFile {
     }
 
     static func append(_ line: String) {
-        let stamp = Date().formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
-        let data = Data("\(stamp) \(line)\n".utf8)
-        queue.async { write(data) }
+        let now = Date()
+        queue.async {
+            let stamp = now.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
+            write(Data("\(stamp) \(line)\n".utf8))
+        }
     }
 
     private static func write(_ data: Data) {
