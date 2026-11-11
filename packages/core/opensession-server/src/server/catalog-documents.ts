@@ -106,6 +106,11 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // UTC day plus a per-person day index for retention (blob-metrics.ts).
   // New, so its legacy directory is missing and imports as empty.
   "blob-metrics",
+  // What the owner approved each project's lead to do: its proposals with
+  // typed steps and their approvals, one document per project
+  // (leads/approvals.ts). New, so its legacy directory is missing and
+  // imports as empty.
+  "lead-approvals",
 ] as const;
 
 export type ApplicationCatalogNamespace =
