@@ -73,11 +73,7 @@ struct BlobReplyView: View {
             if !reply.show.isEmpty {
                 let parts = reply.parts
                 let shown = parts.indices.map { index in
-                    BlobShow.blocks(
-                        of: parts[index].markdown,
-                        open: streaming && index == parts.count - 1,
-                        claims: TranscriptRichBlocks.claimedLangs.contains
-                    )
+                    Self.blocks(of: parts[index], open: streaming && index == parts.count - 1)
                 }
                 let strong = Self.strongCallout(in: shown)
                 VStack(alignment: .leading, spacing: 0) {
@@ -100,6 +96,24 @@ struct BlobReplyView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// A part's elements. Only the part still being written is read again
+    /// on each snapshot; a finished part is read once, by its markdown.
+    @MainActor
+    private static func blocks(of part: BlobCues.Part, open: Bool) -> [BlobShow.Block] {
+        let claims = TranscriptRichBlocks.claimedLangs.contains
+        if open {
+            return BlobShow.blocks(of: part.markdown, open: true, anchored: !part.ids.isEmpty, claims: claims)
+        }
+        if let cached = finished[part.markdown] { return cached }
+        let blocks = BlobShow.blocks(of: part.markdown, open: false, claims: claims)
+        if finished.count >= 200 { finished.removeAll(keepingCapacity: true) }
+        finished[part.markdown] = blocks
+        return blocks
+    }
+
+    /// Finished parts' elements by their markdown. Bounded.
+    @MainActor private static var finished: [String: [BlobShow.Block]] = [:]
 
     /// The reply's first warning or caution: the one callout drawn warm.
     private static func strongCallout(in parts: [[BlobShow.Block]]) -> (part: Int, block: Int)? {

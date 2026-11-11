@@ -8,7 +8,8 @@ import SwiftUI
 ///
 /// Blob (`markdownLook == .blob`) draws its Choices board: soft chips with
 /// no edge, the first (the recommended answer) filled in the accent while
-/// it can be sent; labels past three words stack as full-width rows instead.
+/// it can be sent; labels past three words stack as full-width rows instead
+/// (`ChoicesBlock.stacks`).
 struct ChoicesBlockView: View {
     let choices: [String]
 
@@ -24,7 +25,7 @@ struct ChoicesBlockView: View {
 
     var body: some View {
         Group {
-            if look == .blob, choices.contains(where: { $0.split(separator: " ").count > 3 }) {
+            if look == .blob, ChoicesBlock.stacks(choices) {
                 VStack(spacing: 8) {
                     ForEach(choices, id: \.self) { choice in
                         blobRow(choice)

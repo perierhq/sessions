@@ -16,14 +16,19 @@ import Foundation
 ///
 /// While the part is still being written (`open`), what can't be drawn yet
 /// holds its place instead of showing source: an unclosed fence, a callout
-/// or quote still growing, a row whose title or status hasn't arrived. The
+/// or quote still growing, a row whose title or status hasn't arrived. A
+/// paragraph that opens in bold is prose until its line has a row's shape
+/// (the bold lead, then ` · ` or an anchor), since most bold leads open a
+/// sentence (`**Done.** All green.`), not a row. The
 /// prose at the end loses markers that aren't closed yet (`closeInline`), so
 /// `**bo` reads `bo` until its `**` comes. Cue anchors (`{#id}`) are never
 /// shown, nor one still being typed.
 ///
 /// Foundation-only. No test target compiles `Blob/`, so check changes with a
 /// scratch `swiftc` run of this file and `OS1/Models/SayBlock.swift` against
-/// these examples (`claims` = {"choices", "metrics"}):
+/// these examples (`claims` = {"choices", "metrics"}). The bold-lead ones
+/// guard the rule above: a bold paragraph never shows a row's placeholder
+/// before its line has a row's shape.
 ///
 ///     "[PR #10](u) · merged · CI green"           → rows [PR #10, u, "merged", "CI green", done]
 ///     "**Release 533** · stuck · it conflicts."   → rows [Release 533, "stuck", "It conflicts.", attention]
@@ -31,11 +36,17 @@ import Foundation
 ///     "**Done.** All green."                       → prose
 ///     "> [!NOTE]\n> Check the domain."             → callout(note, "Check the domain.")
 ///     "> [!NOTE]\n> Check the"            (open)   → placeholder(callout)
-///     "Intro\n\n```choices\nA\nB"         (open)   → prose "Intro", placeholder(chips)
+///     "Intro\n\n```choices\nA\nB"         (open)   → prose "Intro", placeholder(choices ["A", "B"])
 ///     "Intro **bo"                        (open)   → prose "Intro bo"
 ///     "See [the PR](https://exa"          (open)   → prose "See the PR"
-///     "**Release 5"                       (open)   → placeholder(row)
-///     "Text {#ab"                         (open)   → prose "Text"
+///     "**Release 5"                       (open)   → prose "Release 5"
+///     "**Release 533**"                   (open)   → prose "**Release 533**"
+///     "**Release 533**"     (open, anchored)   → placeholder(row)
+///     "**Release 533** {#re"              (open)   → placeholder(row)
+///     "**Release 533** · stu"             (open)   → rows [Release 533, "stu"]
+///     "**Done.** All"                     (open)   → prose "**Done.** All"
+///     "[PR #1"                            (open)   → placeholder(row)
+///     "Text {#ab"                         (open)   → prose "Text "
 enum BlobShow {
     /// What a row's status says about the item, for its mark.
     enum Tone: Equatable {
@@ -59,8 +70,10 @@ enum BlobShow {
         var tone: Tone
     }
 
-    /// The space an element that isn't complete yet holds.
-    enum Placeholder: Equatable { case row, callout, quote, chips, block }
+    /// The space an element that isn't complete yet holds. Quick replies
+    /// carry the lines received so far, so the skeleton takes the shape the
+    /// replies will (`ChoicesBlock.stacks`).
+    enum Placeholder: Equatable { case row, callout, quote, choices([String]), block }
 
     enum Block: Equatable {
         case prose(String)
@@ -76,9 +89,18 @@ enum BlobShow {
 
     static let calloutKinds: Set<String> = ["note", "tip", "important", "warning", "caution"]
 
-    static func blocks(of markdown: String, open: Bool, claims: (String) -> Bool) -> [Block] {
+    /// `anchored`: the part carries a cue anchor (`BlobCues.Part.ids`),
+    /// already stripped. On a part of one line the anchor was on that line,
+    /// so a bold lead with nothing after it had the anchor right after it.
+    static func blocks(of markdown: String, open: Bool, anchored: Bool = false, claims: (String) -> Bool) -> [Block] {
         var text = markdown
-        if open { text = text.replacingOccurrences(of: #"\{#[^\s}]*$"#, with: "", options: .regularExpression) }
+        // An anchor still being typed at the end: hidden, but it already
+        // says a bold lead before it is a row (`rowLead`).
+        var typingAnchor = false
+        if open, let typing = ShowPattern.typingCue.firstRange(in: text) {
+            typingAnchor = true
+            text.removeSubrange(typing)
+        }
         let lines = text.components(separatedBy: "\n")
         var out: [Block] = []
         var prose: [String] = []
@@ -121,7 +143,7 @@ enum BlobShow {
                     continue
                 }
                 if open {
-                    add(.placeholder(lang == "choices" ? .chips : .block))
+                    add(.placeholder(lang == "choices" ? .choices(Array(lines[(index + 1)...])) : .block))
                 } else {
                     prose += lines[index...]
                 }
@@ -161,7 +183,8 @@ enum BlobShow {
                 continue
             }
             let afterRows: Bool = { if case .rows? = out.last, prose.allSatisfy(isBlank) { return true }; return false }()
-            switch rowLead(line, plainAllowed: atStart || afterRows) {
+            let anchoredHere = index == lines.count - 1 && (typingAnchor || anchored && index == 0)
+            switch rowLead(line, plainAllowed: atStart || afterRows, anchored: anchoredHere) {
             case .row:
                 var unit = [line]
                 var end = index + 1
@@ -211,21 +234,28 @@ enum BlobShow {
 
     // MARK: Rows
 
-    private enum Lead { case row, maybe, none }
+    /// Whether a line starts a row: `.maybe` while a link lead, or a bold
+    /// lead already followed by an anchor, is still being written and could
+    /// become one; `.partial` for a bold lead still being written, which
+    /// stays prose until it has a row's shape but never carries on the row
+    /// above it.
+    private enum Lead { case row, maybe, partial, none }
 
-    /// Whether `line` starts a row: `.maybe` while a link or bold lead is
-    /// still being written and could become one.
-    private static func rowLead(_ line: String, plainAllowed: Bool) -> Lead {
+    /// `anchored`: a cue anchor came right after what the line has so far.
+    private static func rowLead(_ line: String, plainAllowed: Bool, anchored: Bool = false) -> Lead {
         let body = withoutBullet(line.trimmingCharacters(in: .whitespaces))
-        if body.hasPrefix("[") && !body.hasPrefix("[!") || body.hasPrefix("**") {
+        let bold = body.hasPrefix("**")
+        if body.hasPrefix("[") && !body.hasPrefix("[!") || bold {
             guard let (_, _, rest) = lead(body) else {
                 // A lead still being written.
-                let partial = #"^(\[[^\]]*\]?|\[[^\]]+\]\([^)\s]*|\*\*[^*]*\*?)$"#
-                return body.range(of: partial, options: .regularExpression) != nil ? .maybe : .none
+                guard ShowPattern.partialLead.matches(body) else { return .none }
+                return bold ? .partial : .maybe
             }
             let after = rest.trimmingCharacters(in: .whitespaces)
             if after.hasPrefix("·") { return .row }
-            return after.isEmpty || after.hasPrefix("{") ? .maybe : .none
+            if after.hasPrefix("{") || after.isEmpty && anchored { return .maybe }
+            if after.isEmpty { return bold ? .partial : .maybe }
+            return .none
         }
         guard plainAllowed, let plain = plainTitle(body) else { return .none }
         return plain.isEmpty ? .none : .row
@@ -238,7 +268,7 @@ enum BlobShow {
         guard !trimmed.isEmpty, CueMarkers.fenceMarker(line) == nil, quoteBody(line) == nil,
               !trimmed.hasPrefix("#"), !trimmed.hasPrefix("|") else { return false }
         if case .none = rowLead(line, plainAllowed: afterRows) {
-            return trimmed.range(of: #"^([-*+]|\d+[.)])\s"#, options: .regularExpression) == nil
+            return !ShowPattern.listMarker.matches(trimmed)
         }
         return false
     }
@@ -274,14 +304,14 @@ enum BlobShow {
     /// A link (`[title](url)`) or bold (`**title**`) lead: its title, URL
     /// and what follows.
     private static func lead(_ body: String) -> (String, String?, String)? {
-        if body.hasPrefix("["), let match = body.range(of: #"^\[([^\]]+)\]\(([^)\s]+)\)"#, options: .regularExpression) {
+        if body.hasPrefix("["), let match = ShowPattern.linkLead.firstRange(in: body) {
             let whole = String(body[match])
             let close = whole.firstIndex(of: "]")!
             let title = String(whole[whole.index(after: whole.startIndex)..<close])
             let url = String(whole[whole.index(close, offsetBy: 2)..<whole.index(before: whole.endIndex)])
             return (title, url, String(body[match.upperBound...]))
         }
-        if body.hasPrefix("**"), let match = body.range(of: #"^\*\*([^*]+)\*\*"#, options: .regularExpression) {
+        if body.hasPrefix("**"), let match = ShowPattern.boldLead.firstRange(in: body) {
             let title = String(body[match].dropFirst(2).dropLast(2))
             return (title, nil, String(body[match.upperBound...]))
         }
@@ -295,13 +325,13 @@ enum BlobShow {
         let title = String(body[..<dot.lowerBound])
         guard title.count <= 60, let last = title.last, !".,:;!?".contains(last),
               !title.contains("["), !title.contains("*"), !title.contains("`"),
-              title.range(of: #"^(#|>|\||\d+[.)]\s)"#, options: .regularExpression) == nil
+              !ShowPattern.blockStart.matches(title)
         else { return nil }
         return title
     }
 
     private static func withoutBullet(_ line: String) -> String {
-        guard let match = line.range(of: #"^[-*+]\s+"#, options: .regularExpression) else { return line }
+        guard let match = ShowPattern.bullet.firstRange(in: line) else { return line }
         return String(line[match.upperBound...])
     }
 
@@ -376,8 +406,7 @@ enum BlobShow {
     /// inline markers not closed yet (`closeInline`).
     static func closeProse(_ text: String) -> String {
         var lines = text.components(separatedBy: "\n")
-        if let last = lines.last,
-           last.range(of: #"^\s*(#{1,6}|[-*+]|\d+[.)]?|[-*_=]+|`{1,2}|~{1,2}|\|)?\s*$"#, options: .regularExpression) != nil {
+        if let last = lines.last, ShowPattern.bareMarker.matches(last) {
             lines.removeLast()
         }
         guard !lines.isEmpty else { return "" }
@@ -395,14 +424,9 @@ enum BlobShow {
     static func closeInline(_ text: String) -> String {
         var s = text
         if s.filter({ $0 == "`" }).count % 2 == 1, let last = s.lastIndex(of: "`") { s.remove(at: last) }
-        let rules: [(String, String)] = [
-            (#"!\[[^\]]*(\]\([^)]*)?$"#, ""),
-            (#"\[([^\]]*)\]\([^)]*$"#, "$1"),
-            (#"\[([^\]]*)\]?$"#, "$1"),
-        ]
-        for (pattern, template) in rules {
-            s = s.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
-        }
+        s = ShowPattern.openImage.replace(in: s, with: "")
+        s = ShowPattern.openLinkTarget.replace(in: s, with: "$1")
+        s = ShowPattern.openLinkLabel.replace(in: s, with: "$1")
         for marker in ["**", "__", "~~"] where s.components(separatedBy: marker).count % 2 == 0 {
             if let last = s.range(of: marker, options: .backwards) { s.removeSubrange(last) }
         }
@@ -424,13 +448,13 @@ enum BlobShow {
             s = String(chars[..<last]) + String(chars[(last + 1)...])
         }
         // A marker just started at the end: `foo *` on its way to `foo **bar**`.
-        s = s.replacingOccurrences(of: #"(^|\s)[*_~]+$"#, with: "$1", options: .regularExpression)
+        s = ShowPattern.trailingMarker.replace(in: s, with: "$1")
         // An underscore inside the last word is never emphasis, but a
         // renderer still guessing at a half-written word could take it for one.
         if s.filter({ $0 == "`" }).count % 2 == 0, let space = s.lastIndex(where: \.isWhitespace) ?? s.indices.first {
             let word = s[space...]
             if word.contains("_"), !word.contains("\\_") {
-                s = String(s[..<space]) + word.replacingOccurrences(of: #"(?<=[A-Za-z0-9])_"#, with: #"\\_"#, options: .regularExpression)
+                s = String(s[..<space]) + ShowPattern.wordUnderscore.replace(in: String(word), with: #"\\_"#)
             }
         }
         return s
@@ -448,7 +472,7 @@ enum BlobShow {
                 return line
             }
             if let marker = CueMarkers.fenceMarker(line) { fence = marker; return line }
-            return line.replacingOccurrences(of: "[ \t]*" + CueMarkers.loosePattern, with: "", options: .regularExpression)
+            return ShowPattern.anyCue.replace(in: line, with: "")
         }.joined(separator: "\n")
     }
 
@@ -466,4 +490,39 @@ enum BlobShow {
         while let last = kept.last, isBlank(last) { kept = kept.dropLast() }
         return Array(kept)
     }
+}
+
+/// A regular expression compiled once (`BlobShow` runs on every streamed
+/// snapshot). The patterns are literals; a typo is a programming error.
+private struct ShowPattern: @unchecked Sendable {
+    let regex: NSRegularExpression
+
+    init(_ pattern: String) {
+        regex = try! NSRegularExpression(pattern: pattern)
+    }
+
+    func firstRange(in text: String) -> Range<String.Index>? {
+        regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)).flatMap { Range($0.range, in: text) }
+    }
+
+    func matches(_ text: String) -> Bool { firstRange(in: text) != nil }
+
+    func replace(in text: String, with template: String) -> String {
+        regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
+    }
+
+    static let typingCue = ShowPattern(#"\{#[^\s}]*$"#)
+    static let partialLead = ShowPattern(#"^(\[[^\]]*\]?|\[[^\]]+\]\([^)\s]*|\*\*[^*]*\*?)$"#)
+    static let listMarker = ShowPattern(#"^([-*+]|\d+[.)])\s"#)
+    static let linkLead = ShowPattern(#"^\[([^\]]+)\]\(([^)\s]+)\)"#)
+    static let boldLead = ShowPattern(#"^\*\*([^*]+)\*\*"#)
+    static let blockStart = ShowPattern(#"^(#|>|\||\d+[.)]\s)"#)
+    static let bullet = ShowPattern(#"^[-*+]\s+"#)
+    static let bareMarker = ShowPattern(#"^\s*(#{1,6}|[-*+]|\d+[.)]?|[-*_=]+|`{1,2}|~{1,2}|\|)?\s*$"#)
+    static let openImage = ShowPattern(#"!\[[^\]]*(\]\([^)]*)?$"#)
+    static let openLinkTarget = ShowPattern(#"\[([^\]]*)\]\([^)]*$"#)
+    static let openLinkLabel = ShowPattern(#"\[([^\]]*)\]?$"#)
+    static let trailingMarker = ShowPattern(#"(^|\s)[*_~]+$"#)
+    static let wordUnderscore = ShowPattern(#"(?<=[A-Za-z0-9])_"#)
+    static let anyCue = ShowPattern("[ \t]*" + CueMarkers.loosePattern)
 }

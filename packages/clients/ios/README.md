@@ -726,14 +726,20 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   caution in a reply is warm, any later one quiet. A quote is dim italic
   on a plate. Prose goes through the markdown renderer, links in the
   accent; a reply that starts streaming keeps one streaming renderer per
-  prose run for its whole life. A fence the block catalog claims draws as
+  prose run for its whole life. Once the reply settles its prose gets the
+  transcript's links (bare URLs, PR and commit references, session ids,
+  files; `BlobProseLinks`), each on the words as written, so settling only
+  recolours them. A fence the block catalog claims draws as
   soon as it closes; until then, and while a row, callout or quote is still
-  being written, a quiet placeholder in its shape holds its space. Markers
+  being written, a quiet placeholder in its shape holds its space (quick
+  replies as chips or rows, by the lines so far). A paragraph opening in
+  bold stays prose until its line has a row's shape. Markers
   not closed yet are left out (`**bo` reads `bo`), and cue anchors never
   show. Callouts and quick replies take Blob's look from
   `markdownLook = .blob`, set at Blob's root; the OS apps keep theirs.
   Quick replies are soft chips, the first in the accent while it can be
-  sent, or full-width rows when a label runs past three words. No test
+  sent, or full-width rows when a label runs past three words
+  (`ChoicesBlock.stacks`). No test
   target compiles `Blob/`; `BlobShow`'s doc comment lists the cases to check
   with a scratch `swiftc` run.
 - Streaming speech (`Blob/BlobSentenceStreamer.swift`): Blob reads the Say

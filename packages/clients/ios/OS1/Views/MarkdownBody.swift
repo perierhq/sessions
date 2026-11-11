@@ -285,22 +285,28 @@ struct MarkdownBody: View {
     }
 
     private func rewrite(_ value: String, ledger: PrLinks.Ledger) -> String {
-        AssetLinks.linkify(
-            FileLinks.linkify(
-                SessionLinks.linkify(
-                    AutomationLinks.linkify(
-                        MarkdownAutolink.linkify(
-                            CommitLinks.linkify(
-                                PrLinks.linkify(value, sessionId: openPanel.sessionId, ledger: ledger),
-                                sessionId: openPanel.sessionId ?? transcriptSessionId
-                            )
-                        )
-                    )
-                ),
-                sessionId: openPanel.sessionId
-            ),
-            sessionId: openPanel.sessionId
-        )
+        Self.linkRewrites(sessionId: openPanel.sessionId, transcriptSessionId: transcriptSessionId, ledger: ledger)
+            .reduce(value) { text, rewrite in rewrite(text) }
+    }
+
+    /// The link rewrites, in the order `linkified` explains. Each works line
+    /// by line and never adds or removes a line. Blob's prose runs them too,
+    /// one at a time (`BlobProseLinks`).
+    @MainActor
+    static func linkRewrites(
+        sessionId: String?,
+        transcriptSessionId: String?,
+        ledger: PrLinks.Ledger = PrLinks.Ledger()
+    ) -> [(String) -> String] {
+        [
+            { PrLinks.linkify($0, sessionId: sessionId, ledger: ledger) },
+            { CommitLinks.linkify($0, sessionId: sessionId ?? transcriptSessionId) },
+            MarkdownAutolink.linkify,
+            AutomationLinks.linkify,
+            SessionLinks.linkify,
+            { FileLinks.linkify($0, sessionId: sessionId) },
+            { AssetLinks.linkify($0, sessionId: sessionId) },
+        ]
     }
 
     /// The gap between a diagram and the prose around it, matching the block

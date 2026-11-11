@@ -62,24 +62,193 @@ struct BlobShowBody: View {
 /// text is drawn by the very view that drew it while it streamed. A reply
 /// already settled (history, a decision) uses the cached static renderer.
 /// Both at the same metrics: links in the accent, no underline.
+///
+/// Once the reply has settled the prose gets `MarkdownBody`'s links (bare
+/// URLs, PR and commit references, session ids, files), kept to links that
+/// only recolour words (`BlobProseLinks`), so settling never reflows it.
+/// While it streams it has none: a URL arrives a few characters at a time.
 struct BlobProse: View {
     let text: String
-    @State private var live: Bool
+    /// The reply has settled.
+    let settled: Bool
+    /// Made while the reply streamed: keeps the streaming renderer.
+    @State private var streamed: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openPanel) private var openPanel
+    @Environment(\.transcriptSessionId) private var transcriptSessionId
 
     init(_ text: String, live: Bool) {
         self.text = text
-        _live = State(initialValue: live)
+        settled = !live
+        _streamed = State(initialValue: live)
     }
 
     var body: some View {
-        if live {
-            StreamingMarkdownBody(text, config: .blob(animated: !reduceMotion))
+        let shown = settled
+            ? BlobProseLinks.linked(text, sessionId: openPanel.sessionId, transcriptSessionId: transcriptSessionId)
+            : text
+        if streamed {
+            StreamingMarkdownBody(shown, config: .blob(animated: !reduceMotion))
         } else {
-            CachedMarkdownView(text: text, config: .blob(animated: false))
+            CachedMarkdownView(text: shown, config: .blob(animated: false))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+}
+
+/// `MarkdownBody`'s link rewrites (`MarkdownBody.linkRewrites`) for Blob's
+/// settled prose, kept to what only recolours words, so the prose a reply
+/// streamed keeps its layout when it settles:
+///
+/// - A rewrite that changes a line's words (a chip, a PR URL relabelled
+///   `PR #12`, a session id shown by its title) links the words as written
+///   instead, to the same place.
+/// - A line where that still changes what shows, or how it is set (a link
+///   inside bold or italic takes the link's plain font, a heading or a table
+///   has its own), keeps that rewrite out.
+///
+/// Each rewrite runs on its own and is kept or dropped per line.
+@MainActor
+enum BlobProseLinks {
+    static func linked(_ text: String, sessionId: String?, transcriptSessionId: String?) -> String {
+        // Subscribes the view to the registries the rewrites read, as
+        // `MarkdownBody` does.
+        let generation = TranscriptLinks.shared.generation
+        let key = Key(text: text, sessionId: sessionId, transcriptSessionId: transcriptSessionId, generation: generation)
+        if let cached = cache[key] { return cached }
+        var lines = text.components(separatedBy: "\n")
+        for rewrite in MarkdownBody.linkRewrites(sessionId: sessionId, transcriptSessionId: transcriptSessionId) {
+            let next = rewrite(lines.joined(separator: "\n")).components(separatedBy: "\n")
+            guard next.count == lines.count else { continue }
+            for index in lines.indices where next[index] != lines[index] {
+                if let kept = recoloured(lines[index], as: next[index]) { lines[index] = kept }
+            }
+        }
+        let out = lines.joined(separator: "\n")
+        if cache.count >= 300 { cache.removeAll(keepingCapacity: true) }
+        cache[key] = out
+        return out
+    }
+
+    private struct Key: Hashable {
+        let text: String
+        let sessionId: String?
+        let transcriptSessionId: String?
+        let generation: Int
+    }
+
+    private static var cache: [Key: String] = [:]
+
+    /// `rewritten` with each new link put back on the words `line` had
+    /// there, or nil when the line can't take its links without changing
+    /// what it shows or how it is set.
+    private static func recoloured(_ line: String, as rewritten: String) -> String? {
+        if line.contains("|") || matches(heading, line) { return nil }
+        // The rewritten line: runs of text copied from `line`, each followed
+        // by a link (one `line` had, or a new one).
+        var pieces: [(literal: String, link: (token: String, label: String, destination: String)?)] = []
+        var last = rewritten.startIndex
+        for match in linkToken.matches(in: rewritten, range: NSRange(rewritten.startIndex..., in: rewritten)) {
+            guard let whole = Range(match.range, in: rewritten), let label = Range(match.range(at: 1), in: rewritten),
+                  let target = Range(match.range(at: 2), in: rewritten) else { return nil }
+            let link = (String(rewritten[whole]), String(rewritten[label]), String(rewritten[target]))
+            pieces.append((String(rewritten[last..<whole.lowerBound]), link))
+            last = whole.upperBound
+        }
+        pieces.append((String(rewritten[last...]), nil))
+
+        var out = ""
+        var cursor = line.startIndex
+        var added: Set<String> = []
+        // A new link whose words run up to the next text the two share.
+        var pending: String?
+        func place(_ destination: String, upTo end: String.Index) -> Bool {
+            let words = line[cursor..<end]
+            guard !words.isEmpty, !words.contains("["), !words.contains("]") else { return false }
+            out += "[\(words)](\(destination))"
+            cursor = end
+            return true
+        }
+        for piece in pieces {
+            if let destination = pending, !piece.literal.isEmpty {
+                // The words are what comes before the next shared text; an
+                // id or address has no space in it, so look up to the first.
+                let stop = line[cursor...].firstIndex(where: \.isWhitespace) ?? line.endIndex
+                var found: String.Index?
+                var from = cursor
+                while from < line.endIndex, let next = line.range(of: piece.literal, range: from..<line.endIndex),
+                      next.lowerBound <= stop {
+                    found = next.lowerBound
+                    from = line.index(after: next.lowerBound)
+                }
+                guard let found, place(destination, upTo: found) else { return nil }
+                pending = nil
+            }
+            guard line[cursor...].hasPrefix(piece.literal) else { return nil }
+            out += piece.literal
+            cursor = line.index(cursor, offsetBy: piece.literal.count)
+            guard let link = piece.link else { continue }
+            // Two new links in a row: nothing between them says where the
+            // first one ends.
+            guard pending == nil else { return nil }
+            let rest = line[cursor...]
+            if rest.hasPrefix(link.token) {
+                // A link the line already had.
+                out += link.token
+                cursor = line.index(cursor, offsetBy: link.token.count)
+                continue
+            }
+            let chip = link.label == TranscriptChip.marker
+            let destination = chip ? String(link.destination.prefix { $0 != "?" }) : link.destination
+            added.insert(destination)
+            let restText = String(rest)
+            if let had = linkToken.firstMatch(in: restText, range: NSRange(restText.startIndex..., in: restText)),
+               had.range.location == 0, let whole = Range(had.range, in: restText), let label = Range(had.range(at: 1), in: restText) {
+                // A link the rewrite pointed somewhere else: same words.
+                out += "[\(restText[label])](\(destination))"
+                cursor = line.index(cursor, offsetBy: restText[whole].count)
+            } else if !chip, rest.hasPrefix(link.label) {
+                // A link on the words as written.
+                out += "[\(link.label)](\(destination))"
+                cursor = line.index(cursor, offsetBy: link.label.count)
+            } else {
+                pending = destination
+            }
+        }
+        if let destination = pending, !place(destination, upTo: line.endIndex) { return nil }
+        guard cursor == line.endIndex, words(of: out) == words(of: line), !setApart(added, in: out) else { return nil }
+        return out
+    }
+
+    private static func matches(_ regex: NSRegularExpression, _ text: String) -> Bool {
+        regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static func parsed(_ line: String) -> AttributedString {
+        (try? AttributedString(markdown: line, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(line)
+    }
+
+    private static func words(of line: String) -> String {
+        String(parsed(line).characters)
+    }
+
+    /// Whether one of the new links sits in bold, italic or struck-through
+    /// text, which the renderer would set in the link's plain font.
+    private static func setApart(_ destinations: Set<String>, in line: String) -> Bool {
+        let styled: InlinePresentationIntent = [.emphasized, .stronglyEmphasized, .strikethrough]
+        return parsed(line).runs.contains { run in
+            guard let link = run.link, destinations.contains(link.absoluteString) || destinations.contains(link.relativeString),
+                  let intent = run.inlinePresentationIntent else { return false }
+            return !intent.isDisjoint(with: styled)
+        }
+    }
+
+    /// `[label](destination)`, a destination with one level of parentheses.
+    private static let linkToken = try! NSRegularExpression(
+        pattern: #"\[((?:[^\[\]\\]|\\.)*)\]\(((?:[^()\s]|\([^()\s]*\))*)\)"#
+    )
+    private static let heading = try! NSRegularExpression(pattern: #"^\s{0,3}#{1,6}(\s|$)"#)
 }
 
 /// Rows in a row: a status list, hairlines between.
@@ -249,6 +418,8 @@ struct BlobPlaceholder: View {
 
     @ScaledMetric(relativeTo: .footnote) private var line: CGFloat = 16
     @ScaledMetric(relativeTo: .subheadline) private var chipHeight: CGFloat = 34
+    /// A stacked reply's height (`ChoicesBlockView`'s rows).
+    @ScaledMetric(relativeTo: .subheadline) private var rowHeight: CGFloat = 44
 
     var body: some View {
         content
@@ -292,10 +463,24 @@ struct BlobPlaceholder: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(OS1VisualStyle.chipFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        case .chips:
-            HStack(spacing: 8) {
-                ForEach([96, 72, 88], id: \.self) { width in
-                    Capsule().fill(OS1VisualStyle.chipFill).frame(width: CGFloat(width), height: chipHeight)
+        case .choices(let lines):
+            // The shape the replies will take (`ChoicesBlock.stacks`), from
+            // the lines so far: a label only gains words, so chips can turn
+            // into rows while the fence streams but never when it closes.
+            let choices = ChoicesBlock.parse(lines.joined(separator: "\n")) ?? []
+            if ChoicesBlock.stacks(choices) {
+                VStack(spacing: 8) {
+                    ForEach(choices.indices, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(OS1VisualStyle.chipFill)
+                            .frame(height: rowHeight)
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ForEach([96, 72, 88], id: \.self) { width in
+                        Capsule().fill(OS1VisualStyle.chipFill).frame(width: CGFloat(width), height: chipHeight)
+                    }
                 }
             }
         }
