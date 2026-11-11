@@ -1284,6 +1284,7 @@ describe("opensession-supervisor", () => {
       "list_items",
       "post_item",
       "read_ledger",
+      "reply_in_thread",
       "watch_for",
     ]);
     const posted = await tools.post_item!.handler(

@@ -1468,11 +1468,25 @@ export const websocketHandlers: WebSocketHandler<WSClientData> = {
           // @People-mentions in a prompt ping the tagged teammates (roster
           // from the identity config, never the sender). Fires at send time
           // on every path — direct, queued, steer.
+          // @Blob routes only for the socket's verified person (web
+          // sign-in on, not the automation principal), keyed by the send's
+          // request id.
           void notifyMentions(
             String(content || ""),
             String(user || ""),
             sessionId,
             "prompt",
+            undefined,
+            {
+              ...(typeof msg.requestId === "string" && msg.requestId
+                ? { ref: msg.requestId }
+                : {}),
+              ...(ws.data.authLogin && !ws.data.authAutomation
+                ? { verifiedSender: ws.data.authUser || undefined }
+                : {}),
+              // Only what the person typed, never their pasted blocks.
+              typed: typeof msg.content === "string" ? msg.content : "",
+            },
           );
 
           // An explicit send is the user's next action after a Stop, so it lifts the

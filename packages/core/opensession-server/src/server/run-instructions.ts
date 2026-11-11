@@ -104,7 +104,9 @@ export function buildRunInstructions(input: {
   // next tool, so the sender saw only more work and read it as ignored.
   parts.push(
     "## Messages during a turn\nWhen a person messages you mid-turn, answer them in " +
-      "plain text before your next tool call, then continue unless the message changes the task.",
+      "plain text before your next tool call, then continue unless the message changes the task. " +
+      // @Blob reaches the sender's supervisor (blob-mentions.ts).
+      "A request to @Blob is for Blob, which gets it on its own: leave it to Blob.",
   );
   parts.push(
     "## References\nFor PRs outside the current primary repository, write " +

@@ -613,6 +613,15 @@ describe("standing sessions", () => {
     expect(note).not.toMatch(/merge it \(send_to_session\)/);
   });
 
+  test("the charter answers an @Blob mention where it was asked", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain("When the owner mentions you (@Blob)");
+    expect(note).toContain(
+      "reply_in_thread for a thread, send_to_session for a session",
+    );
+    expect(note).toContain("create_session or spawn_task");
+  });
+
   test("the charter keeps decisions to the owner's own words", () => {
     const note = supervisor.supervisorNote("Pat");
     expect(note).toContain(

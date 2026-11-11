@@ -396,6 +396,38 @@ export function resolvePinnedAccountId(
 }
 
 /**
+ * The person whose @Blob in a create's prompt may reach their supervisor:
+ * the verified signed-in person who typed it, and only for a create they
+ * started themselves. Anything an agent, Blob, a workflow or automation, or
+ * a Slack thread started runs under a person's name with text that person
+ * never typed, so it never routes, whatever its sender says.
+ */
+export function blobMentionAuthor(
+  spec: Pick<
+    ResolvedCreate,
+    | "blobMentionSender"
+    | "parentSessionId"
+    | "agentStarted"
+    | "actedBy"
+    | "spawnedBy"
+    | "slackOrigin"
+    | "automationDescendantPolicy"
+  > & { invokingSessionId?: string },
+): string | undefined {
+  if (
+    spec.parentSessionId ||
+    spec.invokingSessionId ||
+    spec.agentStarted ||
+    spec.actedBy ||
+    spec.spawnedBy ||
+    spec.slackOrigin ||
+    spec.automationDescendantPolicy
+  )
+    return undefined;
+  return spec.blobMentionSender?.trim() || undefined;
+}
+
+/**
  * A create resolved down to what the shared engine needs: where the session
  * lives, what it persists, and how its opening run is configured. Built by
  * the per-path setup (web palette vs. MCP) — every deliberate difference
@@ -419,6 +451,10 @@ export interface ResolvedCreate {
   createdAt: string;
   /** Verified web sign-in identity of the creator (web creates only). */
   createdByLogin?: string;
+  /** The signed-in person the server verified typed `titlePrompt` in the
+   *  app (blobMentionAuthor). Unset for anything an agent, Blob, an
+   *  automation or Slack started: only then may @Blob in it route. */
+  blobMentionSender?: string;
   mode: "ask" | "code" | "scratch";
   wtPath: string;
   /** Branch recorded on the session file ("" for ask/scratch sessions). */
@@ -1840,7 +1876,17 @@ export async function openCreatedSession(
       // any other message: the session exists now, so the badge has a row
       // to land on. Scanned from the raw prompt, never the assembled one,
       // so a repo note or a handoff cannot invent a mention.
-      void notifyMentions(spec.titlePrompt, spec.user || "", bksId, "prompt");
+      // @Blob routes only from a verified person's own create in the app
+      // (blobMentionAuthor), keyed by the session it created.
+      const blobSender = blobMentionAuthor(spec);
+      void notifyMentions(
+        spec.titlePrompt,
+        spec.user || "",
+        bksId,
+        "prompt",
+        undefined,
+        blobSender ? { ref: bksId, verifiedSender: blobSender } : {},
+      );
       // Projection is latency-sensitive; startup is capacity-sensitive.
       // Persist and announce every accepted session first, then wait for one of
       // the bounded startup slots. The slot is released on the opening run's
@@ -3392,6 +3438,11 @@ export async function handleCreateSessionMessage(
       createdBy: user || "Anonymous",
       createdAt: new Date().toISOString(),
       createdByLogin: ws.data?.authLogin || undefined,
+      // The socket's verified person typed this prompt (web sign-in on,
+      // not the automation principal).
+      ...(ws.data?.authLogin && !ws.data.authAutomation && ws.data.authUser
+        ? { blobMentionSender: ws.data.authUser }
+        : {}),
       mode: isScratch
         ? ("scratch" as const)
         : isAsk

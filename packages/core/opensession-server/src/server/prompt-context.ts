@@ -57,6 +57,7 @@ export type ContextSource =
   | "supervisor-report-style"
   | "supervisor-clock"
   | "supervisor-seed"
+  | "blob-mention"
   | "session"
   | "unknown";
 
@@ -82,6 +83,7 @@ const SOURCES = new Set<string>([
   "supervisor-report-style",
   "supervisor-clock",
   "supervisor-seed",
+  "blob-mention",
   "session",
   "unknown",
 ]);

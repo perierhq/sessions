@@ -93,6 +93,7 @@ import {
   type ResolvedCreate,
   actorCreationSetupPlan,
   actorWorktreeMaterializer,
+  blobMentionAuthor,
   forkHandoffContext,
   runOpeningCreateOnce,
   resolveForkContext,
@@ -747,6 +748,7 @@ registerSessionControl({
       reportBack,
       user,
       createdByLogin,
+      blobMentionSender,
       sandbox,
       sandboxGpu: sandboxGpuInput,
       forkFrom,
@@ -1390,6 +1392,21 @@ ${createMentionsNote}`;
       user,
       createdBy: sessionCreatedBy,
       createdByLogin,
+      // Dropped for anything an agent, automation or Slack started.
+      ...(blobMentionAuthor({
+        blobMentionSender,
+        parentSessionId,
+        invokingSessionId,
+        agentStarted,
+        actedBy,
+        // The input, not the attributed spawnedBy: the Desk and the
+        // supervisor delegate as the person, but never typed this text.
+        spawnedBy: spawnedByInput,
+        slackOrigin,
+        automationDescendantPolicy: requestedDescendantPolicy,
+      })
+        ? { blobMentionSender }
+        : {}),
       createdAt: sessionCreatedAt,
       mode: isScratch
         ? ("scratch" as const)

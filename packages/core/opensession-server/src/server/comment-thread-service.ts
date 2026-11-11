@@ -27,6 +27,7 @@ import { personaName } from "./config";
 import { mentionPreview, notifyMentions } from "./mentions";
 import { mentionedUsers } from "./people";
 import { notifyUser, sessionSubject } from "./notifications";
+import { isBlobActor } from "./session-actors";
 import { findSessionAsync } from "./session-cache";
 import { removeStagedImages } from "./uploads";
 import { broadcastToAll, broadcastToSession } from "./ws-hub";
@@ -68,7 +69,9 @@ export function continuesAgentConversation(
   if (added.agent) return false;
   const index = thread.comments.findIndex((c) => c.id === added.id);
   const previous = index > 0 ? thread.comments[index - 1] : undefined;
-  if (!previous?.agent) return false;
+  // Blob answers in threads too (supervisor reply_in_thread); a reply to
+  // Blob is not a conversation with the session's agent.
+  if (!previous?.agent || isBlobActor(previous.user)) return false;
   return mentionedUsers(added.text, added.user).length === 0;
 }
 
@@ -237,6 +240,9 @@ export async function createThread(input: {
   images?: string[];
   anchor?: TextAnchor | null;
   assignee?: string | null;
+  /** `user` is the signed-in person, verified by the route
+   *  (routes/context.ts verifiedPerson): only then does @Blob route. */
+  verified?: boolean;
 }): Promise<ServiceResult> {
   const result = await mutateThreads(input.sessionId, (threads) =>
     applyCreateThread(threads, input),
@@ -253,6 +259,11 @@ export async function createThread(input: {
     thread.sessionId,
     thread.anchor ? "comment" : "note",
     url,
+    {
+      threadId: thread.id,
+      ref: thread.comments[0]!.id,
+      ...(input.verified ? { verifiedSender: input.user } : {}),
+    },
   );
   if (mentionsAgent(thread.comments[0]!.text))
     await startAgentAnswer(thread, input.user);
@@ -262,7 +273,14 @@ export async function createThread(input: {
 export async function addComment(
   sessionId: string,
   threadId: string,
-  input: { user: string; text: string; images?: string[]; agent?: boolean },
+  input: {
+    user: string;
+    text: string;
+    images?: string[];
+    agent?: boolean;
+    /** As createThread's `verified`; never with `agent`. */
+    verified?: boolean;
+  },
 ): Promise<ServiceResult & { added?: ThreadComment }> {
   const result = await mutateThreads(sessionId, (threads) =>
     applyAddComment(threads, threadId, input),
@@ -277,6 +295,11 @@ export async function addComment(
     sessionId,
     "comment",
     url,
+    {
+      threadId,
+      ref: added.id,
+      ...(input.verified && !input.agent ? { verifiedSender: input.user } : {}),
+    },
   );
   await notifyParticipants(
     thread,

@@ -438,6 +438,13 @@ describe("buildRunInstructions", () => {
     }
   });
 
+  test("leaves @Blob requests to Blob", () => {
+    const prompt = buildRunInstructions({ isAsk: false, hasSession: true });
+    expect(prompt).toContain(
+      "A request to @Blob is for Blob, which gets it on its own: leave it to Blob.",
+    );
+  });
+
   test("carries no per-session facts", () => {
     const prompt = buildRunInstructions({
       isAsk: false,

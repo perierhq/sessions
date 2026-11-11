@@ -14,6 +14,8 @@
  * `append_ledger` are its memory across conversations (supervisor-ledger.ts).
  * `watch_for` hands a background follow-up to the owner's watch
  * (supervisor-watch.ts): the conversation keeps no timers of its own.
+ * `reply_in_thread` answers an @Blob mention (blob-mentions.ts) in the
+ * comment thread it came from, as Blob.
  *
  * The inbox and ledger tools are built here once and shared with the
  * watch's own server (supervisor-watch-mcp.ts).
@@ -22,7 +24,11 @@ import { z } from "zod";
 import { personaName } from "./config";
 import { ASK_PAT_ACTIONS, askPat } from "./supervisor-ask-pat";
 import { createSdkMcpServer, tool } from "./inprocess-mcp";
-import { humanPrompter, sessionCreationOwner } from "./session-actors";
+import {
+  BLOB_ACTOR,
+  humanPrompter,
+  sessionCreationOwner,
+} from "./session-actors";
 import {
   appendSupervisorLedger,
   LEDGER_ENTRY_MAX,
@@ -287,6 +293,28 @@ export function createSupervisorMcpServer(ctx: { user: string }) {
         },
       ),
       tool(
+        "reply_in_thread",
+        "Answer in a comment thread on a session, as Blob: where the owner mentioned you (@Blob) in a thread, the turn names its session_id and thread_id. Only those threads, for 7 days, until you resolve one. resolve also resolves the thread, when the reply settles it. The people in the thread are notified. For a mention in a session itself, answer with send_to_session instead.",
+        {
+          session_id: z.string().min(1).max(80),
+          thread_id: z.string().min(1).max(80),
+          text: z.string().min(1).max(8000).describe("The reply, in Markdown."),
+          resolve: z.boolean().optional(),
+        },
+        async (args) => {
+          const result = await replyInThread(user, {
+            sessionId: args.session_id,
+            threadId: args.thread_id,
+            text: args.text,
+            resolve: args.resolve,
+          });
+          return {
+            ...text(result.message),
+            ...(result.ok ? {} : { isError: true }),
+          };
+        },
+      ),
+      tool(
         "ask_pat",
         `Hand GitHub work on a pull request to ${personaName()}, the public worker, through the existing flows: review_pr runs the PR review, fix_ci runs the auto-fix loop starting with the failing checks, auto_fix runs the full auto-fix loop (os-auto-fix). ${personaName()} posts the results on the PR. Takes no text: nothing you write goes to GitHub. Tell the owner you asked ${personaName()}.`,
         {
@@ -313,6 +341,101 @@ export function createSupervisorMcpServer(ctx: { user: string }) {
       ),
     ],
   });
+}
+
+/** Whether `owner` may see `session`: anyone's session but another
+ *  person's Desk or supervisor, which are theirs alone. */
+export function ownerSeesSession(
+  owner: string,
+  session: { desk?: boolean; supervisor?: boolean; createdBy?: string | null },
+): boolean {
+  if (!session.desk && !session.supervisor) return true;
+  const creator = session.createdBy?.trim();
+  return !!creator && supervisorInboxKey(creator) === supervisorInboxKey(owner);
+}
+
+/**
+ * Blob's answer in a comment thread: a comment as Blob through the thread
+ * service (comment-thread-service.ts), so the thread's people are told, and
+ * a resolve when asked. Only where a mention by this owner was routed to
+ * their supervisor (blob-mentions.ts routedThreadOpen): within 7 days and
+ * not resolved by Blob since. Anything else is refused, so text pasted
+ * into the supervisor can't make Blob post in other threads. Each post is
+ * audited as Blob, with the text as a digest. Blob's comment never routes
+ * back to Blob (`mentionsBlob` drops Blob as a sender, and an agent
+ * comment skips the routing).
+ */
+export async function replyInThread(
+  owner: string,
+  input: {
+    sessionId: string;
+    threadId: string;
+    text: string;
+    resolve?: boolean;
+  },
+): Promise<{ ok: boolean; message: string }> {
+  const [{ findSessionAsync }, threads, service, mentions, { auditAsync }] =
+    await Promise.all([
+      import("./session-cache"),
+      import("./comment-threads"),
+      import("./comment-thread-service"),
+      import("./blob-mentions"),
+      import("./audit"),
+    ]);
+  const missing = { ok: false, message: "No such thread on that session." };
+  if (!threads.isValidThreadSession(input.sessionId)) return missing;
+  const session = await findSessionAsync(input.sessionId);
+  if (!session || !ownerSeesSession(owner, session)) return missing;
+  const thread = await threads.getThread(input.sessionId, input.threadId);
+  if (!thread) return missing;
+  if (
+    !(await mentions.routedThreadOpen(owner, input.sessionId, input.threadId))
+  )
+    return {
+      ok: false,
+      message:
+        "You can answer only in a thread where the owner mentioned @Blob in the last 7 days and you haven't resolved it since.",
+    };
+  const result = await service.addComment(input.sessionId, input.threadId, {
+    user: BLOB_ACTOR,
+    agent: true,
+    text: input.text,
+  });
+  if (!result.ok)
+    return {
+      ok: false,
+      message: `Couldn't reply: ${result.reason.replace("_", " ")}.`,
+    };
+  let resolved = false;
+  if (input.resolve && thread.status !== "resolved") {
+    const update = await service.updateThread(
+      input.sessionId,
+      input.threadId,
+      { status: "resolved" },
+      BLOB_ACTOR,
+    );
+    resolved = update.ok;
+    if (resolved)
+      await mentions.closeRoutedThread(owner, input.sessionId, input.threadId);
+  }
+  auditAsync({
+    kind: "blob_thread_reply",
+    session_id: input.sessionId,
+    thread_id: input.threadId,
+    comment_id: result.added?.id,
+    text_sha256: new Bun.CryptoHasher("sha256")
+      .update(input.text)
+      .digest("hex"),
+    resolved,
+    user: owner,
+    actor: BLOB_ACTOR,
+  });
+  if (input.resolve && thread.status !== "resolved" && !resolved)
+    return { ok: false, message: "Replied, but couldn't resolve it." };
+  return {
+    ok: true,
+    message: input.resolve ? "Replied and resolved." : "Replied.",
+  };
 }
 
 /** Servers a supervisor session's turn never gets: it keeps no timers of

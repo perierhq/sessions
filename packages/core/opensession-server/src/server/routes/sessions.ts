@@ -10,7 +10,7 @@ import { handleAgentMessageSummaryRoutes } from "./agent-message-summary";
 
 import { executeSessionProjection } from "../session-projection-executor";
 import { transcriptSearchWorkerArgv } from "../../runner-host/exe";
-import { requestUser, type RouteContext } from "./context";
+import { requestUser, type RouteContext, verifiedPerson } from "./context";
 import { archiveOlderThan, isArchivedId } from "../archive";
 import {
   pendingAskAwaitingAnswerSync,
@@ -603,6 +603,25 @@ export async function sidebarRowsProjection(
   return { rows, group: enrichedGroup };
 }
 
+/** Where a REST create's prompt came from, when not the person's typing.
+ *  `suggested-task`: an agent's suggest_task instructions, started as
+ *  written (SuggestedTaskCard). */
+export const SUGGESTED_TASK_ORIGIN = "suggested-task";
+
+/**
+ * Who may route @Blob from a REST create's prompt: the verified signed-in
+ * person, when they typed it. A suggested task's instructions are the
+ * agent's words, so they never route. The client's `origin` is trusted
+ * only to exclude: it can turn routing off, never on.
+ */
+export function createBlobMentionSender(
+  ctx: RouteContext,
+  body: { origin?: unknown } | null | undefined,
+): string | undefined {
+  if (body?.origin === SUGGESTED_TASK_ORIGIN) return undefined;
+  return verifiedPerson(ctx) || undefined;
+}
+
 /**
  * A session as list clients consume it.
  *
@@ -1064,6 +1083,8 @@ export async function handleSessionsRoutes(
   if (path === "/api/sessions" && req.method === "POST") {
     const body = (await req.json().catch(() => null)) as {
       prompt?: unknown;
+      /** SUGGESTED_TASK_ORIGIN: an agent's words, never routes @Blob. */
+      origin?: unknown;
       repo?: unknown;
       mode?: unknown;
       model?: unknown;
@@ -1174,6 +1195,10 @@ export async function handleSessionsRoutes(
         requestId,
         requestScope: actorScope,
         createdByLogin: ctx.authUser?.login,
+        // The signed-in person typed this prompt: @Blob in it may route.
+        ...(createBlobMentionSender(ctx, body)
+          ? { blobMentionSender: createBlobMentionSender(ctx, body) }
+          : {}),
         prompt,
         mode,
         ...(mode === "code" && branch ? { branch } : {}),
@@ -1502,7 +1527,23 @@ export async function handleSessionsRoutes(
         );
       }
       if (session && !result.duplicate) {
-        await notifyMentions(content, String(user || ""), sessionId, "prompt");
+        // @Blob routes only for a verified signed-in person, keyed by the
+        // outbox's client id.
+        await notifyMentions(
+          content,
+          String(user || ""),
+          sessionId,
+          "prompt",
+          undefined,
+          {
+            ...(clientId ? { ref: clientId } : {}),
+            ...(verifiedPerson(ctx)
+              ? { verifiedSender: verifiedPerson(ctx) }
+              : {}),
+            // Only what the person typed, never their pasted blocks.
+            typed: raw.trim(),
+          },
+        );
       }
       const payload = {
         ...result,

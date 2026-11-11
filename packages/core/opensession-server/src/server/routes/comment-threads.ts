@@ -17,7 +17,7 @@
  * live inside the /api/sessions/:id path family.
  */
 
-import { requestUser, type RouteContext } from "./context";
+import { requestUser, type RouteContext, verifiedPerson } from "./context";
 import {
   cleanAnchor,
   isValidThreadSession,
@@ -124,6 +124,7 @@ async function handleThreads(
       images,
       anchor,
       assignee: typeof body?.assignee === "string" ? body.assignee : null,
+      verified: !!verifiedPerson(ctx),
     }).catch((error) => {
       removeStagedImages(images);
       throw error;
@@ -191,6 +192,7 @@ async function handleThreads(
       user,
       text: typeof body?.text === "string" ? body.text : "",
       images,
+      verified: !!verifiedPerson(ctx),
     }).catch((error) => {
       removeStagedImages(images);
       throw error;
@@ -253,6 +255,7 @@ async function handleLegacyNotes(
       user,
       text: typeof body?.text === "string" ? body.text : "",
       images,
+      verified: !!verifiedPerson(ctx),
     });
     if (!result.ok) {
       removeStagedImages(images);
