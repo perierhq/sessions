@@ -216,7 +216,8 @@ What landed from this proposal, and the decisions made on the way:
   Turned on per project in settings (#153).
 - **How Blob reports** (#152): the first paragraph is what Blob says, the rest is shown;
   BLUF, SBAR or plain per person; Blob hands GitHub work to Pat, the public persona, and
-  never posts as itself.
+  never posts as itself. The owner reversed the last part on 2026-11-11 (see "Blob speaks
+  on GitHub as itself" below).
 - **Native push** (#151): Bark as a second transport, AES-GCM optional, opening
   `blob://item/<id>`. The paid Apple team is unavailable, so Blob has no APNs of its own.
 - **Long-lived supervisor** (#154): a ledger, weekly rotation reseeded from it, daily
@@ -317,3 +318,26 @@ is in `docs/security-model.md` ("Project leads").
 Not built yet: the `spawn-worker` step (it waits for a restricted spawn path), the steps
 section outside Blob, the classifier (Haiku 5.5 rather than a separate vendor), more leads,
 and Duo posture APIs.
+
+## Blob speaks on GitHub as itself
+
+Decided by the owner on 2026-11-11. Not built yet. It reverses the rule above that Blob
+never posts as itself.
+
+- **Blob has its own GitHub account.** It is a machine user in the organization, not a
+  GitHub App. People can mention it and assign it like a teammate.
+- **Blob may post on issues and pull requests.** It may comment, leave a review with
+  comments, add existing labels and open an issue. It never approves a pull request.
+- **Only server-side tools hold its token.** The supervisor and the leads call gateway
+  tools, and the gateway posts as Blob. The token is never in a shell, `GH_CONFIG_DIR` or
+  an agent's environment.
+- **Guards fail closed.** Posting is off until the owner turns it on. The repository must
+  be registered and allowed for Blob. A public repository must be listed by name. Writes
+  are capped per owner and per thread, and each one is audited.
+- **Nothing pushes or merges as Blob.** Its token can't write code. Merging stays with the
+  owner and the existing loops' rules.
+- **Pat stays the code worker persona.** Code sessions, commits and pull requests keep
+  their current identities. Blob speaks for the supervisor and the leads, and hands code
+  work to Pat as before.
+
+See `docs/github-authority.md` ("Current policy") for the credential.

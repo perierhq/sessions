@@ -12,6 +12,19 @@ Ask runs, unattended runs, and machine-authored turns keep their App-token
 limits and publication guards. Run-scoped `GH_CONFIG_DIR`, bot commit authorship,
 `Co-authored-by` attribution, and audit error handling remain unchanged.
 
+Blob's GitHub machine user is the third principal. It was decided on
+2026-11-11 and is not built yet. Blob is the supervisor and the project leads
+(see `adrs/supervisor-and-leads.md`). Its account is a member of the
+organization, for example `acme-blob`, and it holds a fine-grained token with
+read and write on issues and pull requests and read on contents. With it, Blob
+may comment, leave a review with comments, add existing labels and open
+issues. It never approves, pushes or merges. Only the gateway's Blob tools
+read the token, on the server. It is never put in a shell, `GH_CONFIG_DIR` or
+an agent's environment. A post is refused unless Blob is turned on, the
+repository is registered and allowed for Blob, and a public repository is
+listed by name. Writes are capped per owner and per thread, and each one is
+audited with the owner it acted for.
+
 The App grant and every installation-token mint exclude repository
 Administration. New repository creation happens in the person's GitHub
 browser session at `https://github.com/new`; Open Session only connects the
