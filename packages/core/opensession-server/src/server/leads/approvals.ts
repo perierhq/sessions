@@ -25,6 +25,7 @@ import { LEAD_CATEGORIES, type LeadCategory } from "../../shared/project-lead";
 import type { SignalRule } from "../../shared/incidents";
 import { catalogDocuments, isValidCatalogKey } from "../catalog-documents";
 import { validateRule } from "../incidents/signal-validation";
+import type { LeadCondition } from "./conditions";
 import { CATALOG_DOCUMENT_MAX_VALUE_BYTES } from "../session-kernel/catalog-document-protocol";
 
 export const LEAD_APPROVALS_NAMESPACE = "lead-approvals";
@@ -84,11 +85,6 @@ export type LeadStep =
   | { kind: "support-send"; conversationId: string; draftId: string };
 
 export type LeadStepKind = LeadStep["kind"];
-
-export type LeadCondition =
-  | { kind: "pr-merged"; ghRepo: string; number: number }
-  | { kind: "checks-green"; ghRepo: string; number: number; headSha: string }
-  | { kind: "incident-resolved"; id: string };
 
 export interface ActProposal {
   id: string;
