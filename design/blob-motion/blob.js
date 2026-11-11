@@ -246,13 +246,15 @@
       }
 
       if (halo) {
+        // A soft ring just outside the body (radius 0.4 of size), at most
+        // 1.3 times its radius.
         const hs =
           (size / 200) *
-          (1.45 + (reduce ? 0 : 0.25 * env * (st.mode === "listen" ? 1 : 0)));
+          (0.98 + (reduce ? 0 : 0.06 * env * (st.mode === "listen" ? 1 : 0)));
         halo.style.transform = `translate(${sp.x.x - 100}px, ${sp.y.x - 100}px) scale(${hs})`;
         halo.style.opacity = clamp(sp.halo.x, 0, 1.2);
         halo.style.background =
-          sp.sky.x > 0.5 ? "rgb(29 130 188 / 14%)" : "rgb(0 0 0 / 5%)";
+          sp.sky.x > 0.5 ? "rgb(29 130 188 / 12%)" : "rgb(0 0 0 / 4.5%)";
       }
     }
 

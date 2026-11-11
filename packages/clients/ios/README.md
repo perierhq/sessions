@@ -241,7 +241,9 @@ Pure SwiftUI with SwiftStreamingMarkdown for CommonMark/GFM rendering. See
   heading with captions, a before/after compare control, Swift Charts for a
   Vega-Lite subset, locked artifact/SVG frames, slide decks, palettes, data
   grids, JSON trees, ANSI output, washed diffs, display math, callouts and
-  metric cards. Every parser lives in `Models/` and falls back to the plain
+  metric cards (equal columns that fill the width, as many as fit at
+  104 pt, more as the text size grows, the rows balanced so no card is
+  wider than the rest). Every parser lives in `Models/` and falls back to the plain
   fence when it refuses the source, so a streaming block stays readable.
   JSON trees reject values deeper than 64 levels. Sortable table headers share
   the body column widths and scroll with the rows when the table overflows.
@@ -694,7 +696,13 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
 `pl.sessions.blob`, so it installs next to OS.
 
 - The character (`Blob/BlobCharacter.swift`) is a port of the motion
-  prototype in `design/blob-motion/blob.js`. Keep the two in step.
+  prototype in `design/blob-motion/blob.js`. Keep the two in step. Its halo
+  is a soft ring just outside the body (at most 1.3 times its radius): grey
+  while it listens, the accent when something needs you, none while you
+  type.
+- Accent: Blob and Blob for Mac start on Tangerine (`AccentTheme.default`
+  under the `BLOB` condition) until the server's accent arrives; the OS
+  apps keep Sky.
 - Tap Blob to talk. The conversation is the Desk's live voice call
   (`DeskVoiceEngine.desk`); long-press for settings.
 - Say and show (`Blob/BlobReply.swift`): the first paragraph of a reply
@@ -751,7 +759,11 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   slides, images, the rest of the block catalog), or with a decision
   waiting beside it, puts those in the trailing pane, top-aligned with
   their own scroll, and Blob goes to its slot. Text never crosses a
-  physical fold, and Blob's thought stays in Blob's region. Blob travels
+  physical fold, and Blob's thought stays in Blob's region. While Blob
+  sits across the open Duo's fold, its captions (the first-run hint,
+  listening, a notice) go beside it in the leading pane, level with it.
+  With two panes the write bar stays in the leading pane, ending before
+  the fold. Blob travels
   on its spring and the text column keeps its width, so nothing re-wraps;
   under Reduce Motion Blob fades in at its new place instead. History
   keeps each exchange the way it was shown: one with visuals beside it
