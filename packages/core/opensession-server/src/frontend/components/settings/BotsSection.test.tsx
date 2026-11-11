@@ -108,7 +108,7 @@ describe("BlobMemberCard", () => {
 
   test("links to Blob's settings and offers no edit or remove", () => {
     expect(html).toContain('href="/settings/notifications"');
-    expect(shown).toContain("Open Blob settings");
+    expect(shown).toContain("Notification settings");
     expect(html).not.toContain("<input");
     expect(html).not.toMatch(/remove|delete/i);
   });

@@ -920,6 +920,16 @@ describe("routes", () => {
     ).toBe(200);
   });
 
+  test("fields=id lists only the ids, for a count", async () => {
+    const a = await needsYou();
+    await fyi("CI repaired");
+    const list = await call(
+      "GET",
+      "/api/supervisor/items?user=Ada&state=open&kind=needs-you&fields=id",
+    );
+    expect(await list!.json()).toEqual({ items: [{ id: a.item.id }] });
+  });
+
   test("a signed-in person acts on their own inbox, whatever the request claims", async () => {
     const a = await needsYou();
     const asGrace = { login: "grace", name: "Grace Hopper" };

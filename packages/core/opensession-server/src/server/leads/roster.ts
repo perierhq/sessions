@@ -7,8 +7,8 @@ import type { ProjectSettingsDocument } from "../../shared/project-settings";
 
 export interface LeadRosterDeps {
   listProjectDocuments(): Promise<ProjectSettingsDocument[]>;
-  /** The project as people know it. */
-  projectLabel(project: string): string;
+  /** Each configured project's id and the label people know it by. */
+  projectLabels(): ReadonlyMap<string, string>;
   /** Who the lead answers to; "" when nobody does. */
   leadOwner(doc: ProjectSettingsDocument): string;
 }
@@ -24,7 +24,13 @@ async function liveDeps(): Promise<LeadRosterDeps> {
     ]);
   return {
     listProjectDocuments,
-    projectLabel: (project) => configuredRepos()[project]?.label || project,
+    projectLabels: () =>
+      new Map(
+        Object.entries(configuredRepos()).map(([id, repo]) => [
+          id,
+          repo.label || id,
+        ]),
+      ),
     leadOwner,
   };
 }
@@ -38,20 +44,28 @@ export function __setLeadRosterDepsForTest(
   overrides = next;
 }
 
-/** Running leads first, then by label. */
+/**
+ * Configured projects only, running leads first, then by label. A document
+ * left behind by a removed project stays out.
+ */
 export async function listLeadRoster(): Promise<LeadRosterEntry[]> {
   const deps = { ...(await liveDeps()), ...overrides };
+  const labels = deps.projectLabels();
   const docs = await deps.listProjectDocuments();
   return docs
-    .map((doc): LeadRosterEntry => {
+    .flatMap((doc): LeadRosterEntry[] => {
+      const label = labels.get(doc.project);
+      if (label === undefined) return [];
       const owner = deps.leadOwner(doc);
-      return {
-        project: doc.project,
-        label: deps.projectLabel(doc.project),
-        enabled: doc.lead.enabled,
-        stage: doc.lead.stage,
-        ...(owner ? { owner } : {}),
-      };
+      return [
+        {
+          project: doc.project,
+          label,
+          enabled: doc.lead.enabled,
+          stage: doc.lead.stage,
+          ...(owner ? { owner } : {}),
+        },
+      ];
     })
     .sort(
       (a, b) =>

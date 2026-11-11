@@ -65,7 +65,7 @@ describe("loadBlobSummary", () => {
     ]);
     expect(summary.needsYou).toBe(2);
     expect(seen).toContain(
-      `/api/supervisor/items?user=Ada%20Lovelace&state=open&kind=needs-you&limit=${NEEDS_YOU_LIMIT}`,
+      `/api/supervisor/items?user=Ada%20Lovelace&state=open&kind=needs-you&limit=${NEEDS_YOU_LIMIT}&fields=id`,
     );
     expect(seen).toContain("/api/supervisor/prefs?user=Ada%20Lovelace");
   });

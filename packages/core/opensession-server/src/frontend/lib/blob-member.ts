@@ -82,7 +82,7 @@ export async function loadBlobSummary(
       fetchImpl,
     ),
     getParsed(
-      `/api/supervisor/items?${who}&state=open&kind=needs-you&limit=${NEEDS_YOU_LIMIT}`,
+      `/api/supervisor/items?${who}&state=open&kind=needs-you&limit=${NEEDS_YOU_LIMIT}&fields=id`,
       z.object({ items: z.array(z.object({ id: z.string() })) }),
       fetchImpl,
     ),

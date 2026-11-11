@@ -35,10 +35,17 @@ function doc(
   } as ProjectSettingsDocument;
 }
 
-function stub(docs: ProjectSettingsDocument[]) {
+function stub(
+  docs: ProjectSettingsDocument[],
+  labels: Record<string, string> = {
+    "acme-web": "Acme web",
+    beta: "beta",
+    zeta: "zeta",
+  },
+) {
   __setLeadRosterDepsForTest({
     listProjectDocuments: async () => docs,
-    projectLabel: (project) => (project === "acme-web" ? "Acme web" : project),
+    projectLabels: () => new Map(Object.entries(labels)),
     leadOwner: (d) => d.lead.owner ?? "",
   });
 }
@@ -91,6 +98,19 @@ test("the route answers GET with the roster and nothing else", async () => {
     ],
   });
   expect(await call("POST")).toBeUndefined();
+});
+
+test("a stored document for a removed project is not listed", async () => {
+  stub(
+    [
+      doc("acme-web", { enabled: true, stage: "watch" }),
+      doc("gone", { enabled: true, stage: "act" }),
+    ],
+    { "acme-web": "Acme web" },
+  );
+  expect(await listLeadRoster()).toEqual([
+    { project: "acme-web", label: "Acme web", enabled: true, stage: "watch" },
+  ]);
 });
 
 test("no stored documents is an empty list", async () => {

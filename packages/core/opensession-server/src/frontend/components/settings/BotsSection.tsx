@@ -120,7 +120,7 @@ export function BlobMemberCard({
               />
             }
           >
-            Open Blob settings
+            Notification settings
           </Button>
         }
       />

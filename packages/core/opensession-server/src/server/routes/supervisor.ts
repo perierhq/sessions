@@ -101,6 +101,10 @@ export async function handleSupervisorRoutes(
       since: Number.isFinite(since) && since > 0 ? since : undefined,
       limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     });
+    // fields=id is for counting: just the ids, without reading lead records.
+    if (url.searchParams.get("fields") === "id") {
+      return Response.json({ items: items.map(({ id }) => ({ id })) });
+    }
     // Each item with the revision an answer names, and a lead's item with
     // the steps its approval runs, read from the record (leads/item-acts.ts).
     return Response.json({ items: await withItemActs(items) });
