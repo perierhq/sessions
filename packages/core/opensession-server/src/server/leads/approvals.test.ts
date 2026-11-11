@@ -86,7 +86,7 @@ function input(overrides: Record<string, unknown> = {}) {
     itemRevision: 1000,
     steps: [merge],
     ...overrides,
-  } as import("./approvals").LeadProposalInput;
+  } as import("./approvals").ActProposalInput;
 }
 
 async function propose(overrides: Record<string, unknown> = {}) {
@@ -158,6 +158,14 @@ describe("validation", () => {
     ["long prompt", { kind: "spawn-worker", prompt: "x".repeat(4001) }],
     ["control prompt", { kind: "spawn-worker", prompt: "hi\u0007" }],
     ["bidi prompt", { kind: "spawn-worker", prompt: "hi\u202e" }],
+    ["line separator prompt", { kind: "spawn-worker", prompt: "a\u2028b" }],
+    [
+      "paragraph separator prompt",
+      { kind: "spawn-worker", prompt: "a\u2029b" },
+    ],
+    ["zero-width prompt", { kind: "spawn-worker", prompt: "a\u200bb" }],
+    ["word joiner prompt", { kind: "spawn-worker", prompt: "a\u2060b" }],
+    ["byte order mark prompt", { kind: "spawn-worker", prompt: "a\ufeffb" }],
     [
       "bad signal id",
       {
@@ -316,7 +324,7 @@ describe("transitions", () => {
 
   test("the table", () => {
     expect(A.LEAD_APPROVAL_TRANSITIONS).toEqual({
-      waiting: ["ready", "applying", "void"],
+      waiting: ["ready", "void"],
       ready: ["applying", "void"],
       applying: ["applied", "failed", "partial"],
       applied: [],
@@ -520,11 +528,19 @@ describe("claimApply", () => {
     });
   });
 
-  test("claims a waiting approval too", async () => {
+  test("refuses a waiting approval until it is ready", async () => {
     const { proposal } = await approved(
       {},
       { condition: { kind: "incident-resolved", id: "inc-1" } },
     );
+    expect(await A.claimApply("acme", proposal.id, "run-1")).toEqual({
+      ok: false,
+      error: "not-ready",
+    });
+    expect((await A.getRecord("acme", proposal.id))?.approval?.state).toBe(
+      "waiting",
+    );
+    await A.transition("acme", proposal.id, "ready");
     const claim = await A.claimApply("acme", proposal.id, "run-1");
     expect(claim.ok && claim.approval.state).toBe("applying");
   });
@@ -821,24 +837,179 @@ describe("voidFor", () => {
   });
 });
 
-describe("storage", () => {
-  test("drops a stored record that does not validate", async () => {
+describe("settleInterrupted", () => {
+  test("an apply older than the bound becomes partial, never re-runs", async () => {
     const { proposal } = await approved();
+    await A.claimApply("acme", proposal.id, "run-1");
+    const claimedAt = clock;
+    expect(
+      await A.settleInterrupted("acme", claimedAt + A.STALE_APPLY_MS - 1),
+    ).toEqual([]);
+    expect((await A.getRecord("acme", proposal.id))?.approval?.state).toBe(
+      "applying",
+    );
+    expect(
+      await A.settleInterrupted(" acme ", claimedAt + A.STALE_APPLY_MS),
+    ).toEqual([proposal.id]);
+    const record = await A.getRecord("acme", proposal.id);
+    expect(record?.approval?.state).toBe("partial");
+    expect(record?.approval?.reason).toBe("interrupted");
+    expect(await A.claimApply("acme", proposal.id, "run-1")).toEqual({
+      ok: false,
+      error: "settled",
+    });
+    expect(await A.claimApply("acme", proposal.id, "run-2")).toEqual({
+      ok: false,
+      error: "settled",
+    });
+    // The late claimant cannot finish it either.
+    expect(
+      await A.transition("acme", proposal.id, "applied", { claimId: "run-1" }),
+    ).toEqual({ ok: false, error: "illegal" });
+  });
+
+  test("leaves ready, waiting and settled records alone", async () => {
+    const ready = await approved({ itemId: "si-ready" });
+    const waiting = await approved(
+      { itemId: "si-wait" },
+      { condition: { kind: "incident-resolved", id: "inc-1" } },
+    );
+    expect(await A.settleInterrupted("acme", clock + 6 * DAY)).toEqual([]);
+    expect(
+      (await A.getRecord("acme", ready.proposal.id))?.approval?.state,
+    ).toBe("ready");
+    expect(
+      (await A.getRecord("acme", waiting.proposal.id))?.approval?.state,
+    ).toBe("waiting");
+    expect(await A.settleInterrupted("a/b")).toEqual([]);
+  });
+});
+
+describe("writes", () => {
+  test("nothing is written for a missing project or a refused change", async () => {
+    const { catalogDocuments, catalogNamespaceWriteCount } =
+      await import("../catalog-documents");
+    const writes = () => catalogNamespaceWriteCount(A.LEAD_APPROVALS_NAMESPACE);
+    const before = writes();
+    expect(await A.transition("ghost", "lp-x", "ready")).toEqual({
+      ok: false,
+      error: "not-found",
+    });
+    expect(await A.claimApply("ghost", "lp-x", "run-1")).toEqual({
+      ok: false,
+      error: "not-found",
+    });
+    expect(await A.voidFor("ghost", () => true, "x")).toEqual([]);
+    expect(await A.settleInterrupted("ghost")).toEqual([]);
+    expect(
+      await A.approve({
+        project: "ghost",
+        proposalId: "lp-x",
+        approvedBy: "Ada",
+        login: "ada-example",
+      }),
+    ).toEqual({ ok: false, error: "not-found" });
+    expect(await A.expire()).toBe(0);
+    expect(writes()).toBe(before);
+    expect(
+      await catalogDocuments(A.LEAD_APPROVALS_NAMESPACE).get("ghost"),
+    ).toBeNull();
+
+    const { proposal } = await approved();
+    const after = writes();
+    expect(await A.transition("acme", proposal.id, "applied")).toEqual({
+      ok: false,
+      error: "illegal",
+    });
+    expect(await A.claimApply("acme", "lp-x", "run-1")).toEqual({
+      ok: false,
+      error: "not-found",
+    });
+    await A.claimApply("acme", proposal.id, "run-1");
+    const claimed = writes();
+    expect(claimed).toBe(after + 1);
+    await A.claimApply("acme", proposal.id, "run-1");
+    expect(writes()).toBe(claimed);
+  });
+
+  test("a padded project name writes to the trimmed key", async () => {
+    const { proposal } = await approved();
+    const claim = await A.claimApply("  acme ", proposal.id, "run-1");
+    expect(claim.ok && claim.approval.state).toBe("applying");
+    expect((await A.getRecord("acme", proposal.id))?.approval?.state).toBe(
+      "applying",
+    );
+    const { catalogDocuments } = await import("../catalog-documents");
+    const keys = (
+      await catalogDocuments(A.LEAD_APPROVALS_NAMESPACE).list()
+    ).map((row) => row.key);
+    expect(keys).toEqual(["acme"]);
+  });
+});
+
+describe("storage", () => {
+  async function addStored(record: unknown) {
     const { catalogDocuments } = await import("../catalog-documents");
     await catalogDocuments(A.LEAD_APPROVALS_NAMESPACE).update(
       "acme",
       (current) => {
         const doc = current as { records: unknown[] };
-        return {
-          ...doc,
-          records: [
-            ...doc.records,
-            { proposal: { id: "lp-bad", project: "acme" } },
-          ],
-        };
+        return { ...doc, records: [...doc.records, record] };
       },
     );
+  }
+
+  async function storedIds() {
+    const { catalogDocuments } = await import("../catalog-documents");
+    const doc = (await catalogDocuments(A.LEAD_APPROVALS_NAMESPACE).get(
+      "acme",
+    )) as { records: Array<{ proposal: { id: string } }> };
+    return doc.records.map((record) => record.proposal.id);
+  }
+
+  test("keeps a stored record that does not validate, but never lists it", async () => {
+    const { proposal } = await approved();
+    await addStored({ proposal: { id: "lp-bad", project: "acme" } });
     const records = await A.listForProject("acme");
     expect(records.map((r) => r.proposal.id)).toEqual([proposal.id]);
+    await propose({ itemId: "si-2" });
+    expect(await storedIds()).toContain("lp-bad");
+  });
+
+  test("a stricter validator doesn't drop a ready record, nor run it", async () => {
+    await approved();
+    // Stored before prompts refused line separators: ready, now invalid.
+    await addStored({
+      proposal: {
+        id: "lp-old",
+        project: "acme",
+        category: "fix-verified",
+        subject: "Old",
+        itemId: "si-old",
+        itemRevision: 1,
+        steps: [{ kind: "spawn-worker", prompt: "a\u2028b" }],
+        createdAt: clock,
+      },
+      approval: {
+        proposalId: "lp-old",
+        approvedBy: "Ada",
+        login: "ada-example",
+        at: clock,
+        expiresAt: clock + DAY,
+        state: "ready",
+        updatedAt: clock,
+      },
+    });
+    expect(await A.claimApply("acme", "lp-old", "run-1")).toEqual({
+      ok: false,
+      error: "not-found",
+    });
+    await propose({ itemId: "si-2" });
+    clock += 2 * DAY;
+    await A.expire();
+    expect(await storedIds()).toContain("lp-old");
+    expect(
+      (await A.listForProject("acme")).some((r) => r.proposal.id === "lp-old"),
+    ).toBe(false);
   });
 });

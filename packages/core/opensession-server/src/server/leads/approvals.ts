@@ -13,8 +13,13 @@
 //
 // An approval moves waiting -> ready -> applying -> applied | failed |
 // partial, and waiting or ready -> void. A claim is the only way into
-// applying and needs a claim id; only that claimant finishes it, and an
-// interrupted apply is never claimed again. Nothing runs at import.
+// applying, only from ready, and needs a claim id; only that claimant
+// finishes it. An interrupted apply is never claimed again: once it is older
+// than STALE_APPLY_MS, `settleInterrupted` marks it partial.
+//
+// A stored record that no longer validates (a later, stricter validator) is
+// kept as it is and never offered or claimed; nothing drops it silently.
+// Nothing runs at import.
 import { randomUUIDv7 } from "bun";
 import { LEAD_CATEGORIES, type LeadCategory } from "../../shared/project-lead";
 import type { SignalRule } from "../../shared/incidents";
@@ -29,6 +34,8 @@ export const DEFAULT_APPROVAL_TTL_MS = 7 * DAY_MS;
 export const MAX_APPROVAL_TTL_MS = 30 * DAY_MS;
 /** An unapproved proposal is voided after this. */
 export const PROPOSAL_TTL_MS = 30 * DAY_MS;
+/** An apply still running after this was interrupted (the run died). */
+export const STALE_APPLY_MS = 30 * 60 * 1000;
 /** Records kept per project; settled ones past it are dropped oldest first. */
 export const MAX_RECORDS = 200;
 export const MAX_STEPS = 10;
@@ -83,7 +90,7 @@ export type LeadCondition =
   | { kind: "checks-green"; ghRepo: string; number: number; headSha: string }
   | { kind: "incident-resolved"; id: string };
 
-export interface LeadProposal {
+export interface ActProposal {
   id: string;
   project: string;
   category: LeadCategory;
@@ -115,7 +122,7 @@ export type LeadApprovalState = (typeof LEAD_APPROVAL_STATES)[number];
 export const LEAD_APPROVAL_TRANSITIONS: Readonly<
   Record<LeadApprovalState, readonly LeadApprovalState[]>
 > = {
-  waiting: ["ready", "applying", "void"],
+  waiting: ["ready", "void"],
   ready: ["applying", "void"],
   applying: ["applied", "failed", "partial"],
   applied: [],
@@ -143,7 +150,7 @@ export interface LeadApproval {
 }
 
 export interface LeadRecord {
-  proposal: LeadProposal;
+  proposal: ActProposal;
   approval?: LeadApproval;
 }
 
@@ -151,6 +158,9 @@ interface ApprovalsDocument {
   project: string;
   /** Newest first. */
   records: LeadRecord[];
+  /** Stored records that no longer validate, written back unchanged after
+   *  `records`. Never listed, claimed or pruned. */
+  unreadable: unknown[];
 }
 
 export type Valid<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -190,9 +200,11 @@ function object(
 // Control, bidi and line separator characters: never in one-line fields.
 const UNSAFE_LINE =
   /[\u0000-\u001f\u007f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
-// The same, but newlines and tabs are allowed (a worker's prompt).
+// The same, but newlines and tabs are allowed (a worker's prompt), and
+// zero-width characters are refused too, so nothing in a prompt is hidden
+// from the owner who approved it.
 const UNSAFE_TEXT =
-  /[\u0000-\u0008\u000b-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+  /[\u0000-\u0008\u000b-\u001f\u007f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]/;
 
 function line(value: unknown, label: string, max: number): string {
   if (typeof value !== "string") fail(`${label} must be a string`);
@@ -469,7 +481,7 @@ export function validateLeadCondition(value: unknown): Valid<LeadCondition> {
   return validate(() => conditionOf(value));
 }
 
-export interface LeadProposalInput {
+export interface ActProposalInput {
   project: string;
   category: string;
   subject: string;
@@ -479,7 +491,7 @@ export interface LeadProposalInput {
 }
 
 export type ValidProposalInput = Omit<
-  LeadProposal,
+  ActProposal,
   "id" | "createdAt" | "voidedAt" | "voidReason"
 >;
 
@@ -521,12 +533,12 @@ export function approvalExpiry(now: number, requested?: number): Valid<number> {
 
 // ── Reading stored records ──────────────────────────────────────────────────
 
-function storedProposal(value: unknown): LeadProposal {
+function storedProposal(value: unknown): ActProposal {
   if (!isRecord(value)) fail("proposal must be an object");
   const { id: rawId, createdAt, voidedAt, voidReason, ...input } = value;
   const valid = validateProposalInput(input);
   if (!valid.ok) fail(valid.error);
-  const proposal: LeadProposal = {
+  const proposal: ActProposal = {
     id: id(rawId, "id"),
     ...valid.value,
     createdAt: time(createdAt, "createdAt"),
@@ -577,8 +589,8 @@ function storedApproval(value: unknown, proposalId: string): LeadApproval {
   return approval;
 }
 
-function cleanRecord(value: unknown): LeadRecord | null {
-  const result = validate(() => {
+function readRecord(value: unknown): Valid<LeadRecord> {
+  return validate(() => {
     const raw = object(value, "record", ["proposal", "approval"]);
     const proposal = storedProposal(raw.proposal);
     const record: LeadRecord = { proposal };
@@ -586,20 +598,26 @@ function cleanRecord(value: unknown): LeadRecord | null {
       record.approval = storedApproval(raw.approval, proposal.id);
     return record;
   });
-  if (!result.ok) {
-    console.warn(`[lead-approvals] dropped a stored record: ${result.error}`);
-    return null;
-  }
-  return result.value;
 }
 
 function cleanDocument(value: unknown, project: string): ApprovalsDocument {
-  if (!isRecord(value) || !Array.isArray(value.records))
-    return { project, records: [] };
-  return {
-    project,
-    records: value.records.flatMap((record) => cleanRecord(record) ?? []),
-  };
+  const doc: ApprovalsDocument = { project, records: [], unreadable: [] };
+  if (!isRecord(value) || !Array.isArray(value.records)) return doc;
+  for (const raw of value.records) {
+    const result = readRecord(raw);
+    if (result.ok) doc.records.push(result.value);
+    else {
+      console.warn(
+        `[lead-approvals] kept an unreadable record: ${result.error}`,
+      );
+      doc.unreadable.push(raw);
+    }
+  }
+  return doc;
+}
+
+function storedDocument(doc: ApprovalsDocument) {
+  return { project: doc.project, records: [...doc.records, ...doc.unreadable] };
 }
 
 // ── Pure state changes ──────────────────────────────────────────────────────
@@ -706,6 +724,7 @@ export type ClaimError =
   | "voided"
   | "expired"
   | "busy"
+  | "not-ready"
   | "settled";
 
 /** Move an approval to `to` when the table allows it. Entering applying
@@ -732,8 +751,9 @@ export function transitionApproval(
   return { ok: true, approval: next };
 }
 
-/** Claim a waiting or ready approval for applying. The same claimant
- *  claiming again gets it back (`already`); anyone else is refused. */
+/** Claim a ready approval for applying; a waiting one is `not-ready` until
+ *  its condition holds. The same claimant claiming again gets it back
+ *  (`already`); anyone else is refused. */
 export function claimApproval(
   record: LeadRecord,
   claimId: string,
@@ -752,6 +772,7 @@ export function claimApproval(
   if (record.proposal.voidedAt !== undefined)
     return { ok: false, error: "voided" };
   if (now >= approval.expiresAt) return { ok: false, error: "expired" };
+  if (approval.state !== "ready") return { ok: false, error: "not-ready" };
   return {
     ok: true,
     already: false,
@@ -805,23 +826,32 @@ export function __setLeadApprovalsDepsForTest(
   };
 }
 
-function validProject(project: string): boolean {
-  return validate(() => projectOf(project)).ok;
+/** The catalog key for `project`, trimmed like every write's, or null when
+ *  it is not a valid project. */
+function projectKey(project: string): string | null {
+  const result = validate(() => projectOf(project));
+  return result.ok ? result.value : null;
 }
 
 async function readDocument(project: string): Promise<ApprovalsDocument> {
   return cleanDocument(await deps.documents().get(project), project);
 }
 
-/** Compare-and-set one project's document. `mutate` may run more than once
- *  (a conflict reruns it on the committed truth); its last run committed. */
+/** Compare-and-set one project's document. `mutate` returns null when it
+ *  changes nothing, and then nothing is written: a missing document stays
+ *  missing. It may run more than once (a first read, then a conflict reruns
+ *  it on the committed truth); its last run is the one that counts. */
 async function updateDocument(
   project: string,
-  mutate: (doc: ApprovalsDocument) => ApprovalsDocument,
+  mutate: (doc: ApprovalsDocument) => ApprovalsDocument | null,
 ): Promise<void> {
-  await deps
-    .documents()
-    .update(project, (current) => mutate(cleanDocument(current, project)));
+  const documents = deps.documents();
+  if (mutate(cleanDocument(await documents.get(project), project)) === null)
+    return;
+  await documents.update(project, (current) => {
+    const next = mutate(cleanDocument(current, project));
+    return next === null ? current : storedDocument(next);
+  });
 }
 
 function replace(doc: ApprovalsDocument, next: LeadRecord): ApprovalsDocument {
@@ -833,6 +863,15 @@ function replace(doc: ApprovalsDocument, next: LeadRecord): ApprovalsDocument {
   };
 }
 
+/** `doc` with expiry applied, or null when nothing was due. */
+function expired(
+  doc: ApprovalsDocument,
+  now: number,
+): ApprovalsDocument | null {
+  const result = expireRecords(doc.records, now);
+  return result.expired ? { ...doc, records: result.records } : null;
+}
+
 // ── Store ───────────────────────────────────────────────────────────────────
 
 /**
@@ -841,12 +880,12 @@ function replace(doc: ApprovalsDocument, next: LeadRecord): ApprovalsDocument {
  * invalid, or when the project's records are full of ones still to run.
  */
 export async function recordProposal(
-  input: LeadProposalInput,
-): Promise<Valid<LeadProposal>> {
+  input: ActProposalInput,
+): Promise<Valid<ActProposal>> {
   const valid = validateProposalInput(input);
   if (!valid.ok) return valid;
   const now = deps.now();
-  const proposal: LeadProposal = {
+  const proposal: ActProposal = {
     id: deps.newId(),
     ...valid.value,
     createdAt: now,
@@ -858,9 +897,14 @@ export async function recordProposal(
         ? voidRecord(record, now, "superseded")
         : record,
     );
-    const pruned = pruneRecords([{ proposal }, ...records]);
+    // Unreadable records are kept, so they count against both bounds.
+    const pruned = pruneRecords(
+      [{ proposal }, ...records],
+      MAX_RECORDS - doc.unreadable.length,
+      DOCUMENT_BUDGET - byteSize(doc.unreadable),
+    );
     fits = pruned.fits;
-    return fits ? { ...doc, records: pruned.records } : doc;
+    return fits ? { ...doc, records: pruned.records } : null;
   });
   if (!fits)
     return {
@@ -878,7 +922,8 @@ export interface ApproveInput {
   condition?: unknown;
   expiresAt?: number;
   /** The inbox item revision the owner answered; refused when it is not the
-   *  proposal's. */
+   *  proposal's. TODO(act PR 5/10): required once answers carry the revision
+   *  (PR 5) and the iOS app sends it (PR 10). */
   itemRevision?: number;
 }
 
@@ -925,30 +970,34 @@ export async function approve(
     | { ok: true; approval: LeadApproval; created: boolean }
     | { ok: false; error: ApproveError } = { ok: false, error: "not-found" };
   await updateDocument(fields.project, (doc) => {
-    const records = expireRecords(doc.records, now).records;
-    const record = records.find((r) => r.proposal.id === fields.proposalId);
+    // Expiry found due is written even when the approval is refused.
+    const fresh = expired(doc, now);
+    const current = fresh ?? doc;
+    const record = current.records.find(
+      (r) => r.proposal.id === fields.proposalId,
+    );
     if (!record) {
       result = { ok: false, error: "not-found" };
-      return doc;
+      return fresh;
     }
     if (isLive(record.approval)) {
       result = { ok: true, approval: record.approval, created: false };
-      return { ...doc, records };
+      return fresh;
     }
     if (record.proposal.voidedAt !== undefined) {
       result = { ok: false, error: "voided" };
-      return { ...doc, records };
+      return fresh;
     }
     if (record.approval) {
       result = { ok: false, error: "settled" };
-      return { ...doc, records };
+      return fresh;
     }
     if (
       input.itemRevision !== undefined &&
       input.itemRevision !== record.proposal.itemRevision
     ) {
       result = { ok: false, error: "stale" };
-      return { ...doc, records };
+      return fresh;
     }
     const approval: LeadApproval = {
       proposalId: fields.proposalId,
@@ -961,7 +1010,7 @@ export async function approve(
     };
     if (fields.condition) approval.condition = fields.condition;
     result = { ok: true, approval, created: true };
-    return replace({ ...doc, records }, { ...record, approval });
+    return replace(current, { ...record, approval });
   });
   return result;
 }
@@ -976,28 +1025,29 @@ export async function transition(
 ): Promise<
   { ok: true; approval: LeadApproval } | { ok: false; error: TransitionError }
 > {
-  if (!validProject(project)) return { ok: false, error: "not-found" };
+  const key = projectKey(project);
+  if (!key) return { ok: false, error: "not-found" };
   const now = deps.now();
   let result:
     | { ok: true; approval: LeadApproval }
     | { ok: false; error: TransitionError } = { ok: false, error: "not-found" };
-  await updateDocument(project, (doc) => {
+  await updateDocument(key, (doc) => {
     const record = doc.records.find((r) => r.proposal.id === proposalId);
     if (!record) {
       result = { ok: false, error: "not-found" };
-      return doc;
+      return null;
     }
     if (!record.approval) {
       result = { ok: false, error: "no-approval" };
-      return doc;
+      return null;
     }
     if (to !== "void" && record.proposal.voidedAt !== undefined) {
       result = { ok: false, error: "illegal" };
-      return doc;
+      return null;
     }
     const moved = transitionApproval(record.approval, to, now, options);
     result = moved;
-    if (!moved.ok) return doc;
+    if (!moved.ok) return null;
     const next: LeadRecord = { ...record, approval: moved.approval };
     if (to === "void")
       next.proposal = {
@@ -1011,10 +1061,11 @@ export async function transition(
 }
 
 /**
- * Claim a proposal's approval for applying, in one compare-and-set:
- * waiting or ready becomes applying under `claimId`. Idempotent for the
- * same claimant; refused for anyone else, and for an approval that is
- * void, expired (voided now) or done.
+ * Claim a proposal's approval for applying, in one compare-and-set: ready
+ * becomes applying under `claimId`. Idempotent for the same claimant;
+ * refused for anyone else, for a waiting approval (`not-ready`), and for
+ * one that is void, expired (voided now) or done. Records that no longer
+ * validate are not found.
  */
 export async function claimApply(
   project: string,
@@ -1024,17 +1075,17 @@ export async function claimApply(
   | { ok: true; approval: LeadApproval; already: boolean }
   | { ok: false; error: ClaimError }
 > {
-  if (!validProject(project) || !ID.test(claimId))
-    return { ok: false, error: "not-found" };
+  const key = projectKey(project);
+  if (!key || !ID.test(claimId)) return { ok: false, error: "not-found" };
   const now = deps.now();
   let result:
     | { ok: true; approval: LeadApproval; already: boolean }
     | { ok: false; error: ClaimError } = { ok: false, error: "not-found" };
-  await updateDocument(project, (doc) => {
+  await updateDocument(key, (doc) => {
     const record = doc.records.find((r) => r.proposal.id === proposalId);
     if (!record) {
       result = { ok: false, error: "not-found" };
-      return doc;
+      return null;
     }
     const claimed = claimApproval(record, claimId, now);
     result = claimed;
@@ -1042,9 +1093,55 @@ export async function claimApply(
       return replace(doc, { ...record, approval: claimed.approval });
     if (!claimed.ok && claimed.error === "expired")
       return replace(doc, voidRecord(record, now, "expired"));
-    return doc;
+    return null;
   });
   return result;
+}
+
+/** Mark applying approvals claimed at least STALE_APPLY_MS before `now` as
+ *  partial: their run died mid-way, and interrupted steps never re-run. */
+export function settleInterruptedRecords(
+  records: readonly LeadRecord[],
+  now: number,
+): { records: LeadRecord[]; settled: string[] } {
+  const settled: string[] = [];
+  const next = records.map((record) => {
+    const approval = record.approval;
+    if (approval?.state !== "applying") return record;
+    if (now - (approval.claimedAt ?? approval.updatedAt) < STALE_APPLY_MS)
+      return record;
+    settled.push(record.proposal.id);
+    return {
+      ...record,
+      approval: {
+        ...approval,
+        state: "partial" as const,
+        updatedAt: now,
+        reason: "interrupted",
+      },
+    };
+  });
+  return { records: next, settled };
+}
+
+/**
+ * Settle applies in `project` that were interrupted: applying for at least
+ * STALE_APPLY_MS. They become partial without the claim id and are never
+ * claimed or run again. Returns the settled proposal ids.
+ */
+export async function settleInterrupted(
+  project: string,
+  now: number = deps.now(),
+): Promise<string[]> {
+  const key = projectKey(project);
+  if (!key) return [];
+  let settled: string[] = [];
+  await updateDocument(key, (doc) => {
+    const result = settleInterruptedRecords(doc.records, now);
+    settled = result.settled;
+    return settled.length ? { ...doc, records: result.records } : null;
+  });
+  return settled;
 }
 
 /**
@@ -1058,27 +1155,29 @@ export async function voidFor(
   predicate: (record: LeadRecord) => boolean,
   reason: string,
 ): Promise<string[]> {
-  if (!validProject(project)) return [];
+  const key = projectKey(project);
+  if (!key) return [];
   const now = deps.now();
   const why = reasonOf(reason) ?? "voided";
   let voided: string[] = [];
-  await updateDocument(project, (doc) => {
+  await updateDocument(key, (doc) => {
     voided = [];
     const records = doc.records.map((record) => {
       if (!voidable(record) || !predicate(record)) return record;
       voided.push(record.proposal.id);
       return voidRecord(record, now, why);
     });
-    return voided.length ? { ...doc, records } : doc;
+    return voided.length ? { ...doc, records } : null;
   });
   return voided;
 }
 
-/** A project's records, newest first, with expiry applied to the view. */
+/** A project's records, newest first, with expiry applied to the view.
+ *  Records that no longer validate are left out. */
 export async function listForProject(project: string): Promise<LeadRecord[]> {
-  if (!validProject(project)) return [];
-  return expireRecords((await readDocument(project)).records, deps.now())
-    .records;
+  const key = projectKey(project);
+  if (!key) return [];
+  return expireRecords((await readDocument(key)).records, deps.now()).records;
 }
 
 /** One record, with expiry applied to the view. */
@@ -1099,16 +1198,15 @@ export async function getRecord(
 export async function expire(now: number = deps.now()): Promise<number> {
   let total = 0;
   for (const row of await deps.documents().list()) {
-    if (!validProject(row.key)) continue;
-    const doc = cleanDocument(row.value, row.key);
-    if (!expireRecords(doc.records, now).expired) continue;
-    let expired = 0;
+    if (projectKey(row.key) !== row.key) continue;
+    if (!expired(cleanDocument(row.value, row.key), now)) continue;
+    let count = 0;
     await updateDocument(row.key, (current) => {
       const result = expireRecords(current.records, now);
-      expired = result.expired;
-      return result.expired ? { ...current, records: result.records } : current;
+      count = result.expired;
+      return count ? { ...current, records: result.records } : null;
     });
-    total += expired;
+    total += count;
   }
   return total;
 }
