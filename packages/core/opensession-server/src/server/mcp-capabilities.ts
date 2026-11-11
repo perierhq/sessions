@@ -259,7 +259,7 @@ export const INTERNAL_MCP_CAPABILITIES = {
     summary:
       "A project lead's read-only view of its project, its proposals and digest notes to the owner.",
     guidance:
-      "project_overview and flap_report read your project; flap_report names the rule change each flapping signal needs. You change nothing yourself: propose sends each suggestion to the owner's inbox (only-you actions as kind needs-you, prepared), and post_digest_note writes the day's note for their digest.",
+      "project_overview and flap_report read your project; flap_report names the rule change each flapping signal needs. You change nothing yourself: propose sends each suggestion to the owner's inbox (only-you actions as kind needs-you, prepared), and post_digest_note writes the day's note for their digest. blob_ tools post as Blob on GitHub.",
   },
   "opensession-incident-access": {
     summary:

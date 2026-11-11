@@ -11,7 +11,8 @@
  *
  * Everything public goes out as the persona from those flows. The supervisor
  * passes only an action, a registered repository and a PR number: no free
- * text of its own reaches GitHub, so nothing public is ever signed Blob.
+ * text of its own reaches GitHub through ask_pat. (Blob's own posts go
+ * through blob-github-tools.ts instead.)
  * Every call is audited, refused ones included.
  */
 import type { PrActionKind, TriggerResult } from "../agents/github/trigger";

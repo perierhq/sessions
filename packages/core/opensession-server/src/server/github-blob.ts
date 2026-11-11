@@ -1,6 +1,6 @@
 /**
  * Blob's GitHub machine user: the account Blob (the supervisor and the
- * project leads) will post as on issues and pull requests. See
+ * project leads) posts as on issues and pull requests. See
  * docs/github-authority.md ("Current policy") and docs/setup/github.md
  * ("Blob's GitHub account").
  *
@@ -43,7 +43,17 @@ import {
   rawConfigAsync,
   withConfigMutationLock,
 } from "./config-mutation";
+import {
+  BLOB_MARKER,
+  LABEL_ISSUE,
+  TRIGGER_LABELS,
+} from "../agents/github/constants";
+import { catalogDocuments } from "./catalog-documents";
+import { repoIsPrivate } from "./repo-visibility";
+import { BLOB_ACTOR } from "./session-actors";
 import { fetchWithTimeout } from "./shared/fetch-with-timeout";
+import { githubLoginFor } from "./shared/user-mappings";
+import { canonicalName } from "./shared/user-store-key";
 import {
   deleteWorkspaceSecretAsync,
   putWorkspaceSecretAsync,
@@ -55,7 +65,7 @@ export const BLOB_GITHUB_SECRET_PURPOSE = "github.blob";
 
 const USER_URL = "https://api.github.com/user";
 const EXPIRY_HEADER = "github-authentication-token-expiration";
-const VERIFY_TIMEOUT_MS = 10_000;
+const FETCH_TIMEOUT_MS = 10_000;
 const MAX_TOKEN_LENGTH = 255;
 const MAX_REPOS = 100;
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
@@ -95,11 +105,43 @@ export type BlobGithubResult =
 interface Deps {
   fetch(url: string, init: RequestInit): Promise<Response>;
   now(): number;
+  /** The App's word on a repository: true private, false public, null
+   *  unknown (repo-visibility.ts). */
+  repoIsPrivate(ghRepo: string): Promise<boolean | null>;
+  audit(event: Record<string, unknown>): void;
+  /** Raise a needs-you item to the instance owner, at most once per
+   *  `dedupeKey`. */
+  raise(item: {
+    title: string;
+    body: string;
+    dedupeKey: string;
+  }): Promise<unknown>;
+  /** This instance's web link for a session (run-instructions.ts). */
+  sessionLink(sessionId: string): Promise<string>;
 }
 
 const defaultDeps: Deps = {
-  fetch: (url, init) => fetchWithTimeout(url, init, VERIFY_TIMEOUT_MS),
+  fetch: (url, init) => fetchWithTimeout(url, init, FETCH_TIMEOUT_MS),
   now: Date.now,
+  repoIsPrivate,
+  audit: auditAsync,
+  raise: async (item) => {
+    const [{ instanceOwner }, { postSupervisorItem }] = await Promise.all([
+      import("./incidents/owner"),
+      import("./supervisor-inbox"),
+    ]);
+    const user = instanceOwner();
+    if (!user) return;
+    await postSupervisorItem({
+      user,
+      source: SOURCE,
+      kind: "needs-you",
+      once: true,
+      ...item,
+    });
+  },
+  sessionLink: async (sessionId) =>
+    (await import("./run-instructions")).sessionLink(sessionId),
 };
 
 let deps: Deps = defaultDeps;
@@ -492,4 +534,569 @@ function withoutUndefined(record: BlobGithubRecord): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(record).filter(([, value]) => value !== undefined),
   );
+}
+
+// ── Posting as Blob ─────────────────────────────────────────────────────
+//
+// blob_comment, blob_review, blob_label and blob_open_issue
+// (blob-github-tools.ts) post through the functions below; they are the
+// only callers of the token. Every call fails closed, in this order:
+// posting is on, a token is set and not expired, the repository is
+// registered and on Blob's list, a lead's call is for its own project, the
+// repository is private per the App's metadata (repo-visibility.ts) or
+// named in `publicRepos` (a lead's must be private; unknown visibility
+// refuses), the owner has a GitHub login for the footer, the text carries
+// no trigger command, trigger label or hidden marker, and the owner is
+// under BLOB_WRITES_PER_HOUR writes an hour and BLOB_WRITES_PER_THREAD_HOUR
+// on that issue or pull request. Every attempt that reaches GitHub is
+// audited as Blob, for the owner, with the text as a digest.
+//
+// A 401 turns posting off and raises one needs-you item to the instance
+// owner. `checkBlobGithubExpiry` (run by the supervisor inbox sweep) raises
+// one when the token expires within BLOB_EXPIRY_WARN_DAYS.
+
+const API = "https://api.github.com";
+const HOUR_MS = 60 * 60_000;
+const DAY_MS = 24 * HOUR_MS;
+/** Writes Blob makes for one owner an hour. */
+export const BLOB_WRITES_PER_HOUR = 30;
+/** Writes Blob makes on one issue or pull request for one owner an hour. */
+export const BLOB_WRITES_PER_THREAD_HOUR = 5;
+/** Days before the token expires that the owner is told. */
+export const BLOB_EXPIRY_WARN_DAYS = 14;
+const SOURCE = "blob-github";
+const writes = catalogDocuments("blob-github-writes");
+
+/** Who Blob posts for. */
+export interface BlobPoster {
+  /** The person Blob acts for: the footer's login, the audit's user and the
+   *  rate limit's key. */
+  owner: string;
+  /** The session Blob works from, linked in the footer on private
+   *  repositories only. */
+  sessionId?: string;
+  /** A project lead: only this project's repositories, and only private
+   *  ones. */
+  lead?: { project: string; repos: string[] };
+}
+
+export type BlobWriteResult =
+  | { ok: true; message: string; url?: string }
+  | { ok: false; message: string };
+
+export interface BlobReviewComment {
+  path: string;
+  line: number;
+  side?: "LEFT" | "RIGHT";
+  start_line?: number;
+  body: string;
+}
+
+const LABEL_TRIGGERS: readonly string[] = TRIGGER_LABELS;
+/** A slash command for one of our loops (`/os-auto-fix`, `/os review`). */
+const TRIGGER_COMMAND = /(^|[^\w/.~-])\/os(?:-[a-z-]+)?(?![\w/])/im;
+/** A hidden marker, which would pass the text off as one of our loops'. */
+const HIDDEN_MARKER = /<!--/;
+
+/**
+ * Why `text` may not go out as Blob, or null. Blob's posts count as our own
+ * bot's (OWN_MARKERS), so a body must never carry what starts or steers a
+ * loop: a `/os…` command, a trigger label's name, or a hidden marker.
+ */
+export function blobTextRefusal(text: string): string | null {
+  if (TRIGGER_COMMAND.test(text))
+    return "The text contains a /os command. Blob never posts commands for the review or fix loops; quote the text without it.";
+  const lower = text.toLowerCase();
+  const label = LABEL_TRIGGERS.find(
+    (name) =>
+      name !== LABEL_ISSUE &&
+      new RegExp(`(^|[^\\w.-])${name}(?![\\w-]|\\.\\w)`).test(lower),
+  );
+  if (label)
+    return `The text names the ${label} label, which starts an agent loop. Leave it out.`;
+  if (HIDDEN_MARKER.test(text))
+    return "The text contains an HTML comment. Blob's posts carry only its own marker.";
+  return null;
+}
+
+/** The line every post by Blob ends with: who it is for, the session on a
+ *  private repository, and the marker. */
+export function blobFooter(
+  ownerLogin: string,
+  sessionUrl: string | undefined,
+): string {
+  const link = sessionUrl ? ` · [session](${sessionUrl})` : "";
+  return `\n\n<sub>Blob, for @${ownerLogin}${link}</sub>${BLOB_MARKER}`;
+}
+
+interface Prepared {
+  token: string;
+  ghRepo: string;
+  footer: string;
+  isPrivate: boolean;
+  record: BlobGithubRecord;
+}
+
+type Guard = { ok: true; value: Prepared } | { ok: false; message: string };
+
+const refuse = (message: string) => ({ ok: false as const, message });
+
+/** The registered GitHub repository `name` names, in its configured
+ *  spelling, with its `public` override. */
+function registeredRepo(
+  name: string,
+): { ghRepo: string; public?: boolean } | undefined {
+  const key = name.trim().toLowerCase();
+  for (const [id, repo] of Object.entries(configuredRepos())) {
+    if (repo.host === "codestorage" || !repo.ghRepo) continue;
+    if (repo.ghRepo.toLowerCase() === key || id.toLowerCase() === key)
+      return { ghRepo: repo.ghRepo, public: repo.public };
+  }
+  return undefined;
+}
+
+/** Every check before a write, in the order of the section's header. */
+async function prepare(
+  poster: BlobPoster,
+  repoName: string,
+  texts: string[],
+): Promise<Guard> {
+  const config = await getConfigAsync();
+  const record = parseRecord(obj(config.integrations?.github)?.blob);
+  if (!record.enabled)
+    return refuse(
+      "Blob's GitHub account is off. The owner turns it on in Settings, Members, Blob.",
+    );
+  const token = record.tokenRef
+    ? await resolveWorkspaceSecretAsync(record.tokenRef)
+    : undefined;
+  if (!token || !record.login)
+    return refuse(
+      "Blob's GitHub account has no token. Ask the owner to set one.",
+    );
+  const expires = record.expiresAt ? Date.parse(record.expiresAt) : NaN;
+  if (!Number.isFinite(expires) || expires <= deps.now())
+    return refuse(
+      "Blob's GitHub token has expired. Ask the owner to save a new one.",
+    );
+  const repo = registeredRepo(repoName);
+  if (
+    !repo ||
+    !record.repos.some((r) => r.toLowerCase() === repo.ghRepo.toLowerCase())
+  )
+    return refuse(
+      `${repoName} is not one of Blob's repositories. The owner picks them in Settings, Members, Blob.`,
+    );
+  if (
+    poster.lead &&
+    !poster.lead.repos.some(
+      (r) => r.toLowerCase() === repo.ghRepo.toLowerCase(),
+    )
+  )
+    return refuse(
+      `${repo.ghRepo} is not one of ${poster.lead.project}'s repositories.`,
+    );
+  const looked =
+    repo.public === true ? false : await deps.repoIsPrivate(repo.ghRepo);
+  const isPrivate = looked === true;
+  if (!isPrivate) {
+    if (poster.lead)
+      return refuse(
+        `${repo.ghRepo} is public or its visibility is unknown. A lead posts on private repositories only.`,
+      );
+    const listed = record.publicRepos.some(
+      (r) => r.toLowerCase() === repo.ghRepo.toLowerCase(),
+    );
+    if (!listed)
+      return refuse(
+        looked === null
+          ? `Couldn't confirm ${repo.ghRepo} is private, so Blob doesn't post there.`
+          : `${repo.ghRepo} is public and not on Blob's list of public repositories.`,
+      );
+  }
+  const ownerLogin = githubLoginFor(poster.owner);
+  if (!ownerLogin)
+    return refuse(
+      "The owner has no GitHub login on the team roster, so the post couldn't say who it is for.",
+    );
+  for (const text of texts) {
+    const refusal = blobTextRefusal(text);
+    if (refusal) return refuse(refusal);
+  }
+  const footer = blobFooter(
+    ownerLogin,
+    isPrivate && poster.sessionId
+      ? await deps.sessionLink(poster.sessionId)
+      : undefined,
+  );
+  return {
+    ok: true,
+    value: { token, ghRepo: repo.ghRepo, footer, isPrivate, record },
+  };
+}
+
+interface WriteEntry {
+  id: string;
+  ts: number;
+  thread: string;
+}
+
+function writeEntries(value: unknown): WriteEntry[] {
+  const raw = obj(value)?.writes;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (e): e is WriteEntry =>
+      !!obj(e) &&
+      typeof e.id === "string" &&
+      typeof e.ts === "number" &&
+      typeof e.thread === "string",
+  );
+}
+
+/** Count a write against the owner's limits under the catalog's
+ *  compare-and-set; null when it fits, else why not. */
+async function claimWrite(
+  owner: string,
+  entry: WriteEntry,
+): Promise<string | null> {
+  let refusal: string | null = null;
+  await writes.update(canonicalName(owner), (value) => {
+    const kept = writeEntries(value).filter((e) => entry.ts - e.ts < HOUR_MS);
+    refusal = null;
+    if (kept.length >= BLOB_WRITES_PER_HOUR)
+      refusal = `Blob already wrote ${BLOB_WRITES_PER_HOUR} times on GitHub for you this hour. Try again later.`;
+    else if (
+      kept.filter((e) => e.thread === entry.thread).length >=
+      BLOB_WRITES_PER_THREAD_HOUR
+    )
+      refusal = `Blob already wrote ${BLOB_WRITES_PER_THREAD_HOUR} times on ${entry.thread} this hour. Try again later.`;
+    return { writes: refusal ? kept : [...kept, entry] };
+  });
+  return refusal;
+}
+
+async function releaseWrite(owner: string, id: string): Promise<void> {
+  await writes
+    .update(canonicalName(owner), (value) => ({
+      writes: writeEntries(value).filter((e) => e.id !== id),
+    }))
+    .catch(() => {});
+}
+
+const digest = (text: string) =>
+  new Bun.CryptoHasher("sha256").update(text).digest("hex");
+
+/** GitHub's status and body; status 0 when it couldn't be reached. */
+interface GithubAnswer {
+  status: number;
+  json: unknown;
+}
+
+/** One call to GitHub's REST API with Blob's token. Never redirects, so
+ *  the token reaches api.github.com alone. */
+async function githubCall(
+  token: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<GithubAnswer> {
+  try {
+    const res = await deps.fetch(`${API}${path}`, {
+      method,
+      redirect: "manual",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "opensession",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  } catch {
+    return { status: 0, json: null };
+  }
+}
+
+const repoPath = (ghRepo: string) =>
+  ghRepo
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+
+/** GitHub refused the token: turn posting off and tell the instance owner,
+ *  once per token (the call that turned it off raises the item). */
+async function onUnauthorized(record: BlobGithubRecord): Promise<void> {
+  const turnedOff = await withConfigMutationLock(async () => {
+    const config = await rawConfigAsync();
+    const github = githubSection(config);
+    const current = obj(github.blob);
+    if (!current || current.enabled !== true) return false;
+    github.blob = { ...current, enabled: false };
+    await persistRawConfigAsync(config);
+    return true;
+  });
+  if (!turnedOff) return;
+  deps.audit({
+    kind: "blob_github_update",
+    actor: BLOB_ACTOR,
+    turnedOff: "unauthorized",
+  });
+  await deps
+    .raise({
+      title: "GitHub refused Blob's token",
+      body: "GitHub answered 401 to Blob's token, so Blob stopped posting on GitHub. Save a new token in Settings, Members, Blob, then turn posting on again.",
+      dedupeKey: `blob-github-401:${record.expiresAt ?? "unknown"}`,
+    })
+    .catch(() => {});
+}
+
+interface WriteSpec {
+  action: "comment" | "review" | "label" | "issue";
+  repo: string;
+  /** The issue or pull request; absent for a new issue. */
+  number?: number;
+  texts: string[];
+  run(p: Prepared): Promise<GithubAnswer | { refused: string }>;
+  ok(json: unknown, p: Prepared): string;
+}
+
+async function write(
+  poster: BlobPoster,
+  spec: WriteSpec,
+): Promise<BlobWriteResult> {
+  const guard = await prepare(poster, spec.repo, spec.texts);
+  if (!guard.ok) return guard;
+  const p = guard.value;
+  const thread = `${p.ghRepo}#${spec.number ?? "new"}`;
+  const entry: WriteEntry = {
+    id: crypto.randomUUID(),
+    ts: deps.now(),
+    thread,
+  };
+  const limited = await claimWrite(poster.owner, entry);
+  if (limited) return refuse(limited);
+  const result = await spec.run(p);
+  // A definite failure doesn't count against the limits; an unanswered
+  // call may have posted, so it does.
+  if ("refused" in result || result.status >= 300)
+    await releaseWrite(poster.owner, entry.id);
+  if (!("refused" in result))
+    deps.audit({
+      kind: "blob_github_write",
+      action: spec.action,
+      repo: p.ghRepo,
+      ...(spec.number ? { number: spec.number } : {}),
+      text_sha256: digest(spec.texts.join("\n\u0000\n")),
+      status: result.status,
+      user: poster.owner,
+      actor: BLOB_ACTOR,
+    });
+  if ("refused" in result) return refuse(result.refused);
+  if (result.status === 401) {
+    await onUnauthorized(p.record);
+    return refuse(
+      "GitHub refused Blob's token, so posting is off now. The owner has been asked for a new one.",
+    );
+  }
+  if (result.status === 0)
+    return refuse(
+      "Couldn't reach GitHub. It may still have gone through: check before trying again.",
+    );
+  if (result.status === 403 || result.status === 404)
+    return refuse(
+      `GitHub answered ${result.status}: Blob's account can't do that on ${thread}, or it doesn't exist.`,
+    );
+  if (result.status === 422)
+    return refuse(`GitHub answered 422: it refused the request as written.`);
+  if (result.status < 200 || result.status >= 300)
+    return refuse(`GitHub answered ${result.status}.`);
+  const url = obj(result.json)?.html_url;
+  return {
+    ok: true,
+    message: spec.ok(result.json, p),
+    ...(typeof url === "string" ? { url } : {}),
+  };
+}
+
+const where = (json: unknown) => {
+  const url = obj(json)?.html_url;
+  return typeof url === "string" ? `: ${url}` : "";
+};
+
+/** Comment on an issue or pull request as Blob. */
+export function blobComment(
+  poster: BlobPoster,
+  input: { repo: string; number: number; body: string },
+): Promise<BlobWriteResult> {
+  return write(poster, {
+    action: "comment",
+    repo: input.repo,
+    number: input.number,
+    texts: [input.body],
+    run: (p) =>
+      githubCall(
+        p.token,
+        "POST",
+        `/repos/${repoPath(p.ghRepo)}/issues/${input.number}/comments`,
+        {
+          body: input.body.trim() + p.footer,
+        },
+      ),
+    ok: (json) => `Commented${where(json)}`,
+  });
+}
+
+/** A review with comments as Blob. Always event COMMENT: Blob never
+ *  approves or requests changes. */
+export function blobReview(
+  poster: BlobPoster,
+  input: {
+    repo: string;
+    pr: number;
+    body: string;
+    comments: BlobReviewComment[];
+  },
+): Promise<BlobWriteResult> {
+  return write(poster, {
+    action: "review",
+    repo: input.repo,
+    number: input.pr,
+    texts: [input.body, ...input.comments.map((c) => c.body)],
+    run: (p) =>
+      githubCall(
+        p.token,
+        "POST",
+        `/repos/${repoPath(p.ghRepo)}/pulls/${input.pr}/reviews`,
+        {
+          event: "COMMENT",
+          body: input.body.trim() + p.footer,
+          comments: input.comments.map((c) => ({
+            path: c.path,
+            line: c.line,
+            ...(c.side ? { side: c.side } : {}),
+            ...(c.start_line ? { start_line: c.start_line } : {}),
+            body: c.body.trim() + p.footer,
+          })),
+        },
+      ),
+    ok: (json) => `Reviewed with comments${where(json)}`,
+  });
+}
+
+/** Add and remove labels as Blob. Only labels the repository already has;
+ *  never a trigger label. */
+export function blobLabel(
+  poster: BlobPoster,
+  input: { repo: string; number: number; add: string[]; remove: string[] },
+): Promise<BlobWriteResult> {
+  const add = [...new Set(input.add.map((l) => l.trim()).filter(Boolean))];
+  const remove = [
+    ...new Set(input.remove.map((l) => l.trim()).filter(Boolean)),
+  ];
+  if (!add.length && !remove.length)
+    return Promise.resolve(refuse("Name a label to add or remove."));
+  const trigger = [...add, ...remove].find((l) =>
+    LABEL_TRIGGERS.includes(l.toLowerCase()),
+  );
+  if (trigger)
+    return Promise.resolve(
+      refuse(
+        `${trigger} starts an agent loop, so Blob never adds or removes it. Hand that work over with ask_pat instead.`,
+      ),
+    );
+  return write(poster, {
+    action: "label",
+    repo: input.repo,
+    number: input.number,
+    texts: [],
+    run: async (p) => {
+      const base = `/repos/${repoPath(p.ghRepo)}`;
+      for (const label of add) {
+        const found = await githubCall(
+          p.token,
+          "GET",
+          `${base}/labels/${encodeURIComponent(label)}`,
+        );
+        if (found.status === 404)
+          return {
+            refused: `${p.ghRepo} has no label named ${label}. Blob only uses existing labels.`,
+          };
+        if (found.status !== 200) return found;
+      }
+      let last: GithubAnswer = {
+        status: 200,
+        json: null,
+      };
+      if (add.length) {
+        last = await githubCall(
+          p.token,
+          "POST",
+          `${base}/issues/${input.number}/labels`,
+          { labels: add },
+        );
+        if (last.status === 0 || last.status >= 300) return last;
+      }
+      for (const label of remove) {
+        last = await githubCall(
+          p.token,
+          "DELETE",
+          `${base}/issues/${input.number}/labels/${encodeURIComponent(label)}`,
+        );
+        // Not on the issue: nothing to remove.
+        if (last.status === 404) last = { status: 200, json: null };
+        if (last.status === 0 || last.status >= 300) return last;
+      }
+      return last;
+    },
+    ok: () =>
+      [
+        add.length ? `Added ${add.join(", ")}` : "",
+        remove.length ? `removed ${remove.join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("; ") + ".",
+  });
+}
+
+/** Open an issue as Blob. */
+export function blobOpenIssue(
+  poster: BlobPoster,
+  input: { repo: string; title: string; body: string },
+): Promise<BlobWriteResult> {
+  return write(poster, {
+    action: "issue",
+    repo: input.repo,
+    texts: [input.title, input.body],
+    run: (p) =>
+      githubCall(p.token, "POST", `/repos/${repoPath(p.ghRepo)}/issues`, {
+        title: input.title.trim(),
+        body: input.body.trim() + p.footer,
+      }),
+    ok: (json) => {
+      const number = obj(json)?.number;
+      return `Opened${typeof number === "number" ? ` #${number}` : ""}${where(json)}`;
+    },
+  });
+}
+
+/**
+ * Tell the instance owner, once per token, that Blob's token expires within
+ * BLOB_EXPIRY_WARN_DAYS. Run by the supervisor inbox sweep
+ * (supervisor-inbox.ts); reads the config only.
+ */
+export async function checkBlobGithubExpiry(): Promise<boolean> {
+  const config = await getConfigAsync();
+  const record = parseRecord(obj(config.integrations?.github)?.blob);
+  if (!record.enabled || !record.tokenRef || !record.expiresAt) return false;
+  const left = Date.parse(record.expiresAt) - deps.now();
+  if (!Number.isFinite(left) || left > BLOB_EXPIRY_WARN_DAYS * DAY_MS)
+    return false;
+  await deps.raise({
+    title: "Blob's GitHub token expires soon",
+    body: `Blob's GitHub token expires on ${record.expiresAt.slice(0, 10)}. After that Blob can't post on GitHub. Create a new token for Blob's account and save it in Settings, Members, Blob.`,
+    dedupeKey: `blob-github-expiry:${record.expiresAt}`,
+  });
+  return true;
 }

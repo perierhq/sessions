@@ -19,7 +19,7 @@ import type {
   SupervisorAnswerer,
   SupervisorItem,
 } from "../supervisor-inbox";
-import { configuredRepos } from "../config";
+import { configuredRepos, personaName } from "../config";
 import type { LeadGoalFields, LeadWakePlan } from "../goal-runner";
 import {
   LEAD_UNAVAILABLE_REASON,
@@ -196,6 +196,7 @@ export function leadGoalFields(
       doc,
       owner: leadOwner(doc),
       reportStyle,
+      persona: personaName(),
     }),
     mode: "ask",
     repo: d.isRepo(project) ? project : undefined,

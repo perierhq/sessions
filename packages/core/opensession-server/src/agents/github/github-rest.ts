@@ -27,6 +27,7 @@ import {
 } from "../../server/github-limit";
 import { noteGithubGraphqlCall } from "../../server/github-budget";
 import { isTrustedGithubLogin } from "../../server/shared/user-mappings";
+import { BLOB_MARKER } from "./constants";
 /** The PR agent's target — the instance's default repo (config-driven). */
 export const GITHUB_REPO = defaultRepo().ghRepo;
 /** The bot account our token posts as — used to recognise our own comments/events.
@@ -39,8 +40,7 @@ export const REPLY_MARKER = "<!-- os-reply -->";
 export const AUTOFIX_MARKER = "<!-- os-autofix -->";
 export const SIMPLIFY_MARKER = "<!-- os-simplify -->";
 export const ADVERSARIAL_MARKER = "<!-- os-adversarial -->";
-/** Ends every post by Blob's GitHub machine user (server/github-blob.ts). */
-export const BLOB_MARKER = "<!-- os:blob -->";
+export { BLOB_MARKER };
 
 export const OWN_MARKERS = [
   REVIEW_MARKER,

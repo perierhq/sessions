@@ -89,7 +89,9 @@ function goalMcpServers(
       // No opensession-sessions: a lead starts no sessions. lead_apply
       // refuses spawn-worker steps until workers can run restricted
       // (leads/apply.ts).
-      "opensession-lead": createLeadMcpServer(goal.leadProject),
+      "opensession-lead": createLeadMcpServer(goal.leadProject, {
+        sessionId: osSessionId,
+      }),
       // Its status is its settings': no tools to pause or finish itself.
       "opensession-goal-self": createGoalSelfMcpServer(goal.id, {
         lead: true,

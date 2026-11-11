@@ -86,6 +86,17 @@ export const LABEL_SIMPLIFY = "os-simplify";
 export const LABEL_ADVERSARIAL = "os-adversarial";
 /** Issue trigger label: starts a code session for a plain (non-PR) issue. */
 export const LABEL_ISSUE = "os";
+/** Every label that starts or steers an agent loop. */
+export const TRIGGER_LABELS = [
+  LABEL_REVIEW,
+  LABEL_AUTOFIX,
+  LABEL_SIMPLIFY,
+  LABEL_ADVERSARIAL,
+  LABEL_ISSUE,
+] as const;
+
+/** Ends every post by Blob's GitHub machine user (server/github-blob.ts). */
+export const BLOB_MARKER = "<!-- os:blob -->";
 
 export function labelMatches(name: string, expected: string): boolean {
   return name === expected;

@@ -7,13 +7,16 @@
 // `lead_apply`, which runs a recorded proposal's steps when the lead rules
 // or the owner's approval allow it (apply.ts). Only lead_apply changes the
 // project; it and the two that report refuse while the lead is off or the
-// project's kill switch is on.
+// project's kill switch is on. Blob's GitHub tools (blob-github-tools.ts)
+// post as Blob's machine user on this project's private repositories only,
+// under the same refusal.
 import { z } from "zod";
 import {
   LEAD_CATEGORIES,
   LEAD_CATEGORY_LABELS,
   leadDecision,
 } from "../../shared/project-lead";
+import { blobGithubTools } from "../blob-github-tools";
 import { createSdkMcpServer, tool } from "../inprocess-mcp";
 import { leadApply } from "./apply";
 import { flapReportMarkdown } from "./flaps";
@@ -27,6 +30,7 @@ import {
   checkLeadAct,
   supportDrafts,
   deliverLeadProposal,
+  leadOwner,
   leadReportRefusal,
   postLeadDigestNote,
 } from "./report";
@@ -102,7 +106,10 @@ const FORMAT = z
   .optional()
   .describe("markdown (default) or json");
 
-export function createLeadMcpServer(project: string) {
+export function createLeadMcpServer(
+  project: string,
+  opts: { sessionId?: string } = {},
+) {
   const tools = [
     tool(
       "project_overview",
@@ -327,6 +334,22 @@ export function createLeadMcpServer(project: string) {
         return text(result.text, !result.ok);
       },
     ),
+    // Blob's GitHub tools, held to this project's repositories and to
+    // private ones (github-blob.ts), refused while the lead may not report.
+    ...blobGithubTools(async () => {
+      const sources = leadSources();
+      const doc = await sources.projectDocument(project);
+      const refusal = leadReportRefusal(doc);
+      if (refusal) return refusal;
+      const owner = leadOwner(doc);
+      if (!owner)
+        return "Nobody to post for: set the lead's owner in the project settings";
+      return {
+        owner,
+        ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+        lead: { project, repos: sources.projectGhRepos(project) },
+      };
+    }, ` on ${project}'s private repositories`),
   ];
   return createSdkMcpServer({
     name: "opensession-lead",

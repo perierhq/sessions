@@ -22,8 +22,9 @@
  * needs-you item raised in them is held until they end, unless its urgency
  * is `down` (something fully down), which always goes through. A sweep once a
  * minute flushes held items, retries failed pushes and sends due digests,
- * and rotates a supervisor session that is due (supervisor.ts).
- * Nothing runs at import: `startSupervisorInbox` starts the sweep, once.
+ * rotates a supervisor session that is due (supervisor.ts), and tells the
+ * instance owner once when Blob's GitHub token nears its expiry
+ * (github-blob.ts). Nothing runs at import: `startSupervisorInbox` starts the sweep, once.
  */
 import { randomUUID } from "node:crypto";
 import { catalogDocuments } from "./catalog-documents";
@@ -169,6 +170,9 @@ export interface SupervisorInboxDeps {
   /** The person's profile time zone (identity.team[].timezone, else the
    *  instance default, else UTC). */
   timeZone(user: string): string;
+  /** Tell the instance owner, once, that Blob's GitHub token expires soon
+   *  (github-blob.ts). */
+  checkBlobGithub(): Promise<unknown>;
 }
 
 const defaultDeps: SupervisorInboxDeps = {
@@ -191,6 +195,8 @@ const defaultDeps: SupervisorInboxDeps = {
   ensureWatch: async (user) =>
     (await import("./supervisor-watch")).ensureWatchGoalOnce(user),
   timeZone: (user) => timezoneForUser(user) || "UTC",
+  checkBlobGithub: async () =>
+    (await import("./github-blob")).checkBlobGithubExpiry(),
 };
 
 let deps: SupervisorInboxDeps = defaultDeps;
@@ -1159,6 +1165,16 @@ export function sweepSupervisorInbox(): Promise<{
 }> {
   sweeping ??= (async () => {
     const totals = { pushed: 0, digested: 0 };
+    // Blob's GitHub token nearing its expiry raises one needs-you item;
+    // no timer of its own.
+    try {
+      await deps.checkBlobGithub();
+    } catch (error) {
+      console.warn(
+        "[supervisor-inbox] Blob's GitHub token check failed:",
+        error instanceof Error ? error.message : error,
+      );
+    }
     let rows: Array<{ key: string; value: unknown }>;
     try {
       rows = await documents().list();

@@ -14,8 +14,9 @@ limits and publication guards. Run-scoped `GH_CONFIG_DIR`, bot commit authorship
 
 Blob's GitHub machine user is the third principal. It was decided on
 2026-11-11. Its account and token are stored (`server/github-blob.ts`, set
-up as in [GitHub setup](setup/github.md#blobs-github-account)); the tools
-that post with it are not built yet. Blob is the supervisor and the project leads
+up as in [GitHub setup](setup/github.md#blobs-github-account)), and it posts
+through the gateway tools described in
+[the security model](security-model.md#blobs-github-tools). Blob is the supervisor and the project leads
 (see `adrs/supervisor-and-leads.md`). Its account is a member of the
 organization, for example `acme-blob`, and it holds a fine-grained token with
 read and write on issues and pull requests and read on contents. With it, Blob

@@ -620,6 +620,55 @@ steps. Paths below are under `packages/core/opensession-server/src/`.
   the steps from structured fields read from the record, apart from the
   lead's prose (`server/leads/item-acts.ts`).
 
+## Blob's GitHub tools
+
+Blob posts on GitHub as its own machine user (`docs/github-authority.md`)
+through four gateway tools: `blob_comment`, `blob_review`, `blob_label` and
+`blob_open_issue` (`server/blob-github-tools.ts`). The REST calls and every
+guard live in `server/github-blob.ts`, the only module that resolves the
+token (`github-blob-boundary.test.ts`). Paths are under
+`packages/core/opensession-server/src/`.
+
+- **Where they are mounted.** The supervisor conversation
+  (`opensession-supervisor`, for its owner's own turns) gets all four. A
+  project lead (`opensession-lead`) gets them limited to its own project's
+  repositories and to private ones, and refused while the lead is off or
+  the project's agents are paused. The supervisor's watch gets none
+  (`supervisor-watch.test.ts`).
+- **The token never leaves the server.** Calls go to the fixed
+  `https://api.github.com` with `redirect: "manual"` and a timeout. No
+  result, refusal, audit entry or log line carries the token or GitHub's
+  error text: the agent gets fixed copy with the status code.
+- **Every call fails closed**, in this order: posting is on; a token is set
+  and not expired; the repository is registered and on Blob's list; a
+  lead's repository is its project's; the repository is private per the
+  GitHub App's metadata (`repo-visibility.ts`) or named in `publicRepos`
+  (a lead's must be private, and unknown visibility refuses); the owner has
+  a GitHub login on the roster; the text passes the trigger guard; and the
+  owner is under 30 writes an hour and 5 an hour on one issue or pull
+  request (catalog namespace `blob-github-writes`). A definite failure from
+  GitHub doesn't count against the limits.
+- **Reviews are comments only.** `blob_review` always sends event
+  `COMMENT`: Blob never approves or requests changes, and has no tool to
+  push or merge. `blob_label` adds only labels the repository already has.
+- **Blob's text can't steer our loops.** Blob's posts end with
+  `<!-- os:blob -->`, one of `OWN_MARKERS`, so the GitHub agent treats them
+  as its own. A body or title with a `/os…` command, the name of a trigger
+  label (`os-review`, `os-auto-fix`, `os-simplify`, `os-adversarial`) or
+  an HTML comment is refused, and `blob_label` never adds or removes a
+  trigger label (`os` included). The tool descriptions tell Blob to quote
+  anything someone else wrote only inside a blockquote.
+- **Every post is signed and audited.** The server appends
+  `<sub>Blob, for @<owner-login></sub>` and the marker to every body,
+  inline review comments included, with a link to Blob's session only on
+  a private repository. Each attempt that reaches GitHub is audited as
+  `blob_github_write` with actor `Blob`, user the owner, the repository,
+  the number, the status and a SHA-256 digest of the text.
+- **A refused token turns posting off.** A 401 from GitHub sets
+  `integrations.github.blob.enabled` to false and raises one needs-you item
+  to the instance owner. The supervisor inbox sweep raises one needs-you
+  item when the token expires within 14 days.
+
 ## Mac Keychain requests
 
 The interactive-only `opensession-keychain` server can request one macOS Keychain
