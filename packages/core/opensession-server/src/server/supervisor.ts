@@ -14,7 +14,7 @@
  * model: its conversations are deep, the Desk's are quick.
  */
 import { catalogDocuments } from "./catalog-documents";
-import { personaName } from "./config";
+import { personaName, productName } from "./config";
 import { ensureDeskSession } from "./desk";
 import { newSessionId } from "./paths";
 import {
@@ -35,6 +35,11 @@ export const ROTATE_AGE_MS = 7 * 24 * 60 * MINUTE_MS;
 export const ROTATE_IDLE_MS = 30 * MINUTE_MS;
 /** A supervisor session compacted this often is rotated once it is idle. */
 export const ROTATE_COMPACTIONS = 3;
+/** A supervisor session whose last turn sent this many context tokens is
+ *  rotated once it is idle. Pi compacts only near the model's window (a
+ *  million tokens on some models), so without this one conversation grew to
+ *  246k tokens, and each return after the cache expired rewrote all of it. */
+export const ROTATE_CONTEXT_TOKENS = 100_000;
 /** Retired sessions kept on the record, newest first. */
 export const MAX_PREVIOUS = 50;
 
@@ -133,14 +138,17 @@ export interface SupervisorSessionState {
   lastActivity: string;
   /** A run is in progress or a queued prompt is being drained. */
   busy: boolean;
+  /** The size of the last turn's prompt (usage.contextTokens), when known. */
+  contextTokens?: number;
 }
 
 /**
  * Whether the person's supervisor should move to a fresh session: only when
  * it is idle (no run in progress, nothing for ROTATE_IDLE_MS), and then
- * when it is older than ROTATE_AGE_MS or went through ROTATE_COMPACTIONS
- * compactions. A month in one session would mean summaries of summaries;
- * the ledger and the seed context carry what matters into the new one.
+ * when it is older than ROTATE_AGE_MS, went through ROTATE_COMPACTIONS
+ * compactions, or its context reached ROTATE_CONTEXT_TOKENS. A month in one
+ * session would mean summaries of summaries; the ledger and the seed
+ * context carry what matters into the new one.
  */
 export function rotationDue(
   record: SupervisorRecord,
@@ -151,6 +159,7 @@ export function rotationDue(
   const last = Date.parse(session.lastActivity);
   if (!Number.isFinite(last) || now - last <= ROTATE_IDLE_MS) return false;
   if (record.compactions >= ROTATE_COMPACTIONS) return true;
+  if ((session.contextTokens ?? 0) >= ROTATE_CONTEXT_TOKENS) return true;
   const born = Date.parse(record.createdAt || session.createdAt);
   return Number.isFinite(born) && now - born > ROTATE_AGE_MS;
 }
@@ -287,7 +296,7 @@ async function ensureNow(
       // Marked retired but still mapped: a rotation that failed after
       // retiring it. Finish the rotation; prompts to it are refused.
       if (session.supervisorRetiredAt)
-        return mint(user, key, current, current.sessionId);
+        return mint(user, key, current, current.sessionId, session);
       const now = deps.now();
       const due = rotationDue(
         current,
@@ -295,11 +304,12 @@ async function ensureNow(
           createdAt: session.createdAt,
           lastActivity: session.lastActivity,
           busy: deps.busy(session),
+          contextTokens: session.usage?.contextTokens,
         },
         now,
       );
       if (!due) return ensured(current);
-      return mint(user, key, current, current.sessionId);
+      return mint(user, key, current, current.sessionId, session);
     }
     // Never hand out a session that is gone: the next ensure replaces it.
     if (mode === "rotate") return null;
@@ -310,11 +320,25 @@ async function ensureNow(
   return mint(user, key, null, undefined);
 }
 
+/** What a new supervisor session takes over from the one it replaces: the
+ *  owner's model and thinking effort, set from the composer or a prompt's
+ *  `effort` (maybePersistEffort). Unset stays unset: the instance default
+ *  model at pi's default effort (medium). */
+export function carriedSupervisorSettings(
+  from: Pick<UnifiedSession, "model" | "effort"> | undefined,
+): Pick<NativeSessionFile, "model" | "effort"> {
+  return {
+    ...(from?.model ? { model: from.model } : {}),
+    ...(from?.effort ? { effort: from.effort } : {}),
+  };
+}
+
 async function mint(
   user: string,
   key: string,
   base: SupervisorRecord | null,
   retire: string | undefined,
+  from?: Pick<UnifiedSession, "model" | "effort">,
 ): Promise<SupervisorEnsured> {
   const documents = catalogDocuments(SUPERVISORS_NAMESPACE);
   // Write the session before claiming it, so the map never points at a
@@ -335,6 +359,7 @@ async function mint(
       createdAt: now,
       lastActivity: now,
       title: "Supervisor",
+      ...carriedSupervisorSettings(from),
       ...existing,
     };
   });
@@ -539,7 +564,10 @@ This session is the owner's supervisor, their chief of staff. The Blob app shows
 - Keep your own turns short so you stay free to talk: monitoring and anything long goes to a worker session or a goal that reports back.
 - Answer what the owner asked, and only that. The live state at the top of each turn is your reference, not your reply: it is there so you know the picture, not so you read it out.
 - Hold the decisions that are waiting for the owner. Bring one up when it is new since your last reply, when it is urgent, or when the owner asks what is waiting; then put it plainly with its options. Never repeat a list you already gave in this conversation; a greeting gets a greeting and, at most, one line on what changed.
-- Choices at the end of a reply follow from that reply only, never a menu of everything that is waiting.
+- Choices at the end of a reply follow from that reply only, never a menu of everything that is waiting. Never offer a menu you already offered; if the owner didn't pick from it, ask nothing or say what you'll do.
+- Act instead of asking back. When one option is clearly right and within what the owner asked for, do it and say so. A short yes or approval ("go", "approve", "do it") refers to the choices you offered last: act on them. Ask only when two of them fit.
+- Before a tool call that can take more than a moment, write one short line saying what you're checking ("Checking ${persona}'s review now."), so the owner hears something within two seconds. When the turn's Blob context asks for a say fence, that line is a short \`\`\`say fence.
+- Never state how Blob, ${productName()} or a tool behaves (what it shows, where a card appears, what it can or can't do) unless this turn's context, the charter or a tool result says so. Check first, or say you don't know.
 - Delegate real work. Start a scoped worker session with opensession-sessions create_session or spawn_task, or steer one already on it with send_to_session, and tell the owner you did. Never do long implementation work in this session.
 - When the owner mentions you (@Blob) in a session or a comment thread, the turn says where. Answer there: reply_in_thread for a thread, send_to_session for a session. Work it asks for goes through create_session or spawn_task.
 - When the owner assigns you a comment thread, the turn names it. Start the work with create_session or spawn_task, watch it with watch_for, report in the thread with reply_in_thread, and resolve the thread there when it's done.

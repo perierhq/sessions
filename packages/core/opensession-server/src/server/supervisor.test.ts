@@ -209,6 +209,36 @@ describe("rotationDue", () => {
     ).toBe(true);
   });
 
+  test("a young idle session is due once its context reaches 100k tokens", () => {
+    const young = record({ createdAt: "2026-07-18T12:00:00Z" });
+    expect(supervisor.ROTATE_CONTEXT_TOKENS).toBe(100_000);
+    expect(
+      supervisor.rotationDue(young, { ...idle, contextTokens: 99_999 }, now),
+    ).toBe(false);
+    expect(
+      supervisor.rotationDue(young, { ...idle, contextTokens: 100_000 }, now),
+    ).toBe(true);
+    // Still only when idle.
+    expect(
+      supervisor.rotationDue(
+        young,
+        { ...idle, contextTokens: 246_000, busy: true },
+        now,
+      ),
+    ).toBe(false);
+    expect(
+      supervisor.rotationDue(
+        young,
+        {
+          ...idle,
+          contextTokens: 246_000,
+          lastActivity: "2026-07-20T11:45:00Z",
+        },
+        now,
+      ),
+    ).toBe(false);
+  });
+
   test("exactly seven days is not yet old; the session's own date backs a record without one", () => {
     const week = record({ createdAt: "2026-07-13T12:00:00Z" });
     expect(supervisor.rotationDue(week, idle, now)).toBe(false);
@@ -301,6 +331,49 @@ describe("rotation", () => {
     // A compaction of the retired session no longer counts.
     expect(await supervisor.recordSupervisorCompaction(session)).toBeNull();
     expect((await record()).compactions).toBe(0);
+  });
+
+  test("a large context rotates a young idle session and keeps the owner's model and effort", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    const { updateSessionFile } = await import("./session-cache");
+    await updateSessionFile(first.sessionId, (data) => ({
+      ...data,
+      model: "pi/anthropic/claude-sonnet-5-5",
+      effort: "low",
+      usage: {
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        contextTokens: 120_000,
+        contextWindow: 1_000_000,
+        turns: 30,
+        updatedAt: new Date(clock).toISOString(),
+      },
+    }));
+    clock += 60 * 60_000;
+    const second = await supervisor.ensureSupervisorSession("Ada");
+    expect(second.sessionId).not.toBe(first.sessionId);
+    expect(second.previousSessionIds).toEqual([first.sessionId]);
+    const fresh = await sessionDoc(second.sessionId);
+    expect(fresh?.model).toBe("pi/anthropic/claude-sonnet-5-5");
+    expect(fresh?.effort).toBe("low");
+    expect(fresh?.usage).toBeUndefined();
+  });
+
+  test("a new supervisor without a chosen effort leaves it to the default", async () => {
+    const first = await supervisor.ensureSupervisorSession("Ada");
+    const doc = await sessionDoc(first.sessionId);
+    expect(doc?.effort).toBeUndefined();
+    expect(doc?.model).toBeUndefined();
+    expect(supervisor.carriedSupervisorSettings(undefined)).toEqual({});
+    expect(
+      supervisor.carriedSupervisorSettings({
+        model: undefined,
+        effort: "high",
+      }),
+    ).toEqual({ effort: "high" });
   });
 
   test("compactions of any other session are not counted", async () => {
@@ -591,6 +664,26 @@ describe("standing sessions", () => {
       off();
       offThrowing();
     }
+  });
+
+  test("the charter acts, acknowledges slow tools and checks claims about itself", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain(
+      "Act instead of asking back. When one option is clearly right and within what the owner asked for, do it and say so.",
+    );
+    expect(note).toContain(
+      'A short yes or approval ("go", "approve", "do it") refers to the choices you offered last: act on them. Ask only when two of them fit.',
+    );
+    expect(note).toContain(
+      "Before a tool call that can take more than a moment, write one short line saying what you're checking",
+    );
+    expect(note).toContain('("Checking Pat\'s review now.")');
+    expect(note).toContain("within two seconds");
+    expect(note).toContain("that line is a short ```say fence");
+    expect(note).toContain(
+      "Never state how Blob, Open Session or a tool behaves (what it shows, where a card appears, what it can or can't do) unless this turn's context, the charter or a tool result says so. Check first, or say you don't know.",
+    );
+    expect(note).toContain("Never offer a menu you already offered");
   });
 
   test("the charter says to read and keep the ledger", () => {
