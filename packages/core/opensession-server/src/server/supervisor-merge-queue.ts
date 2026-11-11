@@ -17,7 +17,9 @@
  * auto-fix loop (ask_pat auto_fix, which updates the branch and resolves
  * the conflicts), and its card comes back when that run finishes, saying
  * the new head carries the fix. The owner hears about the conflict once. A
- * PR that still conflicts after MAX_PAT_ROUNDS runs leaves the queue. Only
+ * PR that still conflicts after MAX_PAT_ROUNDS runs leaves the queue, and
+ * so does one whose run hasn't finished within PAT_TIMEOUT_MINUTES (the
+ * owner gets a needs-you item for it). Only
  * a real conflict goes to the persona: GitHub reporting the PR as
  * conflicting (mergeable CONFLICTING, merge state DIRTY). A branch rule or
  * a missing permission goes to the owner as a needs-you item instead.
@@ -47,6 +49,13 @@ export const MAX_PAT_ROUNDS = 2;
 
 /** One session holds at most this many PRs of one repository. */
 export const MAX_QUEUED_PER_REPO = 10;
+
+/** One session holds at most this many PRs across all repositories. */
+export const MAX_QUEUED_PER_SESSION = 20;
+
+/** How long a conflicting PR waits on the persona's run before it leaves
+ *  the queue. */
+export const PAT_TIMEOUT_MINUTES = 45;
 
 /** Delivery ids of the outcome notices, for the receipts only. What keeps a
  *  notice in the conversation is the server-only `conversationNotice`
@@ -98,6 +107,8 @@ export interface MergeQueueDeps {
   /** Every session's saved queue, read once at boot. */
   saved(): Promise<Array<{ sessionId: string; saved: unknown }>>;
   persona(): string;
+  /** How long to wait on the persona's run, in milliseconds. */
+  patTimeoutMs(): number;
 }
 
 /** What the catalog keeps of a session's queue. */
@@ -150,6 +161,7 @@ const liveDeps: MergeQueueDeps = {
       saved: value,
     })),
   persona: () => personaName(),
+  patTimeoutMs: () => PAT_TIMEOUT_MINUTES * 60_000,
 };
 
 let deps: MergeQueueDeps = liveDeps;
@@ -247,6 +259,7 @@ function tellOwner(
   sessionId: string,
   job: Job,
   notice: { title: string; body: string },
+  reason = "refused",
 ): void {
   void deps
     .postItem({
@@ -255,7 +268,10 @@ function tellOwner(
       kind: "needs-you",
       title: notice.title,
       body: notice.body,
-      dedupeKey: `${MERGE_CARD_SOURCE}:${sessionId}:${job.label}`,
+      dedupeKey:
+        reason === "refused"
+          ? `${MERGE_CARD_SOURCE}:${sessionId}:${job.label}`
+          : `${MERGE_CARD_SOURCE}:${reason}:${sessionId}:${job.label}`,
     })
     .catch((error) =>
       console.error("[merge-queue] couldn't tell the owner:", error),
@@ -306,9 +322,38 @@ async function handOff(
       `${job.label} conflicts with its base${after}. I asked ${persona} to update the branch; its card comes back when ${persona} is done, and you'll hear how it ends.`,
     );
   }
+  // Whichever comes first, the run finishing or the timeout, moves on.
+  let waiting = true;
+  const timer = setTimeout(() => {
+    if (!waiting) return;
+    waiting = false;
+    if (q.jobs[0] !== job) return;
+    q.jobs.shift();
+    report(
+      sessionId,
+      job,
+      `${persona} didn't finish updating ${job.label} within ${PAT_TIMEOUT_MINUTES} minutes, so it left the merge queue. Nothing was merged.`,
+    );
+    tellOwner(
+      sessionId,
+      job,
+      {
+        title: `Couldn't merge ${job.label}`,
+        body: `${persona} didn't finish updating ${job.label} within ${PAT_TIMEOUT_MINUTES} minutes, so it left the merge queue and nothing was merged. Ask Blob to merge it again once the branch is ready.`,
+      },
+      "pat-timeout",
+    );
+    void advance(sessionId, q).catch((error) =>
+      console.error("[merge-queue] couldn't advance the queue:", error),
+    );
+  }, deps.patTimeoutMs());
+  (timer as { unref?: () => void }).unref?.();
   void asked.done
     .catch(() => undefined)
     .then(() => {
+      if (!waiting) return;
+      waiting = false;
+      clearTimeout(timer);
       // The card that comes back is for the head the persona pushed.
       job.reason = `New head includes ${persona}'s conflict fix. ${job.givenReason}`;
       return advance(sessionId, q);
@@ -390,6 +435,8 @@ export async function raiseMergeCard(
   const busy = queues.get(sessionId);
   if (busy?.jobs.some((j) => j.label === label))
     return `${label} is already in the merge queue; you'll hear when it's merged.`;
+  if (busy && busy.jobs.length >= MAX_QUEUED_PER_SESSION)
+    return `The merge queue already holds ${MAX_QUEUED_PER_SESSION} PRs, so ${label} wasn't queued. Raise it again once some of them are done.`;
   const sameRepo = busy?.jobs.filter(
     (j) => j.target.repoId === input.target.repoId,
   ).length;

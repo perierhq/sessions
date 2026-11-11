@@ -18,6 +18,7 @@ import {
   DROPPED_TITLE,
   MAX_PAT_ROUNDS,
   MAX_QUEUED_PER_REPO,
+  MAX_QUEUED_PER_SESSION,
   MERGE_CARD_DELIVERY_PREFIX,
   mergeQueue,
   raiseMergeCard,
@@ -57,7 +58,9 @@ function source(number: number, conflicting: boolean): PrReadinessSource {
 }
 
 /** A repository where merging one PR can leave others conflicting. */
-function setup(opts: { merge?: GithubMergeResponse } = {}) {
+function setup(
+  opts: { merge?: GithubMergeResponse; patTimeoutMs?: number } = {},
+) {
   const conflicting = new Set<number>();
   /** PRs that conflict once the given PR merges. */
   const conflictsAfter = new Map<number, number[]>();
@@ -118,6 +121,7 @@ function setup(opts: { merge?: GithubMergeResponse } = {}) {
     saved: async () =>
       [...saved].map(([sessionId, value]) => ({ sessionId, saved: value })),
     persona: () => "Pat",
+    patTimeoutMs: () => opts.patTimeoutMs ?? 60_000,
   });
   return { conflicting, conflictsAfter, told, items, saved, pat };
 }
@@ -324,6 +328,65 @@ describe("supervisor merge cards", () => {
         owner: "ada",
       }),
     ).toStartWith("Queued acme/web#1 behind");
+  });
+
+  test("a PR whose Pat run doesn't finish in time leaves the queue, and the owner hears", async () => {
+    const { conflicting, told, items, pat } = setup({ patTimeoutMs: 5 });
+    conflicting.add(10);
+    await raise("q-slow", 10);
+    await raise("q-slow", 11);
+    expect(pat.map((p) => p.pr)).toEqual([10]);
+
+    await new Promise((r) => setTimeout(r, 20));
+    await flush();
+    expect(told).toEqual([
+      "Merge card: Pat didn't finish updating acme/app#10 within 45 minutes, so it left the merge queue. Nothing was merged.",
+    ]);
+    expect(items).toEqual([
+      {
+        user: "ada",
+        source: "merge-cards",
+        kind: "needs-you",
+        title: "Couldn't merge acme/app#10",
+        body: "Pat didn't finish updating acme/app#10 within 45 minutes, so it left the merge queue and nothing was merged. Ask Blob to merge it again once the branch is ready.",
+        dedupeKey: "merge-cards:pat-timeout:q-slow:acme/app#10",
+      },
+    ]);
+    // The next PR's card comes up.
+    expect(mergeQueue("q-slow")).toEqual(["acme/app#11"]);
+    expect(pendingForceMerge("q-slow")?.request.number).toBe(11);
+
+    // Pat finishing late changes nothing.
+    pat[0]!.finish();
+    await flush();
+    expect(mergeQueue("q-slow")).toEqual(["acme/app#11"]);
+    expect(told).toHaveLength(1);
+  });
+
+  test(`a session queues at most ${MAX_QUEUED_PER_SESSION} PRs across repositories`, async () => {
+    setup();
+    const repos = ["a", "b", "c"];
+    for (let n = 0; n < MAX_QUEUED_PER_SESSION; n++) {
+      const repo = repos[n % repos.length]!;
+      await raiseMergeCard("q-total", {
+        target: { repoId: repo, ghRepo: `acme/${repo}`, number: n + 1 },
+        reason: "The owner asked to merge it.",
+        driver,
+        owner: "ada",
+      });
+    }
+    expect(mergeQueue("q-total")).toHaveLength(MAX_QUEUED_PER_SESSION);
+    expect(
+      await raiseMergeCard("q-total", {
+        target: { repoId: "d", ghRepo: "acme/d", number: 1 },
+        reason: "The owner asked to merge it.",
+        driver,
+        owner: "ada",
+      }),
+    ).toBe(
+      `The merge queue already holds ${MAX_QUEUED_PER_SESSION} PRs, so acme/d#1 wasn't queued. Raise it again once some of them are done.`,
+    );
+    expect(mergeQueue("q-total")).toHaveLength(MAX_QUEUED_PER_SESSION);
   });
 
   test("after a restart the owner hears once which queued merges were dropped", async () => {
