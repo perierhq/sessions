@@ -294,7 +294,7 @@ export function createSupervisorMcpServer(ctx: { user: string }) {
       ),
       tool(
         "reply_in_thread",
-        "Answer in a comment thread on a session, as Blob: where the owner mentioned you (@Blob) in a thread, the turn names its session_id and thread_id. resolve also resolves the thread, when the reply settles it. The people in the thread are notified. For a mention in a session itself, answer with send_to_session instead.",
+        "Answer in a comment thread on a session, as Blob: where the owner mentioned you (@Blob) in a thread, the turn names its session_id and thread_id. Only those threads, for 7 days, until you resolve one. resolve also resolves the thread, when the reply settles it. The people in the thread are notified. For a mention in a session itself, answer with send_to_session instead.",
         {
           session_id: z.string().min(1).max(80),
           thread_id: z.string().min(1).max(80),
@@ -357,9 +357,13 @@ export function ownerSeesSession(
 /**
  * Blob's answer in a comment thread: a comment as Blob through the thread
  * service (comment-thread-service.ts), so the thread's people are told, and
- * a resolve when asked. Refused for a session or thread the owner can't
- * see. Blob's comment never routes back to Blob (`mentionsBlob` drops Blob
- * as a sender, and an agent comment skips the routing).
+ * a resolve when asked. Only where a mention by this owner was routed to
+ * their supervisor (blob-mentions.ts routedThreadOpen): within 7 days and
+ * not resolved by Blob since. Anything else is refused, so text pasted
+ * into the supervisor can't make Blob post in other threads. Each post is
+ * audited as Blob, with the text as a digest. Blob's comment never routes
+ * back to Blob (`mentionsBlob` drops Blob as a sender, and an agent
+ * comment skips the routing).
  */
 export async function replyInThread(
   owner: string,
@@ -370,17 +374,28 @@ export async function replyInThread(
     resolve?: boolean;
   },
 ): Promise<{ ok: boolean; message: string }> {
-  const [{ findSessionAsync }, threads, service] = await Promise.all([
-    import("./session-cache"),
-    import("./comment-threads"),
-    import("./comment-thread-service"),
-  ]);
+  const [{ findSessionAsync }, threads, service, mentions, { auditAsync }] =
+    await Promise.all([
+      import("./session-cache"),
+      import("./comment-threads"),
+      import("./comment-thread-service"),
+      import("./blob-mentions"),
+      import("./audit"),
+    ]);
   const missing = { ok: false, message: "No such thread on that session." };
   if (!threads.isValidThreadSession(input.sessionId)) return missing;
   const session = await findSessionAsync(input.sessionId);
   if (!session || !ownerSeesSession(owner, session)) return missing;
   const thread = await threads.getThread(input.sessionId, input.threadId);
   if (!thread) return missing;
+  if (
+    !(await mentions.routedThreadOpen(owner, input.sessionId, input.threadId))
+  )
+    return {
+      ok: false,
+      message:
+        "You can answer only in a thread where the owner mentioned @Blob in the last 7 days and you haven't resolved it since.",
+    };
   const result = await service.addComment(input.sessionId, input.threadId, {
     user: BLOB_ACTOR,
     agent: true,
@@ -391,16 +406,32 @@ export async function replyInThread(
       ok: false,
       message: `Couldn't reply: ${result.reason.replace("_", " ")}.`,
     };
+  let resolved = false;
   if (input.resolve && thread.status !== "resolved") {
-    const resolved = await service.updateThread(
+    const update = await service.updateThread(
       input.sessionId,
       input.threadId,
       { status: "resolved" },
       BLOB_ACTOR,
     );
-    if (!resolved.ok)
-      return { ok: false, message: "Replied, but couldn't resolve it." };
+    resolved = update.ok;
+    if (resolved)
+      await mentions.closeRoutedThread(owner, input.sessionId, input.threadId);
   }
+  auditAsync({
+    kind: "blob_thread_reply",
+    session_id: input.sessionId,
+    thread_id: input.threadId,
+    comment_id: result.added?.id,
+    text_sha256: new Bun.CryptoHasher("sha256")
+      .update(input.text)
+      .digest("hex"),
+    resolved,
+    user: owner,
+    actor: BLOB_ACTOR,
+  });
+  if (input.resolve && thread.status !== "resolved" && !resolved)
+    return { ok: false, message: "Replied, but couldn't resolve it." };
   return {
     ok: true,
     message: input.resolve ? "Replied and resolved." : "Replied.",

@@ -101,6 +101,10 @@ export interface CreateSessionOpts {
   requestScope?: string;
   /** Server-authenticated creator login. Never accept this from agent input. */
   createdByLogin?: string;
+  /** The verified signed-in person who typed `prompt` in the app
+   *  (session-create.ts blobMentionAuthor). Set by the create route only;
+   *  never from agent, automation or Slack input. */
+  blobMentionSender?: string;
   /** Branch for a code-mode worktree session. Ignored for ask mode. */
   branch?: string;
   /** `branch` exists already (on origin or here): the worktree checks it out

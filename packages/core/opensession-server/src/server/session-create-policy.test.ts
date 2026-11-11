@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   assertAutomationDescendantOpeningIsolation,
+  blobMentionAuthor,
   descendantOpeningScope,
   openingCreateTrustPolicy,
   openingMentionsNote,
@@ -527,5 +528,34 @@ describe("support session opening mentions", () => {
     expect(openingMentionsNote(prompt, undefined)).toContain(
       "@session:bks-0190aaaa-0000",
     );
+  });
+});
+
+describe("@Blob in a create's prompt", () => {
+  test("routes only for the verified person's own create", () => {
+    expect(blobMentionAuthor({ blobMentionSender: "Ada" })).toBe("Ada");
+    // Web sign-in off, or a server-composed create: no verified sender.
+    expect(blobMentionAuthor({})).toBeUndefined();
+    expect(blobMentionAuthor({ blobMentionSender: "  " })).toBeUndefined();
+  });
+
+  test.each([
+    ["a child session", { parentSessionId: "os-parent" }],
+    ["an agent's tool call", { invokingSessionId: "os-agent" }],
+    ["an agent-started create", { agentStarted: true }],
+    ["Blob acting for the person", { actedBy: "Blob" as const }],
+    ["a spawned helper", { spawnedBy: "os-desk" }],
+    [
+      "a Slack thread",
+      { slackOrigin: { channel: "C1", threadTs: "1.0" } as never },
+    ],
+    [
+      "an automation descendant",
+      { automationDescendantPolicy: { automationId: "a" } as never },
+    ],
+  ])("never routes from %s", (_label, origin) => {
+    expect(
+      blobMentionAuthor({ blobMentionSender: "Ada", ...origin }),
+    ).toBeUndefined();
   });
 });

@@ -141,7 +141,8 @@ export async function recordMentions(
  * notification (src/server/notifications.ts), which also pushes. Every surface that can carry a
  * mention calls this rather than assembling the three itself, so a new
  * surface cannot ship two of them and forget the third. An @Blob mention
- * goes to the sender's supervisor from here too (blob-mentions.ts).
+ * goes to the sender's supervisor from here too (blob-mentions.ts), in the
+ * background, and only where the caller passes `verifiedSender`.
  */
 export async function notifyMentions(
   text: string,
@@ -153,17 +154,20 @@ export async function notifyMentions(
   where: {
     /** The comment thread it was written in. */
     threadId?: string;
-    /** The comment's id, so a replay routes @Blob once. */
+    /** Where it was written, stable across replays (comment, delivery or
+     *  client id), so a replay routes @Blob once. */
     ref?: string;
-    /** False where the text is not the sender's own words in the app
-     *  (a Slack thread, an agent's or an automation's create). */
-    blob?: boolean;
+    /** The signed-in person the caller verified typed `text` in the app.
+     *  Only then does @Blob route: unset for an agent's, Blob's, an
+     *  automation's or Slack's text and for claimed names. */
+    verifiedSender?: string;
   } = {},
 ): Promise<string[]> {
-  if (where.blob !== false && text.includes("@"))
-    await routeBlobMentionSafely({
+  if (where.verifiedSender && text.includes("@"))
+    void routeBlobMentionSafely({
       text,
       sender,
+      verifiedSender: where.verifiedSender,
       sessionId,
       source,
       url,
@@ -197,19 +201,33 @@ export async function notifyMentions(
   return mentioned;
 }
 
-/** A failed route never fails the mention's other effects. */
-async function routeBlobMentionSafely(
+/** Routes still running, so a test can wait for them. */
+const pendingBlobRoutes = new Set<Promise<void>>();
+
+/** Wait for routes started so far. Tests only. */
+export async function __settleBlobRoutesForTest(): Promise<void> {
+  await Promise.all([...pendingBlobRoutes]);
+}
+
+/** Runs in the background so a send never waits on it; a failed route
+ *  is logged and never fails the mention's other effects. */
+function routeBlobMentionSafely(
   mention: Parameters<typeof import("./blob-mentions").routeBlobMention>[0],
 ): Promise<void> {
-  try {
-    const { routeBlobMention } = await import("./blob-mentions");
-    await routeBlobMention(mention);
-  } catch (error) {
-    console.warn(
-      "[mentions] @Blob routing failed:",
-      error instanceof Error ? error.message : error,
-    );
-  }
+  const run = (async () => {
+    try {
+      const { routeBlobMention } = await import("./blob-mentions");
+      await routeBlobMention(mention);
+    } catch (error) {
+      console.warn(
+        "[mentions] @Blob routing failed:",
+        error instanceof Error ? error.message : error,
+      );
+    }
+  })();
+  pendingBlobRoutes.add(run);
+  void run.finally(() => pendingBlobRoutes.delete(run));
+  return run;
 }
 
 /** The push body shares the mention's preview rule. */

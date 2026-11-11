@@ -240,6 +240,9 @@ export async function createThread(input: {
   images?: string[];
   anchor?: TextAnchor | null;
   assignee?: string | null;
+  /** `user` is the signed-in person, verified by the route
+   *  (routes/context.ts verifiedPerson): only then does @Blob route. */
+  verified?: boolean;
 }): Promise<ServiceResult> {
   const result = await mutateThreads(input.sessionId, (threads) =>
     applyCreateThread(threads, input),
@@ -256,7 +259,11 @@ export async function createThread(input: {
     thread.sessionId,
     thread.anchor ? "comment" : "note",
     url,
-    { threadId: thread.id, ref: thread.comments[0]!.id },
+    {
+      threadId: thread.id,
+      ref: thread.comments[0]!.id,
+      ...(input.verified ? { verifiedSender: input.user } : {}),
+    },
   );
   if (mentionsAgent(thread.comments[0]!.text))
     await startAgentAnswer(thread, input.user);
@@ -266,7 +273,14 @@ export async function createThread(input: {
 export async function addComment(
   sessionId: string,
   threadId: string,
-  input: { user: string; text: string; images?: string[]; agent?: boolean },
+  input: {
+    user: string;
+    text: string;
+    images?: string[];
+    agent?: boolean;
+    /** As createThread's `verified`; never with `agent`. */
+    verified?: boolean;
+  },
 ): Promise<ServiceResult & { added?: ThreadComment }> {
   const result = await mutateThreads(sessionId, (threads) =>
     applyAddComment(threads, threadId, input),
@@ -281,7 +295,11 @@ export async function addComment(
     sessionId,
     "comment",
     url,
-    { threadId, ref: added.id, blob: !input.agent },
+    {
+      threadId,
+      ref: added.id,
+      ...(input.verified && !input.agent ? { verifiedSender: input.user } : {}),
+    },
   );
   await notifyParticipants(
     thread,

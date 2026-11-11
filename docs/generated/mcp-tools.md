@@ -1653,7 +1653,7 @@ Hand a background follow-up to the owner's watch instead of waiting for it here:
 
 `mcp__opensession-supervisor__reply_in_thread` · input: `session_id` (string, required), `thread_id` (string, required), `text` (string, required), `resolve` (boolean)
 
-Answer in a comment thread on a session, as Blob: where the owner mentioned you (@Blob) in a thread, the turn names its session_id and thread_id. resolve also resolves the thread, when the reply settles it. The people in the thread are notified. For a mention in a session itself, answer with send_to_session instead.
+Answer in a comment thread on a session, as Blob: where the owner mentioned you (@Blob) in a thread, the turn names its session_id and thread_id. Only those threads, for 7 days, until you resolve one. resolve also resolves the thread, when the reply settles it. The people in the thread are notified. For a mention in a session itself, answer with send_to_session instead.
 
 ### `ask_pat`
 

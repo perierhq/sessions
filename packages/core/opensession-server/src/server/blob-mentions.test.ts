@@ -65,7 +65,8 @@ mock.module("./session-cache", () => ({
 }));
 
 const blob = await import("./blob-mentions");
-const { notifyMentions } = await import("./mentions");
+const { notifyMentions, __settleBlobRoutesForTest } =
+  await import("./mentions");
 const { replyInThread, ownerSeesSession } = await import("./supervisor-mcp");
 const threads = await import("./comment-threads");
 const service = await import("./comment-thread-service");
@@ -147,8 +148,10 @@ function mention(overrides: Partial<BlobMention> = {}): BlobMention {
   return {
     text: "@Blob can you check why the acme deploy failed?",
     sender: "Ada",
+    verifiedSender: "Ada",
     sessionId: "os-acme",
     source: "prompt",
+    ref: "req-1",
     ...overrides,
   };
 }
@@ -160,7 +163,7 @@ describe("routeBlobMention", () => {
     const item = enqueued[0]!;
     expect(item.sessionId).toBe("os-sup-ada");
     expect(item.user).toBe("Ada");
-    expect(item.id).toStartWith("blob-mention:prompt:os-acme:");
+    expect(item.id).toBe("blob-mention:prompt:os-acme::req-1");
     expect(item.content).toStartWith(
       "Ada mentioned you in [Fix the acme login](/session/os-acme).",
     );
@@ -214,7 +217,29 @@ describe("routeBlobMention", () => {
   ])("drops a mention sent by %p", async (sender) => {
     // Blob's own senders never count as mentioning it (mentionsBlob).
     expect(["not-a-person", "not-mentioned"]).toContain(
-      await blob.routeBlobMention(mention({ sender })),
+      await blob.routeBlobMention(mention({ sender, verifiedSender: sender })),
+    );
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("only a sender the surface verified routes", async () => {
+    // Web sign-in off: the name is only claimed.
+    expect(
+      await blob.routeBlobMention(mention({ verifiedSender: undefined })),
+    ).toBe("not-a-person");
+    // Someone else's name on a verified send.
+    expect(
+      await blob.routeBlobMention(mention({ verifiedSender: "Bob" })),
+    ).toBe("not-a-person");
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("a mention with no delivery or comment id routes nothing", async () => {
+    expect(await blob.routeBlobMention(mention({ ref: undefined }))).toBe(
+      "unsupported",
+    );
+    expect(await blob.routeBlobMention(mention({ ref: " " }))).toBe(
+      "unsupported",
     );
     expect(enqueued).toHaveLength(0);
   });
@@ -237,58 +262,138 @@ describe("routeBlobMention", () => {
     const thread = mention({ source: "comment", threadId: "th-1", ref: "c-1" });
     expect(await blob.routeBlobMention(thread)).toBe("routed");
     expect(await blob.routeBlobMention(thread)).toBe("duplicate");
-    // A prompt is keyed by its text: the same send seen twice is one.
+    // A prompt is keyed by its delivery id, never its text: the same
+    // delivery seen twice is one, the same words sent again are two.
     expect(await blob.routeBlobMention(mention())).toBe("routed");
     expect(await blob.routeBlobMention(mention())).toBe("duplicate");
-    expect(enqueued).toHaveLength(2);
+    expect(await blob.routeBlobMention(mention({ ref: "req-2" }))).toBe(
+      "routed",
+    );
+    expect(enqueued).toHaveLength(3);
   });
 
-  test("past the hourly cap the sender gets one fyi a day", async () => {
+  test("a failed enqueue releases its claim and doesn't count", async () => {
+    restoreDeps();
+    let fail = true;
+    restoreDeps = blob.__setBlobMentionDepsForTest({
+      now: () => now,
+      supervisorSessionId: async (user) => `os-sup-${user.toLowerCase()}`,
+      enqueue: async (sessionId, item) => {
+        if (fail) throw new Error("queue down");
+        enqueued.push({ sessionId, ...item });
+      },
+    });
+    for (let i = 0; i < blob.MAX_PER_HOUR + 2; i++)
+      await expect(
+        blob.routeBlobMention(mention({ ref: `req-${i}` })),
+      ).rejects.toThrow("queue down");
+    fail = false;
+    // The retry of the same delivery routes, and the failures left the
+    // hourly allowance untouched.
+    expect(await blob.routeBlobMention(mention({ ref: "req-0" }))).toBe(
+      "routed",
+    );
+    for (let i = 1; i < blob.MAX_PER_HOUR; i++)
+      expect(await blob.routeBlobMention(mention({ ref: `req-${i}` }))).toBe(
+        "routed",
+      );
+    expect(enqueued).toHaveLength(blob.MAX_PER_HOUR);
+  });
+
+  test("past the hourly cap the sender gets one fyi that hour", async () => {
     for (let i = 0; i < blob.MAX_PER_HOUR; i++)
       expect(
-        await blob.routeBlobMention(mention({ text: `@Blob task ${i}` })),
+        await blob.routeBlobMention(
+          mention({ text: `@Blob task ${i}`, ref: `req-${i}` }),
+        ),
       ).toBe("routed");
     expect(
-      await blob.routeBlobMention(mention({ text: "@Blob one more" })),
+      await blob.routeBlobMention(
+        mention({ text: "@Blob one more", ref: "req-a" }),
+      ),
     ).toBe("capped");
     expect(
-      await blob.routeBlobMention(mention({ text: "@Blob and more" })),
+      await blob.routeBlobMention(
+        mention({ text: "@Blob and more", ref: "req-b" }),
+      ),
     ).toBe("capped");
     expect(enqueued).toHaveLength(blob.MAX_PER_HOUR);
     const items = await inbox.listSupervisorItems("Ada", { state: "open" });
     expect(items).toHaveLength(1);
     expect(items[0]!.kind).toBe("fyi");
-    expect(items[0]!.dedupeKey).toBe("blob-mention-cap:2026-11-11");
+    expect(items[0]!.dedupeKey).toBe("blob-mention-cap:2026-11-11T09");
+    expect(items[0]!.body).toContain("this hour");
     // Bob has his own allowance.
-    expect(await blob.routeBlobMention(mention({ sender: "Bob" }))).toBe(
-      "routed",
-    );
+    expect(
+      await blob.routeBlobMention(
+        mention({ sender: "Bob", verifiedSender: "Bob" }),
+      ),
+    ).toBe("routed");
     // An hour later Ada's mentions route again.
     now += 60 * 60_000;
-    expect(await blob.routeBlobMention(mention({ text: "@Blob later" }))).toBe(
-      "routed",
-    );
+    expect(
+      await blob.routeBlobMention(
+        mention({ text: "@Blob later", ref: "req-later" }),
+      ),
+    ).toBe("routed");
   });
 });
 
 describe("notifyMentions", () => {
-  test("routes @Blob from every surface that calls it", async () => {
-    await notifyMentions("@Blob have a look", "Ada", "os-acme", "prompt");
-    expect(enqueued).toHaveLength(1);
-  });
-
-  test("a surface that is not the sender's own words opts out", async () => {
+  test("routes @Blob where the caller verified the sender", async () => {
     await notifyMentions(
       "@Blob have a look",
       "Ada",
       "os-acme",
       "prompt",
       undefined,
-      {
-        blob: false,
+      { ref: "req-1", verifiedSender: "Ada" },
+    );
+    await __settleBlobRoutesForTest();
+    expect(enqueued).toHaveLength(1);
+  });
+
+  test("routes nothing by default", async () => {
+    // An agent's, an automation's or Slack's text, or a claimed name.
+    await notifyMentions("@Blob have a look", "Ada", "os-acme", "prompt");
+    await notifyMentions(
+      "@Blob have a look",
+      "Ada",
+      "os-acme",
+      "prompt",
+      undefined,
+      { ref: "req-1" },
+    );
+    await __settleBlobRoutesForTest();
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("the send doesn't wait for the route", async () => {
+    restoreDeps();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    restoreDeps = blob.__setBlobMentionDepsForTest({
+      now: () => now,
+      supervisorSessionId: async (user) => `os-sup-${user.toLowerCase()}`,
+      enqueue: async (sessionId, item) => {
+        await gate;
+        enqueued.push({ sessionId, ...item });
       },
+    });
+    await notifyMentions(
+      "@Blob have a look",
+      "Ada",
+      "os-acme",
+      "prompt",
+      undefined,
+      { ref: "req-1", verifiedSender: "Ada" },
     );
     expect(enqueued).toHaveLength(0);
+    release();
+    await __settleBlobRoutesForTest();
+    expect(enqueued).toHaveLength(1);
   });
 
   test("a routing failure never stops the teammate mentions", async () => {
@@ -300,8 +405,16 @@ describe("notifyMentions", () => {
       },
     });
     expect(
-      await notifyMentions("@Blob and @Bob, look", "Ada", "os-acme", "prompt"),
+      await notifyMentions(
+        "@Blob and @Bob, look",
+        "Ada",
+        "os-acme",
+        "prompt",
+        undefined,
+        { ref: "req-1", verifiedSender: "Ada" },
+      ),
     ).toEqual(["Bob"]);
+    await __settleBlobRoutesForTest();
   });
 });
 
@@ -311,9 +424,11 @@ describe("reply_in_thread", () => {
       sessionId: "os-acme",
       user: "Ada",
       text: "@Blob why did this fail?",
+      verified: true,
     });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
+    await __settleBlobRoutesForTest();
     expect(enqueued).toHaveLength(1);
 
     const result = await replyInThread("Ada", {
@@ -328,7 +443,78 @@ describe("reply_in_thread", () => {
     expect(reply.user).toBe("Blob");
     expect(reply.agent).toBe(true);
     expect(thread!.status).toBe("resolved");
+    await __settleBlobRoutesForTest();
     expect(enqueued).toHaveLength(1);
+    // Resolved by Blob: that mention allows no more replies.
+    expect(
+      await replyInThread("Ada", {
+        sessionId: "os-acme",
+        threadId: created.thread.id,
+        text: "One more thing.",
+      }),
+    ).toMatchObject({ ok: false });
+  });
+
+  test("answers only where this owner's mention was routed", async () => {
+    // A thread nobody mentioned @Blob in.
+    const plain = await service.createThread({
+      sessionId: "os-acme",
+      user: "Ada",
+      text: "a note for later",
+      verified: true,
+    });
+    // A mention with sign-in off: a claimed name never routes.
+    const claimed = await service.createThread({
+      sessionId: "os-acme",
+      user: "Ada",
+      text: "@Blob look",
+    });
+    // Bob's mention reached Bob's supervisor, not Ada's.
+    const bobs = await service.createThread({
+      sessionId: "os-acme",
+      user: "Bob",
+      text: "@Blob look",
+      verified: true,
+    });
+    if (!plain.ok || !claimed.ok || !bobs.ok) throw new Error("no thread");
+    await __settleBlobRoutesForTest();
+    for (const thread of [plain, claimed, bobs])
+      expect(
+        await replyInThread("Ada", {
+          sessionId: "os-acme",
+          threadId: thread.thread.id,
+          text: "hi",
+        }),
+      ).toMatchObject({ ok: false });
+    expect(
+      (await threads.getThread("os-acme", bobs.thread.id))!.comments,
+    ).toHaveLength(1);
+    expect(
+      await replyInThread("Bob", {
+        sessionId: "os-acme",
+        threadId: bobs.thread.id,
+        text: "On it.",
+      }),
+    ).toEqual({ ok: true, message: "Replied." });
+  });
+
+  test("the allowance ends after 7 days", async () => {
+    const created = await service.createThread({
+      sessionId: "os-acme",
+      user: "Ada",
+      text: "@Blob status?",
+      verified: true,
+    });
+    if (!created.ok) throw new Error("no thread");
+    await __settleBlobRoutesForTest();
+    now += blob.KEEP_MS;
+    expect(
+      await replyInThread("Ada", {
+        sessionId: "os-acme",
+        threadId: created.thread.id,
+        text: "Late.",
+      }),
+    ).toMatchObject({ ok: false });
   });
 
   test("a reply to Blob is not a conversation with the session's agent", async () => {
@@ -336,8 +522,10 @@ describe("reply_in_thread", () => {
       sessionId: "os-acme",
       user: "Ada",
       text: "@Blob status?",
+      verified: true,
     });
     if (!created.ok) throw new Error("no thread");
+    await __settleBlobRoutesForTest();
     await replyInThread("Ada", {
       sessionId: "os-acme",
       threadId: created.thread.id,

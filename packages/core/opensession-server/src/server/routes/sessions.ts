@@ -10,7 +10,7 @@ import { handleAgentMessageSummaryRoutes } from "./agent-message-summary";
 
 import { executeSessionProjection } from "../session-projection-executor";
 import { transcriptSearchWorkerArgv } from "../../runner-host/exe";
-import { requestUser, type RouteContext } from "./context";
+import { requestUser, type RouteContext, verifiedPerson } from "./context";
 import { archiveOlderThan, isArchivedId } from "../archive";
 import {
   pendingAskAwaitingAnswerSync,
@@ -1174,6 +1174,10 @@ export async function handleSessionsRoutes(
         requestId,
         requestScope: actorScope,
         createdByLogin: ctx.authUser?.login,
+        // The signed-in person typed this prompt: @Blob in it may route.
+        ...(verifiedPerson(ctx)
+          ? { blobMentionSender: verifiedPerson(ctx) }
+          : {}),
         prompt,
         mode,
         ...(mode === "code" && branch ? { branch } : {}),
@@ -1502,7 +1506,21 @@ export async function handleSessionsRoutes(
         );
       }
       if (session && !result.duplicate) {
-        await notifyMentions(content, String(user || ""), sessionId, "prompt");
+        // @Blob routes only for a verified signed-in person, keyed by the
+        // outbox's client id.
+        await notifyMentions(
+          content,
+          String(user || ""),
+          sessionId,
+          "prompt",
+          undefined,
+          {
+            ...(clientId ? { ref: clientId } : {}),
+            ...(verifiedPerson(ctx)
+              ? { verifiedSender: verifiedPerson(ctx) }
+              : {}),
+          },
+        );
       }
       const payload = {
         ...result,
