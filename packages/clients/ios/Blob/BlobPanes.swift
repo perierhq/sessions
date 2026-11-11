@@ -11,8 +11,8 @@ struct BlobPanes: Equatable {
     var fold: CGRect
     var width: CGFloat
     /// The device's own fold (the open Duo), not just the gap this app keeps
-    /// between two panes on a wide flat surface. Nothing that has to stay
-    /// whole (text, Blob's face, a control) may cross it.
+    /// between two panes on a wide flat surface. No text or control may
+    /// cross it; Blob's face may sit on it only when nothing is shown.
     var physical: Bool
 
     /// The trailing pane's width: what is left after the fold.

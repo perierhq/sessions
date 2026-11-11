@@ -1028,9 +1028,10 @@ struct BlobHomeView: View {
     /// `wide`: two panes, where Blob is not under the captions but in the
     /// middle of the surface. The band then stays put above the keyboard
     /// and bell, whatever Blob is doing, and what you say keeps its last
-    /// three lines.
+    /// three lines. Notices, errors and hints then keep to the trailing
+    /// side, with the owner's words.
     private func captions(insets: EdgeInsets, column: BlobColumns.Span, hint: Alignment, wide: Bool) -> some View {
-        captionLines(hint: hint, alignment: .leading, wide: wide)
+        captionLines(hint: hint, alignment: wide ? .trailing : .leading, wide: wide)
             .blobColumn(column)
             .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : talking && !wide ? 28 : 60))
     }
@@ -1325,8 +1326,11 @@ private extension View {
     /// At most `count` lines of this text, set in `font`. `fromEnd`: the
     /// last ones, with the start cut off above them, so the newest words of
     /// something still being said stay in view; the box is always `count`
-    /// lines tall, so the band it sits in never moves. Otherwise the first
-    /// lines, ending in an ellipsis.
+    /// lines tall, so the band it sits in never moves. The text's bottom is
+    /// pinned to the box, whose height is whole lines, so no half line shows;
+    /// the top line fades out to say the start is cut (a mask, not a
+    /// material, so Reduce Transparency changes nothing). Otherwise the
+    /// first lines, ending in an ellipsis.
     @ViewBuilder
     func blobLines(_ count: Int, fromEnd: Bool, font: Font) -> some View {
         if fromEnd {
@@ -1336,6 +1340,13 @@ private extension View {
                 .frame(maxWidth: .infinity)
                 .overlay(alignment: .bottom) { fixedSize(horizontal: false, vertical: true) }
                 .clipped()
+                .mask {
+                    VStack(spacing: 0) {
+                        LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 14)
+                        Color.black
+                    }
+                }
         } else {
             lineLimit(count)
         }
