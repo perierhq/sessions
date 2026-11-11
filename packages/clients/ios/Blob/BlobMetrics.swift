@@ -24,6 +24,31 @@ final class BlobMetrics {
 
     enum Input: String { case voice, typed, chip, ask }
     enum Transcriber: String { case parakeet, fish, apple }
+    /// Why a voice turn's text came from the transcriber it came from.
+    enum TranscriberReason: String {
+        case parakeet
+        /// Parakeet picked, not on the device.
+        case parakeetAbsent = "parakeet-absent"
+        /// Parakeet picked, still downloading or paused mid-download.
+        case parakeetDownloading = "parakeet-downloading"
+        /// Parakeet on the device but not loaded within the wait after you stopped.
+        case parakeetLoadingTimeout = "parakeet-loading-timeout"
+        /// Parakeet's last download or load failed.
+        case parakeetFailed = "parakeet-failed"
+        /// Parakeet was loaded and threw on the recording.
+        case parakeetError = "parakeet-error"
+        /// Parakeet was loaded and returned no text.
+        case parakeetEmpty = "parakeet-empty"
+        /// Parakeet was loaded and missed its deadline.
+        case parakeetDeadline = "parakeet-deadline"
+        case fish
+        /// Fish was asked (or meant to be) and gave no text in time.
+        case fishMissed = "fish-missed"
+        /// Apple's recognizer is the one picked in Settings.
+        case appleChosen = "apple-chosen"
+        /// Under 0.3 s of audio: Apple's text without asking anyone else.
+        case tooShort = "too-short"
+    }
     enum EndOfSpeech: String { case auto, tap }
     enum Interruption: String { case hush, tap }
     enum Outcome: String { case answered, failed, abandoned }
@@ -36,6 +61,9 @@ final class BlobMetrics {
         var outcome = Outcome.abandoned.rawValue
         var transcriber: String?
         var transcribeMs: Int?
+        var transcriberReason: String?
+        var parakeetMiss: String?
+        var parakeetLoadMs: Int?
         var endOfSpeech: String?
         var speechMs: Int?
         var sendToAcceptedMs: Int?
@@ -69,6 +97,8 @@ final class BlobMetrics {
     private var listeningAt: ContinuousClock.Instant?
     private var speechMs: Int?
     private var settledAt: Date?
+    /// The Parakeet load the open turn gave up waiting for.
+    private var awaitedLoad: Int?
     /// The reply's speech was asked for and hasn't started yet.
     private var awaitingAudio = false
     /// The reply is being read aloud, so stopping it is an interruption.
@@ -104,13 +134,21 @@ final class BlobMetrics {
         inputChars: Int,
         transcriber: Transcriber? = nil,
         transcribeMs: Int? = nil,
+        transcriberReason: TranscriberReason? = nil,
+        parakeetMiss: TranscriberReason? = nil,
+        parakeetLoadMs: Int? = nil,
+        parakeetLoad: Int? = nil,
         endOfSpeech: EndOfSpeech? = nil
     ) {
         close()
+        awaitedLoad = parakeetLoad
         var turn = Turn(turnId: UUID().uuidString, startedAt: Int64(Date().timeIntervalSince1970 * 1000), input: input.rawValue)
         turn.inputChars = inputChars
         turn.transcriber = transcriber?.rawValue
         turn.transcribeMs = transcribeMs
+        turn.transcriberReason = transcriberReason?.rawValue
+        turn.parakeetMiss = parakeetMiss?.rawValue
+        turn.parakeetLoadMs = parakeetLoadMs
         turn.endOfSpeech = endOfSpeech?.rawValue
         if input == .voice { turn.speechMs = speechMs }
         if let last, Date().timeIntervalSince(last.closedAt) <= Self.reaskWindow,
@@ -165,6 +203,18 @@ final class BlobMetrics {
         awaitingAudio = false
         current?.voice = voice
         if let firstTokenAt { current?.firstTokenToFirstAudioMs = Self.ms(.now - firstTokenAt) }
+    }
+
+    /// Parakeet finished load number `load`, `ms` after `warm()` began it.
+    /// The open turn that fell back because that load was still running
+    /// records its time. False when no open turn waited for it.
+    @discardableResult
+    func parakeetLoaded(ms: Int, load: Int) -> Bool {
+        guard current != nil, awaitedLoad == load else { return false }
+        awaitedLoad = nil
+        // `close()` buffers the turn with it.
+        current?.parakeetLoadMs = ms
+        return true
     }
 
     /// Blob's speech is about to be stopped by you: counted when it was

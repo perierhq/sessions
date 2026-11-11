@@ -110,6 +110,8 @@ describe("aggregateBlobReview", () => {
         firstTokenToFirstAudioMs: 800,
         transcriber: "apple",
         transcribeMs: 200,
+        transcriberReason: "parakeet-loading-timeout",
+        parakeetLoadMs: 3000,
         endOfSpeech: "tap",
         sentencesSpoken: 2,
         interrupted: "tap",
@@ -182,6 +184,88 @@ describe("aggregateBlobReview", () => {
     expect(review.app.reasks.count).toBe(1);
     expect(review.app.voices).toEqual({ "fish:s2.1-pro": 1 });
     expect(review.app.blocks).toEqual({ metrics: 1 });
+  });
+
+  test("reports why voice turns used their transcriber", () => {
+    const voice = (
+      turnId: string,
+      at: number,
+      fields: Partial<BlobTurnMetric>,
+    ): BlobTurnMetric =>
+      metric({ turnId, startedAt: base + at, input: "voice", ...fields });
+    const stt = aggregateBlobReview({
+      now: NOW,
+      days: 14,
+      timeZone: "UTC",
+      sessions: [],
+      items: [],
+      ledger: "",
+      metrics: [
+        voice("p1", 0, {
+          transcriber: "parakeet",
+          transcriberReason: "parakeet",
+          parakeetLoadMs: 1000,
+        }),
+        voice("p2", 1000, {
+          transcriber: "parakeet",
+          transcriberReason: "parakeet",
+          parakeetLoadMs: 2000,
+        }),
+        voice("a1", 2000, {
+          transcriber: "apple",
+          transcriberReason: "parakeet-loading-timeout",
+          parakeetLoadMs: 5000,
+        }),
+        voice("a2", 3000, {
+          transcriber: "apple",
+          transcriberReason: "too-short",
+        }),
+        voice("f1", 3500, {
+          transcriber: "fish",
+          transcribeMs: 900,
+          transcriberReason: "fish",
+          parakeetMiss: "parakeet-loading-timeout",
+        }),
+        voice("f2", 3600, {
+          transcriber: "apple",
+          transcriberReason: "fish-missed",
+          parakeetMiss: "parakeet-absent",
+        }),
+        voice("old", 4000, {
+          transcriber: "apple",
+          transcribeMs: 7000,
+          parakeetLoadMs: 8000,
+        }),
+        metric({
+          turnId: "typed",
+          startedAt: base + 5000,
+          input: "typed",
+          parakeetLoadMs: 9000,
+        }),
+      ],
+    });
+    expect(stt.app.transcriberReasons).toEqual({
+      parakeet: 2,
+      "parakeet-loading-timeout": 1,
+      "too-short": 1,
+      fish: 1,
+      "fish-missed": 1,
+    });
+    expect(stt.app.parakeetMisses).toEqual({
+      "parakeet-loading-timeout": 2,
+      "parakeet-absent": 1,
+    });
+    // The old build's whole-chain timing stays out of the timings.
+    expect(stt.app.untimedVoiceTurns).toBe(1);
+    expect(stt.app.transcribers.apple!.turns).toBe(4);
+    expect(stt.app.transcribers.apple!.ms.max).not.toBe(7000);
+    expect(stt.app.latencyMs.transcribe.max).toBe(900);
+    expect(stt.app.parakeetLoadMs).toMatchObject({
+      n: 3,
+      p50: 2000,
+      p90: 5000,
+      max: 5000,
+    });
   });
 
   test("reports transcript turns, tools and hours", () => {

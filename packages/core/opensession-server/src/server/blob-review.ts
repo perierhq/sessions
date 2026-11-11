@@ -296,6 +296,12 @@ function linkMetric(
   return best;
 }
 
+function parakeetMiss(turn: BlobTurnMetric): string | undefined {
+  if (turn.parakeetMiss) return turn.parakeetMiss;
+  const reason = turn.transcriberReason;
+  return reason?.startsWith("parakeet-") ? reason : undefined;
+}
+
 function appStats(metrics: BlobTurnMetric[]) {
   const voice = metrics.filter((turn) => turn.input === "voice");
   const spoken = metrics.filter(
@@ -308,10 +314,20 @@ function appStats(metrics: BlobTurnMetric[]) {
     const name = turn.transcriber ?? "unknown";
     byTranscriber.set(name, [...(byTranscriber.get(name) ?? []), turn]);
   }
+  // Builds that send transcriberReason time only the transcriber that wrote
+  // the text; older ones timed the whole fallback chain. Timings come from
+  // the newer turns only, so the two meanings never mix.
+  const timed = voice.filter((turn) => turn.transcriberReason !== undefined);
   for (const [name, turns] of byTranscriber)
     transcribers[name] = {
       turns: turns.length,
-      ms: distribution(defined(turns.map((t) => t.transcribeMs))),
+      ms: distribution(
+        defined(
+          turns
+            .filter((t) => t.transcriberReason !== undefined)
+            .map((t) => t.transcribeMs),
+        ),
+      ),
     };
   return {
     turns: metrics.length,
@@ -323,7 +339,7 @@ function appStats(metrics: BlobTurnMetric[]) {
     ),
     latencyMs: {
       speech: distribution(defined(voice.map((t) => t.speechMs))),
-      transcribe: distribution(defined(voice.map((t) => t.transcribeMs))),
+      transcribe: distribution(defined(timed.map((t) => t.transcribeMs))),
       sendToAccepted: distribution(
         defined(metrics.map((t) => t.sendToAcceptedMs)),
       ),
@@ -336,6 +352,14 @@ function appStats(metrics: BlobTurnMetric[]) {
       sendToFirstToken: distribution(defined(metrics.map(firstTokenMs))),
     },
     transcribers,
+    transcriberReasons: tally(voice.map((turn) => turn.transcriberReason)),
+    // Every Parakeet miss: the reason itself when Apple wrote the text, or
+    // parakeetMiss when Fish was asked in Parakeet's place.
+    parakeetMisses: tally(timed.map(parakeetMiss)),
+    parakeetLoadMs: distribution(defined(timed.map((t) => t.parakeetLoadMs))),
+    // Voice turns from builds before transcriberReason, left out of the
+    // transcribe timings above.
+    untimedVoiceTurns: voice.length - timed.length,
     endOfSpeech: tally(voice.map((turn) => turn.endOfSpeech)),
     voices: tally(metrics.map((turn) => turn.voice)),
     sentencesSpoken: distribution(

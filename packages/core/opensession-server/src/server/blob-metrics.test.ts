@@ -179,6 +179,70 @@ describe("cleanTurnMetric", () => {
     expect(JSON.stringify(clean)).not.toContain("shipped");
   });
 
+  test("keeps why a voice turn used its transcriber", () => {
+    const raw = turn({
+      transcriber: "apple",
+      transcriberReason: "parakeet-loading-timeout",
+      parakeetLoadMs: 3400,
+    });
+    expect(metrics.cleanTurnMetric(raw, NOW)).toEqual(raw as never);
+    for (const reason of metrics.TRANSCRIBER_REASONS)
+      expect(
+        metrics.cleanTurnMetric(turn({ transcriberReason: reason }), NOW)!
+          .transcriberReason,
+      ).toBe(reason);
+  });
+
+  test("keeps why Parakeet missed next to Fish, and nowhere else", () => {
+    for (const parakeetMiss of metrics.PARAKEET_MISSES)
+      for (const transcriberReason of ["fish", "fish-missed"])
+        expect(
+          metrics.cleanTurnMetric(
+            turn({ transcriberReason, parakeetMiss }),
+            NOW,
+          )!.parakeetMiss,
+        ).toBe(parakeetMiss);
+    for (const [transcriberReason, parakeetMiss] of [
+      ["fish", "parakeet"],
+      ["fish", "fish-missed"],
+      ["fish", 3],
+      ["parakeet-absent", "parakeet-absent"],
+      ["apple-chosen", "parakeet-deadline"],
+      [undefined, "parakeet-deadline"],
+    ])
+      expect(
+        metrics.cleanTurnMetric(turn({ transcriberReason, parakeetMiss }), NOW)!
+          .parakeetMiss,
+      ).toBeUndefined();
+  });
+
+  test("a turn without a transcriber reason is still valid", () => {
+    const clean = metrics.cleanTurnMetric(turn(), NOW)!;
+    expect(clean.transcriber).toBe("apple");
+    expect(clean.transcriberReason).toBeUndefined();
+    expect(clean.parakeetLoadMs).toBeUndefined();
+  });
+
+  test("drops an unknown transcriber reason and a bad load time", () => {
+    for (const [transcriberReason, parakeetLoadMs] of [
+      ["parakeet maybe", -1],
+      ["whisper", Number.NaN],
+      [7, "3400"],
+    ]) {
+      const clean = metrics.cleanTurnMetric(
+        turn({ transcriberReason, parakeetLoadMs }),
+        NOW,
+      )!;
+      expect(clean).not.toBeNull();
+      expect(clean.transcriberReason).toBeUndefined();
+      expect(clean.parakeetLoadMs).toBeUndefined();
+    }
+    expect(
+      metrics.cleanTurnMetric(turn({ parakeetLoadMs: 9e9 }), NOW)!
+        .parakeetLoadMs,
+    ).toBe(60 * 60 * 1000);
+  });
+
   test("caps durations at an hour", () => {
     expect(
       metrics.cleanTurnMetric(turn({ acceptedToFirstTokenMs: 9e9 }), NOW)!
