@@ -153,6 +153,38 @@ describe("buildMainspringProviderConfig", () => {
     expect(JSON.stringify(config)).not.toContain(KEY);
   });
 
+  test("Claude through Mainspring turns off the features that need a beta header", () => {
+    const config = buildMainspringProviderConfig({
+      modelID: "claude-opus-5-5",
+      target,
+      anthropicRows: [
+        {
+          id: "claude-opus-5-5",
+          name: "Claude Opus 5.5",
+          reasoning: true,
+          compat: {
+            supportsMidConvoEffort: true,
+            supportsMidConvoSystemMessages: true,
+            supportsMidConvoToolChanges: true,
+            forceAdaptiveThinking: true,
+            allowedFallbackModels: [
+              { provider: "anthropic", model: "claude-sonnet-5-5" },
+            ],
+          },
+        } as any,
+      ],
+    });
+    const compat = (config.models[0] as { compat: Record<string, unknown> })
+      .compat;
+    expect(compat).toMatchObject({
+      supportsMidConvoEffort: false,
+      supportsMidConvoSystemMessages: false,
+      supportsMidConvoToolChanges: false,
+      forceAdaptiveThinking: true,
+    });
+    expect(compat).not.toHaveProperty("allowedFallbackModels");
+  });
+
   test("other models use Chat Completions at <base>/v1", () => {
     const config = buildMainspringProviderConfig({
       modelID: "gpt-5.6-terra",

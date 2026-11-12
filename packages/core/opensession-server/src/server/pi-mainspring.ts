@@ -131,6 +131,21 @@ interface AnthropicRow {
   compat?: unknown;
 }
 
+/** pi's Anthropic compat with every feature that needs a beta header off. */
+export function withoutBetaFeatures(compat: unknown): Record<string, unknown> {
+  const base =
+    compat && typeof compat === "object"
+      ? { ...(compat as Record<string, unknown>) }
+      : {};
+  delete base.allowedFallbackModels;
+  return {
+    ...base,
+    supportsMidConvoEffort: false,
+    supportsMidConvoSystemMessages: false,
+    supportsMidConvoToolChanges: false,
+  };
+}
+
 /**
  * The provider registration for one Mainspring model: Anthropic Messages at
  * the bare address for Claude (the Anthropic SDK appends `/v1/messages`),
@@ -156,6 +171,12 @@ export function buildMainspringProviderConfig(input: {
     delete rest.baseUrl;
     delete rest.api;
     delete rest.headers;
+    // Mainspring forwards to Anthropic with its own `anthropic-beta` list, so
+    // request fields that need one of pi's betas (mid-conversation effort,
+    // thinking block binding, inline tool and system changes, server-side
+    // fallbacks) come back as 400 "Extra inputs are not permitted". Turn the
+    // features off on this route; the plain Messages API needs no beta.
+    rest.compat = withoutBetaFeatures(rest.compat);
     return {
       name: "Mainspring",
       api: "anthropic-messages" as const,
