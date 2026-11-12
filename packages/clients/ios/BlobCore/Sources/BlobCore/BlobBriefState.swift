@@ -55,13 +55,17 @@ public struct BlobBriefState: Sendable {
         public let day: String?
         /// The new items' ids, so they are offered once.
         public let offered: [String]
+        /// Items raised after the brief that reopening it put under its
+        /// own decisions (`reopen`), kept when the brief is read again.
+        public var since: Set<String>
 
         public init(
             kind: Kind, key: String, say: String, decisions: [Item], handled: [String] = [],
-            later: Int = 0, day: String? = nil, offered: [String] = []
+            later: Int = 0, day: String? = nil, offered: [String] = [], since: Set<String> = []
         ) {
             self.kind = kind; self.key = key; self.say = say; self.decisions = decisions
             self.handled = handled; self.later = later; self.day = day; self.offered = offered
+            self.since = since
         }
     }
 
@@ -71,6 +75,10 @@ public struct BlobBriefState: Sendable {
         /// The held page isn't the brief's: read the items again and pass
         /// them to `reread`.
         case reread(Page)
+        /// The held page is a reopened brief with items raised since, which
+        /// the brief doesn't carry: read the items again and pass them to
+        /// `reread` with `only: page.since`, so one answered elsewhere goes.
+        case rereadSince(Page)
         /// A seen brief and new item ids not offered yet: read the open
         /// needs-you items and pass them to `offerNew`.
         case offerNew(ids: [String], briefDay: String)
@@ -107,6 +115,13 @@ public struct BlobBriefState: Sendable {
     public private(set) var preparingSince: Double?
     /// What Blob says in place of a decision, by item id.
     public private(set) var notes: [String: String] = [:]
+    /// The quiet line on the idle home that opens the brief again, in the
+    /// server's copy (`reopen`). Nil when there is none.
+    public private(set) var reopenLine: String?
+    /// The latest brief and the items raised since, for `reopen`.
+    private var latest: SupervisorBrief?
+    /// Open needs-you items raised after the latest brief, newest first.
+    public private(set) var latestSince: [String] = []
 
     /// Answered or dismissed here and maybe not yet gone on the server.
     private var closed: Set<String> = []
@@ -146,16 +161,22 @@ public struct BlobBriefState: Sendable {
         preparingSince = phase == .preparing ? response.preparingSince ?? 0 : nil
         let brief = response.brief
         laterWaiting = brief?.laterCount ?? 0
+        reopenLine = response.reopenLine
+        latest = brief
+        latestSince = response.newSince
         unseen = phase == .ready && brief.map { $0.seenAt == nil && !putAway.contains($0.key) } ?? false
 
         if var held = page {
             if held.kind == .brief, let brief, brief.key == held.key {
-                let fresh = Self.decisions(brief)
+                // What reopening put under the brief rides along: the
+                // brief doesn't carry it, so those items are read again.
+                let since = held.decisions.filter { held.since.contains($0.id) }
+                let fresh = Self.decisions(brief) + since
                 noteRevisions(fresh, against: held.decisions)
                 held.decisions = fresh
                 page = held
                 settleIfDone()
-                return .none
+                return !since.isEmpty && page?.key == held.key ? .rereadSince(held) : .none
             }
             // Another brief was written while this page was up, and not seen yet.
             if let brief, unseen, brief.key != held.key {
@@ -183,11 +204,13 @@ public struct BlobBriefState: Sendable {
     /// its item's current revision in the same place, and one settled
     /// elsewhere goes. A page of new or linked items with none left goes.
     /// `limit`: the most the server lists; a full list may have left some
-    /// open items out, so a missing one stays.
-    public mutating func reread(_ held: Page, items: [Item], limit: Int) {
+    /// open items out, so a missing one stays. `only` limits it to those
+    /// cards (a reopened brief's items raised since); the others are kept.
+    public mutating func reread(_ held: Page, items: [Item], limit: Int, only: Set<String>? = nil) {
         guard var current = page, current.key == held.key else { return }
         let complete = items.count < limit
         let fresh: [Item] = current.decisions.compactMap { shown in
+            if let only, !only.contains(shown.id) { return shown }
             guard let item = items.first(where: { $0.id == shown.id }) else { return complete ? nil : shown }
             guard item.revision != shown.revision else { return shown }
             return current.kind == .brief ? Self.recommending(shown.options.first, in: item) : item
@@ -242,6 +265,27 @@ public struct BlobBriefState: Sendable {
         if page.kind == .brief { putAway.insert(page.key) }
         notes = [:]
         self.page = nil
+    }
+
+    /// Whether the idle home can open the latest brief again.
+    public var canReopen: Bool { page == nil && latest != nil }
+
+    /// Opens the latest brief again, with the items raised since that are
+    /// still open in `items` (the open needs-you items; nil when they
+    /// couldn't be read) under its own decisions. Not said again unless it
+    /// is still unseen; put away, it stays put away until now.
+    public mutating func reopen(items: [Item]?) {
+        guard page == nil, let brief = latest else { return }
+        var reopened = Self.page(for: brief)
+        let shown = Set(reopened.decisions.map(\.id))
+        let since = latestSince.compactMap { id in
+            items?.first { $0.id == id && $0.isOpen && !shown.contains(id) && !closed.contains(id) }
+        }
+        reopened.decisions += since
+        reopened.since = Set(since.map(\.id))
+        putAway.remove(brief.key)
+        if !unseen { spoken.insert(reopened.key) }
+        page = reopened
     }
 
     /// Whether `id` is an open decision on the page.

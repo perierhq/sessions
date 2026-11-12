@@ -34,6 +34,10 @@ final class BlobBrief {
     var laterWaiting: Int { state.laterWaiting }
     /// The latest brief is written and the owner hasn't seen it.
     var unseen: Bool { state.unseen }
+    /// The quiet line on the idle home that opens the brief again, in the
+    /// server's copy (`reopen`): "This morning: 2 decisions waiting", or
+    /// "Today\u{2019}s brief" when nothing waits. Nil when there is none.
+    var reopenLine: String? { state.reopenLine }
     /// What Blob says about a decision after an answer, in its place, by
     /// item id. Each goes after a moment on its own.
     var notes: [String: String] { state.notes }
@@ -131,12 +135,9 @@ final class BlobBrief {
         case .none:
             return
         case .reread(let held):
-            #if DEBUG
-            if Self.demo != nil { return }
-            #endif
-            let limit = OS1API.supervisorItemsMax
-            guard let items = try? await OS1API.supervisorItems(limit: limit), mine == generation else { return }
-            update { $0.reread(held, items: items, limit: limit) }
+            await reread(held, only: nil, generation: mine)
+        case .rereadSince(let held):
+            await reread(held, only: held.since, generation: mine)
         case .offerNew(let ids, let briefDay):
             #if DEBUG
             let items: [Item]? = Self.demo != nil ? Self.demoNew : try? await OS1API.supervisorItems(kind: "needs-you")
@@ -146,6 +147,16 @@ final class BlobBrief {
             guard mine == generation, let items else { return }
             update { $0.offerNew(ids, items: items, briefDay: briefDay, today: Self.today) }
         }
+    }
+
+    /// Reads the items again for the page Blob holds (`BlobBriefState.reread`).
+    private func reread(_ held: Page, only: Set<String>?, generation mine: Int) async {
+        #if DEBUG
+        if Self.demo != nil { return }
+        #endif
+        let limit = OS1API.supervisorItemsMax
+        guard let items = try? await OS1API.supervisorItems(limit: limit), mine == generation else { return }
+        update { $0.reread(held, items: items, limit: limit, only: only) }
     }
 
     /// Changes the state, then stops the timers of notes it took away.
@@ -191,6 +202,22 @@ final class BlobBrief {
     /// The owner put the page away: Blob goes idle. What is still open
     /// stays open on the server, for when the owner asks.
     func dismiss() { update { $0.dismissPage() } }
+
+    /// Opens the latest brief again from the idle home's line, with what
+    /// was raised since under its own decisions. Not said again: it was
+    /// said when it first came up. Done puts it away as before.
+    func reopen() async {
+        guard state.canReopen else { return }
+        var items: [Item]?
+        if !state.latestSince.isEmpty {
+            #if DEBUG
+            items = Self.demo != nil ? Self.demoNew : try? await OS1API.supervisorItems(kind: "needs-you")
+            #else
+            items = try? await OS1API.supervisorItems(kind: "needs-you")
+            #endif
+        }
+        update { $0.reopen(items: items) }
+    }
 
     /// Shows the item a `blob://item/<id>` link names, even one the brief
     /// left for later.
@@ -292,7 +319,8 @@ extension BlobBrief {
     /// A canned brief for screenshots without a server: `BLOB_DEMO_BRIEF=1`
     /// for an unseen brief with three decisions, `none` for one with
     /// nothing to decide, `preparing` while it is written, `new` for a seen
-    /// brief and one new item since.
+    /// brief and one new item since, `reopen` for a seen brief with two
+    /// decisions waiting behind the idle home's line.
     static var demoEnabled: Bool { ProcessInfo.processInfo.environment["BLOB_DEMO_BRIEF"] != nil }
 
     static var demo: OS1API.SupervisorBriefResponse? {
@@ -303,6 +331,9 @@ extension BlobBrief {
             return .init(state: "preparing", brief: nil, preparingSince: now - 20_000, refreshAt: now + 30 * 60_000)
         case "new":
             return .init(state: "ready", brief: demoBrief(seen: true, decisions: []), newSince: ["demo-new"])
+        case "reopen":
+            // Seen and put away, two decisions still waiting: the idle home's line.
+            return .init(state: "ready", brief: demoBrief(seen: true, decisions: Array(demoItems.prefix(2))), reopenLine: "This morning: 2 decisions waiting")
         case "none":
             return .init(state: "ready", brief: demoBrief(seen: false, decisions: []))
         default:

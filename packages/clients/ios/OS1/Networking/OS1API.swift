@@ -2397,6 +2397,8 @@ enum OS1API {
 
     struct SupervisorEnsure: Decodable, Sendable {
         let sessionId: String
+        /// Earlier supervisor sessions, newest first (the server rotates it).
+        let previousSessionIds: [String]?
     }
 
     /// Get-or-create the user's standing supervisor session.
@@ -2473,6 +2475,7 @@ enum OS1API {
     typealias SupervisorItemList = BlobCore.SupervisorItemList
     typealias SupervisorBriefResponse = BlobCore.SupervisorBriefResponse
     typealias SupervisorBrief = BlobCore.SupervisorBrief
+    typealias SupervisorHistoryPage = BlobCore.SupervisorHistoryPage
 
     private struct SupervisorItemResponse: Decodable, Sendable {
         let item: SupervisorItem?
@@ -2531,6 +2534,16 @@ enum OS1API {
         components.queryItems = [URLQueryItem(name: "user", value: ServerConfig.shared.userName)]
             + (start ? [URLQueryItem(name: "start", value: "1")] : [])
         return try await get("/api/supervisor/brief?\(components.percentEncodedQuery ?? "")")
+    }
+
+    /// One page of Blob's history across supervisor sessions, the current
+    /// one and those before each rotation (server: supervisor-history.ts):
+    /// the exchanges older than `before`, the newest page without it.
+    static func supervisorHistory(before: String?) async throws -> SupervisorHistoryPage {
+        var components = URLComponents()
+        components.queryItems = before.map { [URLQueryItem(name: "before", value: $0)] }
+        let query = components.percentEncodedQuery.map { "?\($0)" } ?? ""
+        return try await get("/api/supervisor/history\(query)")
     }
 
     private struct SupervisorBriefSeen: Decodable, Sendable { let seenAt: Double? }

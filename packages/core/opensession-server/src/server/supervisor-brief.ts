@@ -853,6 +853,34 @@ export interface BriefResponse {
   /** The latest day the scheduled brief couldn't be put together, with
    *  what was waiting then; null when it was, or never failed. */
   fallback: null | ({ day: string } & BriefFallbackCounts);
+  /** The quiet line Blob's idle home shows to open the brief again after
+   *  it was seen or put away (`briefReopenLine`); null when there is none. */
+  reopen: null | { line: string };
+}
+
+/**
+ * The line that reopens the brief, in fixed copy: today's brief while the
+ * day lasts ("This morning: 2 decisions waiting", or "Today's brief" when
+ * nothing waits), and an older brief only while decisions from it or new
+ * ones since still wait ("Last brief: 1 decision waiting"). `waiting` counts
+ * the brief's open decisions and the open needs-you items raised since.
+ * None while a brief is being written.
+ */
+export function briefReopenLine(input: {
+  state: BriefState;
+  brief: { day: string; asOf: number } | null;
+  waiting: number;
+  now: number;
+  timeZone: string;
+}): { line: string } | null {
+  const { brief, waiting } = input;
+  if (input.state !== "ready" || !brief) return null;
+  const count = `${waiting} decision${waiting === 1 ? "" : "s"} waiting`;
+  if (brief.day !== localClock(input.now, input.timeZone).day)
+    return waiting > 0 ? { line: `Last brief: ${count}` } : null;
+  if (waiting === 0) return { line: "Today\u2019s brief" };
+  const morning = localClock(brief.asOf, input.timeZone).minutes < 12 * 60;
+  return { line: `${morning ? "This morning" : "Today"}: ${count}` };
 }
 
 /**
@@ -925,6 +953,13 @@ export async function getSupervisorBrief(
       now,
       (record.lastStartAt ?? record.run?.startedAt ?? 0) + BRIEF_REFRESH_MS,
     ),
+    reopen: briefReopenLine({
+      state,
+      brief: payload,
+      waiting: (payload?.decisions.length ?? 0) + fresh.length,
+      now,
+      timeZone: view.timeZone,
+    }),
     fallback:
       record.fallbackDay &&
       record.fallbackCounts &&
@@ -932,4 +967,50 @@ export async function getSupervisorBrief(
         ? { day: record.fallbackDay, ...record.fallbackCounts }
         : null,
   };
+}
+
+/**
+ * The latest brief as text for the supervisor's `read_brief` tool, so it
+ * can answer "what was my brief?" after its conversation rotated away from
+ * the turn that wrote it. Only reads: it never starts a brief turn.
+ */
+export async function describeSupervisorBrief(user: string): Promise<string> {
+  const read = await getSupervisorBrief(user);
+  const lines: string[] = [];
+  if (read.state === "preparing")
+    lines.push("A new brief is being written right now.");
+  const brief = read.brief;
+  if (!brief) {
+    lines.push("There is no brief yet.");
+    return lines.join("\n");
+  }
+  lines.push(
+    `Brief for ${brief.day}, ${brief.seenAt ? "seen by the owner" : "not seen by the owner yet"}.`,
+    "",
+    `What Blob said: ${brief.say}`,
+  );
+  if (brief.handled.length) {
+    lines.push("", "Handled:");
+    for (const h of brief.handled)
+      lines.push(`- ${h.line}${h.itemId ? ` [${h.itemId}]` : ""}`);
+  }
+  lines.push("");
+  if (brief.decisions.length) {
+    lines.push("Decisions still open:");
+    for (const d of brief.decisions)
+      lines.push(
+        `- [${d.itemId}] ${d.item.title}${d.recommended ? ` (you recommended: ${d.recommended})` : ""}`,
+      );
+  } else {
+    lines.push("Every decision in it is answered or closed.");
+  }
+  if (brief.later.count)
+    lines.push(
+      `Left for later: ${brief.later.count} open item${brief.later.count === 1 ? "" : "s"}${brief.later.itemIds.length ? ` (${brief.later.itemIds.join(", ")})` : ""}.`,
+    );
+  if (read.newSince.count)
+    lines.push(
+      `New since the brief: ${read.newSince.count} open item${read.newSince.count === 1 ? "" : "s"} (${read.newSince.itemIds.join(", ")}).`,
+    );
+  return lines.join("\n");
 }

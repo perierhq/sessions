@@ -26,7 +26,8 @@
  *
  * `close_items` and `write_brief` are the morning brief's
  * (supervisor-brief.ts): close what is stale or a duplicate with a reason,
- * then store the brief Blob says, checked against the inbox.
+ * then store the brief Blob says, checked against the inbox. `read_brief`
+ * reads it back, for "what was my brief?" after a rotation.
  *
  * The inbox and ledger tools are built here once and shared with the
  * watch's own server (supervisor-watch-mcp.ts).
@@ -67,6 +68,7 @@ import {
   BRIEF_MAX_DECISIONS,
   BRIEF_MAX_HANDLED,
   BRIEF_SAY_LEN,
+  describeSupervisorBrief,
   writeSupervisorBrief,
 } from "./supervisor-brief";
 import {
@@ -467,6 +469,12 @@ export function createSupervisorMcpServer(ctx: {
             `Brief for ${brief.day} stored: ${brief.decisions.length} decisions, ${brief.handled.length} handled, ${brief.later.count} later. Blob shows it; end the turn with one short line.`,
           );
         },
+      ),
+      tool(
+        "read_brief",
+        "Read the owner's latest morning brief as Blob showed it: its day, whether they saw it, what Blob said, what you handled, the decisions still open with the option you recommended, how many items wait as later, and what came in since. Use it when the owner asks what their brief said or what is still waiting from it. Only reads: it never writes or starts a brief.",
+        {},
+        async () => text(await describeSupervisorBrief(user)),
       ),
       postItemTool(user, "supervisor"),
       incidentsTool(user),

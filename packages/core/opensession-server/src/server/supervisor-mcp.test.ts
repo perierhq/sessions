@@ -118,6 +118,7 @@ describe("opensession-supervisor wiring", () => {
       "list_items",
       "owner_memory",
       "post_item",
+      "read_brief",
       "read_ledger",
       "reply_in_thread",
       "support_waiting",
