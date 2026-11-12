@@ -10,15 +10,27 @@ public struct SupervisorHistoryPage: Decodable, Sendable, Equatable {
         public let id: String
         public let sessionId: String
         public let said: String
+        /// Every owner row joined into `said`, `id` first. Nil from servers
+        /// that predate it.
+        public let saidIds: [String]?
         public let reply: String?
         /// ms.
         public let at: Double?
 
-        private enum CodingKeys: String, CodingKey { case id, sessionId, said, reply, at }
+        private enum CodingKeys: String, CodingKey { case id, sessionId, said, saidIds, reply, at }
 
-        public init(id: String, sessionId: String = "", said: String, reply: String? = nil, at: Double? = nil) {
+        public init(
+            id: String, sessionId: String = "", said: String, saidIds: [String]? = nil,
+            reply: String? = nil, at: Double? = nil
+        ) {
             self.id = id; self.sessionId = sessionId; self.said = said
-            self.reply = reply; self.at = at
+            self.saidIds = saidIds; self.reply = reply; self.at = at
+        }
+
+        /// Shown across two panes when any owner row joined into it was,
+        /// as `BlobExchange.exchanges(in:)` decides for the live transcript.
+        public func split(shownBeside: Set<String>) -> Bool {
+            (saidIds ?? [id]).contains { shownBeside.contains($0) }
         }
 
         public init(from decoder: Decoder) throws {
@@ -26,6 +38,7 @@ public struct SupervisorHistoryPage: Decodable, Sendable, Equatable {
             id = try c.decode(String.self, forKey: .id)
             said = try c.decode(String.self, forKey: .said)
             sessionId = ((try? c.decodeIfPresent(String.self, forKey: .sessionId)) ?? nil) ?? ""
+            saidIds = ((try? c.decodeIfPresent([String].self, forKey: .saidIds)) ?? nil).flatMap { $0.isEmpty ? nil : $0 }
             reply = (try? c.decodeIfPresent(String.self, forKey: .reply)) ?? nil
             at = (try? c.decodeIfPresent(Double.self, forKey: .at)) ?? nil
         }
@@ -91,14 +104,15 @@ public struct BlobHistoryPages: Sendable, Equatable {
 
 extension BlobExchange {
     /// An exchange from a server history page, which groups it the same
-    /// way as `exchanges(in:)`; split when it was shown across two panes.
+    /// way as `exchanges(in:)`; split when any of its rows was shown
+    /// across two panes.
     public init(past: SupervisorHistoryPage.Exchange, shownBeside: Set<String>) {
         self.init(
             id: past.id,
             said: past.said,
             reply: past.reply,
             date: past.at.map { Date(timeIntervalSince1970: $0 / 1000) },
-            split: shownBeside.contains(past.id)
+            split: past.split(shownBeside: shownBeside)
         )
     }
 }

@@ -34,17 +34,29 @@ struct HistoryPagesTests {
         #expect(past[0] == BlobExchange(id: "a", said: "said a", reply: "reply a", date: Date(timeIntervalSince1970: 1)))
     }
 
+    @Test func `split when any joined row was shown beside`() {
+        var history = BlobHistoryPages()
+        history.add(.init(exchanges: [
+            Exchange(id: "a", said: "one\ntwo", saidIds: ["a", "a2"]),
+            Exchange(id: "b", said: "older server"),
+            Exchange(id: "c", said: "not shown beside", saidIds: ["c", "c2"]),
+        ], before: nil))
+        let past = history.past(excluding: [], shownBeside: ["a2", "b"])
+        #expect(past.map(\.split) == [true, true, false])
+    }
+
     @Test func `a page decodes tolerantly`() throws {
         let page = try JSONDecoder().decode(SupervisorHistoryPage.self, from: Data("""
         {"exchanges": [
-           {"id": "a", "sessionId": "s1", "said": "Hi", "reply": "Hello", "at": 1000, "new": 1},
+           {"id": "a", "sessionId": "s1", "said": "Hi", "saidIds": ["a", "a2"], "reply": "Hello", "at": 1000, "new": 1},
            {"id": "b", "said": "Only said"},
            {"said": "no id"},
            {"id": "c"}
          ], "before": ""}
         """.utf8))
         #expect(page.exchanges.map(\.id) == ["a", "b"])
-        #expect(page.exchanges[1].reply == nil && page.exchanges[1].sessionId == "")
+        #expect(page.exchanges[0].saidIds == ["a", "a2"])
+        #expect(page.exchanges[1].reply == nil && page.exchanges[1].sessionId == "" && page.exchanges[1].saidIds == nil)
         #expect(page.before == nil)
     }
 }

@@ -9,7 +9,13 @@
  *
  * Bounded: it opens only the sessions the record names (never a scan), at
  * most `MAX_SESSIONS_PER_PAGE` of them per request, and returns at most
- * `MAX_HISTORY_LIMIT` exchanges. A session that is gone is skipped.
+ * `MAX_HISTORY_LIMIT` exchanges. A session that is gone is skipped; one
+ * that can't be read fails the request as unavailable, so the client keeps
+ * its cursor and tries again rather than paging past it.
+ *
+ * Paging back reads the same retired sessions page after page, so their
+ * parsed exchanges are kept for the few sessions read last, until the
+ * session changes. The current session is always read fresh.
  */
 import type { TranscriptEntry } from "./types";
 
@@ -26,6 +32,9 @@ export interface SupervisorExchange {
   id: string;
   sessionId: string;
   said: string;
+  /** Every owner row joined into `said`, the first being `id`, so Blob
+   *  can tell whether any of them was shown across two panes. */
+  saidIds: string[];
   reply?: string;
   /** Epoch ms of the owner's message, when the transcript has it. */
   at?: number;
@@ -38,38 +47,106 @@ export interface SupervisorHistoryPage {
   before: string | null;
 }
 
+/** A session's history was there but could not be read. The route
+ *  answers 503 and the client keeps its cursor. */
+export class SupervisorHistoryUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("Supervisor history is unavailable", { cause });
+    this.name = "SupervisorHistoryUnavailableError";
+  }
+}
+
+export interface SupervisorHistorySession {
+  /** Changes whenever the transcript does (its last activity), so parsed
+   *  exchanges kept for it are dropped then. */
+  version: string;
+  /** The transcript as clients read it (notices classified). Throws when
+   *  it can't be read; never an empty list in place of a failure. */
+  transcript(): Promise<TranscriptEntry[]>;
+}
+
 export interface SupervisorHistoryDeps {
   /** The current supervisor session first, then the retired ones newest
    *  first, without creating anything. */
   sessionIds(user: string): Promise<string[]>;
-  /** A session's transcript as clients read it (notices classified), or
-   *  null when the session is gone. */
-  transcript(sessionId: string): Promise<TranscriptEntry[] | null>;
+  /** The session, or null when it is gone. Throws when that can't be told. */
+  session(sessionId: string): Promise<SupervisorHistorySession | null>;
 }
 
 const liveDeps: SupervisorHistoryDeps = {
   sessionIds: async (user) =>
     (await import("./supervisor")).supervisorSessionIds(user),
-  transcript: async (sessionId) => {
+  session: async (sessionId) => {
     const { findSessionAsync } = await import("./session-cache");
     const session = await findSessionAsync(sessionId);
     if (!session) return null;
-    const { mergedSessionTranscriptAsync } = await import("./sessions");
-    const { prepareEntriesForWire } = await import("./jsonl-parser");
-    return prepareEntriesForWire(await mergedSessionTranscriptAsync(session));
+    return {
+      version: session.lastActivity,
+      transcript: async () => {
+        const { mergedSessionTranscriptAsync } = await import("./sessions");
+        const { prepareEntriesForWire } = await import("./jsonl-parser");
+        return prepareEntriesForWire(
+          await mergedSessionTranscriptAsync(session, { strict: true }),
+        );
+      },
+    };
   },
 };
 
 let deps: SupervisorHistoryDeps = liveDeps;
+
+/** Retired sessions whose parsed exchanges are kept, least recently read
+ *  dropped first: enough for paging back through the last few. */
+export const CACHED_HISTORY_SESSIONS = 6;
+const cached = new Map<
+  string,
+  { version: string; exchanges: SupervisorExchange[] }
+>();
 
 export function __setSupervisorHistoryDepsForTest(
   next: Partial<SupervisorHistoryDeps>,
 ): () => void {
   const prior = deps;
   deps = { ...liveDeps, ...next };
+  cached.clear();
   return () => {
     deps = prior;
+    cached.clear();
   };
+}
+
+/** A session's exchanges, or null when it is gone. The current session is
+ *  read fresh; a retired one is parsed once per version. */
+async function sessionExchanges(
+  sessionId: string,
+  current: boolean,
+): Promise<SupervisorExchange[] | null> {
+  let session: SupervisorHistorySession | null;
+  let entries: TranscriptEntry[];
+  try {
+    session = await deps.session(sessionId);
+    if (!session) {
+      cached.delete(sessionId);
+      return null;
+    }
+    const hit = current ? undefined : cached.get(sessionId);
+    if (hit && hit.version === session.version) {
+      cached.delete(sessionId);
+      cached.set(sessionId, hit);
+      return hit.exchanges;
+    }
+    entries = await session.transcript();
+  } catch (error) {
+    throw new SupervisorHistoryUnavailableError(error);
+  }
+  const exchanges = supervisorExchanges(entries, sessionId);
+  if (current) return exchanges;
+  cached.delete(sessionId);
+  cached.set(sessionId, { version: session.version, exchanges });
+  while (cached.size > CACHED_HISTORY_SESSIONS) {
+    cached.delete(cached.keys().next().value!);
+  }
+  return exchanges;
 }
 
 /**
@@ -110,6 +187,7 @@ export function supervisorExchanges(
       if (!text) continue;
       if (current && !run.length && !afterTool) {
         current.said += `\n${text}`;
+        current.saidIds.push(entry.id);
       } else {
         flush();
         const at = Date.parse(entry.timestamp ?? "");
@@ -117,6 +195,7 @@ export function supervisorExchanges(
           id: entry.id,
           sessionId,
           said: text,
+          saidIds: [entry.id],
           ...(Number.isFinite(at) ? { at } : {}),
         };
       }
@@ -172,7 +251,9 @@ export function historyLimit(raw: string | null): number {
 /**
  * One page of the owner's exchanges, older than `before` (the newest when
  * absent). An unknown cursor, or one naming a session the record no longer
- * keeps, is the end of history, never a scan.
+ * keeps, is the end of history, never a scan. Throws
+ * `SupervisorHistoryUnavailableError` when the record or a session can't
+ * be read.
  */
 export async function readSupervisorHistory(
   user: string,
@@ -182,7 +263,9 @@ export async function readSupervisorHistory(
     MAX_HISTORY_LIMIT,
     Math.max(1, Math.floor(options.limit ?? DEFAULT_HISTORY_LIMIT)),
   );
-  const ids = await deps.sessionIds(user);
+  const ids = await deps.sessionIds(user).catch((error: unknown) => {
+    throw new SupervisorHistoryUnavailableError(error);
+  });
   let index = 0;
   let beforeId: string | undefined;
   if (options.before) {
@@ -202,8 +285,7 @@ export async function readSupervisorHistory(
       break;
     }
     const sessionId = ids[index]!;
-    const entries = await deps.transcript(sessionId).catch(() => null);
-    let exchanges = entries ? supervisorExchanges(entries, sessionId) : [];
+    let exchanges = (await sessionExchanges(sessionId, index === 0)) ?? [];
     if (beforeId) {
       const cut = exchanges.findIndex((x) => x.id === beforeId);
       // The exchange the cursor named is gone: nothing more from this

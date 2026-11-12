@@ -75,6 +75,10 @@ public struct BlobBriefState: Sendable {
         /// The held page isn't the brief's: read the items again and pass
         /// them to `reread`.
         case reread(Page)
+        /// The held page is a reopened brief with items raised since, which
+        /// the brief doesn't carry: read the items again and pass them to
+        /// `reread` with `only: page.since`, so one answered elsewhere goes.
+        case rereadSince(Page)
         /// A seen brief and new item ids not offered yet: read the open
         /// needs-you items and pass them to `offerNew`.
         case offerNew(ids: [String], briefDay: String)
@@ -165,13 +169,14 @@ public struct BlobBriefState: Sendable {
         if var held = page {
             if held.kind == .brief, let brief, brief.key == held.key {
                 // What reopening put under the brief rides along: the
-                // brief doesn't carry it.
-                let fresh = Self.decisions(brief) + held.decisions.filter { held.since.contains($0.id) }
+                // brief doesn't carry it, so those items are read again.
+                let since = held.decisions.filter { held.since.contains($0.id) }
+                let fresh = Self.decisions(brief) + since
                 noteRevisions(fresh, against: held.decisions)
                 held.decisions = fresh
                 page = held
                 settleIfDone()
-                return .none
+                return !since.isEmpty && page?.key == held.key ? .rereadSince(held) : .none
             }
             // Another brief was written while this page was up, and not seen yet.
             if let brief, unseen, brief.key != held.key {
@@ -199,11 +204,13 @@ public struct BlobBriefState: Sendable {
     /// its item's current revision in the same place, and one settled
     /// elsewhere goes. A page of new or linked items with none left goes.
     /// `limit`: the most the server lists; a full list may have left some
-    /// open items out, so a missing one stays.
-    public mutating func reread(_ held: Page, items: [Item], limit: Int) {
+    /// open items out, so a missing one stays. `only` limits it to those
+    /// cards (a reopened brief's items raised since); the others are kept.
+    public mutating func reread(_ held: Page, items: [Item], limit: Int, only: Set<String>? = nil) {
         guard var current = page, current.key == held.key else { return }
         let complete = items.count < limit
         let fresh: [Item] = current.decisions.compactMap { shown in
+            if let only, !only.contains(shown.id) { return shown }
             guard let item = items.first(where: { $0.id == shown.id }) else { return complete ? nil : shown }
             guard item.revision != shown.revision else { return shown }
             return current.kind == .brief ? Self.recommending(shown.options.first, in: item) : item

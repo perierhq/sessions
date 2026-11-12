@@ -295,14 +295,19 @@ export function mergedSessionTranscript(
   return session.transcriptPath ? parseTranscript(session.transcriptPath) : [];
 }
 
+/** `strict`: a store read that fails throws instead of falling back to the
+ *  legacy file, for callers that must not mistake a failed read for an
+ *  empty transcript (supervisor-history.ts). */
 export async function mergedSessionTranscriptAsync(
   session: TranscriptSessionRef,
+  options: { strict?: boolean } = {},
 ): Promise<TranscriptEntry[]> {
   if (session.id && !session.id.startsWith("plain-")) {
     try {
       const served = await v2StoreTranscript(session.id, session);
       if (served) return served;
     } catch (error) {
+      if (options.strict) throw error;
       console.warn(
         `[sessions] transcript store read failed for ${session.id}:`,
         error instanceof Error ? error.message : error,

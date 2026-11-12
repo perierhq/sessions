@@ -30,7 +30,11 @@ import type { RouteContext } from "./context";
 import { requestUser, verifiedPerson } from "./context";
 import { findSessionAsync } from "../session-cache";
 import { ensureSupervisorSession } from "../supervisor";
-import { historyLimit, readSupervisorHistory } from "../supervisor-history";
+import {
+  SupervisorHistoryUnavailableError,
+  historyLimit,
+  readSupervisorHistory,
+} from "../supervisor-history";
 import {
   getBarkSettings,
   sendBarkTest,
@@ -216,12 +220,26 @@ export async function handleSupervisorRoutes(
         { error: "Sign in to read the history" },
         { status: 401 },
       );
-    return Response.json(
-      await readSupervisorHistory(user, {
-        before: url.searchParams.get("before"),
-        limit: historyLimit(url.searchParams.get("limit")),
-      }),
-    );
+    try {
+      return Response.json(
+        await readSupervisorHistory(user, {
+          before: url.searchParams.get("before"),
+          limit: historyLimit(url.searchParams.get("limit")),
+        }),
+      );
+    } catch (error) {
+      if (!(error instanceof SupervisorHistoryUnavailableError)) throw error;
+      // A session that can't be read is never paged past: the client
+      // keeps its cursor and asks again.
+      console.warn(
+        "[supervisor] history read failed:",
+        error.cause instanceof Error ? error.cause.message : error.cause,
+      );
+      return Response.json(
+        { error: "History is unavailable right now. Try again." },
+        { status: 503 },
+      );
+    }
   }
 
   if (path === "/api/supervisor/brief" && req.method === "GET") {

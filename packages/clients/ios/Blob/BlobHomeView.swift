@@ -892,11 +892,12 @@ struct BlobHomeView: View {
                     container: geometry.containerSize.height,
                     content: geometry.contentSize.height
                 )
-            } action: { _, next in
+            } action: { previous, next in
                 metrics = next
-                // Near the oldest exchange: the page before it loads above,
-                // and the bottom anchor keeps what you're reading in place.
-                if historyRevealed, next.offset < next.container, text.canLoadEarlier, !text.loadingEarlier {
+                // Arriving near the oldest exchange: the page before it loads
+                // above, once per arrival, and the bottom anchor keeps what
+                // you're reading in place (which moves you out of the zone).
+                if historyRevealed, next.nearTop, !previous.nearTop, text.canLoadEarlier, !text.loadingEarlier {
                     text.loadEarlier()
                 }
                 // Only a pull you are still holding arms it, never a flick's
@@ -1434,6 +1435,9 @@ private struct PageMetrics: Equatable {
     var offset: CGFloat = 0
     var container: CGFloat = 0
     var content: CGFloat = 0
+
+    /// Within a screen of the top, where the page before loads.
+    var nearTop: Bool { offset < container }
 }
 
 #if DEBUG

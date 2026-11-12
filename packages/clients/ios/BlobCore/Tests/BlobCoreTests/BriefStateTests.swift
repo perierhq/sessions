@@ -255,6 +255,35 @@ struct BriefStateTests {
         #expect(state.page?.decisions.map(\.id) == ["a", "n"])
     }
 
+    @Test func `an item raised since and answered elsewhere leaves the reopened page`() throws {
+        var state = BlobBriefState()
+        let brief = Self.brief([Self.item("a")], seen: true)
+        _ = state.apply(.init(state: "ready", brief: brief, newSince: ["n", "m"]), offered: ["n", "m"])
+        state.reopen(items: [Self.item("n"), Self.item("m")])
+        let held = try #require(state.page)
+        #expect(held.decisions.map(\.id) == ["a", "n", "m"])
+        // The next read of the brief asks for the items raised since again.
+        let follow = state.apply(.init(state: "ready", brief: brief, newSince: ["m"]), offered: ["n", "m"])
+        guard case .rereadSince(let page) = follow else {
+            Issue.record("expected rereadSince, got \(follow)")
+            return
+        }
+        #expect(page.since == ["n", "m"])
+        // "n" was answered elsewhere; only the items raised since are read,
+        // so "a" (the brief's own, missing from this list) stays.
+        state.reread(page, items: [Self.item("m")], limit: 100, only: page.since)
+        #expect(state.page?.decisions.map(\.id) == ["a", "m"])
+        #expect(state.open.map(\.id) == ["a", "m"])
+    }
+
+    @Test func `a reopened brief with nothing raised since needs no second read`() {
+        var state = BlobBriefState()
+        let brief = Self.brief([Self.item("a")], seen: true)
+        _ = state.apply(Self.ready(brief), offered: [])
+        state.reopen(items: nil)
+        #expect(state.apply(Self.ready(brief), offered: []) == .none)
+    }
+
     @Test func `a brief put away reopens, and items that couldn't be read are left out`() {
         var state = Self.showing([Self.item("a")])
         state.dismissPage()

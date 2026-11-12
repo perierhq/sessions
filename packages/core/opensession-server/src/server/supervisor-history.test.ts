@@ -7,7 +7,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { TranscriptEntry } from "./types";
 import {
+  CACHED_HISTORY_SESSIONS,
   MAX_SESSIONS_PER_PAGE,
+  SupervisorHistoryUnavailableError,
   __setSupervisorHistoryDepsForTest,
   decodeHistoryCursor,
   historyLimit,
@@ -46,16 +48,33 @@ function talk(prefix: string, n: number): TranscriptEntry[] {
   return out;
 }
 
+/** Sessions looked up by the last `fake`, gone ones included. */
+let looked: string[] = [];
+
+/** Fake sessions; a session's version is its entry count, and `failing`
+ *  names sessions whose transcript read throws. Returns the transcripts
+ *  read. */
 function fake(
   sessions: Record<string, TranscriptEntry[] | null>,
   order = Object.keys(sessions),
+  failing = new Set<string>(),
 ) {
   const read: string[] = [];
+  looked = [];
   restore = __setSupervisorHistoryDepsForTest({
     sessionIds: async () => order,
-    transcript: async (id) => {
-      read.push(id);
-      return sessions[id] ?? null;
+    session: async (id) => {
+      looked.push(id);
+      const entries = sessions[id];
+      if (!entries) return null;
+      return {
+        version: String(entries.length),
+        transcript: async () => {
+          read.push(id);
+          if (failing.has(id)) throw new Error("store read failed");
+          return sessions[id] ?? [];
+        },
+      };
     },
   });
   return read;
@@ -97,6 +116,7 @@ describe("exchanges", () => {
       },
       { id: "u2", said: "Thanks", reply: undefined, sessionId: "os-a" },
     ]);
+    expect(out.map((x) => x.saidIds)).toEqual([["u1", "u1b"], ["u2"]]);
     expect(out[0]!.at).toBe(Date.parse(entries[0]!.timestamp));
   });
 });
@@ -143,10 +163,10 @@ describe("paging", () => {
     };
     for (let i = 0; i < 6; i++) sessions[`empty${i}`] = [];
     sessions.last = talk("l", 1);
-    const read = fake(sessions);
+    fake(sessions);
     const first = await readSupervisorHistory("Ada", { limit: 10 });
     expect(first.exchanges.map((x) => x.id)).toEqual(["c-u1"]);
-    expect(read).toHaveLength(MAX_SESSIONS_PER_PAGE);
+    expect(looked).toHaveLength(MAX_SESSIONS_PER_PAGE);
     let page = first;
     const ids = [...first.exchanges.map((x) => x.id)];
     while (page.before) {
@@ -189,6 +209,81 @@ describe("paging", () => {
     expect(second.exchanges.map((x) => x.id)).toEqual(["o-u1"]);
   });
 
+  test("a session that can't be read fails the page and keeps the cursor; it is never skipped", async () => {
+    const failing = new Set(["old"]);
+    const read = fake(
+      { current: talk("c", 1), old: talk("o", 2), older: talk("p", 1) },
+      undefined,
+      failing,
+    );
+    const first = await readSupervisorHistory("Ada", { limit: 1 });
+    expect(first.exchanges.map((x) => x.id)).toEqual(["c-u1"]);
+    expect(decodeHistoryCursor(first.before!)).toEqual({ s: "old" });
+    await expect(
+      readSupervisorHistory("Ada", { before: first.before }),
+    ).rejects.toBeInstanceOf(SupervisorHistoryUnavailableError);
+    // The same cursor works once the read does, from where it was.
+    failing.clear();
+    const second = await readSupervisorHistory("Ada", { before: first.before });
+    expect(second.exchanges.map((x) => x.id)).toEqual(["p-u1", "o-u1", "o-u2"]);
+    expect(read).toEqual(["current", "old", "old", "older"]);
+  });
+
+  test("a record that can't be read fails the page", async () => {
+    restore = __setSupervisorHistoryDepsForTest({
+      sessionIds: async () => {
+        throw new Error("catalog down");
+      },
+    });
+    await expect(readSupervisorHistory("Ada")).rejects.toBeInstanceOf(
+      SupervisorHistoryUnavailableError,
+    );
+  });
+
+  test("paging back parses a retired session once until it changes; the current one every time", async () => {
+    const sessions = { current: talk("c", 1), old: talk("o", 6) };
+    const read = fake(sessions);
+    let page = await readSupervisorHistory("Ada", { limit: 1 });
+    while (page.before) {
+      page = await readSupervisorHistory("Ada", {
+        before: page.before,
+        limit: 1,
+      });
+    }
+    expect(read).toEqual(["current", "old"]);
+    await readSupervisorHistory("Ada", { limit: 2 });
+    // The current session again; the retired one from the cache.
+    expect(read).toEqual(["current", "old", "current"]);
+    // A retired session that changed is read again.
+    sessions.old = [...sessions.old, ...talk("o2", 1)];
+    const again = await readSupervisorHistory("Ada", { limit: 2 });
+    expect(again.exchanges.map((x) => x.id)).toEqual(["o2-u1", "c-u1"]);
+    expect(read).toEqual(["current", "old", "current", "current", "old"]);
+  });
+
+  test("the cache keeps a bounded number of sessions", async () => {
+    const sessions: Record<string, TranscriptEntry[]> = {
+      current: talk("c", 1),
+    };
+    const count = CACHED_HISTORY_SESSIONS + 2;
+    for (let i = 0; i < count; i++) sessions[`s${i}`] = talk(`s${i}`, 1);
+    const read = fake(sessions);
+    const walk = async () => {
+      let page = await readSupervisorHistory("Ada", { limit: 50 });
+      while (page.before)
+        page = await readSupervisorHistory("Ada", {
+          before: page.before,
+          limit: 50,
+        });
+    };
+    await walk();
+    read.length = 0;
+    await walk();
+    // Walking newest to oldest drops the newest retired ones first, so all
+    // of them are read again; none is kept past the bound.
+    expect(read.filter((id) => id !== "current")).toHaveLength(count);
+  });
+
   test("limit is clamped", () => {
     expect(historyLimit(null)).toBe(20);
     expect(historyLimit("abc")).toBe(20);
@@ -221,7 +316,10 @@ describe("route", () => {
         asked.push(user);
         return ["current"];
       },
-      transcript: async () => talk("c", 2),
+      session: async () => ({
+        version: "1",
+        transcript: async () => talk("c", 2),
+      }),
     });
     expect((await call("/api/supervisor/history?user=Ada", null))?.status).toBe(
       401,
@@ -244,5 +342,22 @@ describe("route", () => {
     expect(body.exchanges.map((x) => x.id)).toEqual(["c-u2"]);
     expect(typeof body.before).toBe("string");
     expect(asked).toEqual(["Ada"]);
+  });
+
+  test("a read that fails answers 503 with fixed copy", async () => {
+    restore = __setSupervisorHistoryDepsForTest({
+      sessionIds: async () => ["current"],
+      session: async () => ({
+        version: "1",
+        transcript: async () => {
+          throw new Error("secret store detail");
+        },
+      }),
+    });
+    const res = await call("/api/supervisor/history");
+    expect(res?.status).toBe(503);
+    expect(await res!.json()).toEqual({
+      error: "History is unavailable right now. Try again.",
+    });
   });
 });

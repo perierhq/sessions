@@ -135,12 +135,9 @@ final class BlobBrief {
         case .none:
             return
         case .reread(let held):
-            #if DEBUG
-            if Self.demo != nil { return }
-            #endif
-            let limit = OS1API.supervisorItemsMax
-            guard let items = try? await OS1API.supervisorItems(limit: limit), mine == generation else { return }
-            update { $0.reread(held, items: items, limit: limit) }
+            await reread(held, only: nil, generation: mine)
+        case .rereadSince(let held):
+            await reread(held, only: held.since, generation: mine)
         case .offerNew(let ids, let briefDay):
             #if DEBUG
             let items: [Item]? = Self.demo != nil ? Self.demoNew : try? await OS1API.supervisorItems(kind: "needs-you")
@@ -150,6 +147,16 @@ final class BlobBrief {
             guard mine == generation, let items else { return }
             update { $0.offerNew(ids, items: items, briefDay: briefDay, today: Self.today) }
         }
+    }
+
+    /// Reads the items again for the page Blob holds (`BlobBriefState.reread`).
+    private func reread(_ held: Page, only: Set<String>?, generation mine: Int) async {
+        #if DEBUG
+        if Self.demo != nil { return }
+        #endif
+        let limit = OS1API.supervisorItemsMax
+        guard let items = try? await OS1API.supervisorItems(limit: limit), mine == generation else { return }
+        update { $0.reread(held, items: items, limit: limit, only: only) }
     }
 
     /// Changes the state, then stops the timers of notes it took away.
