@@ -501,6 +501,38 @@ describe("the brief turn", () => {
     expect(delivered).toHaveLength(1);
   });
 
+  test("a digest day without a brief turn does not use the day for Blob opening", async () => {
+    // The old counts-only digest set the day and wrote no brief.
+    clock = at("2026-07-01T09:00:00Z");
+    await inbox.updateSupervisorBrief("Ada", (view) => ({
+      brief: view.brief,
+      lastDigestDay: "2026-07-01",
+    }));
+    clock = at("2026-07-01T10:00:00Z");
+    const opened = await brief.startBriefTurn("Ada", "open");
+    expect(opened.started).toBe(true);
+    if (opened.started) expect(await opened.delivered).toBe(true);
+    expect(delivered).toHaveLength(1);
+    // The day's turn is now claimed: opening again starts none, and the
+    // sweep still sees the day as taken.
+    clock = at("2026-07-01T10:05:00Z");
+    expect(await brief.startBriefTurn("Ada", "open")).toEqual({
+      started: false,
+      reason: "running",
+    });
+    expect(
+      await brief.startBriefTurn("Ada", "scheduled", "2026-07-01"),
+    ).toEqual({ started: false, reason: "running" });
+    // Ended empty: still used until 30 minutes after it started.
+    clock = at("2026-07-01T10:25:00Z");
+    expect(await brief.startBriefTurn("Ada", "open")).toEqual({
+      started: false,
+      reason: "used",
+    });
+    clock = at("2026-07-01T10:30:00Z");
+    expect((await brief.startBriefTurn("Ada", "open")).started).toBe(true);
+  });
+
   test("on request at most every 30 minutes", async () => {
     clock = at("2026-07-01T12:00:00Z");
     const first = await brief.startBriefTurn("Ada", "refresh");

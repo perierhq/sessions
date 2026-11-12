@@ -1635,7 +1635,7 @@ Close open inbox items that no longer need the owner, with one reason for all of
 
 `mcp__opensession-supervisor__write_brief` · input: `say` (string, required), `handled` (object[]), `decisions` (object[])
 
-Store the owner's morning brief, the last step of a brief turn (your charter, "The morning brief"), or when they ask for a fresh one. say is what Blob says aloud, for the ear, under 600 characters (about 40 seconds). handled: one line per thing you closed or did, with its item id when there is one, at most 10. decisions: at most 3 open needs-you items only the owner can decide, most important first, each with the option you recommend (its text or number). Every other open needs-you item stays open as later. The server checks each id against the inbox; an error says what to fix.
+Store the owner's morning brief, the last step of a brief turn (your charter, "The morning brief"), or when they ask for a fresh one. say is what Blob says aloud, for the ear, about 60 words, under 600 characters, with no internal ids. handled: one line per thing you closed or did, with its item id when there is one, at most 10. decisions: at most 3 open needs-you items only the owner can decide, most important first, each with the option you recommend (its text or number). Every other open needs-you item stays open as later. The server checks each id against the inbox; an error says what to fix.
 
 ### `post_item`
 

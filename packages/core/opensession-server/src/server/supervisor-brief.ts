@@ -359,8 +359,10 @@ export type StartBriefResult =
 /**
  * Start a brief turn for the owner, when its trigger's rules allow it:
  * - scheduled (the sweep, at the digest time): for `dueDay`, once;
- * - open (Blob opened): no brief for today yet, quiet hours over, and the
- *   day's turn not used, or the last one ended empty 30 minutes ago;
+ * - open (Blob opened): no brief for today yet, quiet hours over, and no
+ *   brief turn claimed for today, or the last one ended empty 30 minutes
+ *   ago. `lastDigestDay` alone does not count: the old counts-only digest
+ *   set it too;
  * - refresh (the owner asks): 30 minutes after the last turn started.
  * Never while one is in flight. The claim is one compare-and-set; the
  * delivery runs after it (`delivered`), and one that fails marks the turn
@@ -399,8 +401,10 @@ export async function startBriefTurn(
         result = { started: false, reason: "quiet" };
         return null;
       }
-      const used =
-        view.lastDigestDay !== undefined && view.lastDigestDay >= day;
+      // Only a brief turn claimed for today uses the day. The digest
+      // day may have been set by the counts-only digest, which wrote no
+      // brief.
+      const used = record.run?.day === day || record.brief?.day === day;
       if (
         used &&
         !(
