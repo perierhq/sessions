@@ -16,7 +16,7 @@
  * A turn starts:
  * - at the owner's digest time, from the inbox sweep (`scheduled`), once
  *   per local day; it replaces the old counts-only digest push;
- * - when the owner opens Blob (GET /api/supervisor/brief) with no brief for
+ * - when the owner opens Blob (GET /api/supervisor/brief?start=1) with no brief for
  *   today and quiet hours over (`open`), which counts as the day's turn;
  * - on the owner's request (`refresh`), at most every 30 minutes.
  * One turn at a time; one that writes nothing within 20 minutes is over.
@@ -94,6 +94,11 @@ export interface SupervisorBrief {
   pushedAt?: number;
 }
 
+export interface BriefFallbackCounts {
+  decisions: number;
+  updates: number;
+}
+
 export interface BriefRun {
   id: string;
   day: string;
@@ -109,6 +114,8 @@ export interface BriefRecord {
   run?: BriefRun;
   /** The day a fallback push went out. */
   fallbackDay?: string;
+  /** What that fallback counted: open decisions and untold updates. */
+  fallbackCounts?: BriefFallbackCounts;
   /** When the latest server-started turn started, kept after it writes
    *  its brief: a refresh waits 30 minutes from it. */
   lastStartAt?: number;
@@ -129,6 +136,8 @@ export interface BriefDeps {
     day: string,
     decisions: number,
     ready: boolean,
+    /** Open fyi items not yet told; counted by the fallback only. */
+    updates?: number,
   ): Promise<void>;
   /** Items with their revision and a lead's steps (leads/item-acts.ts). */
   expand(items: SupervisorItem[]): Promise<ShownSupervisorItem[]>;
@@ -155,8 +164,8 @@ const liveDeps: BriefDeps = {
     if (result.status === "error" || result.status === "handled")
       throw new Error(result.message);
   },
-  push: (user, day, decisions, ready) =>
-    pushSupervisorBrief(user, day, decisions, ready),
+  push: (user, day, decisions, ready, updates) =>
+    pushSupervisorBrief(user, day, decisions, ready, updates),
   expand: async (items) =>
     (await import("./leads/item-acts")).withItemActs(items),
   announce: async (user, day) => {
@@ -204,13 +213,20 @@ function oneLine(value: unknown, max: number): string {
   return typeof value === "string" ? pushSafeText(value).slice(0, max) : "";
 }
 
+/** What Blob says, cleaned like a line (no control or bidi characters,
+ *  whitespace and line breaks folded to single spaces) but never clipped:
+ *  every sentence stays, and a say too long is refused, not cut. */
+function sayText(value: unknown): string {
+  return typeof value === "string" ? pushSafeText(value) : "";
+}
+
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 function cleanBrief(value: unknown): SupervisorBrief | undefined {
   if (!isRecord(value)) return undefined;
   const day = typeof value.day === "string" ? value.day : "";
   const asOf = num(value.asOf);
-  const say = typeof value.say === "string" ? value.say.trim() : "";
+  const say = sayText(value.say);
   if (!DAY.test(day) || asOf === undefined || !say) return undefined;
   const handled = (Array.isArray(value.handled) ? value.handled : [])
     .flatMap((entry): BriefHandled[] => {
@@ -278,6 +294,15 @@ export function cleanBriefRecord(value: unknown): BriefRecord {
   if (run) record.run = run;
   if (typeof value.fallbackDay === "string" && DAY.test(value.fallbackDay))
     record.fallbackDay = value.fallbackDay;
+  if (record.fallbackDay && isRecord(value.fallbackCounts)) {
+    const decisions = num(value.fallbackCounts.decisions);
+    const updates = num(value.fallbackCounts.updates);
+    if (decisions !== undefined && updates !== undefined)
+      record.fallbackCounts = {
+        decisions: Math.max(0, Math.floor(decisions)),
+        updates: Math.max(0, Math.floor(updates)),
+      };
+  }
   const lastStartAt = num(value.lastStartAt);
   if (lastStartAt !== undefined) record.lastStartAt = lastStartAt;
   return record;
@@ -503,7 +528,7 @@ export function validateBrief(
       ok: false;
       error: string;
     } {
-  const say = typeof input.say === "string" ? input.say.trim() : "";
+  const say = sayText(input.say);
   if (!say) return { ok: false, error: "say is empty." };
   if (say.length > BRIEF_SAY_LEN)
     return {
@@ -700,14 +725,26 @@ function waitingDecisions(items: readonly SupervisorItem[]): number {
   ).length;
 }
 
-/** The scheduled turn could not run or wrote nothing: when decisions
- *  wait, one push for the day says so, so nothing waits unseen. */
+/** Open fyi items no brief or digest told yet. */
+function waitingUpdates(items: readonly SupervisorItem[]): number {
+  return items.filter(
+    (item) =>
+      item.kind === "fyi" &&
+      item.state === "open" &&
+      item.digestedAt === undefined,
+  ).length;
+}
+
+/** The scheduled turn could not run or wrote nothing: when decisions or
+ *  updates wait, one push for the day says so with both counts, and the
+ *  record keeps them, so nothing waits unseen. The updates stay untold
+ *  for the next brief. */
 async function pushFallbackIfDue(user: string): Promise<number> {
   const now = deps.now();
-  let count = 0;
+  let counts: BriefFallbackCounts = { decisions: 0, updates: 0 };
   let day = "";
   await updateSupervisorBrief(user, (view) => {
-    count = 0;
+    counts = { decisions: 0, updates: 0 };
     const record = cleanBriefRecord(view.brief);
     const run = record.run;
     if (
@@ -720,15 +757,23 @@ async function pushFallbackIfDue(user: string): Promise<number> {
       inQuietHours(view.prefs, view.timeZone, now)
     )
       return null;
-    const waiting = waitingDecisions(view.items);
     // Marked either way: nothing waiting needs no push later today.
-    count = waiting;
+    counts = {
+      decisions: waitingDecisions(view.items),
+      updates: waitingUpdates(view.items),
+    };
     day = run.day;
-    return { brief: stored({ ...record, fallbackDay: run.day }) };
+    return {
+      brief: stored({
+        ...record,
+        fallbackDay: run.day,
+        fallbackCounts: counts,
+      }),
+    };
   });
-  if (!count) return 0;
+  if (!counts.decisions && !counts.updates) return 0;
   try {
-    await deps.push(user, day, count, false);
+    await deps.push(user, day, counts.decisions, false, counts.updates);
     return 1;
   } catch (error) {
     console.warn(
@@ -801,6 +846,9 @@ export interface BriefResponse {
   preparingSince: number | null;
   /** When the owner may ask for a fresh brief. */
   refreshAt: number;
+  /** The latest day the scheduled brief couldn't be put together, with
+   *  what was waiting then; null when it was, or never failed. */
+  fallback: null | ({ day: string } & BriefFallbackCounts);
 }
 
 /**
@@ -873,5 +921,11 @@ export async function getSupervisorBrief(
       now,
       (record.lastStartAt ?? record.run?.startedAt ?? 0) + BRIEF_REFRESH_MS,
     ),
+    fallback:
+      record.fallbackDay &&
+      record.fallbackCounts &&
+      record.brief?.day !== record.fallbackDay
+        ? { day: record.fallbackDay, ...record.fallbackCounts }
+        : null,
   };
 }

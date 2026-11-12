@@ -204,6 +204,11 @@ export interface SupervisorInboxDeps {
     view: SupervisorBriefView,
     dueDay: string | null,
   ): Promise<{ started: number; pushed: number }>;
+  /** Whether `item` is a lead's decision with steps still standing: a
+   *  proposal recorded for it that is not voided, not yet approved or
+   *  approved and not yet applied (leads/approvals.ts proposalForItem).
+   *  Rejects when the records can't be read. */
+  standingAct(item: SupervisorItem): Promise<boolean>;
 }
 
 const defaultDeps: SupervisorInboxDeps = {
@@ -234,6 +239,20 @@ const defaultDeps: SupervisorInboxDeps = {
       view,
       dueDay,
     ),
+  standingAct: async (item) => {
+    const { LEAD_SOURCE_PREFIX } = await import("./leads/report");
+    if (
+      item.kind !== "needs-you" ||
+      !item.source.startsWith(LEAD_SOURCE_PREFIX)
+    )
+      return false;
+    const project = item.source.slice(LEAD_SOURCE_PREFIX.length);
+    if (!project) return false;
+    const record = await (
+      await import("./leads/approvals")
+    ).proposalForItem(project, item.id);
+    return !!record && record.proposal.steps.length > 0;
+  },
 };
 
 let deps: SupervisorInboxDeps = defaultDeps;
@@ -1078,27 +1097,91 @@ export async function closeSupervisorItems(
 
 export const MAX_CLOSE_IDS = 50;
 
+/** Why close_items left an open item open, in fixed copy. */
+export const CLOSE_REFUSED_ACT =
+  "It has a lead's steps waiting for the owner. Leave it as later.";
+export const CLOSE_REFUSED_UNCHECKED =
+  "Its lead's steps couldn't be checked. Leave it as later.";
+export const CLOSE_REFUSED_URGENT =
+  "It is marked now or down, so it stays for the owner.";
+
+export interface CloseRefusal {
+  id: string;
+  reason: string;
+}
+
 /**
  * Close open items the supervisor found stale, done or duplicated, each
  * dismissed with `reason` (one line: "merged already", "same as si-…").
  * Nobody's answer: no handler runs, so a lead's recorded steps are never
  * approved by a close. Unknown and already-closed ids are reported, not
  * failed. One compare-and-set for the lot.
+ *
+ * Never closes an item the owner must see: urgency now or down, or a
+ * lead's decision with steps still standing (`standingAct`); an item
+ * whose steps couldn't be checked, or that changed since they were, counts
+ * as one. Each is left open and returned in `refused` with fixed copy, so
+ * the brief can only leave it as later.
  */
 export async function dismissSupervisorItems(
   user: string,
   ids: readonly string[],
   reason: string,
-): Promise<{ closed: SupervisorItem[]; skipped: string[] }> {
+): Promise<{
+  closed: SupervisorItem[];
+  skipped: string[];
+  refused: CloseRefusal[];
+}> {
   const why = line(reason, CLOSE_REASON_LEN);
-  if (!validUser(user) || !why) return { closed: [], skipped: [...ids] };
+  if (!validUser(user) || !why)
+    return { closed: [], skipped: [...ids], refused: [] };
   const wanted = new Set(ids.slice(0, MAX_CLOSE_IDS));
+  // The lead items checked clear of standing steps, at the revision they
+  // were checked at; any other revision is refused in the write below.
+  const cleared = new Map<string, number>();
+  const unchecked = new Set<string>();
+  const candidates = (await readDocument(user)).items.filter(
+    (item) =>
+      wanted.has(item.id) &&
+      item.state === "open" &&
+      item.urgency !== "now" &&
+      item.urgency !== "down",
+  );
+  await Promise.all(
+    candidates.map(async (item) => {
+      try {
+        if (!(await deps.standingAct(item)))
+          cleared.set(item.id, item.updatedAt);
+      } catch (error) {
+        unchecked.add(item.id);
+        console.warn(
+          `[supervisor] could not check the steps of ${item.id}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }),
+  );
   const now = deps.now();
   let closed: SupervisorItem[] = [];
+  let refused: CloseRefusal[] = [];
   await updateDocument(user, (doc) => {
     closed = [];
+    refused = [];
     const items = doc.items.map((item) => {
       if (!wanted.has(item.id) || item.state !== "open") return item;
+      if (item.urgency === "now" || item.urgency === "down") {
+        refused.push({ id: item.id, reason: CLOSE_REFUSED_URGENT });
+        return item;
+      }
+      if (cleared.get(item.id) !== item.updatedAt) {
+        refused.push({
+          id: item.id,
+          reason: unchecked.has(item.id)
+            ? CLOSE_REFUSED_UNCHECKED
+            : CLOSE_REFUSED_ACT,
+        });
+        return item;
+      }
       const next: SupervisorItem = {
         ...item,
         state: "dismissed",
@@ -1120,8 +1203,11 @@ export async function dismissSupervisorItems(
         closed.map((item) => itemThreadId(item.id)),
       )
       .catch(() => {});
-  const done = new Set(closed.map((item) => item.id));
-  return { closed, skipped: ids.filter((id) => !done.has(id)) };
+  const done = new Set([
+    ...closed.map((item) => item.id),
+    ...refused.map((r) => r.id),
+  ]);
+  return { closed, skipped: ids.filter((id) => !done.has(id)), refused };
 }
 
 // ── The brief's storage ─────────────────────────────────────────────────────
@@ -1211,11 +1297,13 @@ export function briefEvent(
   decisions: number,
   now: number,
   ready = true,
+  updates = 0,
 ): NotificationEvent {
-  const count =
-    decisions === 0
+  const count = ready
+    ? decisions === 0
       ? "Nothing to decide"
-      : `${decisions} ${decisions === 1 ? "decision" : "decisions"}`;
+      : `${decisions} ${decisions === 1 ? "decision" : "decisions"}`
+    : briefFallbackCopy(decisions, updates);
   return {
     kind: "supervisor_digest",
     // One row per day, so each brief arrives unread.
@@ -1233,7 +1321,7 @@ export function briefEvent(
     at: now,
     delivery: "alert",
     push: {
-      body: ready ? BRIEF_PUSH_BODY : BRIEF_FALLBACK_BODY,
+      body: ready ? BRIEF_PUSH_BODY : count,
       expiresAt: now + DAY_MS,
     },
   };
@@ -1242,22 +1330,30 @@ export function briefEvent(
 export const BRIEF_PUSH_TITLE = "Your morning brief is ready";
 export const BRIEF_PUSH_BODY = "Open Blob to hear it";
 /** When no brief could be written (no supervisor yet, or its turn failed)
- *  and decisions wait: the same push without a brief behind it. */
-export const BRIEF_FALLBACK_TITLE = "Decisions are waiting";
-export const BRIEF_FALLBACK_BODY = "Open Blob to see them";
+ *  and decisions or updates wait: the same push without a brief behind it,
+ *  counting both, so the updates the digest used to tell aren't lost. */
+export const BRIEF_FALLBACK_TITLE = "Your brief couldn't be put together";
 
-/** Push the person's brief for `day` (`ready` false: the fallback);
- *  rejects when it was not recorded. */
+/** The fallback's fixed line: "2 decisions and 1 update are waiting." */
+export function briefFallbackCopy(decisions: number, updates: number): string {
+  const n = (count: number, noun: string) =>
+    `${count} ${count === 1 ? noun : `${noun}s`}`;
+  return `${n(decisions, "decision")} and ${n(updates, "update")} are waiting.`;
+}
+
+/** Push the person's brief for `day` (`ready` false: the fallback, which
+ *  counts `updates` too); rejects when it was not recorded. */
 export async function pushSupervisorBrief(
   user: string,
   day: string,
   decisions: number,
   ready = true,
+  updates = 0,
 ): Promise<void> {
   const sessionId = await deps.supervisorSessionId(user);
   await deps.notify(
     user,
-    briefEvent(sessionId, day, decisions, deps.now(), ready),
+    briefEvent(sessionId, day, decisions, deps.now(), ready, updates),
   );
 }
 

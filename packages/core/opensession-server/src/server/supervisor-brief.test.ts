@@ -209,6 +209,33 @@ describe("the record", () => {
     ).toBe(false);
   });
 
+  test("say keeps every sentence but no control or bidi characters", () => {
+    const result = brief.validateBrief(
+      {
+        say: "Morning.\nCI is fixed.\u202E Two\u0007 things\r\n\twait.\u2066",
+      },
+      [],
+    );
+    expect(result.ok && result.value.say).toBe(
+      "Morning. CI is fixed. Two things wait.",
+    );
+    // Only control characters: empty, refused.
+    expect(brief.validateBrief({ say: "\u0000\u202E" }, []).ok).toBe(false);
+    // A stored say is cleaned the same way when read back.
+    expect(
+      brief.cleanBriefRecord({
+        brief: {
+          day: "2026-07-01",
+          asOf: 1,
+          say: "Hi\u202E there.\nBye.",
+          handled: [],
+          decisions: [],
+          later: { count: 0, itemIds: [] },
+        },
+      }).brief?.say,
+    ).toBe("Hi there. Bye.");
+  });
+
   test("handled lines are one bounded line each", async () => {
     const result = brief.validateBrief(
       {
@@ -358,6 +385,12 @@ describe("the brief turn", () => {
   test("no supervisor yet, or a turn that wrote nothing: one fallback push when decisions wait", async () => {
     session = null;
     await decision("Ship 1.19.0?", "a");
+    await inbox.postSupervisorItem({
+      user: "Ada",
+      source: "lead:acme",
+      kind: "fyi",
+      title: "CI repaired",
+    });
     clock = at("2026-07-01T09:00:00Z");
     await inbox.sweepSupervisorInbox();
     // A scheduled brief never creates a supervisor.
@@ -366,10 +399,25 @@ describe("the brief turn", () => {
     clock = at("2026-07-01T09:01:00Z");
     await inbox.sweepSupervisorInbox();
     expect(sent).toHaveLength(1);
+    // The updates the digest used to tell are counted too, and kept.
     expect(sent[0]!.event).toMatchObject({
-      reason: "Decisions are waiting",
-      body: "1 decision",
+      reason: "Your brief couldn't be put together",
+      body: "1 decision and 1 update are waiting.",
+      push: { body: "1 decision and 1 update are waiting." },
     });
+    expect(JSON.stringify(sent[0]!.event)).not.toContain("CI repaired");
+    expect(await record()).toMatchObject({
+      fallbackDay: "2026-07-01",
+      fallbackCounts: { decisions: 1, updates: 1 },
+    });
+    expect((await brief.getSupervisorBrief("Ada")).fallback).toEqual({
+      day: "2026-07-01",
+      decisions: 1,
+      updates: 1,
+    });
+    // The update stays untold for the next brief.
+    const [update] = await inbox.listSupervisorItems("Ada", { kind: "fyi" });
+    expect(update!.digestedAt).toBeUndefined();
     clock = at("2026-07-01T09:30:00Z");
     await inbox.sweepSupervisorInbox();
     expect(sent).toHaveLength(1);
@@ -385,6 +433,22 @@ describe("the brief turn", () => {
     clock = at("2026-07-02T09:20:00Z");
     await inbox.sweepSupervisorInbox();
     expect(sent).toHaveLength(2);
+  });
+
+  test("a fallback with only updates waiting still pushes", async () => {
+    session = null;
+    await inbox.postSupervisorItem({
+      user: "Ada",
+      source: "lead:acme",
+      kind: "fyi",
+      title: "CI repaired",
+    });
+    clock = at("2026-07-01T09:00:00Z");
+    await inbox.sweepSupervisorInbox();
+    clock = at("2026-07-01T09:01:00Z");
+    await inbox.sweepSupervisorInbox();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.event.body).toBe("0 decisions and 1 update are waiting.");
   });
 
   test("opening Blob runs the day's turn: preparing, then ready; never in quiet hours", async () => {
@@ -477,7 +541,12 @@ describe("reading", () => {
 });
 
 describe("routes", () => {
-  async function call(method: string, path: string, body?: unknown) {
+  async function call(
+    method: string,
+    path: string,
+    body?: unknown,
+    authUser: Record<string, unknown> | null = { login: "ada", name: "Ada" },
+  ) {
     const { handleSupervisorRoutes } = await import("./routes/supervisor");
     const url = new URL(`http://localhost${path}`);
     return handleSupervisorRoutes({
@@ -493,17 +562,60 @@ describe("routes", () => {
       url,
       path: url.pathname,
       publicPrefix: "/backstage",
-      authUser: { login: "ada", name: "Ada" },
+      authUser: authUser as never,
     });
   }
 
+  test("only the signed-in person, never a claimed name or an automation", async () => {
+    await decision("Ship 1.19.0?", "a");
+    for (const path of [
+      ["GET", "/api/supervisor/brief?user=Ada&start=1"],
+      ["POST", "/api/supervisor/brief/seen"],
+      ["POST", "/api/supervisor/brief/refresh"],
+    ] as const) {
+      // No sign-in: the claimed user is ignored.
+      expect(
+        (await call(path[0], path[1], { user: "Ada" }, null))?.status,
+      ).toBe(401);
+      // The automation principal, even with a login and a name.
+      expect(
+        (
+          await call(
+            path[0],
+            path[1],
+            { user: "Ada" },
+            { login: "ada", name: "Ada", automation: true },
+          )
+        )?.status,
+      ).toBe(401);
+    }
+    // Nothing started for anyone.
+    expect((await brief.getSupervisorBrief("Ada")).preparingSince).toBeNull();
+  });
+
   test("GET the brief, POST seen and refresh, each for the signed-in owner", async () => {
     const a = await decision("Ship 1.19.0?", "a");
-    const none = await call("GET", "/api/supervisor/brief?user=Grace&start=0");
+    // A plain GET only reads, whatever user it claims.
+    const none = await call("GET", "/api/supervisor/brief?user=Grace");
     expect(none?.status).toBe(200);
-    expect(await none!.json()).toMatchObject({ state: "none", brief: null });
+    expect(await none!.json()).toMatchObject({
+      state: "none",
+      brief: null,
+      preparingSince: null,
+    });
+    expect(
+      (
+        (await (await call(
+          "GET",
+          "/api/supervisor/brief?start=true",
+        ))!.json()) as {
+          state: string;
+        }
+      ).state,
+    ).toBe("none");
 
-    const started = await call("GET", "/api/supervisor/brief?user=Ada");
+    // Blob opening sends start=1: the turn starts for the signed-in Ada.
+    const started = await call("GET", "/api/supervisor/brief?start=1");
     expect(((await started!.json()) as { state: string }).state).toBe(
       "preparing",
     );
@@ -518,7 +630,7 @@ describe("routes", () => {
     });
     const ready = (await (await call(
       "GET",
-      "/api/supervisor/brief?user=Ada",
+      "/api/supervisor/brief",
     ))!.json()) as Awaited<ReturnType<Brief["getSupervisorBrief"]>>;
     expect(ready.state).toBe("ready");
     expect(ready.brief!.decisions[0]!.item.id).toBe(a.id);

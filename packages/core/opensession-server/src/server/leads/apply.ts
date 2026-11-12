@@ -977,6 +977,8 @@ async function tellOwner(
           .filter(Boolean)
           .join("\n\n"),
         options: [...APPLY_OPTIONS],
+        // A run that failed can't wait for the brief.
+        urgency: "now",
       })
     : await d.postSupervisorItem({
         ...base,

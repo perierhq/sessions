@@ -1369,6 +1369,8 @@ async function tripBreaker(
       body: `Its last ${WATCH_MAX_FAILED_WAKES} wakes failed, so it is paused. Workers' reports come to your conversation with Blob until it runs again.`,
       options: [RESUME_OPTION, "Keep paused"],
       dedupeKey: FAILING_KEY,
+      // The system telling on itself: it can't wait for the brief.
+      urgency: "now",
     })
     .catch(() => {});
 }

@@ -1629,7 +1629,7 @@ Dismiss an inbox item that no longer needs the owner.
 
 `mcp__opensession-supervisor__close_items` · input: `ids` (string[], required), `reason` (string, required)
 
-Close open inbox items that no longer need the owner, with one reason for all of them: stale, already done (say how you checked), or a duplicate ("same as <id of the item you keep>"). Closing answers nothing: a lead's steps never run from it. Up to 50 ids; group items by reason.
+Close open inbox items that no longer need the owner, with one reason for all of them: stale, already done (say how you checked), or a duplicate ("same as <id of the item you keep>"). Closing answers nothing: a lead's steps never run from it. Items marked now or down, and a lead's items with steps still waiting, are never closed: they stay open, so leave them as later. Up to 50 ids; group items by reason.
 
 ### `write_brief`
 

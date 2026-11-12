@@ -53,6 +53,10 @@ let briefSweeps: Array<{
   dueDay: string | null;
   titles: string[];
 }> = [];
+/** Items with a lead's steps still standing, and items whose steps can't
+ *  be read (standingAct rejects). */
+let standing = new Set<string>();
+let unreadable = new Set<string>();
 let restore: () => void = () => {};
 
 beforeEach(() => {
@@ -69,7 +73,13 @@ beforeEach(() => {
   rotated = [];
   failRotate = false;
   briefSweeps = [];
+  standing = new Set();
+  unreadable = new Set();
   restore = inbox.__setSupervisorInboxDepsForTest({
+    standingAct: async (item) => {
+      if (unreadable.has(item.id)) throw new Error("catalog down");
+      return standing.has(item.id);
+    },
     now: () => clock,
     notify: async (user, event) => {
       if (failNotify) throw new Error("push service down");
@@ -850,6 +860,128 @@ describe("the morning brief from the sweep", () => {
       "Nothing to decide",
     );
   });
+
+  test("the fallback event counts decisions and updates, in fixed copy", () => {
+    const event = inbox.briefEvent("s", "2026-07-01", 2, clock, false, 3);
+    expect(event).toMatchObject({
+      reason: "Your brief couldn't be put together",
+      body: "2 decisions and 3 updates are waiting.",
+      push: { body: "2 decisions and 3 updates are waiting." },
+    });
+    expect(inbox.briefFallbackCopy(1, 1)).toBe(
+      "1 decision and 1 update are waiting.",
+    );
+    expect(inbox.briefFallbackCopy(0, 4)).toBe(
+      "0 decisions and 4 updates are waiting.",
+    );
+  });
+});
+
+describe("closing for the brief (close_items)", () => {
+  test("closes plain items; never one marked now or down, or with a lead's steps standing", async () => {
+    const plain = await needsYou({ dedupeKey: "plain", urgency: "normal" });
+    const note = await fyi("CI repaired");
+    const now = await needsYou({ dedupeKey: "now", urgency: "now" });
+    const down = await needsYou({ dedupeKey: "down", urgency: "down" });
+    const act = await needsYou({ dedupeKey: "act", urgency: "normal" });
+    const blind = await needsYou({ dedupeKey: "blind", urgency: "normal" });
+    standing.add(act.item.id);
+    unreadable.add(blind.item.id);
+    const result = await inbox.dismissSupervisorItems(
+      "Ada",
+      [
+        plain.item.id,
+        note.item.id,
+        now.item.id,
+        down.item.id,
+        act.item.id,
+        blind.item.id,
+        "si-nope",
+      ],
+      "PR 533 merged",
+    );
+    expect(result.closed.map((i) => i.id).sort()).toEqual(
+      [plain.item.id, note.item.id].sort(),
+    );
+    expect(result.skipped).toEqual(["si-nope"]);
+    expect(result.refused).toEqual(
+      expect.arrayContaining([
+        { id: now.item.id, reason: inbox.CLOSE_REFUSED_URGENT },
+        { id: down.item.id, reason: inbox.CLOSE_REFUSED_URGENT },
+        { id: act.item.id, reason: inbox.CLOSE_REFUSED_ACT },
+        { id: blind.item.id, reason: inbox.CLOSE_REFUSED_UNCHECKED },
+      ]),
+    );
+    expect(result.refused).toHaveLength(4);
+    const open = await inbox.listSupervisorItems("Ada", { state: "open" });
+    expect(open.map((i) => i.id).sort()).toEqual(
+      [now.item.id, down.item.id, act.item.id, blind.item.id].sort(),
+    );
+  });
+
+  test("an item changed after its steps were checked stays open", async () => {
+    const item = await needsYou({ dedupeKey: "race", urgency: "normal" });
+    // The lead rewrites it (new steps) while the close checks the old one.
+    let rewritten = false;
+    restore();
+    restore = inbox.__setSupervisorInboxDepsForTest({
+      now: () => clock,
+      markDone: async () => {},
+      standingAct: async () => {
+        if (!rewritten) {
+          rewritten = true;
+          clock += 1000;
+          await needsYou({
+            dedupeKey: "race",
+            urgency: "normal",
+            body: "New steps.",
+          });
+        }
+        return false;
+      },
+    });
+    const result = await inbox.dismissSupervisorItems(
+      "Ada",
+      [item.item.id],
+      "stale",
+    );
+    expect(result.closed).toEqual([]);
+    expect(result.refused).toEqual([
+      { id: item.item.id, reason: inbox.CLOSE_REFUSED_ACT },
+    ]);
+  });
+
+  test("the tool says why each refused item stays open", async () => {
+    const { createSupervisorMcpServer } = await import("./supervisor-mcp");
+    const tools = (
+      createSupervisorMcpServer({ user: "Ada" }).instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: Record<string, unknown>,
+              extra: unknown,
+            ) => Promise<{ content: Array<{ text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools;
+    const act = await needsYou({ dedupeKey: "act", urgency: "normal" });
+    const now = await needsYou({ dedupeKey: "now" });
+    standing.add(act.item.id);
+    const out = (
+      await tools.close_items!.handler(
+        { ids: [act.item.id, now.item.id], reason: "same as si-x" },
+        {},
+      )
+    ).content[0]!.text;
+    expect(out).toContain(
+      `Not closed: [${act.item.id}] ${inbox.CLOSE_REFUSED_ACT}`,
+    );
+    expect(out).toContain(
+      `Not closed: [${now.item.id}] ${inbox.CLOSE_REFUSED_URGENT}`,
+    );
+  });
 });
 
 describe("supervisor rotation from the sweep", () => {
@@ -1596,12 +1728,18 @@ describe("opensession-supervisor", () => {
     const [item] = await inbox.listSupervisorItems("Ada");
     expect(item?.source).toBe("supervisor");
     const listed = await tools.list_items!.handler({}, {});
-    expect(listed.content[0]!.text).toContain("Raise prices?");
+    // Item text is quoted as data under a label, as the status block's is.
+    const { ITEMS_DATA_NOTE } = await import("./supervisor-mcp");
+    expect(listed.content[0]!.text).toStartWith(ITEMS_DATA_NOTE);
+    expect(listed.content[0]!.text).toContain(
+      `] "Raise prices?" (needs-you, open`,
+    );
+    expect(listed.content[0]!.text).toContain(`1. "Not now"  2. "Yes"`);
     const answered = await tools.answer_item!.handler(
       { id: item!.id, answer: "1" },
       {},
     );
-    expect(answered.content[0]!.text).toContain("Answer: Not now");
+    expect(answered.content[0]!.text).toContain('Answer: "Not now"');
     expect(
       (await tools.dismiss_item!.handler({ id: item!.id }, {})).content[0]!
         .text,
@@ -1609,14 +1747,22 @@ describe("opensession-supervisor", () => {
 
     // close_items: one reason for several, no answer handler, unknown
     // and closed ids reported.
-    const a = await needsYou({ dedupeKey: "r1", title: "Ship 1.19.0?" });
-    const b = await needsYou({ dedupeKey: "r2", title: "PR 533 checks" });
+    const a = await needsYou({
+      dedupeKey: "r1",
+      title: "Ship 1.19.0?",
+      urgency: "normal",
+    });
+    const b = await needsYou({
+      dedupeKey: "r2",
+      title: "PR 533 checks",
+      urgency: "normal",
+    });
     const closedOut = await tools.close_items!.handler(
       { ids: [b.item.id, item!.id, "si-nope"], reason: `same as ${a.item.id}` },
       {},
     );
     const out = closedOut.content[0]!.text;
-    expect(out).toContain(`Closed: same as ${a.item.id}`);
+    expect(out).toContain(`Closed: "same as ${a.item.id}"`);
     expect(out).toContain(`Not open or not found: ${item!.id}, si-nope`);
     const closedB = (await inbox.listSupervisorItems("Ada")).find(
       (i) => i.id === b.item.id,

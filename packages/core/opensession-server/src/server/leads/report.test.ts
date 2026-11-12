@@ -429,4 +429,21 @@ describe("proposalUrgency", () => {
     expect(proposalUrgency({ expiresAt: NOW + 2 * DAY }, NOW)).toBeUndefined();
     expect(proposalUrgency(undefined, NOW)).toBeUndefined();
   });
+
+  test("anything about an incident pushes now, whatever the lead says", () => {
+    expect(proposalUrgency(undefined, NOW, "fix-verified")).toBe("now");
+    expect(
+      proposalUrgency(
+        {
+          expiresAt: NOW + 7 * DAY,
+          condition: { kind: "incident-resolved", id: "inc-1" },
+        },
+        NOW,
+        "public-release",
+      ),
+    ).toBe("now");
+    expect(
+      proposalUrgency({ expiresAt: NOW + 7 * DAY }, NOW, "public-release"),
+    ).toBeUndefined();
+  });
 });

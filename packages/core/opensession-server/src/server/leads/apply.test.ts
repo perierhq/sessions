@@ -613,6 +613,7 @@ describe("leadApply", () => {
       title:
         "Couldn't apply: Branch protection blocks the merge of PR #12 in acme/web",
       options: ["Propose again", "Drop it"],
+      urgency: "now",
     });
     expect(posts[0]!.body).toContain(FORCE_MERGE_LINE);
     // GitHub's own refusal is the same.

@@ -252,10 +252,14 @@ brief (`supervisor-brief.ts`).
   what to do: check each open item with tools, close stale and done ones with a reason and
   duplicates with "same as <kept id>" (`close_items`), act where the rules allow, pick at
   most three decisions with a recommendation, then `write_brief`. Closing answers nothing, so
-  it never approves a lead's steps.
+  it never approves a lead's steps. `close_items` never closes an item marked `now` or `down`,
+  or a lead's item whose steps still stand (unapproved, or approved and not applied; an item
+  whose steps can't be read counts as one): each stays open with a fixed reason, and the brief
+  can only leave it as later.
 - **When it runs.** One automatic turn per owner per day: at the digest time, or earlier when
   the owner opens Blob after quiet hours and there is no brief for today
-  (`GET /api/supervisor/brief` answers `preparing` and the turn finishes on its own). A fresh
+  (`GET /api/supervisor/brief?start=1` answers `preparing` and the turn finishes on its own;
+  a GET without `start=1` only reads). A fresh
   brief on request (`POST /api/supervisor/brief/refresh`) at most every 30 minutes. A turn
   that writes nothing in 20 minutes is over.
 - **The record** lives in the owner's inbox document in the catalog (`brief`): `day`,
@@ -269,12 +273,16 @@ brief (`supervisor-brief.ts`).
 - **Reading it.** `GET /api/supervisor/brief` returns today's brief or the latest, its
   decisions expanded to the item payloads the items route returns (`revision`, `act`), with
   `state` `ready`, `preparing` or `none`. `POST /api/supervisor/brief/seen` marks it seen.
-  Both are the owner's only, with the items' auth. A written brief sends the socket frame
+  The brief routes take the signed-in person only (`verifiedPerson`), never a claimed `user`
+  or the automation principal (401), so a turn starts only for the person it spends on. A written brief sends the socket frame
   `supervisor_brief_ready`.
 - **The push.** A scheduled brief pushes "Your morning brief is ready" once, after quiet
   hours and only if the owner hasn't seen it yet: Blob's icon, opening Blob, and only the
   count of decisions as the Bark subtitle. When the scheduled turn couldn't run or wrote
-  nothing and decisions wait, one "Decisions are waiting" push goes out instead.
+  nothing and decisions or untold updates wait, one push goes out instead, fixed copy with
+  both counts ("Your brief couldn't be put together. 2 decisions and 3 updates are waiting."),
+  and the record keeps the counts (`fallback` in the GET answer). The updates stay untold for
+  the next brief.
 - **Interrupts.** A new needs-you item pushes at once only when its urgency is `down`
   (something fully down, through quiet hours) or `now` (held in quiet hours): it expires
   before the next brief or something time-sensitive waits on it, such as an incident that

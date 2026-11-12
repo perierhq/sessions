@@ -494,6 +494,8 @@ async function askAboutBudget(
       dedupeKey: `${leadSource(project)}:budget:${monthOf(now)}`,
       // One a month, even after the owner answered or dismissed it.
       once: true,
+      // The lead is stopped: it can't wait for the brief.
+      urgency: "now",
     });
   } catch (error) {
     console.warn(
@@ -530,6 +532,8 @@ async function askAboutGuard(
       options: [RESUME_OPTION, KEEP_PAUSED_OPTION],
       dedupeKey: hold.dedupeKey,
       once: true,
+      // The lead is stopped: it can't wait for the brief.
+      urgency: "now",
     });
   } catch (error) {
     console.warn(
@@ -972,6 +976,8 @@ export async function leadGoalWaiting(goal: Goal, now: number): Promise<void> {
       body: `${waiting.reason}, so its wakes wait. It runs again once there is room.`,
       dedupeKey: `${leadSource(project)}:waiting:${waiting.since}`,
       once: true,
+      // The lead hasn't run for a day: it can't wait for the brief.
+      urgency: "now",
     });
   } catch (error) {
     console.warn(

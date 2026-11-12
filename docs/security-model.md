@@ -594,7 +594,9 @@ steps. Paths below are under `packages/core/opensession-server/src/`.
   a card that changed since it was read gets a 409 `changed` and closes
   nothing (`server/routes/supervisor.ts`). The supervisor's morning brief
   (`server/supervisor-brief.ts`) never answers for the owner: `close_items`
-  dismisses without running answer handlers, so it approves nothing, and a
+  dismisses without running answer handlers, so it approves nothing, and
+  refuses in code to close an item marked `now` or `down` or a lead's item
+  whose steps still stand (`dismissSupervisorItems`), and a
   brief's decision only points at one open item, which the owner still
   answers with its revision. An approval expires after 7 days
   by default and at most 30, and a condition it waits on is re-checked when

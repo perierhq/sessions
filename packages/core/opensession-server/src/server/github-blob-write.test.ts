@@ -555,6 +555,7 @@ describe("token trouble", () => {
       kind: "needs-you",
       source: "blob-github",
       title: "GitHub refused Blob's token",
+      urgency: "now",
     });
     // Turned on again, the same token refused again: still one item.
     await setup();

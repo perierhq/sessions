@@ -131,6 +131,8 @@ interface Deps {
     title: string;
     body: string;
     dedupeKey: string;
+    /** `now` when it can't wait for the owner's morning brief. */
+    urgency?: "now";
   }): Promise<unknown>;
   /** This instance's web link for a session (run-instructions.ts). */
   sessionLink(sessionId: string): Promise<string>;
@@ -1034,6 +1036,8 @@ async function onUnauthorized(record: BlobGithubRecord): Promise<void> {
       title: "GitHub refused Blob's token",
       body: "GitHub answered 401 to Blob's token, so Blob stopped posting on GitHub. Save a new token in Settings, Members, Blob, then turn posting on again.",
       dedupeKey: `blob-github-401:${record.expiresAt ?? "unknown"}`,
+      // Posting stopped: it can't wait for the brief.
+      urgency: "now",
     })
     .catch(() => {});
 }

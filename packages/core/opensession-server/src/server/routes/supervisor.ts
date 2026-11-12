@@ -11,10 +11,13 @@
  *   POST /api/supervisor/items/:id/answer       { user, answer, revision? }
  *   POST /api/supervisor/items/:id/dismiss      { user }
  *   POST /api/supervisor/items/shown            { user, ids } → { marked }, Blob showed these open items
- *   GET  /api/supervisor/brief?user=&start=0    → BriefResponse (supervisor-brief.ts); starts today's brief
- *                                               turn when none is written and quiet hours are over (start=0: never)
- *   POST /api/supervisor/brief/seen             { user, day? } → { seenAt }, the owner saw the brief
- *   POST /api/supervisor/brief/refresh          { user } → 202 { state: "preparing" }, or 429 { retryAt }
+ *   GET  /api/supervisor/brief?start=1          → BriefResponse (supervisor-brief.ts); reads only, unless
+ *                                               start=1 (Blob opening): then starts today's brief turn when
+ *                                               none is written and quiet hours are over
+ *   POST /api/supervisor/brief/seen             { day? } → { seenAt }, the owner saw the brief
+ *   POST /api/supervisor/brief/refresh          → 202 { state: "preparing" }, or 429 { retryAt }
+ *   The brief routes are the signed-in person's own: never a claimed name
+ *   or the automation principal (401).
  *   GET  /api/supervisor/leads                  → { leads: LeadRosterEntry[] }, every project's lead
  *   GET  /api/supervisor/prefs?user=
  *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle?, watch?: { enabled?, everyMinutes?, activeStart?, activeEnd? }, memoryWriter? }
@@ -184,24 +187,35 @@ export async function handleSupervisorRoutes(
     return closeResponse(await dismissSupervisorItem(user, id));
   }
 
-  // The morning brief (supervisor-brief.ts). Opening Blob with no brief
-  // for today starts the day's turn and answers `preparing`; Blob polls
-  // until it is `ready`. start=0 reads without starting (a menu bar poll).
-  if (path === "/api/supervisor/brief" && req.method === "GET") {
-    const user = requestUser(ctx, url.searchParams.get("user"));
-    if (!user) return missingUser();
-    const start = url.searchParams.get("start");
+  // The morning brief (supervisor-brief.ts), the signed-in person's own:
+  // a brief turn spends their model budget and the brief says what waits
+  // for them, so a claimed name or an automation gets nothing. A GET only
+  // reads; Blob opening sends start=1, which starts the day's turn when
+  // there is no brief for today and answers `preparing`; Blob polls until
+  // it is `ready`.
+  const briefRoute =
+    (path === "/api/supervisor/brief" && req.method === "GET") ||
+    ((path === "/api/supervisor/brief/seen" ||
+      path === "/api/supervisor/brief/refresh") &&
+      req.method === "POST");
+  const briefUser = briefRoute ? verifiedPerson(ctx) : "";
+  if (briefRoute && !briefUser)
     return Response.json(
-      await getSupervisorBrief(user, {
-        start: start !== "0" && start !== "false",
+      { error: "Sign in to read the brief" },
+      { status: 401 },
+    );
+
+  if (path === "/api/supervisor/brief" && req.method === "GET") {
+    return Response.json(
+      await getSupervisorBrief(briefUser, {
+        start: url.searchParams.get("start") === "1",
       }),
     );
   }
 
   if (path === "/api/supervisor/brief/seen" && req.method === "POST") {
     const body = await req.json().catch(() => null);
-    const user = requestUser(ctx, body?.user);
-    if (!user) return missingUser();
+    const user = briefUser;
     const day: unknown = body?.day;
     if (day !== undefined && (typeof day !== "string" || day.length > 10))
       return Response.json({ error: "invalid day" }, { status: 400 });
@@ -211,10 +225,7 @@ export async function handleSupervisorRoutes(
   }
 
   if (path === "/api/supervisor/brief/refresh" && req.method === "POST") {
-    const body = await req.json().catch(() => null);
-    const user = requestUser(ctx, body?.user);
-    if (!user) return missingUser();
-    const result = await startBriefTurn(user, "refresh");
+    const result = await startBriefTurn(briefUser, "refresh");
     if (result.started) {
       void result.delivered;
       return Response.json({ state: "preparing" }, { status: 202 });

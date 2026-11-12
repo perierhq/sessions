@@ -149,8 +149,9 @@ function deps(): SupervisorStatusDeps {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Someone else's text as one JSON-quoted line, clipped. */
-function q(text: string, chars = TITLE_CHARS): string {
+/** Someone else's text as one JSON-quoted line, clipped: data, never
+ *  instructions (list_items quotes item text the same way). */
+export function quoteData(text: string, chars = TITLE_CHARS): string {
   const flat = pushSafeText(text).replace(/\s+/g, " ").trim();
   return JSON.stringify(
     flat.length > chars ? `${flat.slice(0, chars - 1)}…` : flat,
@@ -286,7 +287,7 @@ function projectLines(p: ProjectStatus, now: number): string[] {
         .slice(0, STATUS_ITEMS)
         .map(
           (i) =>
-            `${q(i.title)} [${i.id}] ${i.state}, ${i.severity}, ${age(i.openedAt, now)} old`,
+            `${quoteData(i.title)} [${i.id}] ${i.state}, ${i.severity}, ${age(i.openedAt, now)} old`,
         )
         .join(
           "; ",
@@ -295,20 +296,23 @@ function projectLines(p: ProjectStatus, now: number): string[] {
   else out.push("- Incidents: none open");
   if (p.note)
     out.push(
-      `- Lead's last note (${age(p.note.updatedAt, now)} ago, ${p.note.kind}, ${p.note.state}): ${q(p.note.title)}`,
+      `- Lead's last note (${age(p.note.updatedAt, now)} ago, ${p.note.kind}, ${p.note.state}): ${quoteData(p.note.title)}`,
     );
   if (p.support.length)
     out.push(
       `- Support waiting for a person: ${p.support.length} (newest: ${p.support
         .slice(0, SUPPORT_NAMES)
-        .map((r) => q(customerName(r), NAME_CHARS))
+        .map((r) => quoteData(customerName(r), NAME_CHARS))
         .join(", ")})`,
     );
   if (p.prs.length)
     out.push(
       `- Pull requests waiting on the owner: ${p.prs
         .slice(0, STATUS_ITEMS)
-        .map(({ pr, reason }) => `#${pr.number} ${q(pr.title)} (${reason})`)
+        .map(
+          ({ pr, reason }) =>
+            `#${pr.number} ${quoteData(pr.title)} (${reason})`,
+        )
         .join(
           "; ",
         )}${p.prs.length > STATUS_ITEMS ? `; and ${p.prs.length - STATUS_ITEMS} more` : ""}`,
@@ -406,7 +410,7 @@ export type IncidentToolState = (typeof INCIDENT_TOOL_STATES)[number];
 
 function incidentLine(i: Incident, now: number): string {
   const closed = i.closedAt ? `, closed ${age(i.closedAt, now)} ago` : "";
-  return `- [${i.id}] ${q(i.title)} (${i.project}): ${i.state}, ${i.severity}, opened ${age(i.openedAt, now)} ago${closed}`;
+  return `- [${i.id}] ${quoteData(i.title)} (${i.project}): ${i.state}, ${i.severity}, opened ${age(i.openedAt, now)} ago${closed}`;
 }
 
 /**
@@ -440,14 +444,14 @@ export async function incidentsReport(
       `Owner: ${i.owner}. Opened by: ${i.openedBy.kind}${i.openedBy.ref ? ` ${i.openedBy.ref}` : ""}. Last problem ${age(i.lastProblemAt, now)} ago. Signals: ${i.signalIds.join(", ")}.`,
       ...(i.impact
         ? [
-            `Impact: ${i.impact.count ?? "?"} ${q(i.impact.noun, 40)}${i.impact.approximate ? " (approximate)" : ""}`,
+            `Impact: ${i.impact.count ?? "?"} ${quoteData(i.impact.noun, 40)}${i.impact.approximate ? " (approximate)" : ""}`,
           ]
         : []),
       ...(i.findings.length ? [`Findings: ${i.findings.length}`] : []),
       `Last ${events.length} of ${i.events.length + i.droppedEvents} events:`,
       ...events.map(
         (e) =>
-          `- ${age(e.at, now)} ago, ${e.kind}${e.to ? ` → ${e.to}` : ""} by ${e.by}: ${q(e.detail, 200)}`,
+          `- ${age(e.at, now)} ago, ${e.kind}${e.to ? ` → ${e.to}` : ""} by ${e.by}: ${quoteData(e.detail, 200)}`,
       ),
     ].join("\n");
   }
@@ -513,7 +517,7 @@ export async function supportWaitingReport(
     lines.push(`${entry.label}: ${rows.length} waiting for a person`);
     for (const r of rows.slice(0, SUPPORT_LIST_MAX))
       lines.push(
-        `- [${r.id}] ${q(customerName(r), NAME_CHARS)}: ${q(r.subject || "(no subject)")}, ${r.draftState ? `draft ${r.draftState}` : "no draft"}, last message ${age(r.lastMessageAt, now)} ago${r.unansweredSince ? `, unanswered for ${age(r.unansweredSince, now)}` : ""}`,
+        `- [${r.id}] ${quoteData(customerName(r), NAME_CHARS)}: ${quoteData(r.subject || "(no subject)")}, ${r.draftState ? `draft ${r.draftState}` : "no draft"}, last message ${age(r.lastMessageAt, now)} ago${r.unansweredSince ? `, unanswered for ${age(r.unansweredSince, now)}` : ""}`,
       );
     if (rows.length > SUPPORT_LIST_MAX)
       lines.push(`- and ${rows.length - SUPPORT_LIST_MAX} more`);
