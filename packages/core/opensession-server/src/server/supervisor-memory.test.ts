@@ -110,7 +110,11 @@ describe("seed context", () => {
       title: "CI repaired",
     });
     clock = at("2026-07-01T09:00:00Z");
-    await inbox.sweepSupervisorInbox();
+    // The morning brief tells the fyi (supervisor-brief.ts write_brief).
+    await inbox.updateSupervisorBrief("Ada", (view) => ({
+      brief: view.brief,
+      digestFyi: view.items.map((item) => item.id),
+    }));
 
     const seed = (await memory.supervisorSeedContext("Ada", {
       rotated: true,

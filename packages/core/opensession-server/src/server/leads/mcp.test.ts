@@ -196,7 +196,8 @@ describe("opensession-lead", () => {
     expect(item!.body).toBe(
       "16 incidents closed by themselves within 6 minutes.\n\nRule: Asks first: Signal rule changes, from the project settings.\n\nStatus page flaps",
     );
-    expect(pushes).toEqual(["Ada"]);
+    // No push: a proposal without expiring steps waits for the morning brief.
+    expect(pushes).toEqual([]);
     expect(audits[0]).toMatchObject({
       actor: "Blob",
       kind: "lead_proposal",
@@ -223,7 +224,8 @@ describe("opensession-lead", () => {
     expect(items).toHaveLength(1);
     expect(items[0]!.title).toBe("Acme: Signal rule changes");
     expect(items[0]!.body).toEndWith("\n\nStatus page still flaps");
-    expect(pushes).toEqual(["Ada"]);
+    // No push: a proposal without expiring steps waits for the morning brief.
+    expect(pushes).toEqual([]);
   });
 
   test("the body's say fence is what Blob says; the rest is shown", async () => {

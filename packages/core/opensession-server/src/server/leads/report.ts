@@ -154,6 +154,16 @@ const DAY_MS = 86_400_000;
 export const DEFAULT_EXPIRES_IN_DAYS = DEFAULT_APPROVAL_TTL_MS / DAY_MS;
 export const MAX_EXPIRES_IN_DAYS = MAX_APPROVAL_TTL_MS / DAY_MS;
 
+/** An approval whose steps expire within a day can't wait for the next
+ *  morning brief: its item pushes at once (`now`). Everything else from a
+ *  lead waits for the brief. */
+export function proposalUrgency(
+  act: Pick<LeadAct, "expiresAt"> | undefined,
+  now: number,
+): "now" | undefined {
+  return act && act.expiresAt - now <= DAY_MS ? "now" : undefined;
+}
+
 /** A proposal's steps as the server checked them. */
 export interface LeadAct {
   steps: LeadStep[];
@@ -823,6 +833,7 @@ export async function deliverLeadProposal(
     title: proposalTitle(label, proposal.category),
     options,
     dedupeKey,
+    urgency: proposalUrgency(act, Date.now()),
   };
   const posted = await postSupervisorItem({ ...item, body });
   const itemId = posted.item.id;

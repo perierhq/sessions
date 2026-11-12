@@ -48,6 +48,11 @@ let done: Array<{ user: string; ids: string[] }> = [];
 let failNotify = false;
 let rotated: string[] = [];
 let failRotate = false;
+let briefSweeps: Array<{
+  user: string;
+  dueDay: string | null;
+  titles: string[];
+}> = [];
 let restore: () => void = () => {};
 
 beforeEach(() => {
@@ -63,6 +68,7 @@ beforeEach(() => {
   failNotify = false;
   rotated = [];
   failRotate = false;
+  briefSweeps = [];
   restore = inbox.__setSupervisorInboxDepsForTest({
     now: () => clock,
     notify: async (user, event) => {
@@ -80,6 +86,14 @@ beforeEach(() => {
     },
     ensureWatch: async () => {},
     timeZone: () => "UTC",
+    sweepBrief: async (user, view, dueDay) => {
+      briefSweeps.push({
+        user,
+        dueDay,
+        titles: view.items.map((item) => item.title),
+      });
+      return { started: dueDay ? 1 : 0, pushed: 0 };
+    },
   });
 });
 
@@ -92,6 +106,8 @@ afterEach(() => {
 
 const at = (iso: string) => Date.parse(iso);
 
+/** A needs-you item that pushes on its own (`now`); a plain one waits for
+ *  the morning brief (see "interrupts"). */
 function needsYou(
   patch: Partial<Parameters<Inbox["postSupervisorItem"]>[0]> = {},
 ) {
@@ -103,6 +119,7 @@ function needsYou(
     body: "Checkout errors doubled after the last deploy.",
     project: "acme",
     options: ["Roll back", "Wait an hour"],
+    urgency: "now",
     ...patch,
   });
 }
@@ -247,6 +264,62 @@ describe("posting", () => {
         title: "t",
       }),
     ).rejects.toThrow("kind");
+  });
+});
+
+describe("interrupts", () => {
+  test("a plain needs-you waits for the brief: no push, no hold, still open", async () => {
+    const { item, delivery } = await needsYou({ urgency: "normal" });
+    expect(delivery).toBe("brief");
+    expect(sent).toHaveLength(0);
+    expect(item.state).toBe("open");
+    expect(item.heldUntil).toBeUndefined();
+    expect(item.notifiedAt).toBeUndefined();
+    // The sweep never pushes it either.
+    clock += 60 * 60_000;
+    expect((await inbox.sweepSupervisorInbox()).pushed).toBe(0);
+    expect(sent).toHaveLength(0);
+    expect(
+      (await inbox.listSupervisorItems("Ada", { state: "open" })).map(
+        (i) => i.id,
+      ),
+    ).toEqual([item.id]);
+  });
+
+  test("now pushes at once and is held in quiet hours; down always pushes", async () => {
+    expect((await needsYou({ dedupeKey: "a" })).delivery).toBe("pushed");
+    clock = at("2026-07-01T03:00:00Z");
+    expect((await needsYou({ dedupeKey: "b" })).delivery).toBe("held");
+    expect((await needsYou({ dedupeKey: "c", urgency: "down" })).delivery).toBe(
+      "pushed",
+    );
+    expect(
+      (await needsYou({ dedupeKey: "d", urgency: "normal" })).delivery,
+    ).toBe("brief");
+  });
+
+  test("the plan for each urgency", () => {
+    const open = { kind: "needs-you" as const, state: "open" as const };
+    expect(inbox.deliveryPlan(open, false)).toBe("brief");
+    expect(inbox.deliveryPlan({ ...open, urgency: "now" }, false)).toBe("push");
+    expect(inbox.deliveryPlan({ ...open, urgency: "now" }, true)).toBe("hold");
+    expect(inbox.deliveryPlan({ ...open, urgency: "down" }, true)).toBe("push");
+    expect(inbox.deliveryPlan({ ...open, kind: "fyi" }, false)).toBe("none");
+    expect(
+      inbox.deliveryPlan({ ...open, urgency: "now", notifiedAt: 1 }, false),
+    ).toBe("none");
+  });
+
+  test("raising a waiting item to now pushes it; an update never lowers it", async () => {
+    const first = await needsYou({ dedupeKey: "k", urgency: "normal" });
+    expect(first.delivery).toBe("brief");
+    const raised = await needsYou({ dedupeKey: "k", urgency: "now" });
+    expect(raised.delivery).toBe("pushed");
+    const plain = await needsYou({ dedupeKey: "k", urgency: "normal" });
+    expect(plain.item.urgency).toBe("now");
+    // Already on the device: the row is updated without a new banner.
+    expect(plain.delivery).toBe("updated");
+    expect(sent.map((s) => s.event.delivery)).toEqual(["alert", "quiet"]);
   });
 });
 
@@ -709,72 +782,73 @@ describe("bounds", () => {
     expect(kept.length).toBeLessThan(items.length);
 
     // Tighter still: digested fyi go next, decisions last.
-    const tight = inbox.pruneSupervisorItems(items, base, 165_000);
+    const tight = inbox.pruneSupervisorItems(
+      items,
+      base,
+      165_000 + inbox.BRIEF_RESERVE_BYTES,
+    );
     expect(tight.map((i) => i.kind)).toEqual(Array(10).fill("needs-you"));
   });
 });
 
-describe("daily digest", () => {
-  test("once a day at the digest time, quiet, with a count", async () => {
+describe("the morning brief from the sweep", () => {
+  test("hands the brief its due day once at the digest time, and no digest push", async () => {
     clock = at("2026-07-01T08:30:00Z");
     await fyi("CI repaired", { project: "acme" });
-    await fyi("Two support replies sent", { project: "acme" });
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
+    await inbox.sweepSupervisorInbox();
+    expect(briefSweeps.map((s) => s.dueDay)).toEqual([null]);
 
     clock = at("2026-07-01T09:00:00Z");
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(2);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.event).toMatchObject({
-      kind: "supervisor_digest",
-      delivery: "quiet",
-      reason: "Daily digest",
-      subject: { type: "supervisor", id: "digest-2026-07-01" },
-      url: "/session/os-sup-ada",
+    expect((await inbox.sweepSupervisorInbox()).briefs).toBe(1);
+    expect(briefSweeps.at(-1)).toMatchObject({
+      user: "Ada",
+      dueDay: "2026-07-01",
     });
-    expect(sent[0]!.event.body).toStartWith("2 updates");
-    // The push, sealed or not, holds counts and projects, never titles.
-    expect(sent[0]!.event.push).toMatchObject({
-      body: "2 things happened",
-      sealedMarkdown: "- **acme**: 2 updates",
-    });
-    expect(JSON.stringify(sent[0]!.event.push)).not.toContain("CI repaired");
-
-    // Not again the same day, even with something new.
-    clock = at("2026-07-01T15:00:00Z");
-    await fyi("Dependency bumped");
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
-
-    // The next day carries only what came after the last digest.
-    clock = at("2026-07-02T09:05:00Z");
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(1);
-    expect(sent.at(-1)!.event.body).toStartWith("1 update: Dependency bumped");
-
-    // A day with nothing new sends nothing.
-    clock = at("2026-07-03T09:05:00Z");
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
-    expect(sent).toHaveLength(2);
+    // The view it gets is the inbox as the sweep read it.
+    expect(briefSweeps.at(-1)!.titles).toEqual(["CI repaired"]);
+    // The counts-only digest push is gone.
+    expect(sent.filter((s) => s.event.kind === "supervisor_digest")).toEqual(
+      [],
+    );
   });
 
-  test("never during quiet hours", async () => {
+  test("never due in quiet hours", async () => {
     await inbox.setSupervisorPrefs("Ada", { digestAt: "03:00" });
     clock = at("2026-07-01T01:00:00Z");
     await fyi("CI repaired");
     clock = at("2026-07-01T03:00:00Z");
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
+    await inbox.sweepSupervisorInbox();
     clock = at("2026-07-01T07:59:00Z");
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
+    await inbox.sweepSupervisorInbox();
+    expect(briefSweeps.every((s) => s.dueDay === null)).toBe(true);
     clock = at("2026-07-01T08:00:00Z");
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(1);
+    await inbox.sweepSupervisorInbox();
+    expect(briefSweeps.at(-1)!.dueDay).toBe("2026-07-01");
   });
 
-  test("a failed digest is retried", async () => {
-    clock = at("2026-07-01T08:00:00Z");
-    await fyi("CI repaired");
-    clock = at("2026-07-01T09:00:00Z");
-    failNotify = true;
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(0);
-    failNotify = false;
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(1);
+  test("the brief event: fixed copy, the count of decisions only, opens Blob", () => {
+    const event = inbox.briefEvent("os-sup-ada", "2026-07-01", 2, clock);
+    expect(event).toMatchObject({
+      kind: "supervisor_digest",
+      reason: "Your morning brief is ready",
+      body: "2 decisions",
+      delivery: "alert",
+      subject: {
+        type: "supervisor",
+        id: "brief-2026-07-01",
+        context: "2 decisions",
+      },
+      url: "/session/os-sup-ada?brief=2026-07-01",
+      eventKey: "brief:2026-07-01",
+      push: { body: "Open Blob to hear it" },
+    });
+    expect(event.actor).toBeDefined();
+    expect(inbox.briefEvent("s", "2026-07-01", 1, clock).body).toBe(
+      "1 decision",
+    );
+    expect(inbox.briefEvent("s", "2026-07-01", 0, clock).body).toBe(
+      "Nothing to decide",
+    );
   });
 });
 
@@ -793,7 +867,7 @@ describe("supervisor rotation from the sweep", () => {
 
     failRotate = true;
     clock = at("2026-07-01T09:00:00Z");
-    expect((await inbox.sweepSupervisorInbox()).digested).toBe(2);
+    expect((await inbox.sweepSupervisorInbox()).briefs).toBe(2);
   });
 });
 
@@ -806,7 +880,11 @@ describe("recent digests", () => {
       for (let i = 0; i < (day === 9 ? 7 : 1); i++)
         await fyi(`Day ${day} update ${i}`, { dedupeKey: `d${day}-${i}` });
       clock = at(`${date}T07:30:00Z`); // 09:30 in Warsaw
-      await inbox.sweepSupervisorInbox();
+      // What a written brief does (supervisor-brief.ts): its fyi are told.
+      await inbox.updateSupervisorBrief("Ada", (view) => ({
+        brief: view.brief,
+        digestFyi: view.items.map((item) => item.id),
+      }));
     }
     // Not digested yet: not in the history.
     await fyi("Still pending");
@@ -1493,6 +1571,7 @@ describe("opensession-supervisor", () => {
       "blob_label",
       "blob_open_issue",
       "blob_review",
+      "close_items",
       "dismiss_item",
       "incidents",
       "list_items",
@@ -1502,6 +1581,7 @@ describe("opensession-supervisor", () => {
       "reply_in_thread",
       "support_waiting",
       "watch_for",
+      "write_brief",
     ]);
     const posted = await tools.post_item!.handler(
       {
@@ -1511,7 +1591,8 @@ describe("opensession-supervisor", () => {
       },
       {},
     );
-    expect(posted.content[0]!.text).toContain("Posted (pushed)");
+    // A plain decision waits for the morning brief.
+    expect(posted.content[0]!.text).toContain("Posted (brief)");
     const [item] = await inbox.listSupervisorItems("Ada");
     expect(item?.source).toBe("supervisor");
     const listed = await tools.list_items!.handler({}, {});
@@ -1525,5 +1606,26 @@ describe("opensession-supervisor", () => {
       (await tools.dismiss_item!.handler({ id: item!.id }, {})).content[0]!
         .text,
     ).toBe("That item is already closed.");
+
+    // close_items: one reason for several, no answer handler, unknown
+    // and closed ids reported.
+    const a = await needsYou({ dedupeKey: "r1", title: "Ship 1.19.0?" });
+    const b = await needsYou({ dedupeKey: "r2", title: "PR 533 checks" });
+    const closedOut = await tools.close_items!.handler(
+      { ids: [b.item.id, item!.id, "si-nope"], reason: `same as ${a.item.id}` },
+      {},
+    );
+    const out = closedOut.content[0]!.text;
+    expect(out).toContain(`Closed: same as ${a.item.id}`);
+    expect(out).toContain(`Not open or not found: ${item!.id}, si-nope`);
+    const closedB = (await inbox.listSupervisorItems("Ada")).find(
+      (i) => i.id === b.item.id,
+    );
+    expect(closedB).toMatchObject({
+      state: "dismissed",
+      closeReason: `same as ${a.item.id}`,
+    });
+    expect(closedB?.answer).toBeUndefined();
+    expect(done.at(-1)!.ids).toHaveLength(1);
   });
 });

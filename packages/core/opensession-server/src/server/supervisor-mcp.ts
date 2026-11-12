@@ -24,6 +24,10 @@
  * as Blob's machine user (blob-github-tools.ts, github-blob.ts); the watch
  * gets none of them.
  *
+ * `close_items` and `write_brief` are the morning brief's
+ * (supervisor-brief.ts): close what is stale or a duplicate with a reason,
+ * then store the brief Blob says, checked against the inbox.
+ *
  * The inbox and ledger tools are built here once and shared with the
  * watch's own server (supervisor-watch-mcp.ts).
  */
@@ -58,8 +62,18 @@ import {
   readSupervisorLedgerTail,
 } from "./supervisor-ledger";
 import {
+  BRIEF_LINE_LEN,
+  BRIEF_MAX_DECISIONS,
+  BRIEF_MAX_HANDLED,
+  BRIEF_SAY_LEN,
+  writeSupervisorBrief,
+} from "./supervisor-brief";
+import {
   answerSupervisorItem,
+  dismissSupervisorItems,
+  CLOSE_REASON_LEN,
   dismissSupervisorItem,
+  MAX_CLOSE_IDS,
   listSupervisorItems,
   MAX_LIST,
   postSupervisorItem,
@@ -78,7 +92,7 @@ function format(item: SupervisorItem): string {
   const meta = [
     item.kind,
     item.state,
-    item.urgency === "down" ? "down" : "",
+    item.urgency === "down" || item.urgency === "now" ? item.urgency : "",
     item.project ?? "",
     item.source,
     item.heldUntil !== undefined && item.state === "open"
@@ -92,6 +106,7 @@ function format(item: SupervisorItem): string {
     lines.push(
       `  Options: ${item.options.map((o, i) => `${i + 1}. ${o}`).join("  ")}`,
     );
+  if (item.closeReason) lines.push(`  Closed: ${item.closeReason}`);
   if (item.answer)
     lines.push(
       `  Answer: ${item.answer}${item.answeredBy === "supervisor" ? " (recorded by you)" : ""}`,
@@ -147,7 +162,7 @@ export function postItemTool(
 ) {
   return tool(
     "post_item",
-    "Raise something to the owner. kind needs-you pushes their phone (held during their quiet hours unless urgency is down); fyi waits for the daily digest. Use needs-you only for a decision only they can make: two short lines and the options, recommended option first. The same dedupe_key updates an open item instead of adding another.",
+    "Raise something to the owner. kind needs-you is a decision only they can make: two short lines and the options, recommended option first. It waits for their next morning brief without a push, unless urgency is now (pushed at once, held in quiet hours) or down. fyi is told in the morning brief. The same dedupe_key updates an open item instead of adding another.",
     {
       kind: z.enum(["needs-you", "fyi"]),
       title: z.string().min(1).max(120).describe("One short line."),
@@ -160,9 +175,11 @@ export function postItemTool(
       project: z.string().max(80).optional(),
       dedupe_key: z.string().max(200).optional(),
       urgency: z
-        .enum(["normal", "down"])
+        .enum(["normal", "now", "down"])
         .optional()
-        .describe("down: something is fully down. Ignores quiet hours."),
+        .describe(
+          "normal (default): waits for the morning brief. now: an incident that needs the owner, an approval expiring within a day, or anything that expires before the next brief or that something time-sensitive waits on; pushed at once, held in quiet hours. down: something is fully down; ignores quiet hours.",
+        ),
     },
     async (args) => {
       const downRefused =
@@ -356,6 +373,72 @@ export function createSupervisorMcpServer(ctx: {
         { id: z.string().max(80) },
         async (args) =>
           text(closed(await dismissSupervisorItem(user, args.id), "Dismissed")),
+      ),
+      tool(
+        "close_items",
+        `Close open inbox items that no longer need the owner, with one reason for all of them: stale, already done (say how you checked), or a duplicate ("same as <id of the item you keep>"). Closing answers nothing: a lead's steps never run from it. Up to ${MAX_CLOSE_IDS} ids; group items by reason.`,
+        {
+          ids: z.array(z.string().max(80)).min(1).max(MAX_CLOSE_IDS),
+          reason: z
+            .string()
+            .min(1)
+            .max(CLOSE_REASON_LEN)
+            .describe("One line, e.g. 'PR 533 merged' or 'same as si-…'."),
+        },
+        async (args) => {
+          const { closed, skipped } = await dismissSupervisorItems(
+            user,
+            args.ids,
+            args.reason,
+          );
+          const lines = closed.map(format);
+          if (skipped.length)
+            lines.push(`Not open or not found: ${skipped.join(", ")}`);
+          return text(lines.join("\n") || "Nothing closed.");
+        },
+      ),
+      tool(
+        "write_brief",
+        `Store the owner's morning brief, the last step of a brief turn (your charter, "The morning brief"), or when they ask for a fresh one. say is what Blob says aloud, for the ear, under ${BRIEF_SAY_LEN} characters (about 40 seconds). handled: one line per thing you closed or did, with its item id when there is one, at most ${BRIEF_MAX_HANDLED}. decisions: at most ${BRIEF_MAX_DECISIONS} open needs-you items only the owner can decide, most important first, each with the option you recommend (its text or number). Every other open needs-you item stays open as later. The server checks each id against the inbox; an error says what to fix.`,
+        {
+          say: z.string().min(1).max(BRIEF_SAY_LEN),
+          handled: z
+            .array(
+              z.object({
+                line: z.string().min(1).max(BRIEF_LINE_LEN),
+                item_id: z.string().max(80).optional(),
+              }),
+            )
+            .max(BRIEF_MAX_HANDLED)
+            .optional(),
+          decisions: z
+            .array(
+              z.object({
+                item_id: z.string().min(1).max(80),
+                recommended: z.string().max(120).optional(),
+              }),
+            )
+            .max(BRIEF_MAX_DECISIONS)
+            .optional(),
+        },
+        async (args) => {
+          const result = await writeSupervisorBrief(user, {
+            say: args.say,
+            handled: args.handled?.map((h) => ({
+              line: h.line,
+              ...(h.item_id ? { itemId: h.item_id } : {}),
+            })),
+            decisions: args.decisions?.map((d) => ({
+              itemId: d.item_id,
+              ...(d.recommended ? { recommended: d.recommended } : {}),
+            })),
+          });
+          if (!result.ok) return { ...text(result.error), isError: true };
+          const { brief } = result;
+          return text(
+            `Brief for ${brief.day} stored: ${brief.decisions.length} decisions, ${brief.handled.length} handled, ${brief.later.count} later. Blob shows it; end the turn with one short line.`,
+          );
+        },
       ),
       postItemTool(user, "supervisor"),
       incidentsTool(user),

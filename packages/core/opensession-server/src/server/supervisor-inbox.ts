@@ -3,9 +3,12 @@
  * the one place project leads, and later other loops, report to, and the
  * only path that pushes the owner on their behalf.
  *
- * An item is either `needs-you` (a decision only the owner can make, pushed
- * through `notifyUser`) or `fyi` (something that ran alone, collected into
- * one quiet daily digest). The owner answers or dismisses an item from Blob
+ * An item is either `needs-you` (a decision only the owner can make) or
+ * `fyi` (something that ran alone). Neither interrupts the owner by itself:
+ * once a day, at their digest time, the supervisor writes a morning brief of
+ * both (supervisor-brief.ts) and one push says it is ready. A needs-you item
+ * pushes at once only when its raiser marks it `now` (it expires before the
+ * next brief, or something time-sensitive waits on it) or `down`. The owner answers or dismisses an item from Blob
  * or the web; the answer reaches the supervisor's next turn through its
  * briefing (`supervisorInboxContext`) and the lead that raised it through
  * `onSupervisorAnswer`.
@@ -19,9 +22,10 @@
  * and digest marks never race each other.
  *
  * Quiet hours (supervisor-quiet-hours.ts) apply to every supervisor push: a
- * needs-you item raised in them is held until they end, unless its urgency
- * is `down` (something fully down), which always goes through. A sweep once a
- * minute flushes held items, retries failed pushes and sends due digests,
+ * `now` item raised in them is held until they end, unless its urgency is
+ * `down` (something fully down), which always goes through. A sweep once a
+ * minute flushes held items, retries failed pushes, starts the day's brief
+ * at the digest time and pushes a brief that is ready,
  * rotates a supervisor session that is due (supervisor.ts), and tells the
  * instance owner once when Blob's GitHub token nears its expiry
  * (github-blob.ts). Nothing runs at import: `startSupervisorInbox` starts the sweep, once.
@@ -51,8 +55,11 @@ export const SUPERVISOR_ITEMS_NAMESPACE = "supervisor-items";
 
 export type SupervisorItemKind = "needs-you" | "fyi";
 export type SupervisorItemState = "open" | "answered" | "dismissed" | "expired";
-/** `down`: something is fully down; it is pushed even in quiet hours. */
-export type SupervisorItemUrgency = "normal" | "down";
+/** `normal` waits for the owner's next morning brief (no push of its own);
+ *  `now` pushes at once, held only for quiet hours: it expires before the
+ *  next brief or something time-sensitive waits on it; `down`: something is
+ *  fully down; it is pushed even in quiet hours. */
+export type SupervisorItemUrgency = "normal" | "now" | "down";
 /** Who closed an item with an answer: the owner themselves (Blob, the web),
  *  or the supervisor recording what the owner told it in conversation. */
 export type SupervisorAnswerer = "owner" | "supervisor";
@@ -94,6 +101,8 @@ export interface SupervisorItem {
   shownAt?: number;
   /** How many times it was shown since it last changed. */
   shownCount?: number;
+  /** Why the supervisor closed it (close_items): "done", "same as <id>". */
+  closeReason?: string;
 }
 
 interface InboxDocument {
@@ -103,8 +112,13 @@ interface InboxDocument {
   /** Bark push settings, owned and cleaned by bark.ts. */
   bark?: Record<string, unknown>;
   lastDigestAt?: number;
-  /** The local day (`YYYY-MM-DD`) the last digest was for. */
+  /** The local day (`YYYY-MM-DD`) the last digest was for: since the
+   *  morning brief replaced the digest push, the day the day's automatic
+   *  brief turn started. */
   lastDigestDay?: string;
+  /** The morning brief and its turn, owned and cleaned by
+   *  supervisor-brief.ts. */
+  brief?: Record<string, unknown>;
 }
 
 export interface PostSupervisorItemInput {
@@ -135,6 +149,9 @@ const DEDUPE_LEN = 200;
 const OPTION_LEN = 120;
 const MAX_OPTIONS = 6;
 const ANSWER_LEN = 2000;
+export const CLOSE_REASON_LEN = 200;
+/** Room kept in the inbox document for the morning brief record. */
+export const BRIEF_RESERVE_BYTES = 16 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Closed items stay listable this long, then drop out. */
 const CLOSED_RETENTION_MS = 30 * DAY_MS;
@@ -179,6 +196,14 @@ export interface SupervisorInboxDeps {
   /** Tell the instance owner, once, that Blob's GitHub token expires soon
    *  (github-blob.ts). */
   checkBlobGithub(): Promise<unknown>;
+  /** The morning brief's part of the sweep (supervisor-brief.ts): start
+   *  the turn for `dueDay` when one is due, push a brief that is ready.
+   *  Resolves the turns started and the pushes sent. */
+  sweepBrief(
+    user: string,
+    view: SupervisorBriefView,
+    dueDay: string | null,
+  ): Promise<{ started: number; pushed: number }>;
 }
 
 const defaultDeps: SupervisorInboxDeps = {
@@ -203,6 +228,12 @@ const defaultDeps: SupervisorInboxDeps = {
   timeZone: (user) => timezoneForUser(user) || "UTC",
   checkBlobGithub: async () =>
     (await import("./github-blob")).checkBlobGithubExpiry(),
+  sweepBrief: async (user, view, dueDay) =>
+    (await import("./supervisor-brief")).sweepSupervisorBrief(
+      user,
+      view,
+      dueDay,
+    ),
 };
 
 let deps: SupervisorInboxDeps = defaultDeps;
@@ -270,7 +301,8 @@ function cleanItem(value: unknown): SupervisorItem | null {
   };
   const project = line(value.project, PROJECT_LEN);
   if (project) item.project = project;
-  if (value.urgency === "down") item.urgency = "down";
+  if (value.urgency === "down" || value.urgency === "now")
+    item.urgency = value.urgency;
   const options = cleanOptions(value.options);
   if (options) item.options = options;
   const dedupeKey = text(value.dedupeKey, DEDUPE_LEN);
@@ -279,6 +311,8 @@ function cleanItem(value: unknown): SupervisorItem | null {
     item.answer = value.answer.slice(0, ANSWER_LEN);
   if (value.answeredBy === "owner" || value.answeredBy === "supervisor")
     item.answeredBy = value.answeredBy;
+  const closeReason = line(value.closeReason, CLOSE_REASON_LEN);
+  if (closeReason) item.closeReason = closeReason;
   for (const key of [
     "answeredAt",
     "notifiedAt",
@@ -307,6 +341,7 @@ function cleanDocument(value: unknown, user: string): InboxDocument {
   if (lastDigestAt !== undefined) doc.lastDigestAt = lastDigestAt;
   if (typeof value.lastDigestDay === "string")
     doc.lastDigestDay = value.lastDigestDay;
+  if (isRecord(value.brief)) doc.brief = value.brief;
   return doc;
 }
 
@@ -348,8 +383,12 @@ export function pruneSupervisorItems(
     .sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt)
     .slice(0, MAX_ITEMS);
   // The rest of the document (user, prefs, digest marks) is a few hundred
-  // bytes; 4 KiB covers it.
-  let size = 4096 + kept.reduce((sum, item) => sum + byteSize(item) + 1, 0);
+  // bytes; 4 KiB covers it, and the brief (bounded by supervisor-brief.ts)
+  // has its own reserve.
+  let size =
+    4096 +
+    BRIEF_RESERVE_BYTES +
+    kept.reduce((sum, item) => sum + byteSize(item) + 1, 0);
   while (size > budget && kept.length) size -= byteSize(kept.pop()) + 1;
   return kept;
 }
@@ -563,17 +602,35 @@ async function pushItem(user: string, id: string): Promise<boolean> {
 
 // ── Posting ─────────────────────────────────────────────────────────────────
 
-export type PostDelivery = "pushed" | "held" | "updated" | "none";
+/** `brief`: no push of its own; it waits for the next morning brief. */
+export type PostDelivery = "pushed" | "held" | "brief" | "updated" | "none";
 
-/** How an open needs-you item is delivered at `now`. */
-function deliveryPlan(
-  item: SupervisorItem,
+/** How an open needs-you item is delivered at `now`: `down` pushes, `now`
+ *  pushes outside quiet hours and is held in them, and everything else
+ *  waits for the morning brief, still open in the inbox. */
+export function deliveryPlan(
+  item: Pick<SupervisorItem, "kind" | "state" | "notifiedAt" | "urgency">,
   quiet: boolean,
-): "push" | "hold" | "none" {
+): "push" | "hold" | "brief" | "none" {
   if (item.kind !== "needs-you" || item.state !== "open") return "none";
   if (item.notifiedAt !== undefined) return "none";
-  if (quiet && item.urgency !== "down") return "hold";
-  return "push";
+  if (item.urgency === "down") return "push";
+  if (item.urgency !== "now") return "brief";
+  return quiet ? "hold" : "push";
+}
+
+const URGENCY_RANK: Record<SupervisorItemUrgency, number> = {
+  normal: 0,
+  now: 1,
+  down: 2,
+};
+
+/** The more urgent of two: an update never lowers an item's urgency. */
+function higherUrgency(
+  a: SupervisorItemUrgency | undefined,
+  b: SupervisorItemUrgency | undefined,
+): SupervisorItemUrgency | undefined {
+  return URGENCY_RANK[a ?? "normal"] >= URGENCY_RANK[b ?? "normal"] ? a : b;
 }
 
 /**
@@ -606,14 +663,17 @@ export async function postSupervisorItem(
     source,
     project: line(input.project, PROJECT_LEN) || undefined,
     options: cleanOptions(input.options),
-    urgency: input.urgency === "down" ? ("down" as const) : undefined,
+    urgency:
+      input.urgency === "down" || input.urgency === "now"
+        ? input.urgency
+        : undefined,
   };
   const dedupeKey = text(input.dedupeKey, DEDUPE_LEN) || undefined;
 
   const outcome: {
     item: SupervisorItem | null;
     created: boolean;
-    plan: "push" | "hold" | "none";
+    plan: ReturnType<typeof deliveryPlan>;
     wasNotified: boolean;
   } = { item: null, created: false, plan: "none", wasNotified: false };
   let already: SupervisorItem | undefined;
@@ -635,8 +695,8 @@ export async function postSupervisorItem(
       item = {
         ...existing,
         ...fields,
-        // Escalating to down never loses the flag on a later plain update.
-        urgency: fields.urgency ?? existing.urgency,
+        // Escalating never loses the flag on a later plain update.
+        urgency: higherUrgency(fields.urgency, existing.urgency),
         updatedAt: now,
       };
       // Escalated to down: a push the owner already had said less than
@@ -665,7 +725,7 @@ export async function postSupervisorItem(
     const plan = deliveryPlan(item, quiet);
     if (plan === "hold" && item.heldUntil === undefined)
       item.heldUntil = quietHoursEnd(prefs, timeZone, now);
-    if (plan === "push") delete item.heldUntil;
+    if (plan === "push" || plan === "brief") delete item.heldUntil;
     outcome.item = item;
     outcome.created = !existing;
     outcome.plan = plan;
@@ -690,7 +750,12 @@ export async function postSupervisorItem(
   if (!item) throw new Error("supervisor item was not recorded");
   announcePosted(item, outcome.created);
 
-  let delivery: PostDelivery = outcome.plan === "hold" ? "held" : "none";
+  let delivery: PostDelivery =
+    outcome.plan === "hold"
+      ? "held"
+      : outcome.plan === "brief"
+        ? "brief"
+        : "none";
   if (outcome.plan === "push")
     delivery = (await pushItem(user, item.id)) ? "pushed" : "none";
   else if (outcome.wasNotified && !outcome.created) {
@@ -1011,6 +1076,191 @@ export async function closeSupervisorItems(
   return closed;
 }
 
+export const MAX_CLOSE_IDS = 50;
+
+/**
+ * Close open items the supervisor found stale, done or duplicated, each
+ * dismissed with `reason` (one line: "merged already", "same as si-…").
+ * Nobody's answer: no handler runs, so a lead's recorded steps are never
+ * approved by a close. Unknown and already-closed ids are reported, not
+ * failed. One compare-and-set for the lot.
+ */
+export async function dismissSupervisorItems(
+  user: string,
+  ids: readonly string[],
+  reason: string,
+): Promise<{ closed: SupervisorItem[]; skipped: string[] }> {
+  const why = line(reason, CLOSE_REASON_LEN);
+  if (!validUser(user) || !why) return { closed: [], skipped: [...ids] };
+  const wanted = new Set(ids.slice(0, MAX_CLOSE_IDS));
+  const now = deps.now();
+  let closed: SupervisorItem[] = [];
+  await updateDocument(user, (doc) => {
+    closed = [];
+    const items = doc.items.map((item) => {
+      if (!wanted.has(item.id) || item.state !== "open") return item;
+      const next: SupervisorItem = {
+        ...item,
+        state: "dismissed",
+        closeReason: why,
+        updatedAt: now,
+      };
+      delete next.heldUntil;
+      closed.push(next);
+      return next;
+    });
+    return closed.length
+      ? { ...doc, items: pruneSupervisorItems(items, now) }
+      : doc;
+  });
+  if (closed.length)
+    await deps
+      .markDone(
+        user,
+        closed.map((item) => itemThreadId(item.id)),
+      )
+      .catch(() => {});
+  const done = new Set(closed.map((item) => item.id));
+  return { closed, skipped: ids.filter((id) => !done.has(id)) };
+}
+
+// ── The brief's storage ─────────────────────────────────────────────────────
+
+/** What the brief reads from the person's inbox in one read: the raw brief
+ *  record, the items (pruned), and the prefs and zone in effect. */
+export interface SupervisorBriefView {
+  brief: Record<string, unknown> | undefined;
+  items: SupervisorItem[];
+  prefs: SupervisorPrefs;
+  timeZone: string;
+  lastDigestDay: string | undefined;
+}
+
+function briefView(doc: InboxDocument, user: string): SupervisorBriefView {
+  const { prefs, timeZone } = prefsAndZone(doc, user);
+  return {
+    brief: doc.brief,
+    items: pruneSupervisorItems(doc.items, deps.now()),
+    prefs,
+    timeZone,
+    lastDigestDay: doc.lastDigestDay,
+  };
+}
+
+export async function readSupervisorBriefView(
+  user: string,
+): Promise<SupervisorBriefView> {
+  if (!validUser(user)) throw new Error("missing user");
+  return briefView(await readDocument(user), user.trim());
+}
+
+/** What one compare-and-set of the brief may change. */
+export interface SupervisorBriefChange {
+  /** The new raw brief record; undefined removes it. */
+  brief: Record<string, unknown> | undefined;
+  /** Set the day of the automatic brief (`lastDigestDay`). */
+  lastDigestDay?: string;
+  /** Mark these open fyi items as told (digestedAt now). */
+  digestFyi?: readonly string[];
+}
+
+/**
+ * Compare-and-set the person's brief record against the inbox as it is,
+ * so a brief's decisions are checked against the same items it is written
+ * with. `mutate` may run more than once; returning null changes nothing.
+ * Resolves the view after the write.
+ */
+export async function updateSupervisorBrief(
+  user: string,
+  mutate: (view: SupervisorBriefView) => SupervisorBriefChange | null,
+): Promise<SupervisorBriefView> {
+  if (!validUser(user)) throw new Error("missing user");
+  const owner = user.trim();
+  const now = deps.now();
+  const doc = await updateDocument(owner, (current) => {
+    const change = mutate(briefView(current, owner));
+    if (!change) return current;
+    const next: InboxDocument = { ...current };
+    if (change.brief) next.brief = change.brief;
+    else delete next.brief;
+    if (change.lastDigestDay) {
+      next.lastDigestDay = change.lastDigestDay;
+      next.lastDigestAt = now;
+    }
+    if (change.digestFyi?.length) {
+      const told = new Set(change.digestFyi);
+      next.items = current.items.map((item) =>
+        told.has(item.id) &&
+        item.kind === "fyi" &&
+        item.state === "open" &&
+        item.digestedAt === undefined
+          ? { ...item, digestedAt: now }
+          : item,
+      );
+    }
+    return next;
+  });
+  return briefView(doc, owner);
+}
+
+/** The brief push: fixed copy, Blob's icon, opening Blob. Only the count
+ *  of decisions rides along (the Bark subtitle), never a title. */
+export function briefEvent(
+  sessionId: string,
+  day: string,
+  decisions: number,
+  now: number,
+  ready = true,
+): NotificationEvent {
+  const count =
+    decisions === 0
+      ? "Nothing to decide"
+      : `${decisions} ${decisions === 1 ? "decision" : "decisions"}`;
+  return {
+    kind: "supervisor_digest",
+    // One row per day, so each brief arrives unread.
+    subject: {
+      type: "supervisor",
+      id: `brief-${day}`,
+      title: "Morning brief",
+      context: count,
+    },
+    reason: ready ? BRIEF_PUSH_TITLE : BRIEF_FALLBACK_TITLE,
+    actor: BLOB_ACTOR,
+    body: count,
+    url: `/session/${encodeURIComponent(sessionId)}?brief=${encodeURIComponent(day)}`,
+    eventKey: `brief:${day}`,
+    at: now,
+    delivery: "alert",
+    push: {
+      body: ready ? BRIEF_PUSH_BODY : BRIEF_FALLBACK_BODY,
+      expiresAt: now + DAY_MS,
+    },
+  };
+}
+
+export const BRIEF_PUSH_TITLE = "Your morning brief is ready";
+export const BRIEF_PUSH_BODY = "Open Blob to hear it";
+/** When no brief could be written (no supervisor yet, or its turn failed)
+ *  and decisions wait: the same push without a brief behind it. */
+export const BRIEF_FALLBACK_TITLE = "Decisions are waiting";
+export const BRIEF_FALLBACK_BODY = "Open Blob to see them";
+
+/** Push the person's brief for `day` (`ready` false: the fallback);
+ *  rejects when it was not recorded. */
+export async function pushSupervisorBrief(
+  user: string,
+  day: string,
+  decisions: number,
+  ready = true,
+): Promise<void> {
+  const sessionId = await deps.supervisorSessionId(user);
+  await deps.notify(
+    user,
+    briefEvent(sessionId, day, decisions, deps.now(), ready),
+  );
+}
+
 // ── Prefs ───────────────────────────────────────────────────────────────────
 
 export interface SupervisorPrefsView extends SupervisorPrefs {
@@ -1091,17 +1341,18 @@ export async function updateSupervisorBark(
   });
 }
 
-// ── Sweep: held pushes, retries, digest ─────────────────────────────────────
+// ── Sweep: held pushes, retries, the morning brief ──────────────────────────
 
-/** Push what is due for one person, then send their digest when due.
- *  `doc` is the document as the sweep listed it; every write is still a
- *  compare-and-set on the current one. */
+/** Push what is due for one person, then hand the morning brief its turn:
+ *  start it at the digest time, push it once it is written
+ *  (supervisor-brief.ts). `doc` is the document as the sweep listed it;
+ *  every write is still a compare-and-set on the current one. */
 async function sweepUser(
   user: string,
   doc: InboxDocument,
 ): Promise<{
   pushed: number;
-  digested: number;
+  briefs: number;
 }> {
   const now = deps.now();
   const { prefs, timeZone } = prefsAndZone(doc, user);
@@ -1113,72 +1364,9 @@ async function sweepUser(
     if (deliveryPlan(item, quiet) !== "push") continue;
     if (await pushItem(user, item.id)) pushed++;
   }
-
-  const day = digestDayDue(prefs, timeZone, now, doc.lastDigestDay);
-  if (!day) return { pushed, digested: 0 };
-  const fyi = doc.items.filter(
-    (item) =>
-      item.kind === "fyi" &&
-      item.state === "open" &&
-      item.digestedAt === undefined,
-  );
-  if (fyi.length) {
-    try {
-      const sessionId = await deps.supervisorSessionId(user);
-      await deps.notify(user, digestEvent(fyi, sessionId, day, now));
-    } catch (error) {
-      // Not marked: the next sweep tries again.
-      console.warn(
-        "[supervisor-inbox] digest failed:",
-        error instanceof Error ? error.message : error,
-      );
-      return { pushed, digested: 0 };
-    }
-  }
-  const included = new Set(fyi.map((item) => item.id));
-  await updateDocument(user, (current) => ({
-    ...current,
-    lastDigestAt: now,
-    lastDigestDay: day,
-    items: current.items.map((item) =>
-      included.has(item.id) && item.digestedAt === undefined
-        ? { ...item, digestedAt: now }
-        : item,
-    ),
-  }));
-  return { pushed, digested: fyi.length };
-}
-
-function digestEvent(
-  fyi: SupervisorItem[],
-  sessionId: string,
-  day: string,
-  now: number,
-): NotificationEvent {
-  const count = fyi.length;
-  return {
-    kind: "supervisor_digest",
-    // One row per day, so each digest arrives unread.
-    subject: { type: "supervisor", id: `digest-${day}`, title: "Daily digest" },
-    reason: "Daily digest",
-    actor: BLOB_ACTOR,
-    body: `${count} ${count === 1 ? "update" : "updates"}: ${fyi
-      .slice(0, 3)
-      .map((item) => item.title)
-      .join(", ")}${count > 3 ? ", and more" : ""}`,
-    url: `/session/${encodeURIComponent(sessionId)}`,
-    eventKey: `digest:${day}`,
-    at: now,
-    delivery: "quiet",
-    // Should a digest ever push, it never carries an item's title, sealed or
-    // not (as supervisorPushCopy): the lock screen gets the count, and only a
-    // push sealed end to end (encrypted Bark) adds the count per project.
-    push: {
-      body: `${count} ${count === 1 ? "thing" : "things"} happened`,
-      expiresAt: now + DAY_MS,
-      sealedMarkdown: digestMarkdown(fyi),
-    },
-  };
+  const dueDay = digestDayDue(prefs, timeZone, now, doc.lastDigestDay);
+  const brief = await deps.sweepBrief(user, briefView(doc, user), dueDay);
+  return { pushed: pushed + brief.pushed, briefs: brief.started };
 }
 
 const DIGEST_MARKDOWN_PROJECTS = 5;
@@ -1217,19 +1405,19 @@ export function digestMarkdown(
   return lines.join("\n");
 }
 
-let sweeping: Promise<{ pushed: number; digested: number }> | null = null;
+let sweeping: Promise<{ pushed: number; briefs: number }> | null = null;
 
 /**
  * One pass over every person's inbox document (one per person, bounded):
  * flush held needs-you items whose quiet hours are over, retry failed pushes,
- * and send due digests. Serial, one sweep at a time.
+ * and start or push the day's morning brief. Serial, one sweep at a time.
  */
 export function sweepSupervisorInbox(): Promise<{
   pushed: number;
-  digested: number;
+  briefs: number;
 }> {
   sweeping ??= (async () => {
-    const totals = { pushed: 0, digested: 0 };
+    const totals = { pushed: 0, briefs: 0 };
     // Blob's GitHub token nearing its expiry raises one needs-you item;
     // no timer of its own.
     try {
@@ -1256,7 +1444,7 @@ export function sweepSupervisorInbox(): Promise<{
       try {
         const done = await sweepUser(user, cleanDocument(row.value, user));
         totals.pushed += done.pushed;
-        totals.digested += done.digested;
+        totals.briefs += done.briefs;
       } catch (error) {
         console.warn(
           "[supervisor-inbox] sweep failed for one inbox:",

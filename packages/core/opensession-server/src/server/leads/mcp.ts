@@ -295,7 +295,7 @@ export function createLeadMcpServer(
     ),
     tool(
       "post_digest_note",
-      `Write today's note on ${project} for the owner's daily digest: what you saw, what you proposed, what is waiting. A later note today replaces this one, so include everything. Nobody is pushed for it.`,
+      `Write today's note on ${project} for the owner's morning brief: what you saw, what you proposed, what is waiting. A later note today replaces this one, so include everything. Nobody is pushed for it.`,
       {
         text: z
           .string()

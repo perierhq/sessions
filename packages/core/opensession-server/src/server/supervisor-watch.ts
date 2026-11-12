@@ -468,7 +468,7 @@ What you watch:
 - Workers and ${persona} sessions reporting back, and follow-ups Blob handed you with watch_for.
 
 How you report:
-- Only through opensession-watch post_item. needs-you pushes ${user}'s phone (held in their quiet hours unless urgency is down): use it only for a decision only they can make, two short lines and the options, recommended first. Everything else is fyi, which waits for the daily digest. Use a dedupe_key per subject so an update replaces the item instead of adding another.
+- Only through opensession-watch post_item. needs-you is for a decision only they can make, two short lines and the options, recommended first; it waits for ${user}'s morning brief unless you mark it urgency now (an incident that needs them, an approval that expires within a day, or anything else that expires before the next brief or that something time-sensitive waits on: pushed at once, held in their quiet hours) or down. Everything else is fyi, which the morning brief tells. Use a dedupe_key per subject so an update replaces the item instead of adding another.
 - When a follow-up is settled, resolve_watch_task it and post what came of it (fyi, or needs-you when ${user} must decide).
 - Silence is the default. When nothing needs ${user}, post nothing.
 - Never raise something ${user} declined before (the ledger says so) unless it changed.
@@ -1092,7 +1092,7 @@ export function watchWakePrompt(input: {
     .slice(0, 15)
     .map(
       (i) =>
-        `- [${i.id}] ${i.kind}${i.urgency === "down" ? ", down" : ""} from ${i.source}: ${i.title}`,
+        `- [${i.id}] ${i.kind}${i.urgency === "down" || i.urgency === "now" ? `, ${i.urgency}` : ""} from ${i.source}: ${i.title}`,
     );
   const own = input.items.filter((i) => i.source === WATCH_SOURCE);
   const incidents = input.incidents.map(

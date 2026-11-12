@@ -253,6 +253,30 @@ describe("message mapping", () => {
     });
   });
 
+  test("the morning brief opens Blob, with the count of decisions as its only subtitle", async () => {
+    const { briefEvent } = await import("./supervisor-inbox");
+    const brief = briefEvent("os-sup-ada", "2026-07-01", 2, Date.now());
+    const message = bark.barkMessageFor(
+      thread({
+        kind: "supervisor_digest",
+        subject: brief.subject,
+        reason: brief.reason,
+        url: brief.url,
+      }),
+      brief,
+      "alert",
+      { title: brief.reason, body: brief.push!.body! },
+      opts,
+    );
+    expect(message).toMatchObject({
+      title: "Your morning brief is ready",
+      subtitle: "2 decisions",
+      body: "Open Blob to hear it",
+      url: "blob://",
+      icon: BLOB_ICON,
+    });
+  });
+
   test("openIn web sends the absolute web URL instead", () => {
     const message = bark.barkMessageFor(
       thread({ kind: "supervisor_needs_you" }),
@@ -991,6 +1015,7 @@ describe("what each push carries", () => {
       source: "supervisor",
       kind: "needs-you",
       title: "Pick one",
+      urgency: "now",
     });
     const needsYou = events.find((e) => e.kind === "supervisor_needs_you");
     expect(needsYou?.push?.expiresAt).toBe(

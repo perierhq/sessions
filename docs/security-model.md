@@ -592,7 +592,11 @@ steps. Paths below are under `packages/core/opensession-server/src/`.
   the signed-in person (`verifiedPerson`), never a claimed name or an
   automation, and must be the lead owner's on the team roster. An answer to
   a card that changed since it was read gets a 409 `changed` and closes
-  nothing (`server/routes/supervisor.ts`). An approval expires after 7 days
+  nothing (`server/routes/supervisor.ts`). The supervisor's morning brief
+  (`server/supervisor-brief.ts`) never answers for the owner: `close_items`
+  dismisses without running answer handlers, so it approves nothing, and a
+  brief's decision only points at one open item, which the owner still
+  answers with its revision. An approval expires after 7 days
   by default and at most 30, and a condition it waits on is re-checked when
   it runs; a condition that can't be read is unknown, never met
   (`server/leads/conditions.ts`).

@@ -112,6 +112,7 @@ describe("opensession-supervisor wiring", () => {
       "blob_label",
       "blob_open_issue",
       "blob_review",
+      "close_items",
       "dismiss_item",
       "incidents",
       "list_items",
@@ -121,6 +122,7 @@ describe("opensession-supervisor wiring", () => {
       "reply_in_thread",
       "support_waiting",
       "watch_for",
+      "write_brief",
     ]);
   });
 
