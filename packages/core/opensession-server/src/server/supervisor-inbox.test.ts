@@ -982,6 +982,103 @@ describe("closing for the brief (close_items)", () => {
       `Not closed: [${now.item.id}] ${inbox.CLOSE_REFUSED_URGENT}`,
     );
   });
+
+  test("dismiss_item keeps the same guard; the owner's dismiss doesn't", async () => {
+    const plain = await needsYou({ dedupeKey: "plain", urgency: "normal" });
+    const now = await needsYou({ dedupeKey: "now", urgency: "now" });
+    const down = await needsYou({ dedupeKey: "down", urgency: "down" });
+    const act = await needsYou({ dedupeKey: "act", urgency: "normal" });
+    const blind = await needsYou({ dedupeKey: "blind", urgency: "normal" });
+    standing.add(act.item.id);
+    unreadable.add(blind.item.id);
+    const dismiss = (id: string) =>
+      inbox.dismissSupervisorItemAsSupervisor("Ada", id);
+    expect(await dismiss(now.item.id)).toEqual({
+      ok: false,
+      error: "refused",
+      reason: inbox.CLOSE_REFUSED_URGENT,
+    });
+    expect(await dismiss(down.item.id)).toEqual({
+      ok: false,
+      error: "refused",
+      reason: inbox.CLOSE_REFUSED_URGENT,
+    });
+    expect(await dismiss(act.item.id)).toEqual({
+      ok: false,
+      error: "refused",
+      reason: inbox.CLOSE_REFUSED_ACT,
+    });
+    expect(await dismiss(blind.item.id)).toEqual({
+      ok: false,
+      error: "refused",
+      reason: inbox.CLOSE_REFUSED_UNCHECKED,
+    });
+    expect(await dismiss("si-nope")).toEqual({
+      ok: false,
+      error: "not-found",
+    });
+    const done = await dismiss(plain.item.id);
+    expect(done.ok && done.item.state).toBe("dismissed");
+    expect(await dismiss(plain.item.id)).toEqual({
+      ok: false,
+      error: "closed",
+    });
+    const open = await inbox.listSupervisorItems("Ada", { state: "open" });
+    expect(open.map((i) => i.id).sort()).toEqual(
+      [now.item.id, down.item.id, act.item.id, blind.item.id].sort(),
+    );
+
+    // The tool says why, in the same fixed copy.
+    const { createSupervisorMcpServer } = await import("./supervisor-mcp");
+    const tools = (
+      createSupervisorMcpServer({ user: "Ada" }).instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: Record<string, unknown>,
+              extra: unknown,
+            ) => Promise<{ content: Array<{ text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools;
+    expect(
+      (await tools.dismiss_item!.handler({ id: act.item.id }, {})).content[0]!
+        .text,
+    ).toBe(`Not dismissed: ${inbox.CLOSE_REFUSED_ACT}`);
+
+    // The owner dismisses what they like.
+    const owner = await inbox.dismissSupervisorItem("Ada", now.item.id);
+    expect(owner.ok && owner.item.state).toBe("dismissed");
+  });
+
+  test("dismiss_item leaves an item changed after its steps were checked", async () => {
+    const item = await needsYou({ dedupeKey: "race", urgency: "normal" });
+    let rewritten = false;
+    restore();
+    restore = inbox.__setSupervisorInboxDepsForTest({
+      now: () => clock,
+      markDone: async () => {},
+      standingAct: async () => {
+        if (!rewritten) {
+          rewritten = true;
+          clock += 1000;
+          await needsYou({
+            dedupeKey: "race",
+            urgency: "normal",
+            body: "New steps.",
+          });
+        }
+        return false;
+      },
+    });
+    expect(
+      await inbox.dismissSupervisorItemAsSupervisor("Ada", item.item.id),
+    ).toEqual({ ok: false, error: "refused", reason: inbox.CLOSE_REFUSED_ACT });
+    const [open] = await inbox.listSupervisorItems("Ada", { state: "open" });
+    expect(open?.id).toBe(item.item.id);
+  });
 });
 
 describe("supervisor rotation from the sweep", () => {

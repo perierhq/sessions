@@ -1023,6 +1023,8 @@ export async function answerSupervisorItem(
   return result;
 }
 
+/** The owner's dismiss (the web, Blob): never guarded. The supervisor's
+ *  goes through dismissSupervisorItemAsSupervisor. */
 export async function dismissSupervisorItem(
   user: string,
   id: string,
@@ -1097,7 +1099,8 @@ export async function closeSupervisorItems(
 
 export const MAX_CLOSE_IDS = 50;
 
-/** Why close_items left an open item open, in fixed copy. */
+/** Why the supervisor's close (close_items, dismiss_item) left an open
+ *  item open, in fixed copy. */
 export const CLOSE_REFUSED_ACT =
   "It has a lead's steps waiting for the owner. Leave it as later.";
 export const CLOSE_REFUSED_UNCHECKED =
@@ -1111,17 +1114,88 @@ export interface CloseRefusal {
 }
 
 /**
+ * The guard every supervisor close shares (close_items, dismiss_item): it
+ * never closes an item the owner must see. Checks the steps of the open,
+ * not urgent `items` before the write, then returns the predicate the
+ * write asks of each item as it is then: the fixed reason it must stay
+ * open, or undefined. Refused: urgency now or down; a lead's decision with
+ * steps still standing (`standingAct`); one whose steps couldn't be read;
+ * and one that changed since its steps were checked. The owner's own
+ * dismiss (the web, Blob) is never guarded.
+ */
+async function supervisorCloseGuard(
+  items: readonly SupervisorItem[],
+): Promise<(item: SupervisorItem) => string | undefined> {
+  const urgent = (item: SupervisorItem) =>
+    item.urgency === "now" || item.urgency === "down";
+  // The items checked clear of standing steps, at the revision they were
+  // checked at; any other revision is refused.
+  const cleared = new Map<string, number>();
+  const unchecked = new Set<string>();
+  await Promise.all(
+    items
+      .filter((item) => item.state === "open" && !urgent(item))
+      .map(async (item) => {
+        try {
+          if (!(await deps.standingAct(item)))
+            cleared.set(item.id, item.updatedAt);
+        } catch (error) {
+          unchecked.add(item.id);
+          console.warn(
+            `[supervisor] could not check the steps of ${item.id}:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }),
+  );
+  return (item) => {
+    if (urgent(item)) return CLOSE_REFUSED_URGENT;
+    if (cleared.get(item.id) === item.updatedAt) return undefined;
+    return unchecked.has(item.id) ? CLOSE_REFUSED_UNCHECKED : CLOSE_REFUSED_ACT;
+  };
+}
+
+export type SupervisorDismissResult =
+  | CloseResult
+  | { ok: false; error: "refused"; reason: string };
+
+/** dismiss_item: the supervisor dismisses one item, under the same guard
+ *  as close_items (`supervisorCloseGuard`); a refused item stays open and
+ *  comes back with its fixed reason. */
+export async function dismissSupervisorItemAsSupervisor(
+  user: string,
+  id: string,
+): Promise<SupervisorDismissResult> {
+  if (!validUser(user)) return { ok: false, error: "not-found" };
+  const refusal = await supervisorCloseGuard(
+    (await readDocument(user)).items.filter((item) => item.id === id),
+  );
+  let refused: string | undefined;
+  const result = await closeItem(user, id, (item, now) => {
+    refused = refusal(item);
+    // closeItem writes nothing for "changed"; the refusal is told below.
+    if (refused) return "changed";
+    const next: SupervisorItem = {
+      ...item,
+      state: "dismissed",
+      updatedAt: now,
+    };
+    delete next.heldUntil;
+    return next;
+  });
+  return refused ? { ok: false, error: "refused", reason: refused } : result;
+}
+
+/**
  * Close open items the supervisor found stale, done or duplicated, each
  * dismissed with `reason` (one line: "merged already", "same as si-…").
  * Nobody's answer: no handler runs, so a lead's recorded steps are never
  * approved by a close. Unknown and already-closed ids are reported, not
  * failed. One compare-and-set for the lot.
  *
- * Never closes an item the owner must see: urgency now or down, or a
- * lead's decision with steps still standing (`standingAct`); an item
- * whose steps couldn't be checked, or that changed since they were, counts
- * as one. Each is left open and returned in `refused` with fixed copy, so
- * the brief can only leave it as later.
+ * Never closes an item the owner must see (`supervisorCloseGuard`): each
+ * is left open and returned in `refused` with fixed copy, so the brief can
+ * only leave it as later.
  */
 export async function dismissSupervisorItems(
   user: string,
@@ -1136,30 +1210,8 @@ export async function dismissSupervisorItems(
   if (!validUser(user) || !why)
     return { closed: [], skipped: [...ids], refused: [] };
   const wanted = new Set(ids.slice(0, MAX_CLOSE_IDS));
-  // The lead items checked clear of standing steps, at the revision they
-  // were checked at; any other revision is refused in the write below.
-  const cleared = new Map<string, number>();
-  const unchecked = new Set<string>();
-  const candidates = (await readDocument(user)).items.filter(
-    (item) =>
-      wanted.has(item.id) &&
-      item.state === "open" &&
-      item.urgency !== "now" &&
-      item.urgency !== "down",
-  );
-  await Promise.all(
-    candidates.map(async (item) => {
-      try {
-        if (!(await deps.standingAct(item)))
-          cleared.set(item.id, item.updatedAt);
-      } catch (error) {
-        unchecked.add(item.id);
-        console.warn(
-          `[supervisor] could not check the steps of ${item.id}:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-    }),
+  const refusal = await supervisorCloseGuard(
+    (await readDocument(user)).items.filter((item) => wanted.has(item.id)),
   );
   const now = deps.now();
   let closed: SupervisorItem[] = [];
@@ -1169,17 +1221,9 @@ export async function dismissSupervisorItems(
     refused = [];
     const items = doc.items.map((item) => {
       if (!wanted.has(item.id) || item.state !== "open") return item;
-      if (item.urgency === "now" || item.urgency === "down") {
-        refused.push({ id: item.id, reason: CLOSE_REFUSED_URGENT });
-        return item;
-      }
-      if (cleared.get(item.id) !== item.updatedAt) {
-        refused.push({
-          id: item.id,
-          reason: unchecked.has(item.id)
-            ? CLOSE_REFUSED_UNCHECKED
-            : CLOSE_REFUSED_ACT,
-        });
+      const stays = refusal(item);
+      if (stays) {
+        refused.push({ id: item.id, reason: stays });
         return item;
       }
       const next: SupervisorItem = {

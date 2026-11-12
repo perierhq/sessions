@@ -1623,7 +1623,7 @@ Record the owner's answer to an inbox item, when they gave it to you in this con
 
 `mcp__opensession-supervisor__dismiss_item` · input: `id` (string, required)
 
-Dismiss an inbox item that no longer needs the owner.
+Dismiss an inbox item that no longer needs the owner. Items marked now or down, and a lead's items with steps still waiting, are never dismissed: they stay open, so leave them as later.
 
 ### `close_items`
 
