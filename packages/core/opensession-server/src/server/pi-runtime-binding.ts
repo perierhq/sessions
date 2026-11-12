@@ -20,6 +20,11 @@ import type { XaiAccount, bindXaiAccount } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 import { isCompiledBinary } from "../runner-host/exe";
 import { checkPhotonWasm } from "./photon-wasm";
+import {
+  MAINSPRING_PROVIDER,
+  buildMainspringProviderConfig,
+  type MainspringTarget,
+} from "./pi-mainspring";
 
 export type PiSdk = typeof import("@earendil-works/pi-coding-agent");
 type PiModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
@@ -89,6 +94,9 @@ export interface PiRuntimeBinding extends PiRuntimeAccountEvidence {
   /** An Anthropic turn on pi's own provider with a Claude pool token: its
    *  requests need the subscription prompt compatibility rewrite. */
   usesNativeAnthropic: boolean;
+  /** A turn sent to Mainspring (pi-mainspring.ts): its requests carry the
+   *  session id for Mainspring's account affinity. Never the key. */
+  mainspring?: { sessionId: string };
 }
 
 type ConfiguredProvider = ModelProviderConfig;
@@ -259,6 +267,10 @@ export interface CreatePiRuntimeBindingInput {
   /** Accounts already burned by this turn's walk (Codex, SuperGrok and
    *  Claude pools). */
   excludedOpenaiAccountIds: ReadonlySet<string>;
+  /** Send this turn to Mainspring instead of the provider's own accounts
+   *  (`pi/mainspring/*`, or `pi/anthropic/*` while Claude is routed there).
+   *  No local account is picked. */
+  mainspring?: MainspringTarget;
   /** Publishes evidence immediately so a later throw can still rotate safely. */
   onAccountEvidence?: (evidence: PiRuntimeAccountEvidence) => void;
   /** Preserves the runner's audit-before-SDK-load ordering. */
@@ -354,7 +366,8 @@ export async function createPiRuntimeBinding(
   let xaiBinding:
     | Extract<Awaited<ReturnType<typeof bindXaiAccount>>, { access: string }>
     | undefined;
-  const nativeAnthropic = input.providerID === "anthropic";
+  const nativeAnthropic =
+    input.providerID === "anthropic" && input.mainspring === undefined;
   let nativeAnthropicToken: string | undefined;
 
   if (nativeAnthropic) {
@@ -487,6 +500,10 @@ export async function createPiRuntimeBinding(
     input.onAccountEvidence?.({ ...evidence });
   }
 
+  if (input.providerID === MAINSPRING_PROVIDER && !input.mainspring)
+    throw new Error(
+      "Mainspring is not set up. Add its address and a key under Settings, Providers, Mainspring.",
+    );
   await input.beforeRuntimeLoad?.({ ...evidence });
   const sdk = await (deps.loadSdk ?? loadPiSdk)();
   const credentials = new MemoryCredentialStore();
@@ -511,7 +528,30 @@ export async function createPiRuntimeBinding(
   });
   let model: ReturnType<typeof runtime.getModel>;
 
-  if (xaiBinding) {
+  if (input.mainspring) {
+    // Mainspring picks the account. Claude models keep pi's own Anthropic
+    // metadata (pricing, limits, thinking); the provider is registered under
+    // its own id, so nothing here reads as a native subscription turn.
+    const config = buildMainspringProviderConfig({
+      modelID: input.modelID,
+      target: input.mainspring,
+      anthropicRows: buildPiAnthropicModels(
+        runtime.getModels("anthropic"),
+        input.modelID,
+      ),
+    });
+    runtime.registerProvider(
+      MAINSPRING_PROVIDER,
+      config as unknown as PiProviderConfigInput,
+    );
+    await runtime.setRuntimeApiKey(MAINSPRING_PROVIDER, input.mainspring.key);
+    model = runtime.getModel(MAINSPRING_PROVIDER, input.modelID);
+    if (!model) {
+      throw new Error(
+        `Model "${input.modelID}" could not be registered with pi for Mainspring`,
+      );
+    }
+  } else if (xaiBinding) {
     runtime.registerProvider(XAI_OAUTH_PROVIDER, xaiBinding.provider);
     await runtime.setRuntimeApiKey(XAI_OAUTH_PROVIDER, xaiBinding.access);
     model = runtime.getModel(XAI_OAUTH_PROVIDER, input.modelID);
@@ -613,5 +653,8 @@ export async function createPiRuntimeBinding(
     openaiPlan: chatgptPlanFromJwt(seededOpenaiCredential?.access),
     usesXaiProxy: xaiBinding !== undefined,
     usesNativeAnthropic: nativeAnthropic,
+    ...(input.mainspring
+      ? { mainspring: { sessionId: input.mainspring.sessionId } }
+      : {}),
   };
 }

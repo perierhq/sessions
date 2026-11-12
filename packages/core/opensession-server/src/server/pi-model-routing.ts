@@ -8,6 +8,11 @@ import {
   type ModelProviderConfig,
   type PiProviderCatalog,
 } from "./model-providers";
+import {
+  MAINSPRING_PROVIDER,
+  mainspringConfigured,
+  readMainspringRecordSync,
+} from "./mainspring";
 import { getDefaultModel, toPiModel } from "./models";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 
@@ -57,6 +62,10 @@ export function piModelUnservableReason(model: string): string | null {
   const parsed = resolvePiRoutedModel(model);
   if (!parsed) return piModelResolutionError(model);
   if (ACCOUNT_POOL_PROVIDERS.has(parsed.providerID)) return null;
+  if (parsed.providerID === MAINSPRING_PROVIDER)
+    return mainspringConfigured(readMainspringRecordSync())
+      ? null
+      : `Mainspring is not set up (got "${model}"). Add its address and a key under Settings, Providers, Mainspring.`;
   if (modelProviders()[parsed.providerID]?.apiKey) return null;
   return (
     `The Pi engine has no credentials for provider "${parsed.providerID}" ` +

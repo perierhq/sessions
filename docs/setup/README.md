@@ -192,6 +192,7 @@ that touches them.
 | [integrations-misc.md](integrations-misc.md)                 | Stripe, WorkOS, Grafana/Sentry/Tinybird, web push, voice                                           |
 | [apple-mobile.md](apple-mobile.md)                           | SwiftPM/xtool development builds and user-restricted Xcode release tools                           |
 | [engines.md](engines.md)                                     | the Pi engine, account pools, provider keys, run isolation                                         |
+| [mainspring.md](mainspring.md)                               | Claude through a Mainspring gateway: address, key, routing switch, errors                          |
 | [../self-hosting-sandboxes.md](../self-hosting-sandboxes.md) | per-session Sandboxes on Daytona or Boat: sleep/wake, project snapshots, Portals                   |
 | [../runners.md](../runners.md)                               | attaching a Mac/Linux/Windows box as a Runner                                                      |
 | [../worktrees.md](../worktrees.md)                           | how sessions map to git worktrees, and where the disk goes                                         |

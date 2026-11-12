@@ -118,6 +118,17 @@ server, but some features depend on the phone and the Bark server:
   spoken. Files are kept in `bark-sounds` in Blob's state directory and
   expire 30 days after their last push.
 
+### Mainspring
+
+Claude turns can run on a Mainspring gateway instead of the Claude accounts
+connected here ([setup/mainspring.md](setup/mainspring.md)). The instance
+owner sets it in Settings, Providers, Mainspring; nothing goes in
+`config.json`. The address, the routing switches and the cached model list
+are stored under `mainspring` in `~/.opensession/model-providers.json`, and
+the `sk-ms-` key is a workspace secret that only its last four characters
+ever leave. "Route Claude through Mainspring" and "Fall back to direct
+accounts" are both off until the owner turns them on.
+
 ## Compatibility literals
 
 Several old names are protocol or persisted-data compatibility, not instance

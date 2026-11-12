@@ -190,6 +190,9 @@ from `project.yml`, so it needs nothing of its own.
     - `pi-account-walk.ts`: the outer account walk and per-attempt account
       state (`PiAttemptAccounts`)
     - `pi-usage-limit.ts`: usage-limit classification and error text
+    - `pi-mainspring.ts`: Claude and `pi/mainspring/*` turns through a
+      Mainspring gateway (route, provider registration, session affinity,
+      error mapping); settings and the reusable client in `mainspring.ts`
     - `pi-turn-ledger.ts`: per-attempt usage, audit closer and terminal flags
     - `pi-run-registry.ts`: live runs by key, cancel and steer entry points
     - `pi-run-authority.ts`: policy, GitHub identity and approvals for a run

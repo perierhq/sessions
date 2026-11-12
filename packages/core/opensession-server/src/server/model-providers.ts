@@ -305,6 +305,10 @@ export const PROVIDER_ID_RE = /^[a-z0-9-]+$/;
  *  here. */
 export const BRIDGE_PROVIDER_IDS = new Set(["anthropic", "openai"]);
 
+/** Provider ids with settings of their own (Settings → Providers →
+ *  Mainspring, mainspring.ts), never a generic `providers` entry. */
+export const RESERVED_PROVIDER_IDS = new Set(["mainspring"]);
+
 export interface ModelProviderSettings {
   /** Gates the Claude account designation below. */
   enabled: boolean;
@@ -504,6 +508,7 @@ function providerMap(
   for (const [id, raw] of Object.entries(v as Record<string, unknown>)) {
     if (
       !PROVIDER_ID_RE.test(id) ||
+      RESERVED_PROVIDER_IDS.has(id) ||
       !raw ||
       typeof raw !== "object" ||
       Array.isArray(raw)
@@ -733,6 +738,9 @@ export function setModelProvider(
     throw new Error(
       `"${id}" runs on a subscription account pool, not a raw API key`,
     );
+  }
+  if (RESERVED_PROVIDER_IDS.has(id)) {
+    throw new Error(`"${id}" has its own settings under Providers`);
   }
   const raw = readRawModelProviderConfig();
   const providers = rawProviders(raw);

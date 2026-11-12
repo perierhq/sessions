@@ -79,6 +79,7 @@ import { handleBlobTranscribeRoutes } from "./blob-transcribe";
 import { handleBlobMetricsRoutes } from "./blob-metrics";
 import { handleBlobGithubRoutes } from "./blob-github";
 import { handleBlobGlossaryRoutes } from "./blob-glossary";
+import { handleMainspringRoutes } from "./mainspring";
 import { handleDeskNavigationRoutes } from "./desk-navigation";
 import { handleWorkflowsRoutes } from "./workflows";
 import { handleReportsRoutes } from "./reports";
@@ -177,6 +178,7 @@ export const routeHandlers: RouteHandler[] = [
   handleBlobMetricsRoutes,
   handleBlobGithubRoutes,
   handleBlobGlossaryRoutes,
+  handleMainspringRoutes,
   handleClientDiagnosticsRoutes,
   handleDeskNavigationRoutes,
   handleWorkflowsRoutes,

@@ -4,6 +4,12 @@ import { modelProviders } from "./model-providers";
 import { hasXaiAccounts } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
 import {
+  MAINSPRING_PROVIDER,
+  mainspringConfigured,
+  mainspringRoutesClaude,
+  readMainspringRecordSync,
+} from "./mainspring";
+import {
   KNOWN_MODELS,
   interactiveDefaultModel,
   refreshPickerModels,
@@ -13,8 +19,12 @@ import {
 /** Provider capacity configured on this server. Temporary exhaustion does not
  * change the catalog or default; adding or removing an account does. */
 export function configuredModelProviders(): Set<string> {
+  const mainspring = readMainspringRecordSync();
   return new Set([
-    ...(listAccountsPublic().length ? ["anthropic"] : []),
+    ...(listAccountsPublic().length || mainspringRoutesClaude(mainspring)
+      ? ["anthropic"]
+      : []),
+    ...(mainspringConfigured(mainspring) ? [MAINSPRING_PROVIDER] : []),
     ...(listCodexAccountsPublic().length ? ["openai"] : []),
     ...(hasXaiAccounts() ? [XAI_OAUTH_PROVIDER] : []),
     ...Object.entries(modelProviders())
