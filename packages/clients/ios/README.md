@@ -988,6 +988,60 @@ open /tmp/blobmac/Build/Products/Debug/Blob.app
 The `BLOB_DEMO*` variables work here too; pass them with
 `open --env BLOB_DEMO_BRIEF=1 …`.
 
+### Testing Blob without the app
+
+`scripts/blob-probe.ts` is a headless Blob: it makes the app's calls in
+the app's order against a running server and prints what Blob would show,
+then PASS, FAIL or SKIP with the reason for each scenario. Its parsing and
+checks are in `scripts/lib/blob-probe.ts`, each next to the Swift code it
+mirrors.
+
+| Scenario          | What it does                                                                                                                                                                                                                                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `open`            | `POST /api/supervisor/ensure`, `GET /api/blob/glossary`, `GET /api/supervisor/brief?start=1`, then polls every 10 s while the brief is being written. Shows what Blob says, the handled line, each decision with its revision and options, and a reopen line when the server sends one.                                                           |
+| `talk`            | Watches the supervisor session on `/ws`, posts a message to `/api/sessions/:id/prompt` as the outbox does (`clientId`, `busy: "steer"`, the phone's `surface`), and reads the reply as Blob does until it settles. Fails without a closed ` ```say ` block or on an error event; prints sent→accepted, accepted→first token and accepted→settled. |
+| `history`         | Pages the current session back to its start with `load_history`, then reads the sessions in `previousSessionIds`: exchanges from before the last rotation must be readable.                                                                                                                                                                       |
+| `brief-lifecycle` | Marks the brief seen (`POST /api/supervisor/brief/seen`), puts it away (Done makes no server call), and reads it again: while decisions are open, the brief needs a reopen line.                                                                                                                                                                  |
+| `answer`          | Answers an item with a stale revision (expects 409 `changed`), reads it again, then answers with the current revision (expects answered). No route posts items to an inbox, so it needs `--item <id>`: an open needs-you item in the probe member's inbox that approves no steps. Otherwise it skips.                                             |
+
+It runs as a dedicated member, never as the instance owner, because
+`talk`, `brief-lifecycle` and `answer` write to the signed-in person's
+supervisor, brief and inbox. To set one up:
+
+1. The owner adds a member named `blob-probe` in Settings, Members, with the
+   GitHub login of an account kept for this (a machine account, not a
+   person's).
+2. Sign in as that account to get a web session token: in a private browser
+   window, sign in with GitHub's device flow and copy the `opensession_auth`
+   cookie; or call `POST /api/auth/device`, enter the code as that account,
+   then `POST /api/auth/device/poll` with `{ "deviceCode": …, "native": true }`,
+   which returns `token`.
+3. Keep the token in your password manager and pass it through the
+   environment only.
+
+```sh
+OPENSESSION_URL=https://sessions.example.test \
+OPENSESSION_PROBE_TOKEN=<token or opensession_auth=<token>> \
+bun scripts/blob-probe.ts                  # every scenario
+bun scripts/blob-probe.ts talk,history --message "What's open?"
+```
+
+The token rides only in the `Authorization` header and is never printed.
+Before running anything the probe reads `/api/auth/status` and the
+owner-only `GET /api/blob/github`; when that says owner (200), or can't say
+(neither 200 nor 403), it refuses to run. `--owner-read-only` lets the owner
+run `open` without `start=1` (no brief turn is started) and `history`; it
+still calls ensure, as the app does on every launch, which rotates the
+supervisor session when a rotation is due. Other options: `--item <id>`,
+`--brief-timeout <s>` (180), `--reply-timeout <s>` (300), `--help`. Exit
+code 1 when a scenario fails, 2 when the probe can't start.
+
+What it can't cover: anything on the device (speech, Parakeet, the
+speaker, layout), the outbox's disk queue and retries across launches, the
+socket's `supervisor_brief_ready` push, and the app's own local state, such
+as a brief put away with Done. It reads `previousSessionIds` for history,
+which the app doesn't decode yet.
+
 ## Architecture
 
 ````
