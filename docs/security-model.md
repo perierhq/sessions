@@ -899,10 +899,14 @@ other instance credentials:
   API key in the process that runs the turn. It is never put in a prompt.
   The one environment that carries it is the `claudeCliEnv` run's
   (deepsec's Claude workers, `pi-run-env.ts`), and only while Claude is
-  routed through Mainspring: that environment already carries a pool
-  Claude OAuth token on the direct route, so the run sees one credential
-  in its place (`ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_BASE_URL` set to the
-  address). A Sandbox command never gets it, as with the OAuth token.
+  routed through Mainspring: that environment carries a pool Claude OAuth
+  token on the direct route, and the key takes its place
+  (`ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_BASE_URL` set to the address).
+  The key can reach more than that one token: every account behind
+  Mainspring, and every provider the key allows. Create a key for this
+  server limited to the Claude provider, with a daily token cap, under
+  Mainspring's Keys page. A Sandbox command never gets it, as with the
+  OAuth token.
 - The address must be `https://`, or `http://` on a tailnet, private or
   loopback host. Link-local (169.254.0.0/16, fe80::/10) and cloud metadata
   addresses (`metadata.google.internal`, `metadata.*.internal`,

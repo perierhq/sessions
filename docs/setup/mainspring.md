@@ -16,7 +16,9 @@ You need Mainspring running somewhere this server can reach, for example
 `https://mainspring.example.test`.
 
 1. In Mainspring, open **Keys** and create a key for this server. It starts
-   with `sk-ms-`. Mainspring shows it once.
+   with `sk-ms-`. Mainspring shows it once. Limit it to the Claude provider
+   and give it a daily token cap: the server's Claude workers carry it
+   (`docs/security-model.md`, "Mainspring key").
 2. Here, as the instance owner, open **Settings → Providers → Mainspring**.
 3. Enter Mainspring's address (`https://mainspring.example.test`, with or
    without `/v1`) and paste the key. Choose **Save**.

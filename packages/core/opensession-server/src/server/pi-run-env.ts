@@ -32,7 +32,8 @@ export function piCliPoolEnv(input: {
     // there too, so they never reach the local accounts behind the owner's
     // back. The Mainspring key takes the place of the pool OAuth token this
     // environment carries on a direct route (docs/security-model.md,
-    // "Mainspring key"): the same exposure to the run, one credential.
+    // "Mainspring key"). The key may reach more accounts than one OAuth
+    // token, so the docs ask for a Claude-only key with a daily cap.
     const { target } = claudeRoute;
     const cliCfgDir = `${PI_STATE_DIR}/cli/claude/mainspring`;
     mkdirSync(cliCfgDir, { recursive: true, mode: 0o700 });
