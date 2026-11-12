@@ -2658,6 +2658,117 @@ enum OS1API {
         )
     }
 
+    /// The morning brief (server: supervisor-brief.ts): what the supervisor
+    /// says when its owner opens Blob, the decisions it picked (at most
+    /// three, each with the item as the items route returns it), what it
+    /// handled, and how much can wait. Decoded tolerantly like the items.
+    struct SupervisorBriefResponse: Decodable, Sendable, Equatable {
+        /// `ready`, `preparing` or `none`.
+        let state: String
+        let brief: SupervisorBrief?
+        /// Open needs-you items raised after the brief, newest first.
+        let newSince: [String]
+        /// When the running brief turn started, ms.
+        let preparingSince: Double?
+        /// When the owner may ask for a fresh brief, ms.
+        let refreshAt: Double?
+
+        private enum CodingKeys: String, CodingKey { case state, brief, newSince, preparingSince, refreshAt }
+        private struct Ids: Decodable { let itemIds: [String]? }
+
+        init(state: String, brief: SupervisorBrief?, newSince: [String] = [], preparingSince: Double? = nil, refreshAt: Double? = nil) {
+            self.state = state; self.brief = brief; self.newSince = newSince
+            self.preparingSince = preparingSince; self.refreshAt = refreshAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            state = ((try? c.decodeIfPresent(String.self, forKey: .state)) ?? nil) ?? "none"
+            brief = (try? c.decodeIfPresent(SupervisorBrief.self, forKey: .brief)) ?? nil
+            newSince = (((try? c.decodeIfPresent(Ids.self, forKey: .newSince)) ?? nil)?.itemIds) ?? []
+            preparingSince = (try? c.decodeIfPresent(Double.self, forKey: .preparingSince)) ?? nil
+            refreshAt = (try? c.decodeIfPresent(Double.self, forKey: .refreshAt)) ?? nil
+        }
+    }
+
+    struct SupervisorBrief: Decodable, Sendable, Equatable {
+        /// The owner's local day it was written for, `YYYY-MM-DD`.
+        let day: String
+        /// When it was written, ms.
+        let asOf: Double
+        /// What Blob says, written for the ear.
+        let say: String
+        /// When the owner saw it, ms; nil while unseen.
+        let seenAt: Double?
+        /// What it closed or did, one line each.
+        let handled: [String]
+        /// Still open decisions, most important first.
+        let decisions: [Decision]
+        /// Open needs-you items it left for later.
+        let laterCount: Int
+
+        struct Decision: Decodable, Sendable, Equatable {
+            let item: SupervisorItem
+            /// One of the item's options.
+            let recommended: String?
+        }
+
+        /// The brief as one card: its unique write.
+        var key: String { "\(day)@\(Int64(asOf))" }
+
+        private enum CodingKeys: String, CodingKey { case day, asOf, say, seenAt, handled, decisions, later }
+        private struct Line: Decodable { let line: String? }
+        private struct Later: Decodable { let count: Int? }
+        private struct LossyDecision: Decodable {
+            let decision: Decision?
+            private enum Keys: String, CodingKey { case item, recommended }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: Keys.self)
+                guard let item = try? c.decode(SupervisorItem.self, forKey: .item) else { decision = nil; return }
+                decision = Decision(item: item, recommended: (try? c.decodeIfPresent(String.self, forKey: .recommended)) ?? nil)
+            }
+        }
+
+        init(day: String, asOf: Double, say: String, seenAt: Double? = nil, handled: [String] = [], decisions: [Decision] = [], laterCount: Int = 0) {
+            self.day = day; self.asOf = asOf; self.say = say; self.seenAt = seenAt
+            self.handled = handled; self.decisions = decisions; self.laterCount = laterCount
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            day = ((try? c.decodeIfPresent(String.self, forKey: .day)) ?? nil) ?? ""
+            asOf = ((try? c.decodeIfPresent(Double.self, forKey: .asOf)) ?? nil) ?? 0
+            say = ((try? c.decodeIfPresent(String.self, forKey: .say)) ?? nil) ?? ""
+            seenAt = (try? c.decodeIfPresent(Double.self, forKey: .seenAt)) ?? nil
+            handled = (((try? c.decodeIfPresent([Line].self, forKey: .handled)) ?? nil) ?? [])
+                .compactMap { $0.line?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            decisions = (((try? c.decodeIfPresent([LossyDecision].self, forKey: .decisions)) ?? nil) ?? [])
+                .compactMap(\.decision)
+            laterCount = max(0, (((try? c.decodeIfPresent(Later.self, forKey: .later)) ?? nil)?.count) ?? 0)
+        }
+    }
+
+    /// The brief as it stands. `start`: Blob came to the front, so a
+    /// missing brief for today starts being prepared; polls and the
+    /// socket's `supervisor_brief_ready` read without starting one.
+    static func supervisorBrief(start: Bool) async throws -> SupervisorBriefResponse {
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "user", value: ServerConfig.shared.userName)]
+            + (start ? [URLQueryItem(name: "start", value: "1")] : [])
+        return try await get("/api/supervisor/brief?\(components.percentEncodedQuery ?? "")")
+    }
+
+    private struct SupervisorBriefSeen: Decodable, Sendable { let seenAt: Double? }
+
+    /// The owner saw the brief for `day`.
+    static func markSupervisorBriefSeen(day: String) async throws {
+        let _: SupervisorBriefSeen = try await post(
+            "/api/supervisor/brief/seen",
+            body: ["user": ServerConfig.shared.userName, "day": day]
+        )
+    }
+
     /// The owner's supervisor preferences (server: supervisor-inbox.ts).
     /// Only what Blob reads; nil when the server doesn't send the field.
     struct SupervisorPrefs: Decodable, Sendable, Equatable {

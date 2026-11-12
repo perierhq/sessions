@@ -43,7 +43,9 @@ struct BlobSaidLine: View {
 /// per cue (not under Reduce Motion). Rows that run on from one part into
 /// the next stay one list.
 struct BlobReplyView: View {
-    enum SayStyle { case line, said, hidden }
+    /// `prose`: the Say line as plain body copy, for a decision inside the
+    /// brief, where Blob's own Say line already leads the page.
+    enum SayStyle { case line, said, prose, hidden }
 
     let reply: BlobReply
     var entryId: String?
@@ -67,6 +69,12 @@ struct BlobReplyView: View {
                 switch style {
                 case .line: BlobSayLine(text: reply.say)
                 case .said: BlobSaidLine(text: reply.say)
+                case .prose:
+                    Text(reply.say)
+                        .font(.subheadline)
+                        .foregroundStyle(OS1VisualStyle.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 case .hidden: EmptyView()
                 }
             }

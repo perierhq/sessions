@@ -19,8 +19,8 @@ struct BlobHomeView: View {
     /// listens on the device and reads its answers aloud.
     @AppStorage(BlobSpeaker.liveCallKey) private var liveCall = false
     @State private var physics = BlobPhysics()
-    /// What the supervisor is waiting on you for, shown while Blob is idle.
-    @State private var decisions = BlobDecisions()
+    /// The morning brief, and what came in since, shown while Blob is idle.
+    @State private var brief = BlobBrief()
     @State private var showSettings = false
     /// Two panes on screen, which puts sheets on the trailing edge.
     @State private var wideSurface = false
@@ -227,33 +227,39 @@ struct BlobHomeView: View {
             // Gives the server this device's timezone when it has none.
             _ = try? await OS1API.ensureSupervisorTimezone()
         }
-        // Open decisions: on appear, when the app comes back, and every
-        // minute while it is in front.
+        // The brief: on appear and when the app comes back, which asks the
+        // server to prepare a missing one; then a plain read every minute
+        // while it is in front, and when the socket says one was written.
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
+            var start = true
             while !Task.isCancelled {
-                await decisions.refresh()
-                try? await Task.sleep(for: .seconds(60))
+                await brief.refresh(start: start)
+                start = false
+                try? await Task.sleep(for: .seconds(brief.phase == .preparing ? 30 : 60))
             }
         }
-        .haptic(.commit, trigger: decisions.answered)
+        .onReceive(NotificationCenter.default.publisher(for: .supervisorBriefReady)) { _ in
+            Task { await brief.refresh() }
+        }
+        .haptic(.commit, trigger: brief.answered)
         // Off (the bell, Settings, the Mac menu) stops the voice at once. Back
         // on, a reply already on its way stays quiet and the next one is read.
         .onChange(of: readAloud) { _, on in
             if !on || text.replying { text.hush() }
         }
         .haptic(.selection, trigger: readAloud)
-        // Blob reads a decision's first paragraph when it comes up, once,
-        // and again when the item is re-raised with a new revision. The
-        // reply to your message wins: while one is on its way or being read,
-        // decisions stay silent.
-        .onChange(of: decision?.cardKey, initial: true) { old, new in
-            guard !text.replyHasVoice else { return }
-            if old != nil, old != new { text.hush() }
-            if let decision, decisions.shouldSpeak(decision) {
-                let say = BlobReply(decision.shownBody).spoken
-                if !say.isEmpty { text.speaker.speak(say) }
-            }
+        // Blob says the brief when it comes up, once; showing it marks it
+        // seen. The reply to your message wins: while one is on its way or
+        // being read, the brief stays silent.
+        .onChange(of: briefPage?.key, initial: true) { old, _ in
+            guard let page = briefPage, brief.shown(page), !text.replyHasVoice else { return }
+            if old != nil { text.hush() }
+            if !page.say.isEmpty { text.speaker.speak(page.say) }
+        }
+        .onChange(of: preparingShown, initial: true) { _, shown in
+            guard shown, brief.shouldSayPreparing(), !text.replyHasVoice else { return }
+            text.speaker.speak(Self.preparingLine)
         }
         // Blob reads what the run asks you when it comes up, once; during
         // the live voice call it waits until the call ends.
@@ -270,14 +276,15 @@ struct BlobHomeView: View {
             if historyRevealed { collapseHistory() }
             if typing && draft.isEmpty { typing = false; fieldFocused = false }
             text.letGo()
-            Task { await decisions.focus(id: id) }
+            Task { await brief.focus(id: id) }
         }
-        .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: decisionKey)
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: briefKey)
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: ask?.id)
         #if DEBUG
         .onAppear {
-            if ProcessInfo.processInfo.environment["BLOB_DEMO_TYPING"] != nil {
-                draft = "what shipped this week?"
+            if let demo = ProcessInfo.processInfo.environment["BLOB_DEMO_TYPING"] {
+                // `empty`: the field open with nothing typed yet.
+                draft = demo == "empty" ? "" : "what shipped this week?"
                 typing = true
                 // Focused, so a software keyboard comes up as it would.
                 Task {
@@ -304,7 +311,7 @@ struct BlobHomeView: View {
         .modifier(BlobMacKeys(space: spaceKey, escape: escapeKey))
         .onChange(of: mode, initial: true) { _, mode in BlobMacState.shared.mode = mode }
         .onChange(of: menuStatus, initial: true) { _, status in BlobMacState.shared.status = status }
-        .onChange(of: decisions.waiting, initial: true) { _, count in BlobMacState.shared.waiting = count }
+        .onChange(of: brief.menuLine, initial: true) { _, line in BlobMacState.shared.waiting = line }
         .onChange(of: BlobMacState.shared.request) { _, request in
             guard let request else { return }
             BlobMacState.shared.request = nil
@@ -344,6 +351,8 @@ struct BlobHomeView: View {
             text.hush()
         } else if historyRevealed {
             collapseHistory()
+        } else if briefPage != nil {
+            brief.dismiss()
         } else if typing && draft.isEmpty {
             typing = false
             fieldFocused = false
@@ -373,7 +382,7 @@ struct BlobHomeView: View {
     private var textConversation: Bool { text.active || !usesVoice }
 
     /// Nothing else going on: no conversation, no typing, no reply on
-    /// screen. Only then does a decision come up.
+    /// screen. Only then does the brief come up.
     private var idle: Bool {
         !talking && !typing && !replyOnScreen && ask == nil && !Self.demoRunning
     }
@@ -384,21 +393,22 @@ struct BlobHomeView: View {
     private var ask: BlobAsk? { text.ask }
 
     /// Blob is awake because something needs you.
-    private var needsYou: Bool { showingDecision || ask != nil }
+    private var needsYou: Bool { briefPage != nil || ask != nil }
 
-    /// The decision on screen, if Blob is idle and one is waiting.
-    private var decision: OS1API.SupervisorItem? {
-        idle && decisions.said == nil ? decisions.current : nil
-    }
+    /// The brief (or what came in since) on the page, while Blob is idle.
+    private var briefPage: BlobBrief.Page? { idle ? brief.page : nil }
 
-    /// What Blob says after an answer, while idle.
-    private var decisionSaid: String? { idle ? decisions.said : nil }
+    /// The brief is being written and nothing else is up: Blob thinks, and
+    /// says so once.
+    private var preparingShown: Bool { idle && brief.page == nil && brief.phase == .preparing }
 
-    /// Blob is awake for a decision: showing one, or just confirming one.
-    private var showingDecision: Bool { decision != nil || decisionSaid != nil }
+    static let preparingLine = "Putting your brief together."
 
-    /// Changes whenever the decision surface does, for its animation.
-    private var decisionKey: String { decisionSaid ?? decision?.cardKey ?? "" }
+    /// Blob is awake for the brief: showing it, or preparing it.
+    private var showingBrief: Bool { briefPage != nil || preparingShown }
+
+    /// Changes whenever the brief surface does, for its animation.
+    private var briefKey: String { briefPage?.key ?? (preparingShown ? "preparing" : "") }
 
     private var statusLabel: String {
         if !textConversation { return engine.state.label }
@@ -443,11 +453,12 @@ struct BlobHomeView: View {
         if let demo = BlobDemo.at(date) { talking = demo.talking; mode = demo.mode; level = demo.level }
         #endif
         if historyRevealed { talking = false }
-        // Something needs you: Blob wakes in its slot.
-        if !talking && needsYou {
+        // Something needs you: Blob wakes in its slot. While the brief is
+        // being written, it thinks there.
+        if !talking && (needsYou || preparingShown) {
             let reading = text.speaker.speaking
             return BlobTargets(
-                mode: decisionSaid != nil || reading ? .speak : .you,
+                mode: reading ? .speak : needsYou ? .you : .think,
                 position: spot.position,
                 size: spot.size,
                 look: nil,
@@ -650,12 +661,12 @@ struct BlobHomeView: View {
     /// Something to read on the page: a reply, a question from the run, or a
     /// decision. It starts at the top, Blob docks in its slot, and its
     /// actions follow it inline.
-    private var hasContent: Bool { replyOnScreen || ask != nil || showingDecision }
+    private var hasContent: Bool { replyOnScreen || ask != nil || showingBrief }
 
     /// Changes when a new item takes the page: a message sent, a question
     /// asked, the next decision. History folds away and the page goes to
     /// the new item's top.
-    private var turnKey: String { "\(text.sends)|\(ask?.id ?? "")|\(decision?.cardKey ?? "")" }
+    private var turnKey: String { "\(text.sends)|\(ask?.id ?? "")|\(briefPage?.key ?? "")" }
 
     /// How far past an edge a pull must go before letting go reveals history.
     private static let pullToReveal: CGFloat = 64
@@ -708,15 +719,16 @@ struct BlobHomeView: View {
         settledReply.map { BlobReplySplit($0).visuals } ?? []
     }
 
-    /// A decision waiting beside the settled reply, for the second pane
-    /// when the reply has no visuals of its own.
-    private var decisionBeside: OS1API.SupervisorItem? {
-        guard settledReply != nil, decisions.said == nil else { return nil }
-        return decisions.current
+    /// The brief's decisions, for the second pane: on two panes the brief
+    /// re-arranges, with what Blob said beside its decisions.
+    private var briefBeside: BlobBrief.Page? {
+        guard let page = briefPage, !page.decisions.isEmpty else { return nil }
+        return page
     }
 
-    /// The settled reply has something for a second pane on a wide surface.
-    private var sideBeside: Bool { !currentVisuals.isEmpty || decisionBeside != nil }
+    /// The page has something for a second pane on a wide surface: the
+    /// settled reply's visuals, or the brief's decisions.
+    private var sideBeside: Bool { !currentVisuals.isEmpty || briefBeside != nil }
 
     /// The reply being written has visual blocks, so they will take the
     /// trailing pane when it settles.
@@ -757,8 +769,8 @@ struct BlobHomeView: View {
         )
     }
 
-    /// The trailing pane: the current reply's visual blocks; without any,
-    /// the decision waiting on you.
+    /// The trailing pane: the current reply's visual blocks, or the brief's
+    /// decisions.
     private func sidePane(insets: EdgeInsets) -> some View {
         BlobSidePane(
             visuals: currentVisuals,
@@ -770,30 +782,18 @@ struct BlobHomeView: View {
                 trailing: insets.trailing + 24
             )
         ) {
-            decisionBesideView
+            briefBesideView
         }
         // A new turn starts the visuals from the top.
         .id(turnKey)
     }
 
-    /// The decision waiting beside the settled reply, in the second pane.
-    /// Only beside a reply: a decision that is itself the current item
-    /// stays with the conversation.
+    /// The brief's decisions, in the second pane.
     @ViewBuilder
-    private var decisionBesideView: some View {
-        if let waiting = decisionBeside {
-            BlobDecisionView(
-                item: waiting,
-                position: decisions.position,
-                count: decisions.count,
-                sending: decisions.sending == waiting.id,
-                revised: decisions.isRevised(waiting),
-                answer: { option in Task { await decisions.answer(waiting, with: option) } },
-                notNow: { decisions.skip(waiting) },
-                dismiss: { Task { await decisions.dismiss(waiting) } }
-            )
-            // A re-raised item is a new card.
-            .id(waiting.cardKey)
+    private var briefBesideView: some View {
+        if let page = briefBeside {
+            BlobBriefView(brief: brief, page: page, part: .decisions)
+                .id(page.key)
         }
     }
 
@@ -840,7 +840,7 @@ struct BlobHomeView: View {
                                     BlobSplitRow(columns: columns, visuals: currentVisuals) {
                                         current(split: true)
                                     } beside: {
-                                        if currentVisuals.isEmpty { decisionBesideView }
+                                        if currentVisuals.isEmpty { briefBesideView }
                                     }
                                 } else {
                                     current(split: split)
@@ -1098,26 +1098,31 @@ struct BlobHomeView: View {
     @ViewBuilder
     private var writeBar: some View {
         if typing {
-            HStack(spacing: 8) {
-                TextField(ask?.takesText == true ? "Answer Blob" : "Write to Blob", text: $draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...4)
-                    .focused($fieldFocused)
-                    .submitLabel(.send)
-                    .onSubmit(sendDraft)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(Capsule().fill(OS1VisualStyle.hover))
-                Button(action: sendDraft) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
-                        .background(Circle().fill(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? AnyShapeStyle(OS1VisualStyle.textFaint) : AnyShapeStyle(OS1VisualStyle.accentInk)))
+            VStack(alignment: .leading, spacing: 8) {
+                if draft.isEmpty, ask == nil, brief.laterWaiting > 0 {
+                    suggestion(Self.whatCanWait)
                 }
-                .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Send")
+                HStack(spacing: 8) {
+                    TextField(ask?.takesText == true ? "Answer Blob" : "Write to Blob", text: $draft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...4)
+                        .focused($fieldFocused)
+                        .submitLabel(.send)
+                        .onSubmit(sendDraft)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Capsule().fill(OS1VisualStyle.hover))
+                    Button(action: sendDraft) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(Circle().fill(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? AnyShapeStyle(OS1VisualStyle.textFaint) : AnyShapeStyle(OS1VisualStyle.accentInk)))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("Send")
+                }
             }
             .padding(.leading, 16)
             .padding(.trailing, writeBarTrailing)
@@ -1148,6 +1153,28 @@ struct BlobHomeView: View {
             .padding(.leading, 14)
             .padding(.bottom, 4)
         }
+    }
+
+    /// Asks the supervisor about what the brief left for later.
+    static let whatCanWait = "What can wait?"
+
+    /// A starter above the empty field, in the Desk's pill style. It sends
+    /// as an ordinary message.
+    private func suggestion(_ line: String) -> some View {
+        Button {
+            hasTalked = true
+            text.send(typed: line)
+        } label: {
+            Text(line)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(OS1VisualStyle.textDim)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Capsule().fill(OS1VisualStyle.hover))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Sends it to Blob")
     }
 
     /// A symbol button in the row under the page: the keyboard and the bell.
@@ -1277,23 +1304,14 @@ struct BlobHomeView: View {
                     focus: text.focus,
                     scrollIds: true
                 )
-            } else if let said = decisionSaid {
-                BlobSayLine(text: said)
+            } else if let page = briefPage {
+                // Beside a second pane, its decisions are there.
+                BlobBriefView(brief: brief, page: page, part: split && briefBeside != nil ? .conversation : .all)
+                    .id(page.key)
+                    .transition(reduceMotion ? .opacity : .offset(y: 16).combined(with: .opacity))
+            } else if preparingShown {
+                BlobSayLine(text: Self.preparingLine)
                     .transition(.opacity)
-            } else if let decision {
-                BlobDecisionView(
-                    item: decision,
-                    position: decisions.position,
-                    count: decisions.count,
-                    sending: decisions.sending == decision.id,
-                    revised: decisions.isRevised(decision),
-                    answer: { option in Task { await decisions.answer(decision, with: option) } },
-                    notNow: { decisions.skip(decision) },
-                    dismiss: { Task { await decisions.dismiss(decision) } }
-                )
-                // A re-raised item is a new card, drawn and read afresh.
-                .id(decision.cardKey)
-                .transition(reduceMotion ? .opacity : .offset(y: 16).combined(with: .opacity))
             }
         }
         .accessibilityElement(children: .contain)

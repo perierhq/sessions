@@ -79,6 +79,9 @@ enum ServerEvent: Sendable {
     /// or another device. Sent only to that person's sockets and carries no
     /// entries: the receiver re-reads the named map (see `UserMapSync`).
     case userMapChanged(map: UserMapName, user: String)
+    /// The owner's supervisor wrote a morning brief: Blob re-reads it
+    /// (server: supervisor-brief.ts). Sent to every socket of that person.
+    case supervisorBriefReady(user: String)
     /// One sidebar row changed, already scoped by the server to the lens this
     /// socket subscribed with (`sessions_subscribe`).
     case sessionRow(Session)
@@ -277,6 +280,9 @@ enum ServerEvent: Sendable {
                   let map = frame.map.flatMap(UserMapName.init(rawValue:))
             else { return .ignored }
             return .userMapChanged(map: map, user: user)
+        case "supervisor_brief_ready":
+            guard let user = frame.user else { return .ignored }
+            return .supervisorBriefReady(user: user)
         case "reply_suggestions":
             guard let id = frame.sessionId else { return .ignored }
             // The server sends null to retire the row. Treat it as an empty
@@ -366,6 +372,11 @@ enum ServerEvent: Sendable {
             return .ignored
         }
     }
+}
+
+extension Notification.Name {
+    /// Posted on the main actor when a socket hears `supervisor_brief_ready`.
+    static let supervisorBriefReady = Notification.Name("os1.supervisorBriefReady")
 }
 
 /// The per-user sidebar maps the server pushes change notices for, by the

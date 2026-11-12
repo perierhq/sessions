@@ -33,12 +33,12 @@ struct BlobRoot: View {
     @State private var connecting = !ServerConfig.shared.isConfigured && !Self.demoHome
     @Environment(\.scenePhase) private var scenePhase
 
-    /// Demo decisions, history and replies need no server, so they go
+    /// The demo brief, history and replies need no server, so they go
     /// straight to the home.
     private static var demoHome: Bool {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
-        return BlobDecisions.demoEnabled || env["BLOB_DEMO_HISTORY"] != nil || env["BLOB_DEMO_REPLY"] != nil
+        return BlobBrief.demoEnabled || env["BLOB_DEMO_HISTORY"] != nil || env["BLOB_DEMO_REPLY"] != nil
             || env["BLOB_DEMO_REPLY_FILE"] != nil || env["BLOB_DEMO_THINKING"] != nil
             || env["BLOB_DEMO_HEARD"] != nil
             || (BlobDemoSheet.current != nil && BlobDemoSheet.current != .connect)

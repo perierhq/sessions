@@ -14,7 +14,8 @@ final class BlobMacState {
 
     var mode: BlobMode = .quiet
     var status = "Asleep"
-    var waiting = 0
+    /// The brief, in a word: "Brief ready", "2 decisions"; nil when nothing waits.
+    var waiting: String?
     /// Set by a menu command, cleared by the home once handled.
     var request: Request?
 }
@@ -54,8 +55,8 @@ struct BlobMacScenes: Scene {
         MenuBarExtra {
             BlobMenu(state: state)
         } label: {
-            Image(nsImage: BlobMenuFace.image(awake: state.mode != .quiet || state.waiting > 0))
-                .accessibilityLabel(state.waiting > 0 ? "Blob, \(BlobMenu.waitingLine(state.waiting))" : "Blob")
+            Image(nsImage: BlobMenuFace.image(awake: state.mode != .quiet || state.waiting != nil))
+                .accessibilityLabel(state.waiting.map { "Blob, \($0)" } ?? "Blob")
         }
     }
 }
@@ -68,7 +69,7 @@ private struct BlobMenu: View {
 
     var body: some View {
         Text(state.status)
-        Text(Self.waitingLine(state.waiting))
+        Text(state.waiting ?? "Nothing waiting")
         Divider()
         Button("Open Blob") {
             openWindow(id: BlobMacScenes.windowId)
@@ -78,14 +79,6 @@ private struct BlobMenu: View {
         Divider()
         Button("Quit Blob") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
-    }
-
-    static func waitingLine(_ count: Int) -> String {
-        switch count {
-        case 0: "Nothing waiting"
-        case 1: "1 decision waiting"
-        default: "\(count) decisions waiting"
-        }
     }
 }
 
