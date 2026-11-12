@@ -297,17 +297,17 @@ function TokenField({
   const errorId = useId();
   return (
     <form
-      className="flex flex-wrap items-start gap-2"
+      className="flex items-start gap-2"
       onSubmit={(e) => {
         e.preventDefault();
         onSave();
       }}
     >
-      <div className="min-w-0 flex-[1_1_16rem]">
+      <div className="min-w-0 flex-1">
         <Input
           type="password"
           aria-label="GitHub token"
-          placeholder="Paste a fine-grained token"
+          placeholder="Fine-grained token"
           value={token}
           autoComplete="off"
           spellCheck={false}
@@ -375,7 +375,7 @@ function LabelsField({
       >
         Separate them with commas. With none, Blob sets no labels.
       </div>
-      <div className="mt-2 flex flex-wrap items-start gap-2">
+      <div className="mt-2 flex items-start gap-2">
         <Input
           id={inputId}
           aria-describedby={hintId}
@@ -386,7 +386,7 @@ function LabelsField({
           autoCapitalize="off"
           autoCorrect="off"
           disabled={busy}
-          className="min-w-0 flex-[1_1_16rem] phone:min-h-11 phone:text-input-phone"
+          className="min-w-0 flex-1 phone:min-h-11 phone:text-input-phone"
           onChange={(e) => setText(e.target.value)}
         />
         <Button

@@ -198,7 +198,7 @@ export function MainspringView({
   const shown = settings.models.slice(0, MODELS_SHOWN);
   const more = settings.models.length - shown.length;
   const fieldClass =
-    "min-w-0 flex-[1_1_16rem] font-mono placeholder:font-sans phone:min-h-11 phone:text-input-phone";
+    "w-full max-w-md min-w-0 phone:min-h-11 phone:max-w-none phone:text-input-phone";
 
   return (
     <MainspringFrame>
@@ -254,6 +254,7 @@ export function MainspringView({
               <Button
                 variant="primary"
                 size="sm"
+                className="phone:min-h-11"
                 disabled={busy || !dirty}
                 onClick={onSave}
               >
@@ -262,6 +263,7 @@ export function MainspringView({
               <Button
                 variant="soft"
                 size="sm"
+                className="phone:min-h-11"
                 disabled={busy || !ready}
                 onClick={onTest}
               >
@@ -271,6 +273,7 @@ export function MainspringView({
                 <Button
                   variant="danger"
                   size="sm"
+                  className="phone:min-h-11"
                   disabled={busy}
                   onClick={onRemoveKey}
                 >
@@ -370,7 +373,7 @@ export function MainspringView({
           href={MAINSPRING_DOCS_URL}
           target="_blank"
           rel="noreferrer"
-          className="underline decoration-line-strong underline-offset-2 hover:text-fg"
+          className="text-dim underline decoration-line-strong underline-offset-2 hover:text-fg"
         >
           Setup steps
         </a>

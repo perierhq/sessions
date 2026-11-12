@@ -86,7 +86,7 @@ describe("BlobGithubSection", () => {
       'href="https://github.com/perierhq/sessions/blob/main/docs/setup/github.md#blobs-github-account"',
     );
     expect(html).toContain('type="password"');
-    expect(html).toContain('placeholder="Paste a fine-grained token"');
+    expect(html).toContain('placeholder="Fine-grained token"');
     expect(shown).toContain("Save");
     expect(shown).not.toContain("Remove token");
     expect(shown).not.toContain("Post on GitHub");
