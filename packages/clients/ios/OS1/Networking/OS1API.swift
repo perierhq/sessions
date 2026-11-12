@@ -2619,14 +2619,20 @@ enum OS1API {
         let item: SupervisorItem?
     }
 
-    /// The owner's open items, newest first. `kind` narrows to `needs-you`
-    /// or `fyi`.
-    static func supervisorItems(kind: String? = nil) async throws -> [SupervisorItem] {
+    /// The most items the server lists at once (supervisor-inbox.ts
+    /// `MAX_LIST`); a shorter list is all of them.
+    static let supervisorItemsMax = 100
+
+    /// The owner's open items, most recently changed first. `kind` narrows
+    /// to `needs-you` or `fyi`; `limit` (at most `supervisorItemsMax`)
+    /// replaces the server's default of 50.
+    static func supervisorItems(kind: String? = nil, limit: Int? = nil) async throws -> [SupervisorItem] {
         var components = URLComponents()
         components.queryItems = [
             URLQueryItem(name: "state", value: "open"),
             URLQueryItem(name: "user", value: ServerConfig.shared.userName),
         ] + (kind.map { [URLQueryItem(name: "kind", value: $0)] } ?? [])
+            + (limit.map { [URLQueryItem(name: "limit", value: String($0))] } ?? [])
         let response: SupervisorItemList = try await get(
             "/api/supervisor/items?\(components.percentEncodedQuery ?? "")"
         )

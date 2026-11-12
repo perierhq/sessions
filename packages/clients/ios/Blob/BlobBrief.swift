@@ -54,11 +54,23 @@ final class BlobBrief {
     private(set) var preparingSince: Double?
     /// An answer on its way, so the options can't be sent twice.
     private(set) var sending: String?
-    /// What Blob says about one decision after an answer, in its place.
-    private(set) var note: (id: String, line: String)?
-    private var noteTask: Task<Void, Never>?
+    /// What Blob says about a decision after an answer, in its place, by
+    /// item id. Each goes after a moment on its own.
+    private(set) var notes: [String: String] = [:]
+    private var noteTasks: [String: Task<Void, Never>] = [:]
     /// Answers sent from here, for the success haptic.
     private(set) var answered = 0
+
+    /// The one task that reads the brief: the poll loop while Blob is in
+    /// front, or a single read. A newer read replaces it.
+    private var pollTask: Task<Void, Never>?
+    private var polling = false
+    /// Counts reads; only the newest one's answer is applied.
+    private var generation = 0
+    /// The latest response's `refreshAt`, ms, for the next poll.
+    private var refreshAt: Double?
+
+    static let log = BlobLog(category: "brief")
 
     /// Answered or dismissed here and maybe not yet gone on the server.
     private var closed: Set<String> = []
@@ -102,29 +114,75 @@ final class BlobBrief {
         return unseen || page?.kind == .brief ? "Brief ready" : nil
     }
 
+    /// Blob came to the front: reads the brief, asking for a missing one,
+    /// then again at each `pollDelay` until `stopPolling`.
+    func startPolling() {
+        polling = true
+        restart(start: true)
+    }
+
+    /// Blob went to the background: no more reads.
+    func stopPolling() {
+        polling = false
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
+    /// The socket said a brief was written: reads now, in place of the
+    /// read in flight, and the next poll counts from here.
+    func kick() { restart(start: false) }
+
+    private func restart(start: Bool) {
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            await self?.refresh(start: start)
+            while !Task.isCancelled, let self, self.polling {
+                try? await Task.sleep(for: self.pollDelay)
+                guard !Task.isCancelled else { return }
+                await self.refresh()
+            }
+        }
+    }
+
+    /// When to read again: at the response's `refreshAt`, no sooner than 15
+    /// seconds and no later than 2 minutes; while the brief is being
+    /// written, within 30 seconds.
+    private var pollDelay: Duration {
+        let now = Date.now.timeIntervalSince1970 * 1000
+        var seconds = refreshAt.map { ($0 - now) / 1000 } ?? 60
+        seconds = min(max(seconds, 15), 120)
+        if phase == .preparing { seconds = min(seconds, 30) }
+        return .seconds(seconds)
+    }
+
     /// Reads the brief. `start`: Blob just came to the front, so a missing
     /// brief for today starts being prepared. Errors keep what is there: a
-    /// blip offline should not make a waiting decision vanish.
+    /// blip offline should not make a waiting decision vanish. A read that
+    /// a newer one overtook is dropped.
     func refresh(start: Bool = false) async {
         #if DEBUG
         if let demo = Self.demo {
-            if page == nil, putAway.isEmpty, closed.isEmpty { await apply(demo) }
+            if page == nil, putAway.isEmpty, closed.isEmpty { await apply(demo, generation: generation) }
             return
         }
         #endif
+        generation += 1
+        let mine = generation
         guard ServerConfig.shared.isConfigured,
-              let response = try? await OS1API.supervisorBrief(start: start)
+              let response = try? await OS1API.supervisorBrief(start: start),
+              mine == generation, !Task.isCancelled
         else { return }
-        await apply(response)
+        await apply(response, generation: mine)
     }
 
-    private func apply(_ response: OS1API.SupervisorBriefResponse) async {
+    private func apply(_ response: OS1API.SupervisorBriefResponse, generation mine: Int) async {
         phase = switch response.state {
         case "preparing": .preparing
         case "ready": .ready
         default: .none
         }
         preparingSince = phase == .preparing ? response.preparingSince ?? 0 : nil
+        refreshAt = response.refreshAt
         let brief = response.brief
         laterWaiting = brief?.laterCount ?? 0
         unseen = phase == .ready && brief.map { $0.seenAt == nil && !putAway.contains($0.key) } ?? false
@@ -141,8 +199,13 @@ final class BlobBrief {
                 return
             }
             // Another brief was written while this page was up, and not seen yet.
-            guard let brief, unseen, brief.key != held.key else { return }
-            page = Self.page(for: brief)
+            if let brief, unseen, brief.key != held.key {
+                page = Self.page(for: brief)
+                return
+            }
+            // What came in since, a linked item, or an earlier brief: the
+            // brief doesn't carry these, so the items are read again.
+            await reread(held, generation: mine)
             return
         }
 
@@ -160,7 +223,7 @@ final class BlobBrief {
         #else
         let items = try? await OS1API.supervisorItems(kind: "needs-you")
         #endif
-        guard page == nil, let items else { return }
+        guard mine == generation, page == nil, let items else { return }
         let picked = fresh.compactMap { id in items.first { $0.id == id && $0.isOpen } }.prefix(3)
         guard !picked.isEmpty else { return }
         let today = Self.today == brief.day
@@ -175,6 +238,35 @@ final class BlobBrief {
             day: nil,
             offered: fresh
         )
+    }
+
+    /// Brings the cards on a page the brief doesn't carry up to date: each
+    /// takes its item's current revision in the same place, and one settled
+    /// elsewhere goes. A page of new or linked items with none left goes.
+    private func reread(_ held: Page, generation mine: Int) async {
+        #if DEBUG
+        if Self.demo != nil { return }
+        #endif
+        let limit = OS1API.supervisorItemsMax
+        guard let items = try? await OS1API.supervisorItems(limit: limit),
+              mine == generation, var current = page, current.key == held.key
+        else { return }
+        // A full list may have left some open items out.
+        let complete = items.count < limit
+        let fresh: [Item] = current.decisions.compactMap { shown in
+            guard let item = items.first(where: { $0.id == shown.id }) else { return complete ? nil : shown }
+            guard item.revision != shown.revision else { return shown }
+            return current.kind == .brief ? Self.recommending(shown.options.first, in: item) : item
+        }
+        guard fresh != current.decisions else { return }
+        if fresh.isEmpty, current.kind != .brief {
+            withNoteCleared { self.page = nil }
+            return
+        }
+        noteRevisions(fresh, against: current.decisions)
+        current.decisions = fresh
+        page = current
+        settleIfDone()
     }
 
     private static func page(for brief: OS1API.SupervisorBrief) -> Page {
@@ -219,12 +311,22 @@ final class BlobBrief {
     func shown(_ page: Page) -> Bool {
         guard spoken.insert(page.key).inserted else { return false }
         offered.formUnion(page.offered)
-        if page.kind == .brief, let day = page.day {
+        if page.kind == .brief {
             unseen = false
             #if DEBUG
             if Self.demo != nil { return true }
             #endif
-            Task { try? await OS1API.markSupervisorBriefSeen(day: day) }
+            guard let day = page.day, !day.isEmpty else {
+                Self.log.error("seen skipped: brief \(page.key) has no day")
+                return true
+            }
+            Task {
+                do {
+                    try await OS1API.markSupervisorBriefSeen(day: day)
+                } catch {
+                    Self.log.error("seen failed for \(day): \(error)")
+                }
+            }
         }
         return true
     }
@@ -251,7 +353,7 @@ final class BlobBrief {
         if Self.demo != nil { return }
         #endif
         guard ServerConfig.shared.isConfigured,
-              let fetched = try? await OS1API.supervisorItems(),
+              let fetched = try? await OS1API.supervisorItems(limit: OS1API.supervisorItemsMax),
               let item = fetched.first(where: { $0.id == id && $0.isOpen })
         else { return }
         closed.remove(id)
@@ -312,41 +414,44 @@ final class BlobBrief {
         } catch {}
     }
 
-    /// The decision is done: its note stands in its place for a moment,
-    /// then it goes. With none left, Blob goes idle.
+    /// The decision is done: it closes now, and its note stands in its
+    /// place for a moment. With none left, Blob goes idle.
     private func close(_ item: Item, saying line: String) {
-        noteTask?.cancel()
-        note = (item.id, line)
-        noteTask = Task { [weak self] in
+        closed.insert(item.id)
+        say(line, about: item)
+    }
+
+    /// What Blob says about one decision, in its place for a moment. Each
+    /// decision's note goes on its own, so answering another one quickly
+    /// leaves this one be.
+    private func say(_ line: String, about item: Item) {
+        let id = item.id
+        noteTasks[id]?.cancel()
+        notes[id] = line
+        noteTasks[id] = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2.4))
             guard !Task.isCancelled, let self else { return }
-            self.note = nil
-            self.closed.insert(item.id)
+            self.notes[id] = nil
+            self.noteTasks[id] = nil
             self.settleIfDone()
         }
     }
 
-    private func say(_ line: String, about item: Item) {
-        noteTask?.cancel()
-        note = (item.id, line)
-        noteTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2.4))
-            guard !Task.isCancelled else { return }
-            self?.note = nil
-        }
-    }
+    /// What Blob says in place of the decision `id`, while it says it.
+    func note(for id: String) -> String? { notes[id] }
 
     /// A page whose decisions were all there was goes once they are done. A
     /// brief with nothing to decide stays until the owner puts it away.
     private func settleIfDone() {
-        guard let page, !page.decisions.isEmpty, open.isEmpty, note == nil else { return }
+        guard let page, !page.decisions.isEmpty, open.isEmpty, notes.isEmpty else { return }
         if page.kind == .brief { putAway.insert(page.key) }
         self.page = nil
     }
 
     private func withNoteCleared(_ change: () -> Void) {
-        noteTask?.cancel()
-        note = nil
+        noteTasks.values.forEach { $0.cancel() }
+        noteTasks = [:]
+        notes = [:]
         change()
     }
 

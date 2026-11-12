@@ -49,9 +49,9 @@ struct BlobBriefView: View {
     private var decisions: some View {
         let first = brief.open.first?.id
         return VStack(alignment: .leading, spacing: 36) {
-            ForEach(page.decisions.filter { brief.open.contains($0) || brief.note?.id == $0.id }) { item in
-                if let note = brief.note, note.id == item.id {
-                    BlobSayLine(text: note.line)
+            ForEach(page.decisions.filter { brief.open.contains($0) || brief.note(for: $0.id) != nil }) { item in
+                if let note = brief.note(for: item.id) {
+                    BlobSayLine(text: note)
                         .transition(.opacity)
                 } else {
                     BlobDecisionView(
@@ -70,7 +70,7 @@ struct BlobBriefView: View {
             }
         }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: brief.open.map(\.id))
-        .animation(.easeOut(duration: 0.2), value: brief.note?.line)
+        .animation(.easeOut(duration: 0.2), value: brief.notes)
     }
 
     /// "Handled 4 things · 3 can wait", which opens, then "Done".
