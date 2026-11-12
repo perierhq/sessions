@@ -228,8 +228,8 @@ struct BlobHomeView: View {
             _ = try? await OS1API.ensureSupervisorTimezone()
         }
         // The brief: on appear and when the app comes back, which asks the
-        // server to prepare a missing one; then a plain read when the
-        // server's `refreshAt` says (15 s to 2 min) while it is in front,
+        // server to prepare a missing one; then a plain read every minute
+        // (10 s while it is being written) while it is in front,
         // and when the socket says one was written. The socket's read takes
         // the poll's place and the next poll counts from it.
         .task(id: scenePhase) {

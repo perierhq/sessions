@@ -67,8 +67,6 @@ final class BlobBrief {
     private var polling = false
     /// Counts reads; only the newest one's answer is applied.
     private var generation = 0
-    /// The latest response's `refreshAt`, ms, for the next poll.
-    private var refreshAt: Double?
 
     static let log = BlobLog(category: "brief")
 
@@ -144,15 +142,12 @@ final class BlobBrief {
         }
     }
 
-    /// When to read again: at the response's `refreshAt`, no sooner than 15
-    /// seconds and no later than 2 minutes; while the brief is being
-    /// written, within 30 seconds.
+    /// When to read again: every minute, or every 10 seconds while the
+    /// brief is being written. The socket's ready event usually comes first.
+    /// (`refreshAt` is when the owner may ask for a fresh brief, not a poll
+    /// time.)
     private var pollDelay: Duration {
-        let now = Date.now.timeIntervalSince1970 * 1000
-        var seconds = refreshAt.map { ($0 - now) / 1000 } ?? 60
-        seconds = min(max(seconds, 15), 120)
-        if phase == .preparing { seconds = min(seconds, 30) }
-        return .seconds(seconds)
+        phase == .preparing ? .seconds(10) : .seconds(60)
     }
 
     /// Reads the brief. `start`: Blob just came to the front, so a missing
@@ -182,7 +177,6 @@ final class BlobBrief {
         default: .none
         }
         preparingSince = phase == .preparing ? response.preparingSince ?? 0 : nil
-        refreshAt = response.refreshAt
         let brief = response.brief
         laterWaiting = brief?.laterCount ?? 0
         unseen = phase == .ready && brief.map { $0.seenAt == nil && !putAway.contains($0.key) } ?? false
