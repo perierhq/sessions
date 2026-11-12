@@ -116,11 +116,11 @@ test("the loop guards and the dollar cap validate, and only null turns the cap o
     [{ budgetUsdPerMonth: 0 }, LEAD_BUDGET_ERROR],
     [
       { dailyWakeLimit: 0 },
-      "Lead wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to 1000",
+      "Lead extra wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to 1000",
     ],
     [
       { dailyWakeLimit: 2.5 },
-      "Lead wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to 1000",
+      "Lead extra wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to 1000",
     ],
     [
       { wakeTokenLimit: 5 },

@@ -110,7 +110,8 @@ export interface ProjectLeadSettings {
   rules: Record<LeadCategory, LeadLevel>;
   /** Optional monthly dollar cap; null is no cap (the default). */
   budgetUsdPerMonth: number | null;
-  /** Wakes a day before the lead pauses and asks the owner. */
+  /** Wakes a day beyond the hourly schedule (event and answer wakes)
+   *  before the lead pauses and asks the owner (leads/goal.ts leadWakeLimit). */
   dailyWakeLimit: number;
   /** Tokens a wake may use before it wraps up and the lead pauses. */
   wakeTokenLimit: number;

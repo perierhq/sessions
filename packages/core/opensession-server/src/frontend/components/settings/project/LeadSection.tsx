@@ -132,8 +132,8 @@ export function LeadSection({
               }
             />
             <SettingLinkRow
-              title="Daily wakes"
-              description="The lead pauses and asks you past this"
+              title="Extra daily wakes"
+              description="Beyond its hourly schedule. The lead pauses and asks you past this"
               value={String(lead.dailyWakeLimit)}
               onClick={() => setWakesOpen(Date.now())}
             />
@@ -304,7 +304,7 @@ export function LeadWakesDialog({
     <SettingsDialog
       open={open}
       onClose={onClose}
-      title="Lead wakes a day"
+      title="Extra lead wakes a day"
       error={error}
       busy={busy}
       canSave={value !== null}
@@ -324,7 +324,7 @@ export function LeadWakesDialog({
         );
       }}
     >
-      <Field label="Wakes a day">
+      <Field label="Extra wakes a day">
         <Input
           type="number"
           inputMode="numeric"
@@ -338,7 +338,7 @@ export function LeadWakesDialog({
         />
       </Field>
       <p className={value === null ? FIELD_ERROR : FIELD_HINT}>
-        {`From 1 to ${MAX_LEAD_DAILY_WAKES}`}
+        {`Wakes from events and your answers, on top of its hourly schedule. From 1 to ${MAX_LEAD_DAILY_WAKES}`}
       </p>
     </SettingsDialog>
   );

@@ -7,6 +7,7 @@ import type { ProjectSettingsPatch } from "../../shared/project-settings";
 import {
   LEAD_UNAVAILABLE_REASON,
   createGoal,
+  resumeGoal,
   deleteGoal,
   getGoal,
   listGoals,
@@ -28,11 +29,13 @@ import {
   answerSupervisorItem,
   listSupervisorItems,
   onSupervisorAnswer,
+  postSupervisorItem,
   setSupervisorPrefs,
 } from "../supervisor-inbox";
 import {
   KILL_SWITCH_REASON,
   LEAD_OFF_REASON,
+  LEAD_SCHEDULED_WAKES,
   STARTING_REASON,
   __setLeadGoalDepsForTest,
   ensureLeadGoal,
@@ -48,11 +51,14 @@ import {
 import {
   __setLeadApprovalsDepsForTest,
   approve,
+  claimAlone,
   claimApply,
   getRecord,
   listForProject,
   recordProposal,
+  transition,
 } from "./approvals";
+import { applyItemKey } from "./apply";
 import type { ConditionResult, LeadCondition } from "./conditions";
 import { deliverLeadProposal } from "./report";
 
@@ -513,27 +519,53 @@ describe("the loop guard", () => {
     expect(plan.budgetUsd).toBeNull();
   });
 
+  test("the lead's own schedule never trips the wake limit", async () => {
+    // Hourly wakes all day, the default limit of 24 extra, and a 25-hour
+    // day when the clocks go back.
+    expect(LEAD_SCHEDULED_WAKES).toBe(25);
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    for (const wakes of [24, 25, 25 + 23]) {
+      await mutateGoal(goal.id, (g) => ({
+        ...g,
+        guard: { day: "2026-11-10", wakes },
+      }));
+      expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+    }
+    // A loop of event wakes still trips it.
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      guard: { day: "2026-11-10", wakes: 25 + 24 },
+    }));
+    expect(await leadWakeCheck(await leadGoal())).toEqual({
+      block:
+        "Loop guard: 49 wakes today, the limit is 49 (25 scheduled and 24 extra)",
+    });
+  });
+
   test("the daily wake limit pauses, asks once, and Resume lifts it for the day", async () => {
     await setLead({ enabled: true, dailyWakeLimit: 3 });
     await ensureLeadGoal(PROJECT);
     const goal = await leadGoal();
     await mutateGoal(goal.id, (g) => ({
       ...g,
-      guard: { day: "2026-11-10", wakes: 2 },
+      guard: { day: "2026-11-10", wakes: 27 },
     }));
     expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
     await mutateGoal(goal.id, (g) => ({
       ...g,
-      guard: { day: "2026-11-10", wakes: 3 },
+      guard: { day: "2026-11-10", wakes: 28 },
     }));
-    const reason = "Loop guard: 3 wakes today, the daily limit is 3";
+    const reason =
+      "Loop guard: 28 wakes today, the limit is 28 (25 scheduled and 3 extra)";
     expect(await leadWakeCheck(await leadGoal())).toEqual({ block: reason });
     await leadWakeCheck(await leadGoal());
     const items = await listSupervisorItems("Ada", { kind: "needs-you" });
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       title: "Acme: the lead paused itself",
-      body: "3 wakes today, the daily limit is 3. The lead may be stuck in a loop. Resume lets it run for the rest of today; otherwise it starts again tomorrow.",
+      body: "28 wakes today, the limit is 28 (25 scheduled and 3 extra). The lead may be stuck in a loop. Resume lets it run for the rest of today; otherwise it starts again tomorrow.",
       options: ["Resume", "Keep paused"],
       dedupeKey: "lead:acme:guard:wakes:2026-11-10",
     });
@@ -554,12 +586,13 @@ describe("the loop guard", () => {
     await setLead({ enabled: true, dailyWakeLimit: 1 });
     await ensureLeadGoal(PROJECT);
     const goal = await leadGoal();
-    const reason = "Loop guard: 1 wakes today, the daily limit is 1";
+    const reason =
+      "Loop guard: 26 wakes today, the limit is 26 (25 scheduled and 1 extra)";
     await mutateGoal(goal.id, (g) => ({
       ...g,
       status: "paused",
       pauseReason: reason,
-      guard: { day: "2026-11-10", wakes: 1 },
+      guard: { day: "2026-11-10", wakes: 26 },
     }));
     await leadWakeCheck(await leadGoal());
     const [item] = await listSupervisorItems("Ada", { kind: "needs-you" });
@@ -654,6 +687,106 @@ describe("the loop guard", () => {
     );
     expect(keys).toContain("lead:acme:guard:trip:2");
     expect(keys.filter((k) => k === "lead:acme:guard:trip:2")).toHaveLength(1);
+  });
+
+  /** Pause the lead on today's wake limit and return its question. */
+  async function pausedOnWakes() {
+    await setLead({ enabled: true, dailyWakeLimit: 1 });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      guard: { day: "2026-11-10", wakes: 26 },
+    }));
+    const plan = await leadWakeCheck(await leadGoal());
+    if (!("block" in plan)) throw new Error("not held");
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      status: "paused",
+      pauseReason: plan.block,
+    }));
+    const [item] = await listSupervisorItems("Ada", { kind: "needs-you" });
+    expect(item).toMatchObject({
+      dedupeKey: "lead:acme:guard:wakes:2026-11-10",
+      state: "open",
+    });
+    return item!;
+  }
+
+  async function itemState(id: string) {
+    return (await listSupervisorItems("Ada")).find((i) => i.id === id)?.state;
+  }
+
+  test("a new day expires the wake limit question once the lead wakes again", async () => {
+    const question = await pausedOnWakes();
+    const other = await postSupervisorItem({
+      user: "Ada",
+      source: "lead:acme",
+      project: PROJECT,
+      kind: "needs-you",
+      title: "Acme: CI repair",
+      dedupeKey: "lead:acme:proposal:ci",
+    });
+    clock = Date.parse("2026-11-11T00:05:00.000Z");
+    await leadGoalIdle(await leadGoal(), clock);
+    expect((await leadGoal()).status).toBe("active");
+    expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+    expect(await itemState(question.id)).toBe("expired");
+    expect(await itemState(other.item.id)).toBe("open");
+  });
+
+  test("any wake check closes an earlier day's open guard question", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    // A card left open by an earlier version, whatever the goal says now.
+    const stale = await postSupervisorItem({
+      user: "Ada",
+      source: "lead:acme",
+      project: PROJECT,
+      kind: "needs-you",
+      title: "Acme: the lead paused itself",
+      options: ["Resume", "Keep paused"],
+      dedupeKey: "lead:acme:guard:wakes:2026-11-09",
+    });
+    expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+    expect(await itemState(stale.item.id)).toBe("expired");
+  });
+
+  test("the question that still holds the lead stays open", async () => {
+    const question = await pausedOnWakes();
+    await leadWakeCheck(await leadGoal());
+    expect(await itemState(question.id)).toBe("open");
+  });
+
+  test("resuming the goal on the goals page lifts the hold and expires its question", async () => {
+    const question = await pausedOnWakes();
+    const resumed = await resumeGoal((await leadGoal()).id);
+    if ("error" in resumed) throw new Error(resumed.error);
+    expect(resumed.guard).toMatchObject({ day: "2026-11-10", lifted: true });
+    expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+    expect(await itemState(question.id)).toBe("expired");
+  });
+
+  test("a trip hold that ran out expires its question", async () => {
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    const goal = await leadGoal();
+    await mutateGoal(goal.id, (g) => ({
+      ...g,
+      guard: {
+        day: "2026-11-10",
+        wakes: 1,
+        trips: 1,
+        trippedAt: new Date(clock).toISOString(),
+        trippedTokens: 1_250_000,
+      },
+    }));
+    expect("block" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+    const [item] = await listSupervisorItems("Ada", { kind: "needs-you" });
+    expect(item!.dedupeKey).toBe("lead:acme:guard:trip:1");
+    clock += 12 * 60 * 60_000;
+    expect("fields" in (await leadWakeCheck(await leadGoal()))).toBe(true);
+    expect(await itemState(item!.id)).toBe("expired");
   });
 
   test("wakes count on the owner's local day", async () => {
@@ -1043,6 +1176,76 @@ describe("the owner's answer approves the proposal it saw", () => {
   async function record(proposalId: string | undefined) {
     return (await getRecord(PROJECT, proposalId!))!;
   }
+
+  test("a proposal the lead settled under its own rules closes its card on the next wake", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    const unsettled = await proposed("PR 43");
+    const claimed = await claimAlone(
+      PROJECT,
+      proposalId!,
+      "la-1",
+      "Alone: Verified fixes",
+    );
+    expect(claimed.ok).toBe(true);
+    expect(
+      (await transition(PROJECT, proposalId!, "applied", { claimId: "la-1" }))
+        .ok,
+    ).toBe(true);
+    await leadWakeCheck(await leadGoal());
+    const items = await listSupervisorItems("Ada");
+    expect(items.find((i) => i.id === item.id)).toMatchObject({
+      state: "answered",
+      answer: "Done by the lead under its rules",
+    });
+    expect(items.find((i) => i.id === unsettled.item.id)?.state).toBe("open");
+  });
+
+  test("a rules run that failed closes its card only once its Couldn't apply item is in the inbox", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    expect(
+      (await claimAlone(PROJECT, proposalId!, "la-1", "Alone: Verified fixes"))
+        .ok,
+    ).toBe(true);
+    expect(
+      (
+        await transition(PROJECT, proposalId!, "failed", {
+          claimId: "la-1",
+          reason: "CI failed",
+        })
+      ).ok,
+    ).toBe(true);
+    const stateOf = async () =>
+      (await listSupervisorItems("Ada")).find((i) => i.id === item.id)?.state;
+    // Posting the Couldn't apply item failed: the card stays open.
+    await leadWakeCheck(await leadGoal());
+    expect(await stateOf()).toBe("open");
+    await postSupervisorItem({
+      user: "Ada",
+      source: "lead:acme",
+      project: PROJECT,
+      kind: "needs-you",
+      title: "Couldn't apply: CI failed",
+      body: "Couldn't apply: CI failed",
+      options: ["Propose again", "Drop it"],
+      dedupeKey: applyItemKey(PROJECT, proposalId!),
+    });
+    await leadWakeCheck(await leadGoal());
+    expect(await stateOf()).toBe("answered");
+  });
+
+  test("a run settleInterrupted made partial keeps its card open with nothing posted", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    expect(
+      (await claimAlone(PROJECT, proposalId!, "la-1", "Alone: Verified fixes"))
+        .ok,
+    ).toBe(true);
+    clock += 24 * 60 * 60_000;
+    await leadWakeCheck(await leadGoal());
+    expect((await record(proposalId)).approval?.state).toBe("partial");
+    expect(
+      (await listSupervisorItems("Ada")).find((i) => i.id === item.id)?.state,
+    ).toBe("open");
+  });
 
   test("the first option, signed in, at the current revision: ready at once", async () => {
     const { item, proposalId } = await proposed("PR 42");

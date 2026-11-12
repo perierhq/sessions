@@ -136,7 +136,7 @@ test("daily wakes and an optional dollar cap, with the headroom line", () => {
   const row = (title: string) =>
     find(section.output(), SettingLinkRow, (p) => p.title === title)?.props
       .value;
-  expect(row("Daily wakes")).toBe("24");
+  expect(row("Extra daily wakes")).toBe("24");
   expect(row("Dollar cap")).toBe("Off");
   expect(row("Budget per month")).toBeUndefined();
   expect(find(section.output(), SettingsHint)?.props.children).toBe(

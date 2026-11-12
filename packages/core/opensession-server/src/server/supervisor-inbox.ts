@@ -954,6 +954,63 @@ export async function dismissSupervisorItem(
   });
 }
 
+/** How closeSupervisorItems closes an item: `expired` when what it asked
+ *  about no longer applies, `answered` with a fixed line when the raiser
+ *  settled it itself. */
+export type SupervisorItemClose =
+  | { state: "expired" }
+  | { state: "answered"; answer: string };
+
+/**
+ * Close the person's open items `pick` selects, on behalf of whoever raised
+ * them: no answer handler runs, and an `answered` close is marked briefed,
+ * since the owner gave no answer for the supervisor to hear about. Reads
+ * the one inbox document first and writes nothing when nothing matches.
+ * Returns the closed items.
+ */
+export async function closeSupervisorItems(
+  user: string,
+  pick: (item: SupervisorItem) => boolean,
+  close: SupervisorItemClose,
+): Promise<SupervisorItem[]> {
+  if (!validUser(user)) return [];
+  const matches = (item: SupervisorItem) => item.state === "open" && pick(item);
+  if (!(await readDocument(user)).items.some(matches)) return [];
+  const now = deps.now();
+  let closed: SupervisorItem[] = [];
+  await updateDocument(user, (doc) => {
+    closed = [];
+    const items = doc.items.map((item) => {
+      if (!matches(item)) return item;
+      const next: SupervisorItem =
+        close.state === "answered"
+          ? {
+              ...item,
+              state: "answered",
+              answer: close.answer.slice(0, ANSWER_LEN),
+              answeredAt: now,
+              briefedAt: now,
+              updatedAt: now,
+            }
+          : { ...item, state: "expired", updatedAt: now };
+      delete next.heldUntil;
+      closed.push(next);
+      return next;
+    });
+    return closed.length
+      ? { ...doc, items: pruneSupervisorItems(items, now) }
+      : doc;
+  });
+  if (closed.length)
+    await deps
+      .markDone(
+        user,
+        closed.map((item) => itemThreadId(item.id)),
+      )
+      .catch(() => {});
+  return closed;
+}
+
 // ── Prefs ───────────────────────────────────────────────────────────────────
 
 export interface SupervisorPrefsView extends SupervisorPrefs {

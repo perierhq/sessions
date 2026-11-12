@@ -22,10 +22,12 @@ import type {
 import { configuredRepos, personaName } from "../config";
 import type { LeadGoalFields, LeadWakePlan } from "../goal-runner";
 import {
+  LEAD_GUARD_REASON_PREFIX,
   LEAD_UNAVAILABLE_REASON,
   WAKE_CHECK_FAILED_REASON,
   goalGuardFor,
   goalMonthSpend,
+  liftGoalGuard,
   monthOf,
   type Goal,
 } from "../goals";
@@ -36,7 +38,13 @@ import {
   DEFAULT_REPORT_STYLE,
   type ReportStyle,
 } from "../supervisor-report-style";
-import { APPROVED_RUNS_ONLY_AT_ACT } from "./apply";
+import {
+  APPROVED_RUNS_ONLY_AT_ACT,
+  DONE_BY_LEAD_ANSWER,
+  applyItemKey,
+  doneByRulesItemIds,
+  failedByRules,
+} from "./apply";
 import type { LeadRecord } from "./approvals";
 import { leadCharter } from "./charter";
 import {
@@ -54,13 +62,19 @@ import {
 } from "./report";
 
 export const LEAD_MIN_WAKE_MINUTES = 60;
+/** The most wakes the lead's own schedule makes in one of the owner's
+ *  days: one per LEAD_MIN_WAKE_MINUTES, over the longest local day (25
+ *  hours, when the clocks go back). The wake limit counts on top of these. */
+export const LEAD_SCHEDULED_WAKES = Math.ceil(
+  (25 * 60) / LEAD_MIN_WAKE_MINUTES,
+);
 export const LEAD_OFF_REASON = "The lead is off in the project settings";
 export const KILL_SWITCH_REASON = "Agents are paused for this project";
 const BUDGET_REASON_PREFIX = "Over the lead's budget";
 /** Pauses the loop guard makes; lifted by the owner's Resume, the owner's
  *  next local day (the wake limit) or LEAD_TRIP_HOLD_MS after the trip
  *  (the token limit). */
-const GUARD_REASON_PREFIX = "Loop guard";
+const GUARD_REASON_PREFIX = LEAD_GUARD_REASON_PREFIX;
 /** How long a wake past its token limit holds the lead without the
  *  owner's Resume: a fixed span, so a trip late in the day still holds. */
 export const LEAD_TRIP_HOLD_MS = 12 * 60 * 60_000;
@@ -99,6 +113,8 @@ export interface LeadGoalDeps {
   mutateGoal: (typeof import("../goals"))["mutateGoal"];
   appendLedger: (typeof import("../goals"))["appendLedger"];
   postSupervisorItem: (typeof import("../supervisor-inbox"))["postSupervisorItem"];
+  closeSupervisorItems: (typeof import("../supervisor-inbox"))["closeSupervisorItems"];
+  listSupervisorItems: (typeof import("../supervisor-inbox"))["listSupervisorItems"];
   proposalForItem: (typeof import("./approvals"))["proposalForItem"];
   approve: (typeof import("./approvals"))["approve"];
   voidFor: (typeof import("./approvals"))["voidFor"];
@@ -139,6 +155,10 @@ const liveDeps: LeadGoalDeps = {
     (await import("../goals")).appendLedger(...args),
   postSupervisorItem: async (...args) =>
     (await import("../supervisor-inbox")).postSupervisorItem(...args),
+  closeSupervisorItems: async (...args) =>
+    (await import("../supervisor-inbox")).closeSupervisorItems(...args),
+  listSupervisorItems: async (...args) =>
+    (await import("../supervisor-inbox")).listSupervisorItems(...args),
   proposalForItem: async (...args) =>
     (await import("./approvals")).proposalForItem(...args),
   approve: async (...args) => (await import("./approvals")).approve(...args),
@@ -262,11 +282,19 @@ export function leadBlockReason(
   return leadGuardHold(doc, goal, now, day)?.reason ?? null;
 }
 
+/** The wakes the lead may start in one of the owner's days before its loop
+ *  guard holds it: its own schedule's (LEAD_SCHEDULED_WAKES) plus the
+ *  setting's extra ones, for wakes events and answers start. Finite, so a
+ *  loop of event wakes still trips it. */
+export function leadWakeLimit(doc: Pick<ProjectSettingsDocument, "lead">) {
+  return LEAD_SCHEDULED_WAKES + doc.lead.dailyWakeLimit;
+}
+
 /** What the loop guard holds the lead for, or null: a wake went past its
  *  token limit less than LEAD_TRIP_HOLD_MS ago, or the owner's day reached
- *  its wake limit. Each hold has the key of the question that asks about
- *  it: one per trip, one per day. The owner's Resume on that question lifts
- *  that hold. */
+ *  its wake limit (leadWakeLimit). Each hold has the key of the question
+ *  that asks about it: one per trip, one per day. The owner's Resume on
+ *  that question lifts that hold. */
 export function leadGuardHold(
   doc: ProjectSettingsDocument,
   goal: Pick<Goal, "guard">,
@@ -282,10 +310,11 @@ export function leadGuardHold(
       reason: `${GUARD_REASON_PREFIX}: a wake used ${(guard.trippedTokens ?? 0).toLocaleString("en-US")} tokens, over its limit of ${doc.lead.wakeTokenLimit.toLocaleString("en-US")}`,
       dedupeKey: `${source}:guard:trip:${guard.trips ?? 1}`,
     };
-  if (!guard.lifted && guard.wakes >= doc.lead.dailyWakeLimit)
+  const limit = leadWakeLimit(doc);
+  if (!guard.lifted && guard.wakes >= limit)
     return {
       kind: "wakes",
-      reason: `${GUARD_REASON_PREFIX}: ${guard.wakes} wakes today, the daily limit is ${doc.lead.dailyWakeLimit}`,
+      reason: `${GUARD_REASON_PREFIX}: ${guard.wakes} wakes today, the limit is ${limit} (${LEAD_SCHEDULED_WAKES} scheduled and ${doc.lead.dailyWakeLimit} extra)`,
       dedupeKey: `${source}:guard:wakes:${day}`,
     };
   return null;
@@ -511,9 +540,44 @@ async function askAboutGuard(
 }
 
 /**
+ * Expire the owner's open questions about loop guard holds that no longer
+ * hold the lead: an earlier day's wake limit, a trip whose hold ran out,
+ * or a hold the owner lifted (their Resume, or resuming the goal on the
+ * goals page). Only `hold`'s own question, if any, stays. Reads the
+ * owner's one inbox document; a failure is logged and never blocks.
+ */
+async function closeStaleGuardQuestions(
+  project: string,
+  doc: ProjectSettingsDocument,
+  hold: ReturnType<typeof leadGuardHold>,
+  d: LeadGoalDeps,
+): Promise<void> {
+  const owner = leadOwner(doc);
+  if (!owner) return;
+  const source = leadSource(project);
+  const prefix = `${source}:guard:`;
+  try {
+    await d.closeSupervisorItems(
+      owner,
+      (item) =>
+        item.source === source &&
+        !!item.dedupeKey?.startsWith(prefix) &&
+        item.dedupeKey !== hold?.dedupeKey,
+      { state: "expired" },
+    );
+  } catch (error) {
+    console.warn(
+      `[leads] ${project}: could not close the old loop guard questions:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
+/**
  * The wake check goal-runner runs before every wake of a lead's goal: it
  * doesn't wake while its lead is off, the project's kill switch is on, its
- * loop guard holds it (which also asks the owner, once a hold), it is over
+ * loop guard holds it (which also asks the owner, once a hold, and
+ * expires the questions about holds that ended), it is over
  * an optional dollar cap (which asks once a month) or the settings name
  * another goal. Otherwise it runs on the fields the settings give it, with
  * its token limit and what is left of a dollar cap, reads the web only
@@ -529,11 +593,12 @@ export async function leadWakeCheck(goal: Goal): Promise<LeadWakePlan> {
   if (doc.lead.goalId !== goal.id) return { block: NOT_THE_LEAD_REASON };
   const now = d.now();
   const day = await leadDay(doc, now, d);
+  const hold = leadGuardHold(doc, goal, now, day);
+  await closeStaleGuardQuestions(project, doc, hold, d);
   const reason = leadBlockReason(doc, goal, now, day);
   if (reason) {
     if (reason.startsWith(BUDGET_REASON_PREFIX))
       await askAboutBudget(project, doc, reason, now, d);
-    const hold = leadGuardHold(doc, goal, now, day);
     if (hold && reason === hold.reason)
       await askAboutGuard(project, doc, hold, d);
     return { block: reason };
@@ -653,9 +718,54 @@ async function tellReady(
   }
 }
 
+/** Close the owner's open proposal cards the lead settled under its own
+ *  rules (never answered by the owner), with the fixed answer line; its
+ *  Applied or Couldn't apply item stays. A failed or partial run's card
+ *  closes only once its Couldn't apply item is in the inbox, so a post that
+ *  failed (or a run settleInterrupted ended) leaves the card open. A
+ *  failure is logged. */
+async function closeDoneByRules(
+  project: string,
+  doc: ProjectSettingsDocument,
+  records: readonly LeadRecord[],
+  d: LeadGoalDeps,
+): Promise<void> {
+  const owner = leadOwner(doc);
+  if (!owner) return;
+  const source = leadSource(project);
+  try {
+    // Only read the inbox when a failed run needs its item confirmed.
+    const told = records.some(failedByRules)
+      ? new Set(
+          (
+            await d.listSupervisorItems(owner, {
+              dedupeKeyPrefix: `${source}:apply:`,
+              limit: 100,
+            })
+          ).map((item) => item.dedupeKey),
+        )
+      : new Set<string | undefined>();
+    const ids = doneByRulesItemIds(records, (id) =>
+      told.has(applyItemKey(project, id)),
+    );
+    if (!ids.size) return;
+    await d.closeSupervisorItems(
+      owner,
+      (item) => item.source === source && ids.has(item.id),
+      { state: "answered", answer: DONE_BY_LEAD_ANSWER },
+    );
+  } catch (error) {
+    console.warn(
+      `[leads] ${project}: could not close the cards the lead settled:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
 /**
  * The project's approvals at the start of a wake: expire old ones and
- * settle interrupted applies, then, where approved runs may happen, check
+ * settle interrupted applies, close the cards of proposals the lead
+ * settled under its own rules (closeDoneByRules), then, where approved runs may happen, check
  * the conditions of up to WAKE_CONDITION_CHECKS waiting ones (the least
  * recently checked first, each check bounded by
  * CONDITION_CHECK_TIMEOUT_MS) and move the met ones to ready. The owner is
@@ -671,9 +781,11 @@ async function reviewApprovals(
   const now = d.now();
   await d.expireApprovals(project, now);
   await d.settleInterrupted(project, now);
+  const records = await d.listApprovals(project);
+  await closeDoneByRules(project, doc, records, d);
   // lead_apply runs approved steps only at these stages (leads/apply.ts).
   if (!approvedRunsAt(doc.lead.stage)) return [];
-  const live = (await d.listApprovals(project)).filter(isLiveApproval);
+  const live = records.filter(isLiveApproval);
   const waiting = live
     .filter((r) => r.approval.state === "waiting" && r.approval.condition)
     // Never checked, then least recently checked, then oldest; ids are
@@ -1025,14 +1137,10 @@ export async function handleLeadAnswer(
       ? null
       : await approveFromAnswer(project, doc, item, answer, context, d);
   if (resumeGuard)
-    await d.mutateGoal(goal.id, (g) => {
-      const {
-        trippedAt: _at,
-        trippedTokens: _tokens,
-        ...guard
-      } = goalGuardFor(g, day);
-      return { ...g, guard: { ...guard, lifted: true } };
-    });
+    await d.mutateGoal(goal.id, (g) => ({
+      ...g,
+      guard: liftGoalGuard(goalGuardFor(g, day)),
+    }));
   await d.appendLedger(
     goal,
     [
