@@ -11,6 +11,13 @@
  *   POST /api/supervisor/items/:id/answer       { user, answer, revision? }
  *   POST /api/supervisor/items/:id/dismiss      { user }
  *   POST /api/supervisor/items/shown            { user, ids } → { marked }, Blob showed these open items
+ *   GET  /api/supervisor/brief?start=1          → BriefResponse (supervisor-brief.ts); reads only, unless
+ *                                               start=1 (Blob opening): then starts today's brief turn when
+ *                                               none is written and quiet hours are over
+ *   POST /api/supervisor/brief/seen             { day? } → { seenAt }, the owner saw the brief
+ *   POST /api/supervisor/brief/refresh          → 202 { state: "preparing" }, or 429 { retryAt }
+ *   The brief routes are the signed-in person's own: never a claimed name
+ *   or the automation principal (401).
  *   GET  /api/supervisor/leads                  → { leads: LeadRosterEntry[] }, every project's lead
  *   GET  /api/supervisor/prefs?user=
  *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle?, watch?: { enabled?, everyMinutes?, activeStart?, activeEnd? }, memoryWriter? }
@@ -42,6 +49,11 @@ import {
 } from "../supervisor-inbox";
 import { validatePrefsPatch } from "../supervisor-quiet-hours";
 import { withItemActs } from "../leads/item-acts";
+import {
+  getSupervisorBrief,
+  markBriefSeen,
+  startBriefTurn,
+} from "../supervisor-brief";
 import { listLeadRoster } from "../leads/roster";
 
 const ITEM_ACTION = /^\/api\/supervisor\/items\/([^/]+)\/(answer|dismiss)$/;
@@ -173,6 +185,57 @@ export async function handleSupervisorRoutes(
       );
     }
     return closeResponse(await dismissSupervisorItem(user, id));
+  }
+
+  // The morning brief (supervisor-brief.ts), the signed-in person's own:
+  // a brief turn spends their model budget and the brief says what waits
+  // for them, so a claimed name or an automation gets nothing. A GET only
+  // reads; Blob opening sends start=1, which starts the day's turn when
+  // there is no brief for today and answers `preparing`; Blob polls until
+  // it is `ready`.
+  const briefRoute =
+    (path === "/api/supervisor/brief" && req.method === "GET") ||
+    ((path === "/api/supervisor/brief/seen" ||
+      path === "/api/supervisor/brief/refresh") &&
+      req.method === "POST");
+  const briefUser = briefRoute ? verifiedPerson(ctx) : "";
+  if (briefRoute && !briefUser)
+    return Response.json(
+      { error: "Sign in to read the brief" },
+      { status: 401 },
+    );
+
+  if (path === "/api/supervisor/brief" && req.method === "GET") {
+    return Response.json(
+      await getSupervisorBrief(briefUser, {
+        start: url.searchParams.get("start") === "1",
+      }),
+    );
+  }
+
+  if (path === "/api/supervisor/brief/seen" && req.method === "POST") {
+    const body = await req.json().catch(() => null);
+    const user = briefUser;
+    const day: unknown = body?.day;
+    if (day !== undefined && (typeof day !== "string" || day.length > 10))
+      return Response.json({ error: "invalid day" }, { status: 400 });
+    const seen = await markBriefSeen(user, day as string | undefined);
+    if (!seen) return Response.json({ error: "not found" }, { status: 404 });
+    return Response.json({ seenAt: seen.seenAt });
+  }
+
+  if (path === "/api/supervisor/brief/refresh" && req.method === "POST") {
+    const result = await startBriefTurn(briefUser, "refresh");
+    if (result.started) {
+      void result.delivered;
+      return Response.json({ state: "preparing" }, { status: 202 });
+    }
+    if (result.reason === "running")
+      return Response.json({ state: "preparing" }, { status: 202 });
+    return Response.json(
+      { error: "too soon", retryAt: result.retryAt ?? null },
+      { status: 429 },
+    );
   }
 
   // Read only: each project's lead from its stored settings document

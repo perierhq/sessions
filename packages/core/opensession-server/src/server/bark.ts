@@ -617,11 +617,15 @@ export function barkMessageFor(
   const base = options.base ?? publicBase();
   const fixed = hasFixedPush(thread.subject.type);
   const plain = !options.sealed && !fixed;
+  const inBlob = (options.openIn ?? "blob") === "blob";
+  // A decision opens its item in Blob; the morning brief opens Blob,
+  // which shows it (supervisor-brief.ts).
   const url =
-    thread.kind === "supervisor_needs_you" &&
-    (options.openIn ?? "blob") === "blob"
+    inBlob && thread.kind === "supervisor_needs_you"
       ? `blob://item/${encodeURIComponent(thread.subject.id)}`
-      : absoluteUrl(base, thread.url);
+      : inBlob && thread.kind === "supervisor_digest"
+        ? "blob://"
+        : absoluteUrl(base, thread.url);
   const supervisor = thread.subject.type === "supervisor";
   const icon = iconUrl(base, supervisor || isBlobActor(thread.actor));
   const level = barkLevel(thread, event, delivery);

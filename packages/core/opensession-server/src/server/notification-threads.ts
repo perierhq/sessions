@@ -44,7 +44,7 @@ export const ACCESS_NOTIFICATION_KINDS = ["access_failing"] as const;
 export type AccessNotificationKind = (typeof ACCESS_NOTIFICATION_KINDS)[number];
 
 /** The supervisor's own pushes (supervisor-inbox.ts): a decision a lead
- *  raised for the owner, and the quiet daily digest of what ran alone. */
+ *  raised for the owner, and the morning brief (supervisor-brief.ts). */
 export const SUPERVISOR_NOTIFICATION_KINDS = [
   "supervisor_needs_you",
   "supervisor_digest",

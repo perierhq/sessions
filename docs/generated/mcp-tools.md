@@ -79,12 +79,12 @@ touches an in-process tool:
 | [`opensession-self`](#opensession-self) | 2 | automation | Only with the human-set `selfImprove` flag on that automation. |
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
-| [`opensession-supervisor`](#opensession-supervisor) | 16 | interactive | Only on a supervisor session (session.supervisor). |
+| [`opensession-supervisor`](#opensession-supervisor) | 18 | interactive | Only on a supervisor session (session.supervisor). |
 | [`opensession-watch`](#opensession-watch) | 7 | goal wake | Only on a person's watch goal (goal.watchOwner). |
 | [`opensession-lead`](#opensession-lead) | 9 | goal wake | Only on a project lead's goal (goal.leadProject). |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-43 servers, 228 tools.
+43 servers, 230 tools.
 
 ## opensession-sessions
 
@@ -1623,13 +1623,25 @@ Record the owner's answer to an inbox item, when they gave it to you in this con
 
 `mcp__opensession-supervisor__dismiss_item` · input: `id` (string, required)
 
-Dismiss an inbox item that no longer needs the owner.
+Dismiss an inbox item that no longer needs the owner. Items marked now or down, and a lead's items with steps still waiting, are never dismissed: they stay open, so leave them as later.
+
+### `close_items`
+
+`mcp__opensession-supervisor__close_items` · input: `ids` (string[], required), `reason` (string, required)
+
+Close open inbox items that no longer need the owner, with one reason for all of them: stale, already done (say how you checked), or a duplicate ("same as <id of the item you keep>"). Closing answers nothing: a lead's steps never run from it. Items marked now or down, and a lead's items with steps still waiting, are never closed: they stay open, so leave them as later. Up to 50 ids; group items by reason.
+
+### `write_brief`
+
+`mcp__opensession-supervisor__write_brief` · input: `say` (string, required), `handled` (object[]), `decisions` (object[])
+
+Store the owner's morning brief, the last step of a brief turn (your charter, "The morning brief"), or when they ask for a fresh one. say is what Blob says aloud, for the ear, under 600 characters (about 40 seconds). handled: one line per thing you closed or did, with its item id when there is one, at most 10. decisions: at most 3 open needs-you items only the owner can decide, most important first, each with the option you recommend (its text or number). Every other open needs-you item stays open as later. The server checks each id against the inbox; an error says what to fix.
 
 ### `post_item`
 
-`mcp__opensession-supervisor__post_item` · input: `kind` ("needs-you" | "fyi", required), `title` (string, required), `body` (string), `options` (string[]), `project` (string), `dedupe_key` (string), `urgency` ("normal" | "down")
+`mcp__opensession-supervisor__post_item` · input: `kind` ("needs-you" | "fyi", required), `title` (string, required), `body` (string), `options` (string[]), `project` (string), `dedupe_key` (string), `urgency` ("normal" | "now" | "down")
 
-Raise something to the owner. kind needs-you pushes their phone (held during their quiet hours unless urgency is down); fyi waits for the daily digest. Use needs-you only for a decision only they can make: two short lines and the options, recommended option first. The same dedupe_key updates an open item instead of adding another.
+Raise something to the owner. kind needs-you is a decision only they can make: two short lines and the options, recommended option first. It waits for their next morning brief without a push, unless urgency is now (pushed at once, held in quiet hours) or down. fyi is told in the morning brief. The same dedupe_key updates an open item instead of adding another.
 
 ### `incidents`
 
@@ -1721,9 +1733,9 @@ List the owner's supervisor inbox: decisions leads raised (needs-you) and what r
 
 ### `post_item`
 
-`mcp__opensession-watch__post_item` · input: `kind` ("needs-you" | "fyi", required), `title` (string, required), `body` (string), `options` (string[]), `project` (string), `dedupe_key` (string), `urgency` ("normal" | "down")
+`mcp__opensession-watch__post_item` · input: `kind` ("needs-you" | "fyi", required), `title` (string, required), `body` (string), `options` (string[]), `project` (string), `dedupe_key` (string), `urgency` ("normal" | "now" | "down")
 
-Raise something to the owner. kind needs-you pushes their phone (held during their quiet hours unless urgency is down); fyi waits for the daily digest. Use needs-you only for a decision only they can make: two short lines and the options, recommended option first. The same dedupe_key updates an open item instead of adding another.
+Raise something to the owner. kind needs-you is a decision only they can make: two short lines and the options, recommended option first. It waits for their next morning brief without a push, unless urgency is now (pushed at once, held in quiet hours) or down. fyi is told in the morning brief. The same dedupe_key updates an open item instead of adding another.
 
 ### `read_ledger`
 
@@ -1787,7 +1799,7 @@ Propose an action for example to its owner. Write the body as Blob presents it: 
 
 `mcp__opensession-lead__post_digest_note` · input: `text` (string, required)
 
-Write today's note on example for the owner's daily digest: what you saw, what you proposed, what is waiting. A later note today replaces this one, so include everything. Nobody is pushed for it.
+Write today's note on example for the owner's morning brief: what you saw, what you proposed, what is waiting. A later note today replaces this one, so include everything. Nobody is pushed for it.
 
 ### `lead_apply`
 

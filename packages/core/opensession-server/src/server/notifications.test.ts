@@ -405,6 +405,8 @@ describe("supervisor delivery", () => {
         body: "Jane wrote: please refund",
         options: ["Refund jane@example.test", "Decline"],
         project: "acme",
+        // Pushed at once; a plain decision waits for the morning brief.
+        urgency: "now",
         ...patch,
       });
     } finally {

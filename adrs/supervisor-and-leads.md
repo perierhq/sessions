@@ -49,7 +49,7 @@ Shared pieces to build on:
   (`ensureDeskSession`'s store pattern), with its own flag and charter note.
   Blob connects to it. It does no project work itself. It keeps the briefing
   across leads, answers the owner, holds the decisions that are waiting, and
-  writes the daily digest. The Desk stays the OS app's quick-question session.
+  writes the morning brief. The Desk stays the OS app's quick-question session.
 - **A lead** owns one project. It is a goal (`goal-runner.ts`) bound to a
   project, with a charter: scope, the loops it owns, its loop guards and its
   autonomy. The charter lives in the project's settings document as a new
@@ -134,10 +134,13 @@ is optional and off by default; without a key, the rules alone decide.
 
 ### 5. The owner hears from one place
 
-- **Pushes:** leads report to the supervisor. The supervisor pushes through
-  `notifyUser` only for something the owner must decide, with two lines and
-  the options, deep-linking into Blob.
-- **Digest:** one digest a day, at a time the owner sets, of what ran alone.
+- **Pushes:** leads report to the supervisor. A decision waits for the
+  morning brief; it pushes through `notifyUser` at once only when it can't
+  wait (see "The morning brief" below), with two lines and the options,
+  deep-linking into Blob.
+- **Morning brief:** once a day, at a time the owner sets, the supervisor
+  writes one brief of what ran alone, what it handled and what needs them.
+  It replaced the counts-only daily digest push.
 - **Quiet hours** apply to every kind, not just incidents: the incident night
   rule and `sweepHeldIncidents`, extended. Something fully down still gets
   through.
@@ -233,6 +236,58 @@ What landed from this proposal, and the decisions made on the way:
   on by default), and the supervisor reads only personal and team memory.
 - **Voice** (#150, #155): Fish Audio read-aloud on the server; the OpenAI live call is
   opt-in in Blob because it is billed per minute.
+- **Morning brief** (this change): the daily digest push is replaced by a brief the
+  supervisor writes; see the next section.
+
+### The morning brief
+
+Showing every open needs-you item as a card, oldest first, buried what mattered under stale
+and duplicate cards. Once a day the supervisor goes through the inbox instead and writes one
+brief (`supervisor-brief.ts`).
+
+- **The turn.** At the owner's digest time (09:00 local by default, never in quiet hours) the
+  inbox sweep starts a brief turn in the owner's supervisor session. It is a server notice
+  with no owner message, delivered the way a merge card's outcome is (`conversationNotice`),
+  so the conversation keeps it instead of the watch. The charter's "The morning brief" says
+  what to do: check each open item with tools, close stale and done ones with a reason and
+  duplicates with "same as <kept id>" (`close_items`), act where the rules allow, pick at
+  most three decisions with a recommendation, then `write_brief`. Closing answers nothing, so
+  it never approves a lead's steps. `close_items` never closes an item marked `now` or `down`,
+  or a lead's item whose steps still stand (unapproved, or approved and not applied; an item
+  whose steps can't be read counts as one): each stays open with a fixed reason, and the brief
+  can only leave it as later.
+- **When it runs.** One automatic turn per owner per day: at the digest time, or earlier when
+  the owner opens Blob after quiet hours and there is no brief for today
+  (`GET /api/supervisor/brief?start=1` answers `preparing` and the turn finishes on its own;
+  a GET without `start=1` only reads). A fresh
+  brief on request (`POST /api/supervisor/brief/refresh`) at most every 30 minutes. A turn
+  that writes nothing in 20 minutes is over.
+- **The record** lives in the owner's inbox document in the catalog (`brief`): `day`,
+  `asOf`, `say` (spoken, at most 600 characters), `handled` (at most 10 one-line entries,
+  each with an optional item id), `decisions` (at most 3, each one open needs-you item of the
+  owner's and an optional recommended option), `later` (count and ids of the other open
+  needs-you items) and `seenAt`. `write_brief` checks it against the inbox in the same
+  compare-and-set it is stored with. A decision names one real item, and the owner answers it
+  through the item API with that item's revision, so an approval stays bound to what they
+  saw. Writing it counts the open fyi items as told, as the digest did.
+- **Reading it.** `GET /api/supervisor/brief` returns today's brief or the latest, its
+  decisions expanded to the item payloads the items route returns (`revision`, `act`), with
+  `state` `ready`, `preparing` or `none`. `POST /api/supervisor/brief/seen` marks it seen.
+  The brief routes take the signed-in person only (`verifiedPerson`), never a claimed `user`
+  or the automation principal (401), so a turn starts only for the person it spends on. A written brief sends the socket frame
+  `supervisor_brief_ready`.
+- **The push.** A scheduled brief pushes "Your morning brief is ready" once, after quiet
+  hours and only if the owner hasn't seen it yet: Blob's icon, opening Blob, and only the
+  count of decisions as the Bark subtitle. When the scheduled turn couldn't run or wrote
+  nothing and decisions or untold updates wait, one push goes out instead, fixed copy with
+  both counts ("Your brief couldn't be put together. 2 decisions and 3 updates are waiting."),
+  and the record keeps the counts (`fallback` in the GET answer). The updates stay untold for
+  the next brief.
+- **Interrupts.** A new needs-you item pushes at once only when its urgency is `down`
+  (something fully down, through quiet hours) or `now` (held in quiet hours): it expires
+  before the next brief or something time-sensitive waits on it, such as an incident that
+  needs the owner or a lead's approval whose steps expire within a day (`proposalUrgency`).
+  Everything else waits for the next brief: no push, still open in the inbox.
 
 ### The act stage (#173 to #184)
 

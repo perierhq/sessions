@@ -10,6 +10,7 @@ import {
   expiryCopy,
   proposalBody,
   proposalLead,
+  proposalUrgency,
   ruleCopy,
   stepCopy,
   supportDrafts,
@@ -418,5 +419,31 @@ describe("proposalLead", () => {
         decision: { rule: "Asks first" } as never,
       }),
     ).toBe("Verified.\n\nRule: Asks first.\n\nShip Steps: 1. Merge all");
+  });
+});
+
+describe("proposalUrgency", () => {
+  test("an approval expiring within a day pushes now; others wait for the brief", () => {
+    expect(proposalUrgency({ expiresAt: NOW + DAY }, NOW)).toBe("now");
+    expect(proposalUrgency({ expiresAt: NOW + 3_600_000 }, NOW)).toBe("now");
+    expect(proposalUrgency({ expiresAt: NOW + 2 * DAY }, NOW)).toBeUndefined();
+    expect(proposalUrgency(undefined, NOW)).toBeUndefined();
+  });
+
+  test("anything about an incident pushes now, whatever the lead says", () => {
+    expect(proposalUrgency(undefined, NOW, "fix-verified")).toBe("now");
+    expect(
+      proposalUrgency(
+        {
+          expiresAt: NOW + 7 * DAY,
+          condition: { kind: "incident-resolved", id: "inc-1" },
+        },
+        NOW,
+        "public-release",
+      ),
+    ).toBe("now");
+    expect(
+      proposalUrgency({ expiresAt: NOW + 7 * DAY }, NOW, "public-release"),
+    ).toBeUndefined();
   });
 });

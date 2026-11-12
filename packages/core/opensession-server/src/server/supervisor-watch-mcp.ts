@@ -85,8 +85,16 @@ export function createWatchMcpServer(ctx: { user: string }) {
       listItemsTool(user, WATCH_UNTRUSTED_LABEL),
       // Down (which ignores quiet hours) only while an urgent event is
       // pending: an incident going critical, an item marked down.
-      postItemTool(user, WATCH_SOURCE, async () =>
-        (await readWatchState(user)).events.some((e) => e.urgent),
+      // A decision raised while an incident is pending pushes (now) at
+      // least: incidents never wait for the morning brief.
+      postItemTool(
+        user,
+        WATCH_SOURCE,
+        async () => (await readWatchState(user)).events.some((e) => e.urgent),
+        async () =>
+          (await readWatchState(user)).events.some(
+            (e) => e.kind === "incident",
+          ),
       ),
       readLedgerTool(user),
       appendLedgerTool(

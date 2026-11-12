@@ -809,6 +809,8 @@ describe("the next decision after a wake", () => {
     ).toHaveLength(1);
     const breaker = open.find((i) => i.kind === "needs-you");
     expect(breaker?.title).toBe("The watch stopped: its last wakes failed");
+    // The system telling on itself pushes; it never waits for the brief.
+    expect(breaker?.urgency).toBe("now");
     expect(await goals.getGoal(goal.id)).toMatchObject({
       status: "paused",
       pauseReason: watch.WATCH_FAILING_REASON,
@@ -1041,9 +1043,10 @@ describe("opensession-watch guards", () => {
       urgency: "down",
       dedupe_key: "checkout",
     });
-    expect(refused.content[0]!.text).toContain("Posted as normal urgency");
+    expect(refused.content[0]!.text).toContain("Posted as urgency now");
     let [item] = await inbox.listSupervisorItems(USER, { state: "open" });
-    expect(item!.urgency ?? "normal").toBe("normal");
+    // Refused down still pushes: it goes out as now, not normal.
+    expect(item!.urgency).toBe("now");
     await watch.recordWatchEvent(USER, {
       kind: "incident",
       title: "Checkout down",
@@ -1057,6 +1060,37 @@ describe("opensession-watch guards", () => {
     });
     [item] = await inbox.listSupervisorItems(USER, { state: "open" });
     expect(item!.urgency).toBe("down");
+  });
+
+  test("a decision raised while an incident is pending pushes now", async () => {
+    await watchGoal();
+    const t = await tools();
+    await t.post_item!.handler({
+      kind: "needs-you",
+      title: "Restart the worker?",
+      dedupe_key: "plain",
+    });
+    let [item] = await inbox.listSupervisorItems(USER, { state: "open" });
+    expect(item!.urgency).toBeUndefined();
+    await watch.recordWatchEvent(USER, {
+      kind: "incident",
+      title: "acme: checkout errors (high, inc-1)",
+    });
+    await t.post_item!.handler({
+      kind: "needs-you",
+      title: "Roll back checkout?",
+      urgency: "normal",
+      dedupe_key: "incident",
+    });
+    [item] = await inbox.listSupervisorItems(USER, { state: "open" });
+    expect(item).toMatchObject({
+      title: "Roll back checkout?",
+      urgency: "now",
+    });
+    // An fyi still waits for the brief.
+    await t.post_item!.handler({ kind: "fyi", title: "Checkout noted" });
+    const note = (await inbox.listSupervisorItems(USER, { kind: "fyi" }))[0];
+    expect(note!.urgency).toBeUndefined();
   });
 
   test("its ledger entries are marked as observations, its item lists as untrusted", async () => {

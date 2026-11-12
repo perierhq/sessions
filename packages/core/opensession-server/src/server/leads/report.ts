@@ -154,6 +154,27 @@ const DAY_MS = 86_400_000;
 export const DEFAULT_EXPIRES_IN_DAYS = DEFAULT_APPROVAL_TTL_MS / DAY_MS;
 export const MAX_EXPIRES_IN_DAYS = MAX_APPROVAL_TTL_MS / DAY_MS;
 
+/** Categories that are about an incident: a fix the incident loop's
+ *  verifier checked. */
+const INCIDENT_CATEGORIES: ReadonlySet<LeadCategory> = new Set([
+  "fix-verified",
+]);
+
+/** What can't wait for the next morning brief pushes at once (`now`),
+ *  decided here from the proposal, never by the lead: anything about an
+ *  incident (an incident category, or steps waiting for an incident to
+ *  resolve), and an approval whose steps expire within a day. Everything
+ *  else from a lead waits for the brief. */
+export function proposalUrgency(
+  act: Pick<LeadAct, "expiresAt" | "condition"> | undefined,
+  now: number,
+  category?: LeadCategory,
+): "now" | undefined {
+  if (category && INCIDENT_CATEGORIES.has(category)) return "now";
+  if (act?.condition?.kind === "incident-resolved") return "now";
+  return act && act.expiresAt - now <= DAY_MS ? "now" : undefined;
+}
+
 /** A proposal's steps as the server checked them. */
 export interface LeadAct {
   steps: LeadStep[];
@@ -823,6 +844,7 @@ export async function deliverLeadProposal(
     title: proposalTitle(label, proposal.category),
     options,
     dedupeKey,
+    urgency: proposalUrgency(act, Date.now(), proposal.category),
   };
   const posted = await postSupervisorItem({ ...item, body });
   const itemId = posted.item.id;

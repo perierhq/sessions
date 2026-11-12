@@ -455,6 +455,7 @@ describe("leadWakeCheck", () => {
       source: "lead:acme",
       options: ["Raise the budget", "Leave it paused"],
       dedupeKey: "lead:acme:budget:2026-11",
+      urgency: "now",
     });
     // Answered, it isn't asked again this month.
     await answerSupervisorItem("Ada", items[0]!.id, "2", "owner");
@@ -568,6 +569,7 @@ describe("the loop guard", () => {
       body: "28 wakes today, the limit is 28 (25 scheduled and 3 extra). The lead may be stuck in a loop. Resume lets it run for the rest of today; otherwise it starts again tomorrow.",
       options: ["Resume", "Keep paused"],
       dedupeKey: "lead:acme:guard:wakes:2026-11-10",
+      urgency: "now",
     });
     await mutateGoal(goal.id, (g) => ({
       ...g,
@@ -831,6 +833,7 @@ describe("waiting for headroom", () => {
     expect(items[0]).toMatchObject({
       title: "Acme: the lead has waited a day to run",
       body: "Your Claude accounts are near their limits, so its wakes wait. It runs again once there is room.",
+      urgency: "now",
     });
   });
 });

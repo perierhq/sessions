@@ -268,6 +268,8 @@ function tellOwner(
       kind: "needs-you",
       title: notice.title,
       body: notice.body,
+      // A merge the owner asked for is stuck: it can't wait for the brief.
+      urgency: "now",
       dedupeKey:
         reason === "refused"
           ? `${MERGE_CARD_SOURCE}:${sessionId}:${job.label}`
@@ -501,6 +503,8 @@ export async function tellDroppedMergeQueues(): Promise<void> {
         body: `The server restarted before these merge cards were confirmed, so nothing was merged: ${saved.labels.join(", ")}. Ask Blob to merge them again if you still want them.`,
         dedupeKey: `${MERGE_CARD_SOURCE}:restart:${sessionId}:${saved.labels.join(",")}`,
         once: true,
+        // Merges the owner asked for didn't happen: it can't wait.
+        urgency: "now",
       });
     if (!queues.has(sessionId)) await deps.save(sessionId, null);
   }

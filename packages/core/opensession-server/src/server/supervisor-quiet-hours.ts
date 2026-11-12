@@ -46,7 +46,7 @@ export interface SupervisorPrefs {
   quietStart: string;
   /** End of quiet hours, `HH:MM` local. */
   quietEnd: string;
-  /** When the daily digest goes out, `HH:MM` local. */
+  /** When the morning brief is written (supervisor-brief.ts), `HH:MM` local. */
   digestAt: string;
   /** IANA time zone. Empty: the person's profile time zone. */
   timezone: string;
