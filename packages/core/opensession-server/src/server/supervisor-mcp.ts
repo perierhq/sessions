@@ -427,7 +427,7 @@ export function createSupervisorMcpServer(ctx: {
       ),
       tool(
         "write_brief",
-        `Store the owner's morning brief, the last step of a brief turn (your charter, "The morning brief"), or when they ask for a fresh one. say is what Blob says aloud, for the ear, under ${BRIEF_SAY_LEN} characters (about 40 seconds). handled: one line per thing you closed or did, with its item id when there is one, at most ${BRIEF_MAX_HANDLED}. decisions: at most ${BRIEF_MAX_DECISIONS} open needs-you items only the owner can decide, most important first, each with the option you recommend (its text or number). Every other open needs-you item stays open as later. The server checks each id against the inbox; an error says what to fix.`,
+        `Store the owner's morning brief, the last step of a brief turn (your charter, "The morning brief"), or when they ask for a fresh one. say is what Blob says aloud, for the ear, about 60 words, under ${BRIEF_SAY_LEN} characters, with no internal ids. handled: one line per thing you closed or did, with its item id when there is one, at most ${BRIEF_MAX_HANDLED}. decisions: at most ${BRIEF_MAX_DECISIONS} open needs-you items only the owner can decide, most important first, each with the option you recommend (its text or number). Every other open needs-you item stays open as later. The server checks each id against the inbox; an error says what to fix.`,
         {
           say: z.string().min(1).max(BRIEF_SAY_LEN),
           handled: z

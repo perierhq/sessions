@@ -717,6 +717,19 @@ describe("standing sessions", () => {
     expect(note).toContain("goes to Pat to update its branch");
   });
 
+  test("the brief never recommends a merge the checks or branch rules would block", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain(
+      "Never recommend merging, releasing or applying something whose required checks are failing or whose merge the branch rules would refuse",
+    );
+    expect(note).toContain(
+      '("Fix CI first: ask Pat") and say why in one clause',
+    );
+    expect(note).toContain("about 60 words, written for the ear");
+    expect(note).toContain("no internal ids");
+    expect(note).not.toContain("under 40 seconds");
+  });
+
   test("the charter claims nothing about what a client shows unchecked", () => {
     const note = supervisor.supervisorNote("Pat");
     expect(note).toContain(
