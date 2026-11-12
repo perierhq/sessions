@@ -88,8 +88,10 @@ export interface ReposToolContext {
   }) => Promise<PrMergeVerdict>;
   /**
    * Open a force-merge confirmation card for the session's driver and wait
-   * for their answer. Throws with a human message when the PR cannot be
-   * force merged or nobody could confirm.
+   * for their answer, or (supervisor sessions) answer at once with what
+   * happened to the card while the outcome arrives later. Throws with a
+   * human message when the PR cannot be force merged or nobody could
+   * confirm.
    */
   forceMerge: (
     input: {
@@ -100,7 +102,7 @@ export interface ReposToolContext {
       method?: "squash" | "merge" | "rebase";
     },
     signal?: AbortSignal,
-  ) => Promise<ForceMergeOutcome>;
+  ) => Promise<ForceMergeOutcome | string>;
 }
 
 function text(s: string) {
@@ -310,7 +312,7 @@ export function createReposMcpServer(ctx: ReposToolContext) {
     ),
     tool(
       "force_merge_pull_request",
-      "Ask the person driving this session to merge a pull request despite failing, pending or missing checks or reviews. Only when they asked for it: never on your own judgment. A card shows them the PR, its title, the head commit, the merge method and exactly which checks and reviews would be bypassed; nothing happens until they press Confirm, and you cannot confirm it. The merge runs with their own GitHub account and is pinned to the head commit on the card, so a push after the card appears aborts it. GitHub still decides whether they may bypass branch protection; a refusal names what is missing. Merged PRs get a comment with the reason. Drafts and PRs with merge conflicts are refused. Waits up to 15 minutes. After a cancel, do not ask again unless they say so.",
+      "Ask the person driving this session to merge a pull request despite failing, pending or missing checks or reviews. Only when they asked for it: never on your own judgment. A card shows them the PR, its title, the head commit, the merge method and exactly which checks and reviews would be bypassed; nothing happens until they press Confirm, and you cannot confirm it. The merge runs with their own GitHub account and is pinned to the head commit on the card, so a push after the card appears aborts it. GitHub still decides whether they may bypass branch protection; a refusal names what is missing. Merged PRs get a comment with the reason. Drafts and PRs with merge conflicts are refused. Waits up to 15 minutes for the answer; in a supervisor session it returns as soon as the card is up (or queued behind other cards), and the result arrives later as a message. Several PRs raised together merge in order, and one that conflicts after another merges goes to the persona to update its branch, then its card comes back. After a cancel, do not ask again unless they say so.",
       {
         url: z
           .string()
@@ -348,8 +350,11 @@ export function createReposMcpServer(ctx: ReposToolContext) {
         extra: any,
       ) => {
         try {
+          const outcome = await ctx.forceMerge(args, extra?.signal);
           return text(
-            formatForceMergeOutcome(await ctx.forceMerge(args, extra?.signal)),
+            typeof outcome === "string"
+              ? outcome
+              : formatForceMergeOutcome(outcome),
           );
         } catch (e: any) {
           return text(`Couldn't force merge: ${e?.message || String(e)}`);

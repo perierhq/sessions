@@ -758,7 +758,18 @@ export function backgroundDeliveryKind(
   content: string,
   user: string | undefined,
   deliveryId: string | undefined,
+  conversationNotice = false,
 ): WatchEventKind | null {
+  // How a merge card the owner answered ended: the conversation raised it
+  // and said they'd hear back (supervisor-merge-queue.ts). Only server code
+  // sets this delivery option, and only with no user and a notice body; a
+  // delivery id is the sender's to choose, so it never decides.
+  if (
+    conversationNotice &&
+    user === undefined &&
+    content.trimStart().startsWith("<!--os:session-notice-->")
+  )
+    return null;
   if (/^<!--os:worker-report(?::[^\s>]+)?-->/.test(content.trimStart()))
     return "worker-report";
   if (isWorkerActor(user)) return "worker-report";
@@ -814,10 +825,16 @@ export async function routeSupervisorDelivery(
   content: string,
   user: string | undefined,
   deliveryId: string | undefined,
+  conversationNotice = false,
 ): Promise<string | null> {
   const owner = session.createdBy?.trim();
   if (!session.supervisor || !owner) return null;
-  const kind = backgroundDeliveryKind(content, user, deliveryId);
+  const kind = backgroundDeliveryKind(
+    content,
+    user,
+    deliveryId,
+    conversationNotice,
+  );
   if (!kind) return null;
   const text = strippedDelivery(content);
   // A worker or session asking something waits for an answer only the

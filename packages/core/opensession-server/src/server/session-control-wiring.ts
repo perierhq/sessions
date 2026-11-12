@@ -378,6 +378,7 @@ registerSessionControl({
           String(content || ""),
           user,
           deliveryId,
+          opts?.conversationNotice === true,
         ).catch(() => null);
         if (routed)
           return { status: "handled" as const, message: routed, deliveryId };

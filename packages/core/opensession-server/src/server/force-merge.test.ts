@@ -5,6 +5,8 @@ import {
   explainMergeRefusal,
   forceMergeBypasses,
   formatForceMergeOutcome,
+  ForceMergeError,
+  openForceMerge,
   parseGhApiError,
   pendingForceMerge,
   pickMergeMethod,
@@ -327,6 +329,37 @@ describe("force merge", () => {
     expect(calls.comment).toEqual([]);
     expect((await outcome).result.status).toBe("refused");
     expect(calls.audit.at(-1)).toMatchObject({ event: "refused" });
+  });
+
+  test("openForceMerge returns once the card is up, before any answer", async () => {
+    const { deps, calls } = fake();
+    const { request, outcome } = await openForceMerge(
+      "s-open",
+      { target, reason: "e2e is down for everyone", driver },
+      undefined,
+      deps,
+    );
+    // The card is in front of the driver and nothing has merged.
+    expect(pendingForceMerge("s-open")?.request.id).toBe(request.id);
+    expect(calls.merge).toEqual([]);
+    // Confirming still needs the driver's own credential.
+    await expect(
+      confirmForceMerge("s-open", request.id, "mallory", credential),
+    ).rejects.toThrow("Only Ada can answer");
+    await confirmForceMerge("s-open", request.id, "ada", credential);
+    expect((await outcome).result.status).toBe("merged");
+  });
+
+  test("a conflicting PR is refused with the conflict code", async () => {
+    const { deps } = fake({ src: { mergeable: "CONFLICTING" } });
+    const error = await openForceMerge(
+      "s-conflict",
+      { target, reason: "why", driver },
+      undefined,
+      deps,
+    ).catch((e) => e);
+    expect(error).toBeInstanceOf(ForceMergeError);
+    expect(error.code).toBe("conflict");
   });
 
   test("refuses what a force merge cannot skip, before any card", async () => {

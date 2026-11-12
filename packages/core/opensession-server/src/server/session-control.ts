@@ -287,6 +287,13 @@ export interface SessionControl {
       hold?: boolean;
       /** Caller-supplied receipt id (agent-to-agent tools); generated otherwise. */
       deliveryId?: string;
+      /**
+       * A server-written notice the supervisor conversation keeps instead of
+       * routing it to the watch: how a merge card it raised ended
+       * (supervisor-merge-queue.ts). Set only by server code, never from a
+       * tool's or a request's input.
+       */
+      conversationNotice?: boolean;
       /** Automated PR findings wait behind an active user turn and drain alone. */
       reviewHandoff?: boolean;
       /** Stable identity included in the durable command payload. */
