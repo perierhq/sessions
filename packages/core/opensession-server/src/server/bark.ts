@@ -475,6 +475,9 @@ export async function setBarkSettings(
         next.encryption = { algorithm, mode, keyRef };
       }
       if (patch.enabled !== undefined) next.enabled = patch.enabled;
+      // The first key turns Bark on: a key alone is what the owner meant.
+      // Replacing a key keeps the current state.
+      else if (patch.deviceKey && !current.deviceKeyRef) next.enabled = true;
       if (!next.deviceKeyRef) {
         if (patch.enabled === true) {
           outcome.error = "Add your Bark device key first";
