@@ -570,6 +570,105 @@ describe("reading", () => {
     expect(read.newSince).toEqual({ count: 1, itemIds: [later.id] });
     expect(read.preparingSince).toBeNull();
   });
+
+  test("the reopen line: decisions waiting while they wait, the brief while the day lasts", async () => {
+    expect((await brief.getSupervisorBrief("Ada")).reopen).toBeNull();
+    const a = await decision("Ship 1.19.0?", "a");
+    const b = await decision("Merge PR 533?", "b");
+    clock = at("2026-07-01T08:00:00Z");
+    await brief.writeSupervisorBrief("Ada", {
+      say: "Morning.",
+      decisions: [{ itemId: a.id }, { itemId: b.id }],
+    });
+    clock = at("2026-07-01T13:00:00Z");
+    // Seen or not, put away or not: the line is there to open it again.
+    await brief.markBriefSeen("Ada");
+    expect((await brief.getSupervisorBrief("Ada")).reopen).toEqual({
+      line: "This morning: 2 decisions waiting",
+    });
+    await inbox.answerSupervisorItem("Ada", a.id, "1", "owner");
+    // A new needs-you item since the brief counts as waiting too.
+    const c = await decision("Rotate the key?", "c");
+    await inbox.answerSupervisorItem("Ada", b.id, "1", "owner");
+    expect((await brief.getSupervisorBrief("Ada")).reopen).toEqual({
+      line: "This morning: 1 decision waiting",
+    });
+    await inbox.answerSupervisorItem("Ada", c.id, "1", "owner");
+    expect((await brief.getSupervisorBrief("Ada")).reopen).toEqual({
+      line: "Today\u2019s brief",
+    });
+    // The next day, nothing waiting: gone.
+    clock = at("2026-07-02T06:00:00Z");
+    expect((await brief.getSupervisorBrief("Ada")).reopen).toBeNull();
+  });
+
+  test("the reopen line's copy", () => {
+    const now = at("2026-07-01T18:00:00Z");
+    const line = (asOf: string, waiting: number, day = "2026-07-01") =>
+      brief.briefReopenLine({
+        state: "ready",
+        brief: { day, asOf: at(asOf) },
+        waiting,
+        now,
+        timeZone: "UTC",
+      });
+    expect(line("2026-07-01T09:00:00Z", 3)).toEqual({
+      line: "This morning: 3 decisions waiting",
+    });
+    expect(line("2026-07-01T14:00:00Z", 1)).toEqual({
+      line: "Today: 1 decision waiting",
+    });
+    expect(line("2026-06-30T09:00:00Z", 2, "2026-06-30")).toEqual({
+      line: "Last brief: 2 decisions waiting",
+    });
+    expect(line("2026-06-30T09:00:00Z", 0, "2026-06-30")).toBeNull();
+    expect(
+      brief.briefReopenLine({
+        state: "preparing",
+        brief: { day: "2026-07-01", asOf: now },
+        waiting: 2,
+        now,
+        timeZone: "UTC",
+      }),
+    ).toBeNull();
+  });
+
+  test("read_brief describes the latest brief and starts nothing", async () => {
+    expect(await brief.describeSupervisorBrief("Ada")).toBe(
+      "There is no brief yet.",
+    );
+    const a = await decision("Ship 1.19.0?", "a");
+    const b = await decision("Merge PR 533?", "b");
+    const c = await decision("Raise the budget?", "c");
+    await brief.writeSupervisorBrief("Ada", {
+      say: "Morning. Two things need you.",
+      handled: [{ line: "Closed the stale budget card" }],
+      decisions: [{ itemId: a.id, recommended: "Ship it" }, { itemId: b.id }],
+    });
+    await inbox.answerSupervisorItem("Ada", b.id, "1", "owner");
+    clock = at("2026-07-01T15:00:00Z");
+    const later = await decision("Rotate the key?", "d");
+    const text = await brief.describeSupervisorBrief("Ada");
+    expect(text).toBe(
+      [
+        "Brief for 2026-07-01, not seen by the owner yet.",
+        "",
+        "What Blob said: Morning. Two things need you.",
+        "",
+        "Handled:",
+        "- Closed the stale budget card",
+        "",
+        "Decisions still open:",
+        `- [${a.id}] Ship 1.19.0? (you recommended: Ship it)`,
+        `Left for later: 1 open item (${c.id}).`,
+        `New since the brief: 1 open item (${later.id}).`,
+      ].join("\n"),
+    );
+    // Reading never starts a turn, even on a new day with no brief.
+    clock = at("2026-07-02T12:00:00Z");
+    await brief.describeSupervisorBrief("Ada");
+    expect(delivered).toHaveLength(0);
+  });
 });
 
 describe("routes", () => {

@@ -97,4 +97,16 @@ struct BriefDecodingTests {
         )
         #expect(mismatched.shownBody == "Other body")
     }
+
+    @Test(arguments: [
+        (#"{"reopen": {"line": "This morning: 2 decisions waiting"}}"#, "This morning: 2 decisions waiting"),
+        (#"{"reopen": "Today\u2019s brief"}"#, "Today\u{2019}s brief"),
+        (#"{"reopen": {"line": "  "}}"#, nil),
+        (#"{"reopen": {"line": 3}}"#, nil),
+        (#"{"reopen": null}"#, nil),
+        (#"{}"#, nil),
+    ] as [(String, String?)])
+    func `the reopen line, as an object or a string`(json: String, line: String?) throws {
+        #expect(try decode(SupervisorBriefResponse.self, json).reopenLine == line)
+    }
 }

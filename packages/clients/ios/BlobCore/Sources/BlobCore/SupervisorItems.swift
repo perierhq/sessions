@@ -168,13 +168,33 @@ public struct SupervisorBriefResponse: Decodable, Sendable, Equatable {
     public let preparingSince: Double?
     /// When the owner may ask for a fresh brief, ms.
     public let refreshAt: Double?
+    /// The quiet line that opens the brief again once it was seen or put
+    /// away, in the server's copy ("This morning: 2 decisions waiting",
+    /// "Today\u{2019}s brief"). Nil when there is none or on older servers.
+    public let reopenLine: String?
 
-    private enum CodingKeys: String, CodingKey { case state, brief, newSince, preparingSince, refreshAt }
+    private enum CodingKeys: String, CodingKey { case state, brief, newSince, preparingSince, refreshAt, reopen }
     private struct Ids: Decodable { let itemIds: [String]? }
+    /// `reopen` is `{ line }` (or null); a bare string is taken too.
+    private struct Reopen: Decodable {
+        let line: String?
+        private enum Keys: String, CodingKey { case line }
+        init(from decoder: Decoder) throws {
+            if let line = try? decoder.singleValueContainer().decode(String.self) {
+                self.line = line
+            } else {
+                line = (try? decoder.container(keyedBy: Keys.self).decodeIfPresent(String.self, forKey: .line)) ?? nil
+            }
+        }
+    }
 
-    public init(state: String, brief: SupervisorBrief?, newSince: [String] = [], preparingSince: Double? = nil, refreshAt: Double? = nil) {
+    public init(
+        state: String, brief: SupervisorBrief?, newSince: [String] = [], preparingSince: Double? = nil,
+        refreshAt: Double? = nil, reopenLine: String? = nil
+    ) {
         self.state = state; self.brief = brief; self.newSince = newSince
         self.preparingSince = preparingSince; self.refreshAt = refreshAt
+        self.reopenLine = reopenLine
     }
 
     public init(from decoder: Decoder) throws {
@@ -184,6 +204,9 @@ public struct SupervisorBriefResponse: Decodable, Sendable, Equatable {
         newSince = (((try? c.decodeIfPresent(Ids.self, forKey: .newSince)) ?? nil)?.itemIds) ?? []
         preparingSince = (try? c.decodeIfPresent(Double.self, forKey: .preparingSince)) ?? nil
         refreshAt = (try? c.decodeIfPresent(Double.self, forKey: .refreshAt)) ?? nil
+        reopenLine = (((try? c.decodeIfPresent(Reopen.self, forKey: .reopen)) ?? nil)?.line)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 

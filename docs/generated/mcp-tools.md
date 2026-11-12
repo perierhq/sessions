@@ -79,12 +79,12 @@ touches an in-process tool:
 | [`opensession-self`](#opensession-self) | 2 | automation | Only with the human-set `selfImprove` flag on that automation. |
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
-| [`opensession-supervisor`](#opensession-supervisor) | 18 | interactive | Only on a supervisor session (session.supervisor). |
+| [`opensession-supervisor`](#opensession-supervisor) | 19 | interactive | Only on a supervisor session (session.supervisor). |
 | [`opensession-watch`](#opensession-watch) | 7 | goal wake | Only on a person's watch goal (goal.watchOwner). |
 | [`opensession-lead`](#opensession-lead) | 9 | goal wake | Only on a project lead's goal (goal.leadProject). |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-43 servers, 230 tools.
+43 servers, 231 tools.
 
 ## opensession-sessions
 
@@ -1636,6 +1636,12 @@ Close open inbox items that no longer need the owner, with one reason for all of
 `mcp__opensession-supervisor__write_brief` · input: `say` (string, required), `handled` (object[]), `decisions` (object[])
 
 Store the owner's morning brief, the last step of a brief turn (your charter, "The morning brief"), or when they ask for a fresh one. say is what Blob says aloud, for the ear, about 60 words, under 600 characters, with no internal ids. handled: one line per thing you closed or did, with its item id when there is one, at most 10. decisions: at most 3 open needs-you items only the owner can decide, most important first, each with the option you recommend (its text or number). Every other open needs-you item stays open as later. The server checks each id against the inbox; an error says what to fix.
+
+### `read_brief`
+
+`mcp__opensession-supervisor__read_brief` · input: none
+
+Read the owner's latest morning brief as Blob showed it: its day, whether they saw it, what Blob said, what you handled, the decisions still open with the option you recommended, how many items wait as later, and what came in since. Use it when the owner asks what their brief said or what is still waiting from it. Only reads: it never writes or starts a brief.
 
 ### `post_item`
 

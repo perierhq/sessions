@@ -674,6 +674,7 @@ struct BlobHomeView: View {
         if typing && draft.isEmpty { typing = false }
         fieldFocused = false
         historyRevealed = true
+        text.historyRevealed()
     }
 
     private func collapseHistory() {
@@ -1146,11 +1147,38 @@ struct BlobHomeView: View {
                 #if os(macOS)
                 .help("Read aloud (\u{21E7}\u{2318}M)")
                 #endif
-                Spacer()
+                Spacer(minLength: 12)
+                if let line = reopenLine {
+                    reopenButton(line)
+                }
             }
             .padding(.leading, 14)
+            .padding(.trailing, reopenLine == nil ? 0 : writeBarTrailing)
             .padding(.bottom, 4)
         }
+    }
+
+    /// The brief's way back once it was seen or put away, on the quiet
+    /// home only: the server's line ("This morning: 2 decisions waiting").
+    private var reopenLine: String? {
+        guard idle, brief.page == nil, !preparingShown, !historyRevealed else { return nil }
+        return brief.reopenLine
+    }
+
+    /// The reopen line, quiet like the bar's symbols; a tap shows the brief.
+    private func reopenButton(_ line: String) -> some View {
+        Button { Task { await brief.reopen() } } label: {
+            Text(line)
+                .font(.footnote)
+                .foregroundStyle(OS1VisualStyle.textDim)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens the brief")
+        .transition(.opacity)
     }
 
     /// Asks the supervisor about what the brief left for later.

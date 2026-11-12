@@ -34,6 +34,10 @@ final class BlobBrief {
     var laterWaiting: Int { state.laterWaiting }
     /// The latest brief is written and the owner hasn't seen it.
     var unseen: Bool { state.unseen }
+    /// The quiet line on the idle home that opens the brief again, in the
+    /// server's copy (`reopen`): "This morning: 2 decisions waiting", or
+    /// "Today\u{2019}s brief" when nothing waits. Nil when there is none.
+    var reopenLine: String? { state.reopenLine }
     /// What Blob says about a decision after an answer, in its place, by
     /// item id. Each goes after a moment on its own.
     var notes: [String: String] { state.notes }
@@ -192,6 +196,22 @@ final class BlobBrief {
     /// stays open on the server, for when the owner asks.
     func dismiss() { update { $0.dismissPage() } }
 
+    /// Opens the latest brief again from the idle home's line, with what
+    /// was raised since under its own decisions. Not said again: it was
+    /// said when it first came up. Done puts it away as before.
+    func reopen() async {
+        guard state.canReopen else { return }
+        var items: [Item]?
+        if !state.latestSince.isEmpty {
+            #if DEBUG
+            items = Self.demo != nil ? Self.demoNew : try? await OS1API.supervisorItems(kind: "needs-you")
+            #else
+            items = try? await OS1API.supervisorItems(kind: "needs-you")
+            #endif
+        }
+        update { $0.reopen(items: items) }
+    }
+
     /// Shows the item a `blob://item/<id>` link names, even one the brief
     /// left for later.
     func focus(id: String) async {
@@ -292,7 +312,8 @@ extension BlobBrief {
     /// A canned brief for screenshots without a server: `BLOB_DEMO_BRIEF=1`
     /// for an unseen brief with three decisions, `none` for one with
     /// nothing to decide, `preparing` while it is written, `new` for a seen
-    /// brief and one new item since.
+    /// brief and one new item since, `reopen` for a seen brief with two
+    /// decisions waiting behind the idle home's line.
     static var demoEnabled: Bool { ProcessInfo.processInfo.environment["BLOB_DEMO_BRIEF"] != nil }
 
     static var demo: OS1API.SupervisorBriefResponse? {
@@ -303,6 +324,9 @@ extension BlobBrief {
             return .init(state: "preparing", brief: nil, preparingSince: now - 20_000, refreshAt: now + 30 * 60_000)
         case "new":
             return .init(state: "ready", brief: demoBrief(seen: true, decisions: []), newSince: ["demo-new"])
+        case "reopen":
+            // Seen and put away, two decisions still waiting: the idle home's line.
+            return .init(state: "ready", brief: demoBrief(seen: true, decisions: Array(demoItems.prefix(2))), reopenLine: "This morning: 2 decisions waiting")
         case "none":
             return .init(state: "ready", brief: demoBrief(seen: false, decisions: []))
         default:

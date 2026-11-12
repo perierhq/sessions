@@ -778,6 +778,12 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   way). Then earlier exchanges load in above, newest nearest, replies split
   into the Say line and the rest; past quick replies (`choices`) are left
   out. Older pages load as you reach the oldest one and keep your place.
+  They come from the server (`GET /api/supervisor/history?before=<cursor>`,
+  server: `supervisor-history.ts`), which groups the exchanges of the
+  current supervisor session and the ones before each rotation the same
+  way, so history reaches back past a rotation. Blob only draws the pages,
+  and the live transcript's exchanges after them; each keeps the two-pane
+  layout it was shown with.
   Scrolled up far enough, a Latest button goes back; tapping Blob goes back
   to the quiet home. Blob connects to the supervisor on launch so it is
   there before the first message.
@@ -824,7 +830,11 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   `/api/supervisor/brief/seen`. There is no "N of M". Only the first open
   decision fills its recommended option, so the page has one primary action.
   "Done" (or Esc on the Mac) puts the brief away; answering every decision
-  does too, and Blob goes idle. Later, items raised after a seen brief come up
+  does too, and Blob goes idle. Put away, it stays one tap away: the quiet
+  home shows the server's `reopen` line at the bottom, beside the bell
+  ("This morning: 2 decisions waiting", or "Today’s brief" when nothing
+  waits), which opens the brief again with anything raised since under its
+  decisions, without saying it again. Later, items raised after a seen brief come up
   once as "One new thing since this morning", in the same view. When the brief left
   items for later, the write bar offers "What can wait?", which
   sends an ordinary message to the supervisor. On two panes the brief
@@ -943,7 +953,8 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   with `TARGETED_DEVICE_FAMILY=1,2` on the command line).
   `BLOB_DEMO_BRIEF=1` shows a canned unseen brief with three decisions, the
   first with steps; `none` one with nothing to decide, `preparing` the
-  brief being written, `new` a seen brief with one new item since;
+  brief being written, `new` a seen brief with one new item since, `reopen` a seen brief with two
+  decisions waiting behind the home's line;
   `BLOB_DEMO_BRIEF_EXPANDED=1` opens the handled lines. `BLOB_DEMO_REPLY_FILE=<path>` shows that file's markdown as the
   settled reply (a host path works in the simulator); add
   `BLOB_DEMO_STREAM=1` to stream it in instead, in chunks of 12 to 40
@@ -968,9 +979,11 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
 view, no network and no clock: the brief's item and brief types with their
 tolerant decoding, the brief's state rules (`BlobBriefState`: which page
 shows, which decisions are open, each closing on its own, a 409 `changed`
-taking the new revision, new items offered once, the poll delay), the
-glossary correction (`BlobGlossaryCorrector`, with the spell check passed
-in) and history's grouping (`BlobExchange`). The Blob and BlobMac targets
+taking the new revision, new items offered once, the poll delay, the
+`reopen` line and reopening the brief), the glossary correction
+(`BlobGlossaryCorrector`, with the spell check passed in), history's
+grouping (`BlobExchange`) and the server's history pages
+(`BlobHistoryPages`: merged oldest first, without duplicates). The Blob and BlobMac targets
 depend on it; `BlobBrief` and `BlobGlossary` in `Blob/` are thin wrappers
 that read, answer, time and pass the system spell checker. Run the tests on
 any Mac, with no simulator and without building the app:

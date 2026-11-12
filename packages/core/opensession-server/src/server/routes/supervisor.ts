@@ -30,6 +30,7 @@ import type { RouteContext } from "./context";
 import { requestUser, verifiedPerson } from "./context";
 import { findSessionAsync } from "../session-cache";
 import { ensureSupervisorSession } from "../supervisor";
+import { historyLimit, readSupervisorHistory } from "../supervisor-history";
 import {
   getBarkSettings,
   sendBarkTest,
@@ -204,6 +205,24 @@ export async function handleSupervisorRoutes(
       { error: "Sign in to read the brief" },
       { status: 401 },
     );
+
+  // Blob's history across supervisor sessions (supervisor-history.ts):
+  // the signed-in owner's exchanges, newest page first, paged with the
+  // `before` the previous page returned.
+  if (path === "/api/supervisor/history" && req.method === "GET") {
+    const user = verifiedPerson(ctx);
+    if (!user)
+      return Response.json(
+        { error: "Sign in to read the history" },
+        { status: 401 },
+      );
+    return Response.json(
+      await readSupervisorHistory(user, {
+        before: url.searchParams.get("before"),
+        limit: historyLimit(url.searchParams.get("limit")),
+      }),
+    );
+  }
 
   if (path === "/api/supervisor/brief" && req.method === "GET") {
     return Response.json(

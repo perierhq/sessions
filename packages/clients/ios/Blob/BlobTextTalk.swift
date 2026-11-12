@@ -291,29 +291,34 @@ final class BlobTextTalk {
         }
     }
 
-    /// Earlier exchanges with the supervisor, oldest first, read from its
-    /// transcript. Voice-call turns are mirrored into the same transcript.
-    var history: [BlobExchange] {
-        #if DEBUG
-        if let demo = BlobExchange.demo { return demo }
-        #endif
-        return BlobExchange.exchanges(in: desk?.entries ?? [], shownBeside: shownBeside)
-    }
-
     /// The exchanges above the current one on Blob's page: everything before
     /// the message on screen, which is drawn below them as the current
     /// exchange. All of history when no message is on its way.
+    ///
+    /// The live transcript's exchanges, after the server's history pages
+    /// (`past`): those reach back across the supervisor's rotations, and
+    /// whatever the live transcript also holds is drawn from it.
     var earlier: [BlobExchange] {
         #if DEBUG
         if let demo = BlobExchange.demo { return demo }
         #endif
         let entries = desk?.entries ?? []
+        let live = BlobExchange.exchanges(in: entries, shownBeside: shownBeside)
+        let older = history.past(excluding: Set(live.map(\.id)), shownBeside: shownBeside)
         let cut: Int? = answeringAsk
             ? sentAfter.flatMap { id in entries.lastIndex { $0.id == id } }.map { $0 + 1 }
             : acceptedIndex(in: entries)
-        guard let cut else { return BlobExchange.exchanges(in: entries, shownBeside: shownBeside) }
-        return BlobExchange.exchanges(in: Array(entries[..<cut]), shownBeside: shownBeside)
+        guard let cut else { return older + live }
+        return older + BlobExchange.exchanges(in: Array(entries[..<cut]), shownBeside: shownBeside)
     }
+
+    /// History pages from the server (`OS1API.supervisorHistory`), oldest
+    /// first, across the current supervisor session and the ones before.
+    private var history = BlobHistoryPages()
+    /// The last read failed (offline, or an older server without the
+    /// route); paging tries again the next time history is revealed.
+    private var historyFailed = false
+    private(set) var loadingEarlier = false
 
     /// The message that starts the exchange on screen: the server's copy of
     /// the one you sent, or, answering an ask, the last one before it.
@@ -337,9 +342,29 @@ final class BlobTextTalk {
         UserDefaults.standard.set(Array(kept.suffix(300)), forKey: Self.shownBesideKey)
     }
 
-    var canLoadEarlier: Bool { desk?.canLoadEarlier ?? false }
-    var loadingEarlier: Bool { desk?.loadingEarlier ?? false }
-    func loadEarlier() { desk?.loadEarlier() }
+    var canLoadEarlier: Bool { !history.ended && !historyFailed && ServerConfig.shared.isConfigured }
+
+    /// History came into view: the first page loads at once, and a read
+    /// that failed earlier is tried again.
+    func historyRevealed() {
+        historyFailed = false
+        if history.isEmpty { loadEarlier() }
+    }
+
+    /// Loads the next older page of history above what is shown. What is
+    /// shown stays when a read fails.
+    func loadEarlier() {
+        guard canLoadEarlier, !loadingEarlier else { return }
+        loadingEarlier = true
+        Task {
+            defer { loadingEarlier = false }
+            guard let page = try? await OS1API.supervisorHistory(before: history.cursor) else {
+                historyFailed = true
+                return
+            }
+            history.add(page)
+        }
+    }
 
     /// Connects to the supervisor ahead of the first message so history is
     /// there to scroll back through. Only the latest page of the transcript

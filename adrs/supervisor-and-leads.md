@@ -273,7 +273,13 @@ brief (`supervisor-brief.ts`).
 - **Reading it.** `GET /api/supervisor/brief` returns today's brief or the latest, its
   decisions expanded to the item payloads the items route returns (`revision`, `act`), with
   `state` `ready`, `preparing` or `none`. `POST /api/supervisor/brief/seen` marks it seen.
-  The brief routes take the signed-in person only (`verifiedPerson`), never a claimed `user`
+  The GET also returns `reopen`, the fixed-copy line Blob's idle home shows to open the
+  brief again once it was seen or put away (`briefReopenLine`): "This morning: 2 decisions
+  waiting" while its open decisions or needs-you items raised since wait, "Today’s brief"
+  while the day lasts, "Last brief: 1 decision waiting" for an older brief with decisions
+  still open, and null otherwise or while a brief is being written. The supervisor reads it
+  back with `read_brief` (read-only, never starts a turn), so "what was my brief?" works
+  after a rotation. The brief routes take the signed-in person only (`verifiedPerson`), never a claimed `user`
   or the automation principal (401), so a turn starts only for the person it spends on. A written brief sends the socket frame
   `supervisor_brief_ready`.
 - **The push.** A scheduled brief pushes "Your morning brief is ready" once, after quiet

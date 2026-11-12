@@ -233,6 +233,37 @@ struct BriefStateTests {
         #expect(state.page == nil)
     }
 
+    // MARK: Reopening
+
+    @Test func `a seen brief reopens with what was raised since under it`() throws {
+        var state = BlobBriefState()
+        let brief = Self.brief([Self.item("a")], seen: true)
+        _ = state.apply(.init(state: "ready", brief: brief, newSince: ["n", "a", "gone"], reopenLine: "Today's brief"), offered: ["n"])
+        #expect(state.page == nil)
+        #expect(state.reopenLine == "Today's brief")
+        #expect(state.canReopen)
+        state.reopen(items: [Self.item("n"), Self.item("a"), Self.item("gone", state: "answered")])
+        let page = try #require(state.page)
+        #expect(page.kind == .brief)
+        #expect(page.decisions.map(\.id) == ["a", "n"])
+        #expect(page.since == ["n"])
+        // Said when it first came up, not again.
+        let saidAgain = state.shown(page)
+        #expect(!saidAgain)
+        // A read of the same brief keeps what reopening put under it.
+        _ = state.apply(.init(state: "ready", brief: brief, newSince: ["n"]), offered: ["n"])
+        #expect(state.page?.decisions.map(\.id) == ["a", "n"])
+    }
+
+    @Test func `a brief put away reopens, and items that couldn't be read are left out`() {
+        var state = Self.showing([Self.item("a")])
+        state.dismissPage()
+        #expect(state.page == nil)
+        state.reopen(items: nil)
+        #expect(state.page?.decisions.map(\.id) == ["a"])
+        #expect(!state.canReopen)
+    }
+
     @Test func `the server's day format`() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
