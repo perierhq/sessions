@@ -58,6 +58,7 @@ import {
   recordProposal,
   transition,
 } from "./approvals";
+import { applyItemKey } from "./apply";
 import type { ConditionResult, LeadCondition } from "./conditions";
 import { deliverLeadProposal } from "./report";
 
@@ -1197,6 +1198,53 @@ describe("the owner's answer approves the proposal it saw", () => {
       answer: "Done by the lead under its rules",
     });
     expect(items.find((i) => i.id === unsettled.item.id)?.state).toBe("open");
+  });
+
+  test("a rules run that failed closes its card only once its Couldn't apply item is in the inbox", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    expect(
+      (await claimAlone(PROJECT, proposalId!, "la-1", "Alone: Verified fixes"))
+        .ok,
+    ).toBe(true);
+    expect(
+      (
+        await transition(PROJECT, proposalId!, "failed", {
+          claimId: "la-1",
+          reason: "CI failed",
+        })
+      ).ok,
+    ).toBe(true);
+    const stateOf = async () =>
+      (await listSupervisorItems("Ada")).find((i) => i.id === item.id)?.state;
+    // Posting the Couldn't apply item failed: the card stays open.
+    await leadWakeCheck(await leadGoal());
+    expect(await stateOf()).toBe("open");
+    await postSupervisorItem({
+      user: "Ada",
+      source: "lead:acme",
+      project: PROJECT,
+      kind: "needs-you",
+      title: "Couldn't apply: CI failed",
+      body: "Couldn't apply: CI failed",
+      options: ["Propose again", "Drop it"],
+      dedupeKey: applyItemKey(PROJECT, proposalId!),
+    });
+    await leadWakeCheck(await leadGoal());
+    expect(await stateOf()).toBe("answered");
+  });
+
+  test("a run settleInterrupted made partial keeps its card open with nothing posted", async () => {
+    const { item, proposalId } = await proposed("PR 42");
+    expect(
+      (await claimAlone(PROJECT, proposalId!, "la-1", "Alone: Verified fixes"))
+        .ok,
+    ).toBe(true);
+    clock += 24 * 60 * 60_000;
+    await leadWakeCheck(await leadGoal());
+    expect((await record(proposalId)).approval?.state).toBe("partial");
+    expect(
+      (await listSupervisorItems("Ada")).find((i) => i.id === item.id)?.state,
+    ).toBe("open");
   });
 
   test("the first option, signed in, at the current revision: ready at once", async () => {

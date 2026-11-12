@@ -134,21 +134,36 @@ export const APPROVED_RUNS_ONLY_AT_ACT: boolean = false;
  *  under its own rules, without the owner's answer. */
 export const DONE_BY_LEAD_ANSWER = "Done by the lead under its rules";
 
+/** The `dedupeKey` of the Applied or Couldn't apply item a run posts. */
+export function applyItemKey(project: string, proposalId: string): string {
+  return `${leadSource(project)}:apply:${proposalId}`;
+}
+
 /** The inbox items of proposals the lead ran under its own rules that
- *  have settled (applied, failed or partial): their cards are done. */
+ *  have settled: their cards are done. An applied one always is; a failed
+ *  or partial one only once `failureTold` confirms its Couldn't apply item
+ *  is in the inbox, so the owner never loses the card without being told. */
 export function doneByRulesItemIds(
   records: readonly LeadRecord[],
+  failureTold: (proposalId: string) => boolean,
 ): Set<string> {
   return new Set(
     records
       .filter(
         (r) =>
-          r.approval?.approvedBy === LEAD_RULES_APPROVER &&
-          (r.approval.state === "applied" ||
-            r.approval.state === "failed" ||
-            r.approval.state === "partial"),
+          (r.approval?.approvedBy === LEAD_RULES_APPROVER &&
+            r.approval.state === "applied") ||
+          (failedByRules(r) && failureTold(r.proposal.id)),
       )
       .map((r) => r.proposal.itemId),
+  );
+}
+
+/** A run the lead started under its own rules that failed or ran part way. */
+export function failedByRules(record: LeadRecord): boolean {
+  return (
+    record.approval?.approvedBy === LEAD_RULES_APPROVER &&
+    (record.approval.state === "failed" || record.approval.state === "partial")
   );
 }
 
@@ -946,7 +961,7 @@ async function tellOwner(
     user: owner,
     source: leadSource(project),
     project,
-    dedupeKey: `${leadSource(project)}:apply:${item.proposalId}`,
+    dedupeKey: applyItemKey(project, item.proposalId),
   };
   const posted = item.failure
     ? await d.postSupervisorItem({
@@ -974,7 +989,8 @@ async function tellOwner(
 
 /** The proposal's own card leaves the owner's inbox once the lead settled
  *  it under its rules: the Applied or Couldn't apply item says how it went.
- *  A failure is logged; the next wake check retries (leads/goal.ts). */
+ *  A failed run's card stays until its Couldn't apply item is posted. A
+ *  failure is logged; the next wake check retries (leads/goal.ts). */
 async function closeProposalCard(
   project: string,
   doc: Pick<ProjectSettingsDocument, "lead">,
@@ -1238,7 +1254,8 @@ export async function leadApply(
   } catch (error) {
     logRaw(project, proposalId, "telling the owner", errorText(error));
   }
-  if (approval.approvedBy === LEAD_RULES_APPROVER)
+  // A failed run's card stays open until the owner was told it failed.
+  if (approval.approvedBy === LEAD_RULES_APPROVER && (!failure || itemId))
     await closeProposalCard(project, doc, d, proposal.itemId);
   const told = itemId ? ` The owner was told (${itemId}).` : "";
   if (!failure)

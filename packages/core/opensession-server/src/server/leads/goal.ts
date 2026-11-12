@@ -41,7 +41,9 @@ import {
 import {
   APPROVED_RUNS_ONLY_AT_ACT,
   DONE_BY_LEAD_ANSWER,
+  applyItemKey,
   doneByRulesItemIds,
+  failedByRules,
 } from "./apply";
 import type { LeadRecord } from "./approvals";
 import { leadCharter } from "./charter";
@@ -112,6 +114,7 @@ export interface LeadGoalDeps {
   appendLedger: (typeof import("../goals"))["appendLedger"];
   postSupervisorItem: (typeof import("../supervisor-inbox"))["postSupervisorItem"];
   closeSupervisorItems: (typeof import("../supervisor-inbox"))["closeSupervisorItems"];
+  listSupervisorItems: (typeof import("../supervisor-inbox"))["listSupervisorItems"];
   proposalForItem: (typeof import("./approvals"))["proposalForItem"];
   approve: (typeof import("./approvals"))["approve"];
   voidFor: (typeof import("./approvals"))["voidFor"];
@@ -154,6 +157,8 @@ const liveDeps: LeadGoalDeps = {
     (await import("../supervisor-inbox")).postSupervisorItem(...args),
   closeSupervisorItems: async (...args) =>
     (await import("../supervisor-inbox")).closeSupervisorItems(...args),
+  listSupervisorItems: async (...args) =>
+    (await import("../supervisor-inbox")).listSupervisorItems(...args),
   proposalForItem: async (...args) =>
     (await import("./approvals")).proposalForItem(...args),
   approve: async (...args) => (await import("./approvals")).approve(...args),
@@ -714,8 +719,10 @@ async function tellReady(
 }
 
 /** Close the owner's open proposal cards the lead settled under its own
- *  rules (applied, failed or partial, never answered by the owner), with
- *  the fixed answer line; its Applied or Couldn't apply item stays. A
+ *  rules (never answered by the owner), with the fixed answer line; its
+ *  Applied or Couldn't apply item stays. A failed or partial run's card
+ *  closes only once its Couldn't apply item is in the inbox, so a post that
+ *  failed (or a run settleInterrupted ended) leaves the card open. A
  *  failure is logged. */
 async function closeDoneByRules(
   project: string,
@@ -724,10 +731,24 @@ async function closeDoneByRules(
   d: LeadGoalDeps,
 ): Promise<void> {
   const owner = leadOwner(doc);
-  const ids = doneByRulesItemIds(records);
-  if (!owner || !ids.size) return;
+  if (!owner) return;
   const source = leadSource(project);
   try {
+    // Only read the inbox when a failed run needs its item confirmed.
+    const told = records.some(failedByRules)
+      ? new Set(
+          (
+            await d.listSupervisorItems(owner, {
+              dedupeKeyPrefix: `${source}:apply:`,
+              limit: 100,
+            })
+          ).map((item) => item.dedupeKey),
+        )
+      : new Set<string | undefined>();
+    const ids = doneByRulesItemIds(records, (id) =>
+      told.has(applyItemKey(project, id)),
+    );
+    if (!ids.size) return;
     await d.closeSupervisorItems(
       owner,
       (item) => item.source === source && ids.has(item.id),

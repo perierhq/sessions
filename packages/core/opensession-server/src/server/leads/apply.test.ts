@@ -1131,6 +1131,33 @@ describe("leadApply", () => {
     expect(closes.map((c) => c.ids)).toEqual([[p.itemId]]);
   });
 
+  test("a rules run that fails keeps its card when the Couldn't apply item wasn't posted", async () => {
+    withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
+    autofixPrs.clear();
+    __setLeadApplyDepsForTest({
+      ...fakes,
+      postSupervisorItem: (async () => {
+        throw new Error("inbox down");
+      }) as never,
+    });
+    const p = await propose("ci-repair", [autofixStep()]);
+    expect(await leadApply("acme", p.id)).toMatchObject({ state: "failed" });
+    expect(closes).toEqual([]);
+  });
+
+  test("a rules run that applies closes its card even when the Applied item wasn't posted", async () => {
+    withLead({}, { "fix-verified": "alone" });
+    __setLeadApplyDepsForTest({
+      ...fakes,
+      postSupervisorItem: (async () => {
+        throw new Error("inbox down");
+      }) as never,
+    });
+    const p = await propose("fix-verified", [mergeStep()]);
+    expect(await leadApply("acme", p.id)).toMatchObject({ ok: true });
+    expect(closes.map((c) => c.ids)).toEqual([[p.itemId]]);
+  });
+
   test("an approved run leaves the card to the owner's answer", async () => {
     const p = await approved("fix-verified", [mergeStep()]);
     expect(await leadApply("acme", p.id)).toMatchObject({ ok: true });
