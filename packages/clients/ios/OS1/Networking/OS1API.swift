@@ -2444,6 +2444,14 @@ enum OS1API {
         return try JSONDecoder().decode(Transcript.self, from: data).text
     }
 
+    /// Project, repo, people and persona names for Blob's speech
+    /// recognition (server: blob-glossary.ts).
+    static func blobGlossary() async throws -> [String] {
+        struct Glossary: Decodable, Sendable { let terms: [String] }
+        let glossary: Glossary = try await get("/api/blob/glossary")
+        return glossary.terms
+    }
+
     /// One piece of an answer as mp3, synthesized by the server.
     static func blobSpeech(_ text: String) async throws -> Data {
         try await mutateData(

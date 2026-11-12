@@ -151,7 +151,13 @@ final class ServerConfig {
 
     var baseURLString: String {
         get { activeAccount.url }
-        set { updateActive { $0.url = newValue } }
+        set {
+            #if BLOB
+            // Another server's names don't belong in this one's speech.
+            if newValue != activeAccount.url { BlobGlossary.forget() }
+            #endif
+            updateActive { $0.url = newValue }
+        }
     }
 
     var userName: String {
@@ -172,6 +178,9 @@ final class ServerConfig {
             if newValue.isEmpty {
                 Keychain.delete(Self.tokenKey(for: activeId))
                 githubLogin = ""
+                #if BLOB
+                BlobGlossary.forget()
+                #endif
             } else {
                 Keychain.set(newValue, for: Self.tokenKey(for: activeId))
             }
@@ -207,6 +216,9 @@ final class ServerConfig {
         }
         Keychain.delete(Self.tokenKey(for: id))
         tokens[id] = nil
+        #if BLOB
+        if id == activeId { BlobGlossary.forget() }
+        #endif
         accounts.remove(at: index)
         accountBadges[id] = nil
         if accounts.isEmpty {

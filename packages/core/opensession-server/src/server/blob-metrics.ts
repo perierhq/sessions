@@ -121,6 +121,10 @@ export interface BlobTurnMetric {
   /** How long the recording waited for a Parakeet load still under way
    *  when the owner stopped talking; absent when it did not wait. */
   parakeetWaitMs?: number;
+  /** On a voice turn: how many misheard names or terms the app's glossary
+   *  correction replaced in the final text (BlobGlossary.swift). A count
+   *  only, never the words. */
+  glossaryFixes?: number;
   endOfSpeech?: BlobEndOfSpeech;
   speechMs?: number;
   sendToAcceptedMs?: number;
@@ -243,6 +247,7 @@ export function cleanTurnMetric(
     set("parakeetMiss", oneOf(PARAKEET_MISSES, get("parakeetMiss")));
   set("parakeetLoadMs", duration(get("parakeetLoadMs")));
   set("parakeetWaitMs", duration(get("parakeetWaitMs")));
+  if (input === "voice") set("glossaryFixes", count(get("glossaryFixes")));
   set("endOfSpeech", oneOf(END_OF_SPEECH, get("endOfSpeech")));
   set("speechMs", duration(get("speechMs")));
   set("sendToAcceptedMs", duration(get("sendToAcceptedMs")));

@@ -51,9 +51,15 @@ final class Dictation {
     ///   - base: the draft as it stands; dictated text is appended to it, so
     ///     dictating into a half-typed message adds to it rather than
     ///     replacing what's there.
+    ///   - contextualStrings: names and terms the recognizer should expect
+    ///     (Blob's glossary); at most 100 are used.
     ///   - onTranscript: called with the full draft (base + speech) on every
     ///     partial result.
-    func start(base: String, onTranscript: @escaping (String) -> Void) async {
+    func start(
+        base: String,
+        contextualStrings: [String] = [],
+        onTranscript: @escaping (String) -> Void
+    ) async {
         guard state != .listening else { return }
         self.base = base
         self.onTranscript = onTranscript
@@ -76,6 +82,7 @@ final class Dictation {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        request.contextualStrings = Array(contextualStrings.prefix(100))
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }

@@ -864,6 +864,20 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   "Still getting my ears ready. Say it again in a moment." and is recorded
   as an abandoned metric turn with `dropped` (`nothing-heard`, `moved-on`,
   `backgrounded`, `no-endpoint`) and `parakeetState`.
+- Glossary (`Blob/BlobGlossary.swift`): the server's list of project,
+  repo, teammate and persona names and a few work terms
+  (`GET /api/blob/glossary`), kept on the device and refreshed at most
+  hourly when you start talking. Apple's recognizers get it as contextual
+  strings; Apple says `SpeechTranscriber` ignores them for now, and the
+  `Dictation` fallback uses them. Whoever wrote the final text, a
+  conservative pass replaces capitalized near misses that sound and spell
+  close to a name ("Butter Band" to BetterBahn), "piers" with PRs only
+  next to a number or a PR action ("open piers", "piers were opened"), and
+  a lowercase near miss of a name only after an asking word ("have pet
+  check" to "have Pat check"). The metric turn carries
+  `glossaryFixes`, the count only. Parakeet gets no vocabulary: FluidAudio's
+  boosting needs a second, English-only CTC encoder (97.5 MB); Fish's API
+  takes no prompt.
 - Talk log (`Blob/BlobTalkLog.swift`): each step of a voice turn (listen
   start, endpoint inputs and decision, stop, waits, transcriber used,
   drops, VAD and Parakeet loads) goes to the unified log and to

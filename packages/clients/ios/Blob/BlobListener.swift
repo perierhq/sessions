@@ -118,6 +118,15 @@ final class BlobListener {
             try await install.downloadAndInstall()
         }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
+        BlobGlossary.refreshIfStale()
+        let glossary = BlobGlossary.terms
+        if !glossary.isEmpty {
+            // Names Apple can't know. It says only `DictationTranscriber`
+            // uses them for now; `BlobGlossary.correct` fixes the final text.
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = glossary
+            try? await analyzer.setContext(context)
+        }
         usesVoiceActivity = false
         let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
@@ -315,7 +324,8 @@ final class BlobListener {
         fallback = dictation
         Self.log.info("start endpoint=dictation")
         watchStillness()
-        await dictation.start(base: "") { [weak self] heard in
+        BlobGlossary.refreshIfStale()
+        await dictation.start(base: "", contextualStrings: BlobGlossary.terms) { [weak self] heard in
             guard let self else { return }
             if heard != self.text { self.heardWords() }
             self.text = heard

@@ -81,6 +81,7 @@ final class BlobMetrics {
         var parakeetMiss: String?
         var parakeetLoadMs: Int?
         var parakeetWaitMs: Int?
+        var glossaryFixes: Int?
         var endOfSpeech: String?
         var speechMs: Int?
         var sendToAcceptedMs: Int?
@@ -159,6 +160,7 @@ final class BlobMetrics {
         parakeetLoadMs: Int? = nil,
         parakeetWaitMs: Int? = nil,
         parakeetLoad: Int? = nil,
+        glossaryFixes: Int? = nil,
         endOfSpeech: EndOfSpeech? = nil
     ) {
         close()
@@ -171,6 +173,7 @@ final class BlobMetrics {
         turn.parakeetMiss = parakeetMiss?.rawValue
         turn.parakeetLoadMs = parakeetLoadMs
         turn.parakeetWaitMs = parakeetWaitMs
+        if input == .voice { turn.glossaryFixes = glossaryFixes }
         turn.endOfSpeech = endOfSpeech?.rawValue
         if input == .voice { turn.speechMs = speechMs }
         if let last, Date().timeIntervalSince(last.closedAt) <= Self.reaskWindow,
