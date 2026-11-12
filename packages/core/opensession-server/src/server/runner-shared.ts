@@ -429,6 +429,9 @@ export function isTransientRunError(
     s.includes("overloaded_error") ||
     s.includes("overloaded") ||
     /\b50[234]\b/.test(s) ||
+    // pi-mainspring.ts: a 5xx, refused connection or timeout through
+    // Mainspring, in its fixed copy.
+    s.includes("mainspring is unavailable") ||
     // The previous runner's shared SQLite store under write contention — transient, retry
     // clears it (see the SQLite-statement-failure runbook).
     s.includes("failed to execute statement")

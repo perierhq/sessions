@@ -140,6 +140,7 @@ describe("/api/settings/mainspring", () => {
 
     restores.push(
       __setMainspringDepsForTest({
+        resolve: async () => ["203.0.113.10"],
         fetch: async (url, init) => {
           expect(url).toBe("https://mainspring.example.test/v1/models");
           expect(new Headers(init.headers).get("authorization")).toBe(
@@ -171,6 +172,7 @@ describe("/api/settings/mainspring", () => {
     });
     restores.push(
       __setMainspringDepsForTest({
+        resolve: async () => ["203.0.113.10"],
         fetch: async () => new Response(`refused ${KEY}`, { status: 401 }),
       }),
     );

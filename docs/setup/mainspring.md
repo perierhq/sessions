@@ -28,16 +28,36 @@ New turns pick up the change; running turns finish where they started.
 
 ## What the settings do
 
-| Setting                         | Effect                                                                                                                                                                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Address                         | `https://` anywhere. Plain `http://` only for a tailnet, private or loopback host (`*.ts.net`, `100.64.0.0/10`, RFC 1918, `localhost`), because the key travels in a header. A new host needs the key pasted again.            |
-| Key                             | Stored as a workspace secret. Only its last four characters are ever shown.                                                                                                                                                    |
-| Route Claude through Mainspring | `pi/anthropic/*` turns go to `<address>/v1/messages` with the key. The Claude account walk and OAuth binding are skipped. Off by default.                                                                                      |
-| Fall back to direct accounts    | When Mainspring can't serve a Claude turn (429, 401, 502/503), the turn moves to the Claude accounts connected here and says so. Off by default: without it, the turn ends with Mainspring's error and nothing moves silently. |
-| Models                          | What the last **Test** listed. They appear in the model picker as `pi/mainspring/<model>`. While Claude is routed through Mainspring, Claude models stay under their usual names.                                              |
+| Setting                         | Effect                                                                                                                                                                                                                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Address                         | `https://` anywhere. Plain `http://` only for a tailnet, private or loopback host (`*.ts.net`, `100.64.0.0/10`, RFC 1918, `localhost`), because the key travels in a header. Link-local and cloud metadata addresses are refused. A new host needs the key pasted again. |
+| Key                             | Stored as a workspace secret. Only its last four characters are ever shown.                                                                                                                                                                                              |
+| Route Claude through Mainspring | `pi/anthropic/*` turns go to `<address>/v1/messages` with the key. The Claude account walk and OAuth binding are skipped. Off by default.                                                                                                                                |
+| Fall back to direct accounts    | When Mainspring can't serve a Claude turn (429, 401, 5xx, a refused connection or a timeout), the turn moves to the Claude accounts connected here and says so. Off by default: without it, the turn ends with Mainspring's error and nothing moves silently.            |
+| Models                          | What the last **Test** listed. They appear in the model picker as `pi/mainspring/<model>`. While Claude is routed through Mainspring, Claude models stay under their usual names.                                                                                        |
 
 A session pinned to one subscription (`fixedSubscription`) keeps its pinned
-account: Mainspring can't honour the pin.
+account: Mainspring can't honour the pin. Its side requests follow the same
+rule: a web tool's Claude request and the run's Claude workers stay on the
+direct accounts too.
+
+The run's Claude workers (deepsec's `claudeCliEnv`) follow the switch: while
+it is on they get `ANTHROPIC_BASE_URL` (the address), `ANTHROPIC_AUTH_TOKEN`
+(the key) and `ANTHROPIC_CUSTOM_HEADERS` (the session's `X-Session-ID`)
+instead of a Claude account's OAuth token.
+
+## Background work
+
+Project leads, goals and Blob's watch wait while their provider is low, so
+they don't take the capacity the owner's own sessions need. While Claude is
+routed through Mainspring, that check reads Mainspring's `GET /v1/pool`
+(cached for a minute) instead of the accounts connected here: background
+Claude work waits only when every Claude account in Mainspring is cooling,
+benched or needs a sign-in, and looks again when the soonest one is back.
+With **Share pool with keys** off in Mainspring (`/v1/pool` answers `404`),
+or when Mainspring can't be reached, the work is allowed. With **Fall back to
+direct accounts** on, a resting Mainspring leaves the decision to the
+accounts connected here.
 
 ## Models
 
@@ -64,7 +84,7 @@ sends a request within its affinity window (an hour by default).
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `429`              | A usage limit: "Every Claude account in Mainspring is resting until …", with `Retry-After` as the time. The model fallback takes over as it does for an exhausted local pool. A key's used-up daily cap is a usage limit too, with its own message. |
 | `401`              | "Mainspring key was refused." The turn stops; paste a new key.                                                                                                                                                                                      |
-| `502`, `503`       | A retryable provider error: pi retries, then the model fallback treats it as transient.                                                                                                                                                             |
+| `5xx`, no answer   | "Mainspring is unavailable": a retryable provider error. A refused connection or a timeout reads the same. With the fallback on, the turn moves to the direct accounts.                                                                             |
 
 ## Who served a turn
 
@@ -104,6 +124,7 @@ and `POST /api/settings/mainspring/test`, all owner only.
 ## Not yet
 
 - Account headroom from Mainspring's `GET /v1/pool` in Settings → Providers.
+  Background work already reads it (above).
 - Mainspring's MCP `web_search` and `web_fetch`. Web search keeps its own
   setting under Settings → Models; a Claude side request follows the routing
   switch.

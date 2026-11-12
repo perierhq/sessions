@@ -5,17 +5,23 @@
  * The question is asked per route (`pi/<provider>/<model>`, as routeModel
  * gives it) and answered by the first headroom source that serves the
  * route. A source reads whatever the instance knows about the accounts
- * behind that route; today there is one:
+ * behind that route; there are two, asked in this order:
  *
- * - `localClaudeAccounts` serves `pi/anthropic/*`: the Claude account pool
- *   this instance calls directly. Each account has a 5-hour and a weekly
- *   usage window, polled by claude-accounts.ts into the shared usage file.
+ * - `mainspringClaudeAccounts` serves `pi/anthropic/*` while "Route Claude
+ *   through Mainspring" is on (mainspring.ts). Those turns never touch the
+ *   local accounts, so their headroom is Mainspring's: `GET /v1/pool`,
+ *   cached a minute. It holds the work only when every Claude account in
+ *   Mainspring is cooling, benched or needs a sign-in, and says when the
+ *   soonest one is back. A pool it can't read (unreachable, `404` while
+ *   Mainspring's "Share pool with keys" is off) is allowed. With "Fall back
+ *   to direct accounts" on, a resting Mainspring defers to the local
+ *   accounts, since the turn would move there.
+ * - `localClaudeAccounts` serves `pi/anthropic/*` otherwise: the Claude
+ *   account pool this instance calls directly. Each account has a 5-hour
+ *   and a weekly usage window, polled by claude-accounts.ts into the shared
+ *   usage file.
  *
- * When the instance moves Claude behind a self-hosted hub (the owner's
- * subscriptions behind one API), a `hub` source takes the same place: it
- * serves the routes the hub carries and reports headroom from the hub's
- * usage endpoint. A route no source serves, or a hub without a usage
- * endpoint, is allowed: nothing here can tell it is low.
+ * A route no source serves is allowed: nothing here can tell it is low.
  *
  * Whatever the source says, a provider that refused a background run with
  * a usage limit or a 429 (classified by pi-usage-limit.ts) holds every
@@ -47,6 +53,13 @@ import {
   claudeAccountsUsagePath,
 } from "./claude-account-shared-state";
 import type { AccountUsage } from "./claude-accounts";
+import { formatAnthropicReset } from "./anthropic-rate-limit";
+import {
+  mainspringClaudePool,
+  mainspringRoutesClaude,
+  parseMainspringRecord,
+  readMainspringRecord,
+} from "./mainspring";
 
 export const BACKGROUND_FIVE_HOUR_HEADROOM = 20;
 export const BACKGROUND_WEEKLY_HEADROOM = 10;
@@ -54,18 +67,28 @@ export const BACKGROUND_WEEKLY_HEADROOM = 10;
  *  with a usage limit. */
 export const USAGE_LIMIT_BACKOFF_MS = 30 * 60_000;
 
+/** A source's "no room", with its own reason and when to look again. */
+export interface HeadroomHold {
+  room: false;
+  reason?: string;
+  /** When the soonest account is back, epoch ms. */
+  retryAt?: number;
+}
+
 /** What knows the usage of the accounts behind some routes. */
 export interface HeadroomSource {
   /** Whose accounts, for the waiting reason: "Claude accounts". */
   readonly label: string;
   /** Whether this source answers for the route (`pi/<provider>/<model>`). */
-  serves(route: string): boolean;
-  /** true: room for background work; false: near the limits; null: no
-   *  data to decide on, so the work is allowed. */
-  headroom(route: string, now: number): Promise<boolean | null>;
+  serves(route: string): boolean | Promise<boolean>;
+  /** true: room for background work; false or a hold: near the limits;
+   *  null: no data to decide on, so the work is allowed. */
+  headroom(route: string, now: number): Promise<boolean | null | HeadroomHold>;
 }
 
-export type HeadroomVerdict = { ok: true } | { ok: false; reason: string };
+export type HeadroomVerdict =
+  | { ok: true }
+  | { ok: false; reason: string; retryAt?: number };
 
 async function readJson(path: string): Promise<unknown> {
   try {
@@ -153,14 +176,45 @@ export const localClaudeAccounts: HeadroomSource = {
   },
 };
 
-let sources: readonly HeadroomSource[] = [localClaudeAccounts];
+async function readRecordSoft() {
+  return readMainspringRecord().catch(() => parseMainspringRecord(undefined));
+}
+
+/** Claude through Mainspring: the pool behind the owner's Mainspring key. */
+export const mainspringClaudeAccounts: HeadroomSource = {
+  label: "Claude accounts in Mainspring",
+  serves: async (route) =>
+    route.startsWith(ANTHROPIC_ROUTE) &&
+    mainspringRoutesClaude(await readRecordSoft()),
+  async headroom(route, now) {
+    const record = await readRecordSoft();
+    const pool = await mainspringClaudePool(record, now);
+    if (!pool?.resting) return null;
+    // The turn would move to the direct accounts: they decide.
+    if (record.fallbackDirect) return localClaudeAccounts.headroom(route, now);
+    return {
+      room: false,
+      reason:
+        pool.retryAt !== undefined
+          ? `Every Claude account in Mainspring is resting until ${formatAnthropicReset(pool.retryAt)}`
+          : "Every Claude account in Mainspring is resting",
+      ...(pool.retryAt !== undefined ? { retryAt: pool.retryAt } : {}),
+    };
+  },
+};
+
+const DEFAULT_SOURCES: readonly HeadroomSource[] = [
+  mainspringClaudeAccounts,
+  localClaudeAccounts,
+];
+let sources: readonly HeadroomSource[] = DEFAULT_SOURCES;
 /** Until when each provider is held after a usage limit. */
 const backoffUntil = new Map<string, number>();
 
 export function __setHeadroomSourcesForTest(
   list: readonly HeadroomSource[] | undefined,
 ): void {
-  sources = list ?? [localClaudeAccounts];
+  sources = list ?? DEFAULT_SOURCES;
   backoffUntil.clear();
 }
 
@@ -193,12 +247,24 @@ export async function backgroundHeadroom(
       };
     backoffUntil.delete(provider);
   }
-  const source = sources.find((s) => s.serves(route));
+  let source: HeadroomSource | undefined;
+  for (const candidate of sources)
+    if (await candidate.serves(route)) {
+      source = candidate;
+      break;
+    }
   if (!source) return { ok: true };
-  if ((await source.headroom(route, now)) === false)
+  const answer = await source.headroom(route, now);
+  if (answer === false)
     return {
       ok: false,
       reason: `Your ${source.label} are near their limits`,
+    };
+  if (answer && typeof answer === "object")
+    return {
+      ok: false,
+      reason: answer.reason ?? `Your ${source.label} are near their limits`,
+      ...(answer.retryAt !== undefined ? { retryAt: answer.retryAt } : {}),
     };
   return { ok: true };
 }

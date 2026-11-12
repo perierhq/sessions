@@ -19,6 +19,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { PI_STATE_DIR, runPi } from "./pi-runner";
 import { saveMainspringSettings } from "./mainspring";
+import { isTransientRunError } from "./runner-shared";
 import { __clearJsonFileCacheForTest } from "./shared/json-file-cache";
 import { setTranscriptForwarder } from "./transcript-forward";
 
@@ -333,6 +334,36 @@ describe("runPi through Mainspring (scripted fake SDK)", () => {
     const terminal = turn.events.at(-1)!;
     expect(terminal.content).toContain("Mainspring is unavailable (503)");
     expect(terminal.usageLimitExhausted).toBeUndefined();
+  });
+
+  test("a refused connection or a timeout is Mainspring unavailable, and retryable", async () => {
+    await route();
+    for (const failure of ["Connection error.", "Request timed out."]) {
+      const turn = await runTurn({
+        onPrompt: (ctx) => ctx.emit(errorEnd(failure)),
+      });
+      const terminal = turn.events.at(-1)!;
+      expect(terminal.content).toContain(
+        "Mainspring is unavailable: the connection was refused or timed out",
+      );
+      expect(isTransientRunError(String(terminal.content))).toBe(true);
+      expect(terminal.usageLimitExhausted).toBeUndefined();
+    }
+  });
+
+  test("with fallback on, a refused connection moves to the direct accounts", async () => {
+    await route({ fallbackDirect: true });
+    const turn = await runTurn({
+      onPrompt: async (ctx) => {
+        if (ctx.index === 0)
+          ctx.emit(errorEnd("connect ECONNREFUSED 10.0.0.2:8080"));
+        else ctx.emit(doneEnd);
+      },
+    });
+    expect(turn.events).toContainEqual({
+      type: "runner_notice",
+      text: "Mainspring couldn't serve this turn. Continuing on the direct Claude accounts.",
+    });
   });
 
   test("with fallback on, a failed Mainspring turn moves to the direct accounts", async () => {

@@ -896,16 +896,28 @@ other instance credentials:
   characters. No API response, audit line or log carries it; a failed Test
   reports a fixed reason and never echoes Mainspring's body.
 - It is resolved only by `mainspring.ts` and handed to pi as the provider's
-  API key in the process that runs the turn. It is never put in a run's
-  tool environment, a shell or a prompt.
+  API key in the process that runs the turn. It is never put in a prompt.
+  The one environment that carries it is the `claudeCliEnv` run's
+  (deepsec's Claude workers, `pi-run-env.ts`), and only while Claude is
+  routed through Mainspring: that environment already carries a pool
+  Claude OAuth token on the direct route, so the run sees one credential
+  in its place (`ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_BASE_URL` set to the
+  address). A Sandbox command never gets it, as with the OAuth token.
 - The address must be `https://`, or `http://` on a tailnet, private or
-  loopback host. Link-local addresses are refused. Pointing an existing key
-  at a new host requires pasting the key again, so a saved key never goes to
-  a server it wasn't entered for.
+  loopback host. Link-local (169.254.0.0/16, fe80::/10) and cloud metadata
+  addresses (`metadata.google.internal`, `metadata.*.internal`,
+  100.100.100.200, fd00:ec2::254) are refused when saved and again after
+  DNS resolution on every request the server makes. Those requests dial
+  only the addresses that were checked, never follow a redirect (a redirect
+  is an error, so the key never goes to another host), and read at most
+  1 MB of a body (`GET /v1/models`, `GET /v1/pool`). Pointing an existing
+  key at a new host requires pasting the key again, so a saved key never
+  goes to a server it wasn't entered for.
 - A session pinned to one subscription keeps its pinned account; routing
-  Claude through Mainspring never widens a strict pin. A failure through
-  Mainspring moves to the direct accounts only when the owner turned on
-  "Fall back to direct accounts".
+  Claude through Mainspring never widens a strict pin. Its side requests (a
+  web tool's Claude request, the run's Claude workers) follow the same
+  rule. A failure through Mainspring moves to the direct accounts only when
+  the owner turned on "Fall back to direct accounts".
 
 ## Fixed-subscription sessions (opt-in)
 

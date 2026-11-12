@@ -645,7 +645,13 @@ async function* runPiAttempt(
     });
     const { sdk, runtime, model: piModel } = binding;
 
-    const cliEnv = piCliPoolEnv({ opts, remote, accountUser, runKey });
+    const cliEnv = piCliPoolEnv({
+      opts,
+      remote,
+      accountUser,
+      runKey,
+      claudeRoute: claudeSideRoute,
+    });
     const bashEnv = await buildPiBashEnv({
       opts,
       remote,

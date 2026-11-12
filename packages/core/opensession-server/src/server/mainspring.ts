@@ -17,22 +17,35 @@
  * `models` caches what `GET /v1/models` listed at the last Test, so the
  * picker and the runner read model metadata without a network call.
  *
- * Exported for the runner and the follow-up that reads `/v1/pool` and
- * Mainspring's MCP web tools: `mainspringConfig()` (the URL and the resolved
- * key) and `mainspringFetch()` (an authorized request). Settings writes are
+ * Exported for the runner, the background headroom check (`GET /v1/pool`,
+ * claude-headroom.ts) and the follow-up that reads Mainspring's MCP web
+ * tools: `mainspringConfig()` (the URL and the resolved key) and
+ * `mainspringFetch()` (an authorized request).
+ *
+ * The server's own requests (`mainspringFetch`) resolve the host once,
+ * refuse link-local and cloud metadata addresses (the address may be
+ * private: Mainspring usually runs on a tailnet or the LAN), dial only the
+ * checked addresses, never follow a redirect, and read at most
+ * MAX_RESPONSE_BYTES of a body. Settings writes are
  * async and serialized; the sync reader exists for the runner's synchronous
  * checks (piModelUnservableReason, the picker refresh), which already read
  * model-providers.json that way. Nothing runs at import.
  */
+import { lookup } from "dns/promises";
 import { chmod, readFile } from "fs/promises";
 import { isIP } from "net";
 import { configPath, catalogRows } from "./model-providers";
 import type { ProviderCatalogModel } from "./model-providers";
 import { formatAnthropicReset } from "./anthropic-rate-limit";
 import { writeJsonAtomicAsync } from "./shared/atomic-write";
-import { fetchWithTimeout } from "./shared/fetch-with-timeout";
 import { readJsonFileShared } from "./shared/json-file-cache";
-import { isBlockedAddress, isPrivateHostName } from "./shared/network-address";
+import {
+  embeddedIpv4,
+  ipv6Hextets,
+  isBlockedAddress,
+  isPrivateHostName,
+} from "./shared/network-address";
+import { pinnedHttpRequest } from "./shared/pinned-fetch";
 import {
   deleteWorkspaceSecretAsync,
   putWorkspaceSecretAsync,
@@ -50,6 +63,9 @@ const MAX_KEY_LENGTH = 512;
 const MAX_URL_LENGTH = 2048;
 const TEST_TIMEOUT_MS = 10_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+/** The largest body the server reads from Mainspring (`/v1/models`,
+ *  `/v1/pool`). */
+export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 /** What model-providers.json stores under `mainspring`. */
 export interface MainspringRecord {
@@ -92,12 +108,23 @@ export interface MainspringConfig {
 }
 
 interface Deps {
-  fetch(url: string, init: RequestInit, timeoutMs: number): Promise<Response>;
+  /** Every address a host name has now. */
+  resolve(host: string): Promise<string[]>;
+  /** One request that dials only `addresses` (already checked), never
+   *  follows a redirect and reads at most MAX_RESPONSE_BYTES. */
+  fetch(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number,
+    addresses: string[],
+  ): Promise<Response>;
   now(): number;
 }
 
 const defaultDeps: Deps = {
-  fetch: (url, init, timeoutMs) => fetchWithTimeout(url, init, timeoutMs),
+  resolve: async (host) =>
+    (await lookup(host, { all: true })).map((entry) => entry.address),
+  fetch: pinnedMainspringFetch,
   now: Date.now,
 };
 
@@ -161,14 +188,52 @@ export function mainspringRoutesClaude(record: MainspringRecord): boolean {
 /** Where plain http is acceptable: a tailnet, private or loopback host. */
 function isPrivateHost(host: string): boolean {
   const bare = host.replace(/^\[|\]$/g, "");
-  if (isIP(bare)) return isBlockedAddress(bare) && !isLinkLocal(bare);
+  if (isIP(bare)) return isBlockedAddress(bare) && !isRefusedAddress(bare);
   return isPrivateHostName(bare);
 }
 
-/** Link-local (cloud metadata) is never a Mainspring. */
-function isLinkLocal(host: string): boolean {
-  const bare = host.replace(/^\[|\]$/g, "").toLowerCase();
-  return /^169\.254\./.test(bare) || /^fe[89ab][0-9a-f]:/.test(bare);
+/**
+ * Addresses that are never a Mainspring: IPv4 link-local 169.254.0.0/16
+ * (AWS, GCP and Azure metadata live at 169.254.169.254), Alibaba's
+ * 100.100.100.200, IPv6 link-local fe80::/10 and AWS's IPv6 metadata
+ * fd00:ec2::254, including IPv4 carried inside IPv6. Private, loopback and
+ * tailnet addresses stay allowed.
+ */
+export function isRefusedAddress(address: string): boolean {
+  const bare = address
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .split("%")[0]!;
+  const v4 = isIP(bare) === 4 ? bare : embeddedIpv4(bare);
+  if (v4) return /^169\.254\./.test(v4) || v4 === "100.100.100.200";
+  const h = ipv6Hextets(bare);
+  if (!h) return false;
+  if ((h[0]! & 0xffc0) === 0xfe80) return true;
+  return (
+    h[0] === 0xfd00 &&
+    h[1] === 0x0ec2 &&
+    h.slice(2, 7).every((group) => group === 0) &&
+    h[7] === 0x254
+  );
+}
+
+/** Cloud metadata names: `metadata.google.internal`, `metadata`,
+ *  `instance-data` and any `metadata.*.internal` or
+ *  `instance-data.*.internal`. */
+export function isRefusedHostName(host: string): boolean {
+  const name = host
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "");
+  return /^(?:metadata|instance-data)(?:\..+\.internal|\.internal)?$/.test(
+    name,
+  );
+}
+
+function isRefusedHost(host: string): boolean {
+  const bare = host.replace(/^\[|\]$/g, "");
+  return isIP(bare) ? isRefusedAddress(bare) : isRefusedHostName(bare);
 }
 
 /**
@@ -195,8 +260,10 @@ export function validateMainspringUrl(
   if (parsed.search || parsed.hash)
     return { error: "url: leave out the query and fragment" };
   if (!parsed.hostname) return { error: "url: no host" };
-  if (isLinkLocal(parsed.hostname))
-    return { error: "url: link-local addresses are not allowed" };
+  if (isRefusedHost(parsed.hostname))
+    return {
+      error: "url: link-local and cloud metadata addresses are not allowed",
+    };
   if (parsed.protocol === "http:" && !isPrivateHost(parsed.hostname))
     return {
       error:
@@ -405,9 +472,53 @@ export function mainspringUrl(baseUrl: string, path: string): string {
   return `${baseUrl}/v1/${tail}`;
 }
 
+/** The address policy refused Mainspring's host, or it redirected. */
+export class MainspringAddressError extends Error {}
+
+/** The production request: node:http(s) through pinned-fetch's dialer, so
+ *  the connection goes only to the addresses mainspringFetch checked. A
+ *  redirect comes back unread; a body over MAX_RESPONSE_BYTES fails. */
+async function pinnedMainspringFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  addresses: string[],
+): Promise<Response> {
+  const parsed = new URL(url);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, timeout])
+    : timeout;
+  const response = await pinnedHttpRequest(
+    { url: parsed, host: parsed.hostname.replace(/^\[|\]$/g, ""), addresses },
+    {
+      method: init.method ?? "GET",
+      headers: Object.fromEntries(new Headers(init.headers).entries()),
+      ...(typeof init.body === "string" ? { body: init.body } : {}),
+      signal,
+      maxBodyBytes: MAX_RESPONSE_BYTES,
+    },
+    isRefusedAddress,
+  );
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  const empty =
+    [204, 205, 304].includes(response.status) ||
+    (response.status >= 300 && response.status < 400);
+  return new Response(empty ? null : new Uint8Array(response.body), {
+    status: response.status,
+    headers,
+  });
+}
+
 /**
  * An authorized request to Mainspring (`Authorization: Bearer sk-ms-…`).
- * Throws when Mainspring is not set up. The key goes only in the header.
+ * Throws when Mainspring is not set up, when its host is or resolves to a
+ * link-local or cloud metadata address (MainspringAddressError), and on a
+ * redirect: the key is never carried to another address. The key goes only
+ * in the header. Resolution happens once; the request dials only the
+ * checked addresses, so a DNS answer that changes in between can't move it.
  */
 export async function mainspringFetch(
   path: string,
@@ -416,14 +527,67 @@ export async function mainspringFetch(
 ): Promise<Response> {
   const config = options.config ?? (await mainspringConfig());
   if (!config) throw new Error("Mainspring is not set up");
+  const url = mainspringUrl(config.baseUrl, path);
+  const host = new URL(url).hostname.replace(/^\[|\]$/g, "");
+  if (isRefusedHost(host))
+    throw new MainspringAddressError(
+      `Refusing ${host}: link-local and cloud metadata addresses are not Mainspring`,
+    );
+  const addresses = isIP(host) ? [host] : await deps.resolve(host);
+  if (!addresses.length) throw new Error(`Could not resolve ${host}`);
+  const refused = addresses.find(isRefusedAddress);
+  if (refused)
+    throw new MainspringAddressError(
+      `Refusing ${host}: it resolves to the link-local or metadata address ${refused}`,
+    );
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${config.key}`);
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
-  return deps.fetch(
-    mainspringUrl(config.baseUrl, path),
-    { ...init, headers },
+  const response = await deps.fetch(
+    url,
+    { ...init, headers, redirect: "manual" },
     options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
+    addresses,
   );
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel().catch(() => {});
+    throw new MainspringAddressError(
+      `Mainspring answered with a redirect (${response.status}). Enter the address it redirects to.`,
+    );
+  }
+  return response;
+}
+
+/** A response's JSON, read up to `maxBytes`. Undefined when the body is
+ *  longer, empty or not JSON; a longer body is cancelled, not read. */
+export async function readBoundedJson(
+  response: Response,
+  maxBytes: number = MAX_RESPONSE_BYTES,
+): Promise<unknown> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    return undefined;
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return undefined;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return undefined;
+      }
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+  } catch {
+    return undefined;
+  }
 }
 
 /** What a failed Test says, in the owner's words. Never the response body:
@@ -456,17 +620,20 @@ export async function testMainspring(): Promise<
       {},
       { config, timeoutMs: TEST_TIMEOUT_MS },
     );
-  } catch {
+  } catch (error) {
     return {
       ok: false,
-      error: `Couldn't reach Mainspring at ${config.baseUrl}`,
+      error:
+        error instanceof MainspringAddressError
+          ? error.message
+          : `Couldn't reach Mainspring at ${config.baseUrl}`,
     };
   }
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
     return { ok: false, error: testFailure(response.status) };
   }
-  const body = await response.json().catch(() => undefined);
+  const body = await readBoundedJson(response);
   const models = catalogRows(body);
   if (!Object.keys(models).length)
     return { ok: false, error: "Mainspring listed no models" };
@@ -629,8 +796,9 @@ export type MainspringFailure =
   | { kind: "cap"; resetAt?: number }
   /** 401: no key, or a revoked one. */
   | { kind: "refused" }
-  /** 502/503: the provider failed, or no account of it is connected. */
-  | { kind: "unavailable"; status: number };
+  /** 5xx, a refused connection or a timeout: Mainspring or the provider
+   *  behind it couldn't answer. `status` is absent for a network failure. */
+  | { kind: "unavailable"; status?: number };
 
 /** The HTTP status an error message leads with ("429 {…}"), if any. */
 function leadingStatus(message: string): number | undefined {
@@ -638,10 +806,17 @@ function leadingStatus(message: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
+/** A request that never got an answer from Mainspring: refused, reset,
+ *  unresolvable or timed out. The texts are Node's error codes and the
+ *  Anthropic and OpenAI SDKs' connection and timeout errors. */
+const UNREACHABLE =
+  /\b(?:ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT)\b|connection (?:error|refused)|request timed out|fetch failed|socket hang up|unable to connect/i;
+
 /**
  * Classify a failed request. The status comes from the captured response
  * when the latest one failed, else from the error text (pi formats provider
- * errors as `<status> <body>`). Anything else is not Mainspring's to name.
+ * errors as `<status> <body>`). A connection that never got an answer is
+ * "unavailable" too. Anything else is not Mainspring's to name.
  */
 export function classifyMainspringFailure(
   message: string,
@@ -664,7 +839,10 @@ export function classifyMainspringFailure(
       : { kind: "resting", ...(resetAt ? { resetAt } : {}) };
   }
   if (status === 401) return { kind: "refused" };
-  if (status === 502 || status === 503) return { kind: "unavailable", status };
+  if (status !== undefined && status >= 500 && status <= 599)
+    return { kind: "unavailable", status };
+  if (status === undefined && UNREACHABLE.test(message))
+    return { kind: "unavailable" };
   return null;
 }
 
@@ -686,6 +864,113 @@ export function mainspringFailureText(
     case "refused":
       return "Mainspring key was refused. Paste a new key under Settings, Providers, Mainspring.";
     case "unavailable":
-      return `Mainspring is unavailable (${failure.status}): the provider failed or no account of it is connected. Retry in a minute.`;
+      return failure.status !== undefined
+        ? `Mainspring is unavailable (${failure.status}): the provider failed or no account of it is connected. Retry in a minute.`
+        : "Mainspring is unavailable: the connection was refused or timed out. Retry in a minute.";
   }
+}
+
+// ── Pool ────────────────────────────────────────────────────────────────
+
+/** Statuses `GET /v1/pool` gives an account that can't take a request. */
+const RESTING_STATUSES = new Set(["cooling", "benched", "needs_sign_in"]);
+const POOL_CACHE_MS = 60_000;
+const POOL_TIMEOUT_MS = 10_000;
+
+/** What `GET /v1/pool` says about Mainspring's Claude accounts. */
+export type MainspringClaudePool =
+  /** At least one account can take work, or nothing to judge by. */
+  | { resting: false }
+  /** Every account is cooling, benched or needs a sign-in. `retryAt` is
+   *  the soonest moment one of them is back, when Mainspring says. */
+  | { resting: true; retryAt?: number };
+
+const num = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/**
+ * Read the `claude` group of a `/v1/pool` body (Mainspring's docs/api.md):
+ * resting only when the group lists accounts and every one is `cooling`,
+ * `benched` or `needs_sign_in`. The retry time is the soonest of the
+ * group's `back_at`, each account's `cool_until` and its windows'
+ * `resets_at` that lies ahead, moved onto this machine's clock by the
+ * body's `now`. Null when the body has no usable Claude group.
+ */
+export function readClaudePool(
+  body: unknown,
+  now: number,
+): MainspringClaudePool | null {
+  const pool = obj(body);
+  const groups = Array.isArray(pool?.groups) ? pool.groups : [];
+  const group = groups.map((g) => obj(g)).find((g) => g?.provider === "claude");
+  const accounts = (Array.isArray(group?.accounts) ? group.accounts : [])
+    .map((a) => obj(a))
+    .filter((a): a is Record<string, unknown> => !!a);
+  if (!group || !accounts.length) return null;
+  if (
+    !accounts.every(
+      (a) => typeof a.status === "string" && RESTING_STATUSES.has(a.status),
+    )
+  )
+    return { resting: false };
+  const skew = (num(pool?.now) ?? now) - now;
+  const times = [num(group.back_at)];
+  for (const a of accounts) {
+    times.push(num(a.cool_until));
+    for (const w of Array.isArray(a.windows) ? a.windows : [])
+      times.push(num(obj(w)?.resets_at));
+  }
+  const ahead = times
+    .filter((t): t is number => t !== undefined && t > 0)
+    .map((t) => t - skew)
+    .filter((t) => t > now);
+  return ahead.length
+    ? { resting: true, retryAt: Math.min(...ahead) }
+    : { resting: true };
+}
+
+let poolCache:
+  | {
+      key: string;
+      at: number;
+      value: Promise<MainspringClaudePool | null>;
+    }
+  | undefined;
+
+/** Forget the cached pool (tests, and a settings change). */
+export function __resetMainspringPoolCacheForTest(): void {
+  poolCache = undefined;
+}
+
+/**
+ * The Claude group of Mainspring's pool, from `GET /v1/pool`, cached for a
+ * minute per address and key. Null when it can't tell: not set up,
+ * unreachable, a refused key, `404` while **Share pool with keys** is off,
+ * a body over MAX_RESPONSE_BYTES or without a Claude group. A failure is
+ * cached the same minute, so a down Mainspring isn't asked on every tick.
+ */
+export async function mainspringClaudePool(
+  record: MainspringRecord,
+  now: number = deps.now(),
+): Promise<MainspringClaudePool | null> {
+  if (!record.url || !record.keyRef) return null;
+  const key = `${record.url}\n${record.keyRef}`;
+  if (poolCache && poolCache.key === key && now - poolCache.at < POOL_CACHE_MS)
+    return poolCache.value;
+  const value = (async () => {
+    const config = await mainspringConfig(record);
+    if (!config) return null;
+    const response = await mainspringFetch(
+      "/v1/pool",
+      {},
+      { config, timeoutMs: POOL_TIMEOUT_MS },
+    );
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      return null;
+    }
+    return readClaudePool(await readBoundedJson(response), now);
+  })().catch(() => null);
+  poolCache = { key, at: now, value };
+  return value;
 }

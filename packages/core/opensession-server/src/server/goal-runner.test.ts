@@ -808,6 +808,23 @@ describe("a project lead's goal", () => {
     }
   });
 
+  test("a goal waits only until the source says an account is back, when that is sooner", async () => {
+    const back = Date.now() + 5 * 60_000;
+    __setBackgroundHeadroomForTest(async () => ({
+      ok: false,
+      reason: "Every Claude account in Mainspring is resting",
+      retryAt: back,
+    }));
+    try {
+      const goal = await dueGoal({ model: "pi/anthropic/claude-fable-5-1" });
+      await tickGoals();
+      expect(runs).toBe(0);
+      expect(Date.parse((await getGoal(goal.id))!.nextWakeAt)).toBe(back);
+    } finally {
+      __setBackgroundHeadroomForTest(undefined);
+    }
+  });
+
   test("a goal on another provider isn't held by the Claude pool", async () => {
     __setBackgroundHeadroomForTest(async (route) =>
       route.startsWith("pi/anthropic/")

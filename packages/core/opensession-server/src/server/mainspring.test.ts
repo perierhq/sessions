@@ -3,8 +3,14 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  MAX_RESPONSE_BYTES,
+  __resetMainspringPoolCacheForTest,
   __setMainspringDepsForTest,
   classifyMainspringFailure,
+  isRefusedAddress,
+  isRefusedHostName,
+  mainspringClaudePool,
+  readClaudePool,
   getMainspringSettings,
   mainspringConfig,
   mainspringFailureText,
@@ -116,6 +122,16 @@ describe("validateMainspringUrl", () => {
     expect("error" in validateMainspringUrl("http://169.254.169.254")).toBe(
       true,
     );
+    for (const metadata of [
+      "http://[fe80::1]",
+      "http://[fd00:ec2::254]",
+      "https://metadata.google.internal",
+      "http://metadata",
+      "https://instance-data.ec2.internal",
+    ])
+      expect(validateMainspringUrl(metadata)).toEqual({
+        error: "url: link-local and cloud metadata addresses are not allowed",
+      });
     expect("error" in validateMainspringUrl("not a url")).toBe(true);
     expect("error" in validateMainspringUrl("")).toBe(true);
   });
@@ -262,6 +278,7 @@ describe("testMainspring", () => {
     });
     const calls: Array<{ url: string; headers: Headers }> = [];
     restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
       fetch: async (url, init) => {
         calls.push({ url, headers: new Headers(init.headers) });
         return modelsResponse();
@@ -299,6 +316,7 @@ describe("testMainspring", () => {
       routeClaude: true,
     });
     restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
       fetch: async () => modelsResponse(),
     });
     await testMainspring();
@@ -312,6 +330,7 @@ describe("testMainspring", () => {
       key: KEY,
     });
     restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
       fetch: async () =>
         new Response(`{"error":{"message":"bad key ${KEY}"}}`, {
           status: 401,
@@ -333,6 +352,7 @@ describe("testMainspring", () => {
     });
     await saveMainspringSettings({ key: KEY });
     restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
       fetch: async () => {
         throw new Error("connect ECONNREFUSED");
       },
@@ -343,12 +363,42 @@ describe("testMainspring", () => {
     });
   });
 
+  test("a redirect and an oversized list are refused", async () => {
+    await saveMainspringSettings({
+      url: "https://mainspring.example.test",
+      key: KEY,
+    });
+    restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
+      fetch: async () =>
+        new Response(null, { status: 301, headers: { location: "/x" } }),
+    });
+    expect((await testMainspring()).ok).toBe(false);
+    restore();
+    restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              { id: "claude-sonnet-5-5", pad: "x".repeat(MAX_RESPONSE_BYTES) },
+            ],
+          }),
+        ),
+    });
+    expect(await testMainspring()).toEqual({
+      ok: false,
+      error: "Mainspring listed no models",
+    });
+  });
+
   test("a URL change drops the cached list", async () => {
     await saveMainspringSettings({
       url: "https://mainspring.example.test",
       key: KEY,
     });
     restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
       fetch: async () => modelsResponse(),
     });
     await testMainspring();
@@ -363,6 +413,7 @@ describe("mainspringFetch", () => {
   test("sends the key only as a Bearer header to <base>/v1/<path>", async () => {
     const calls: Array<{ url: string; headers: Headers }> = [];
     restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
       fetch: async (url, init) => {
         calls.push({ url, headers: new Headers(init.headers) });
         return new Response("{}");
@@ -375,6 +426,61 @@ describe("mainspringFetch", () => {
     );
     expect(calls[0]!.url).toBe("https://mainspring.example.test/v1/pool");
     expect(calls[0]!.headers.get("authorization")).toBe(`Bearer ${KEY}`);
+  });
+
+  const CONFIG = { baseUrl: "https://mainspring.example.test", key: KEY };
+
+  test("refuses a host that resolves to a link-local or metadata address, before sending", async () => {
+    for (const address of ["169.254.169.254", "fd00:ec2::254", "fe80::1"]) {
+      let sent = false;
+      restore?.();
+      restore = __setMainspringDepsForTest({
+        resolve: async () => ["203.0.113.10", address],
+        fetch: async () => {
+          sent = true;
+          return new Response("{}");
+        },
+      });
+      await expect(
+        mainspringFetch("/v1/pool", {}, { config: CONFIG }),
+      ).rejects.toThrow(`link-local or metadata address ${address}`);
+      expect(sent).toBe(false);
+    }
+    await expect(
+      mainspringFetch(
+        "/v1/pool",
+        {},
+        { config: { ...CONFIG, baseUrl: "http://metadata.google.internal" } },
+      ),
+    ).rejects.toThrow("cloud metadata");
+  });
+
+  test("private and tailnet addresses stay allowed; only the checked ones are dialled", async () => {
+    let dialled: string[] = [];
+    restore = __setMainspringDepsForTest({
+      resolve: async () => ["192.168.1.20", "100.101.102.103"],
+      fetch: async (_url, init, _timeout, addresses) => {
+        expect(init.redirect).toBe("manual");
+        dialled = addresses;
+        return new Response("{}");
+      },
+    });
+    await mainspringFetch("/v1/pool", {}, { config: CONFIG });
+    expect(dialled).toEqual(["192.168.1.20", "100.101.102.103"]);
+  });
+
+  test("a redirect is an error, never followed", async () => {
+    restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
+      fetch: async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "http://169.254.169.254/" },
+        }),
+    });
+    await expect(
+      mainspringFetch("/v1/models", {}, { config: CONFIG }),
+    ).rejects.toThrow("redirect (302)");
   });
 
   test("throws when Mainspring is not set up", async () => {
@@ -452,9 +558,198 @@ describe("responses and failures", () => {
       kind: "unavailable",
       status: 502,
     });
-    expect(classifyMainspringFailure("fetch failed")).toBeNull();
+    expect(classifyMainspringFailure("fetch failed")).toEqual({
+      kind: "unavailable",
+    });
+    for (const message of [
+      "connect ECONNREFUSED 10.0.0.2:8080",
+      "Connection error.",
+      "Request timed out.",
+      "ETIMEDOUT",
+    ])
+      expect(classifyMainspringFailure(message)).toEqual({
+        kind: "unavailable",
+      });
+    for (const status of [500, 504, 529])
+      expect(
+        classifyMainspringFailure("upstream", { httpStatus: status }),
+      ).toEqual({ kind: "unavailable", status });
+    expect(classifyMainspringFailure("the model refused")).toBeNull();
     expect(
       classifyMainspringFailure("400 bad request", { httpStatus: 200 }),
     ).toBeNull();
+  });
+});
+
+describe("address policy", () => {
+  test("refuses link-local and metadata, allows private and tailnet", () => {
+    for (const ip of [
+      "169.254.169.254",
+      "169.254.0.1",
+      "100.100.100.200",
+      "fe80::1",
+      "fd00:ec2::254",
+      "::ffff:169.254.169.254",
+    ])
+      expect(isRefusedAddress(ip)).toBe(true);
+    for (const ip of [
+      "10.0.0.2",
+      "192.168.1.2",
+      "100.101.1.2",
+      "127.0.0.1",
+      "::1",
+      "fd00::1",
+    ])
+      expect(isRefusedAddress(ip)).toBe(false);
+    for (const name of [
+      "metadata.google.internal",
+      "metadata",
+      "METADATA.Google.Internal.",
+      "instance-data.ec2.internal",
+    ])
+      expect(isRefusedHostName(name)).toBe(true);
+    for (const name of [
+      "mainspring.internal",
+      "metadata.example.test",
+      "mainspring.local",
+    ])
+      expect(isRefusedHostName(name)).toBe(false);
+  });
+});
+
+describe("pool", () => {
+  const NOW = Date.parse("2026-11-12T10:00:00Z");
+  const account = (status: string, extra: Record<string, unknown> = {}) => ({
+    label: `${status}@example.test`,
+    status,
+    sessions: 0,
+    windows: [],
+    ...extra,
+  });
+  const body = (accounts: unknown[], extra: Record<string, unknown> = {}) => ({
+    now: NOW,
+    groups: [
+      { provider: "codex", accounts: [account("cooling")] },
+      { provider: "claude", accounts, ...extra },
+    ],
+  });
+
+  test("resting only when every Claude account is cooling, benched or needs a sign-in", () => {
+    expect(
+      readClaudePool(body([account("cooling"), account("next")]), NOW),
+    ).toEqual({ resting: false });
+    expect(readClaudePool(body([account("active")]), NOW)).toEqual({
+      resting: false,
+    });
+    expect(
+      readClaudePool(
+        body([
+          account("cooling", { cool_until: NOW + 3_600_000 }),
+          account("benched", {
+            windows: [
+              { label: "5 hours", left: 0, resets_at: NOW + 1_800_000 },
+            ],
+          }),
+          account("needs_sign_in"),
+        ]),
+        NOW,
+      ),
+    ).toEqual({ resting: true, retryAt: NOW + 1_800_000 });
+    expect(readClaudePool(body([account("needs_sign_in")]), NOW)).toEqual({
+      resting: true,
+    });
+  });
+
+  test("the soonest reset is moved onto this clock, past ones ignored", () => {
+    // Mainspring's clock runs a minute ahead.
+    expect(
+      readClaudePool(
+        {
+          now: NOW + 60_000,
+          groups: [
+            {
+              provider: "claude",
+              back_at: NOW + 60_000 + 600_000,
+              accounts: [account("cooling", { cool_until: NOW - 1 })],
+            },
+          ],
+        },
+        NOW,
+      ),
+    ).toEqual({ resting: true, retryAt: NOW + 600_000 });
+  });
+
+  test("no Claude group, or no accounts, can't tell", () => {
+    expect(readClaudePool({ groups: [] }, NOW)).toBeNull();
+    expect(readClaudePool(body([]), NOW)).toBeNull();
+    expect(readClaudePool("nope", NOW)).toBeNull();
+  });
+
+  test("reads GET /v1/pool once a minute; a 404 (sharing off) can't tell", async () => {
+    await saveMainspringSettings({
+      url: "https://mainspring.example.test",
+      key: KEY,
+    });
+    const record = await readMainspringRecord();
+    let calls = 0;
+    let answer: Response = new Response(
+      JSON.stringify(body([account("benched")])),
+    );
+    restore = __setMainspringDepsForTest({
+      resolve: async () => ["203.0.113.10"],
+      fetch: async (url, init) => {
+        calls++;
+        expect(url).toBe("https://mainspring.example.test/v1/pool");
+        expect(new Headers(init.headers).get("authorization")).toBe(
+          `Bearer ${KEY}`,
+        );
+        return answer;
+      },
+    });
+    __resetMainspringPoolCacheForTest();
+    expect(await mainspringClaudePool(record, NOW)).toEqual({ resting: true });
+    expect(await mainspringClaudePool(record, NOW + 59_000)).toEqual({
+      resting: true,
+    });
+    expect(calls).toBe(1);
+    answer = new Response('{"error":{}}', { status: 404 });
+    expect(await mainspringClaudePool(record, NOW + 61_000)).toBeNull();
+    expect(calls).toBe(2);
+    answer = new Response("x".repeat(MAX_RESPONSE_BYTES + 1));
+    expect(await mainspringClaudePool(record, NOW + 200_000)).toBeNull();
+    __resetMainspringPoolCacheForTest();
+  });
+});
+
+describe("the real dialer", () => {
+  test("never follows a redirect and caps the body", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/v1/models")
+          return new Response(null, {
+            status: 302,
+            headers: { location: "http://127.0.0.1:1/v1/models" },
+          });
+        if (path === "/v1/pool")
+          return new Response("x".repeat(MAX_RESPONSE_BYTES + 10));
+        return Response.json({ auth: request.headers.get("authorization") });
+      },
+    });
+    try {
+      const config = { baseUrl: `http://127.0.0.1:${server.port}`, key: KEY };
+      await expect(
+        mainspringFetch("/v1/models", {}, { config }),
+      ).rejects.toThrow("redirect (302)");
+      await expect(
+        mainspringFetch("/v1/pool", {}, { config }),
+      ).rejects.toThrow();
+      const ok = await mainspringFetch("/v1/echo", {}, { config });
+      expect(await ok.json()).toEqual({ auth: `Bearer ${KEY}` });
+    } finally {
+      server.stop(true);
+    }
   });
 });

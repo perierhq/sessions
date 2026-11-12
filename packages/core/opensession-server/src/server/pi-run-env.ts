@@ -9,21 +9,49 @@ import type { RemoteWorkspace } from "./remote-workspace";
 import { PI_STATE_DIR } from "./pi-common";
 import { incidentUserHomeEnv, piBashHomeEnv } from "./pi-bash-tool";
 import { sessionOwnershipEnv } from "./session-ownership";
+import type { MainspringRoute } from "./pi-mainspring";
 
 export function piCliPoolEnv(input: {
   opts: RunAgentOpts;
   remote: RemoteWorkspace | undefined;
   accountUser: string | undefined;
   runKey: string;
+  /** Where this run's Claude requests go (resolveMainspringRoute for
+   *  `anthropic`). Absent reads as direct. */
+  claudeRoute?: MainspringRoute;
 }): Record<string, string> {
-  const { opts, remote, accountUser, runKey } = input;
+  const { opts, remote, accountUser, runKey, claudeRoute } = input;
   const { journal } = opts;
   // Optional pool credentials for tools the run itself spawns (currently
   // deepsec's Claude Agent SDK and Codex CLI workers). These are explicit
   // additions to the minimal environment, never inherited server secrets.
   const cliEnv: Record<string, string> = {};
   // Pool credentials never go into a Sandbox command.
-  if (opts.claudeCliEnv && !remote) {
+  if (opts.claudeCliEnv && !remote && claudeRoute?.kind === "mainspring") {
+    // While Claude is routed through Mainspring, the run's Claude workers go
+    // there too, so they never reach the local accounts behind the owner's
+    // back. The Mainspring key takes the place of the pool OAuth token this
+    // environment carries on a direct route (docs/security-model.md,
+    // "Mainspring key"): the same exposure to the run, one credential.
+    const { target } = claudeRoute;
+    const cliCfgDir = `${PI_STATE_DIR}/cli/claude/mainspring`;
+    mkdirSync(cliCfgDir, { recursive: true, mode: 0o700 });
+    cliEnv.ANTHROPIC_BASE_URL = target.baseUrl;
+    cliEnv.ANTHROPIC_AUTH_TOKEN = target.key;
+    cliEnv.ANTHROPIC_CUSTOM_HEADERS = `X-Session-ID: ${target.sessionId}`;
+    cliEnv.CLAUDE_CONFIG_DIR = cliCfgDir;
+    audit({
+      msg: "claude_cli_env_account",
+      run_kind: journal?.kind,
+      session_id: journal?.osSessionId,
+      via: "mainspring",
+      engine: "pi",
+    });
+  } else if (opts.claudeCliEnv && !remote && claudeRoute?.kind === "error") {
+    console.warn(
+      `[pi-runner] claudeCliEnv requested but Claude is routed through Mainspring and it can't be used (${claudeRoute.message}); run proceeds without it`,
+    );
+  } else if (opts.claudeCliEnv && !remote) {
     const cliAccount = pickClaudeCliAccount(
       undefined,
       accountUser,

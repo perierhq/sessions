@@ -887,7 +887,13 @@ async function tickGoal(
   }
   const verdict = await check;
   if (!verdict.ok) {
-    const nextWakeAt = new Date(now + HEADROOM_POSTPONE_MS).toISOString();
+    // Look again after the postpone, or sooner when the source says an
+    // account is back before then (Mainspring's pool, claude-headroom.ts).
+    const retryAt =
+      verdict.retryAt !== undefined && verdict.retryAt > now
+        ? Math.min(verdict.retryAt, now + HEADROOM_POSTPONE_MS)
+        : now + HEADROOM_POSTPONE_MS;
+    const nextWakeAt = new Date(retryAt).toISOString();
     const since = new Date(now).toISOString();
     const waited = await mutateGoal(goal.id, (current) =>
       current.status === "active" && current.nextWakeAt === goal.nextWakeAt

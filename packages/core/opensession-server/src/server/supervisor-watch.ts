@@ -1179,7 +1179,12 @@ export async function watchWakeCheck(goal: Goal): Promise<WatchWakePlan> {
   if (!headroom.ok)
     return {
       skip: headroom.reason,
-      nextWakeAt: iso(now + WATCH_HEADROOM_RETRY_MS),
+      // Sooner when the source says an account is back before the retry.
+      nextWakeAt: iso(
+        headroom.retryAt !== undefined && headroom.retryAt > now
+          ? Math.min(headroom.retryAt, now + WATCH_HEADROOM_RETRY_MS)
+          : now + WATCH_HEADROOM_RETRY_MS,
+      ),
     };
   // Close what ran out before looking, so it shows as closed.
   if (

@@ -15,8 +15,14 @@
  *
  * A strict account pin (a fixed-subscription session) keeps its direct
  * account: the person chose that subscription, and Mainspring cannot honour
- * the pin. Without "Fall back to direct accounts" a failure through
- * Mainspring ends the turn; it never moves to the local accounts silently.
+ * the pin. The same rule covers the turn's side requests: a web tool's
+ * Claude request (pi-web-search.ts) and the run's Claude workers
+ * (pi-run-env.ts) resolve their route here with the session's pin, so a
+ * strict-pinned session sends none of them to Mainspring, and a soft-pinned
+ * or unpinned one sends all of them while the switch is on. Without "Fall
+ * back to direct accounts" a failure through Mainspring ends the turn; it
+ * never moves to the local accounts silently. With it on, a 429, 401, 5xx,
+ * refused connection or timeout moves the turn to the direct accounts.
  */
 import type { AnthropicRateLimitSnapshot } from "./anthropic-rate-limit";
 import type { FetchLike } from "./anthropic-rate-limit";
@@ -58,8 +64,9 @@ export type MainspringRoute =
   | { kind: "error"; message: string };
 
 /**
- * Decide the route for one attempt. `fellBack` is the walk's "this turn
- * already moved to the direct accounts".
+ * Decide the route for one attempt, or for one of its side requests (pass
+ * `providerID: "anthropic"` and the turn's own pin). `fellBack` is the
+ * walk's "this turn already moved to the direct accounts".
  */
 export async function resolveMainspringRoute(input: {
   providerID: string;
@@ -314,8 +321,9 @@ export function mainspringRateLimit(
 /**
  * A failed Mainspring turn, mapped: the classified failure, its fixed text,
  * and whether it is a usage limit (429). A 401 is not a usage limit and not
- * transient: the session needs the owner. A 502/503 keeps its status in the
- * text, which the fallback walk reads as a transient provider error.
+ * transient: the session needs the owner. A 5xx, refused connection or
+ * timeout reads "Mainspring is unavailable", which the fallback walk treats
+ * as a transient provider error (isTransientRunError).
  */
 export function mainspringTurnFailure(input: {
   message: string;
