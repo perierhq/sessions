@@ -962,6 +962,30 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 
+### Blob logic tests
+
+`BlobCore/` is a small Swift package with the parts of Blob that need no
+view, no network and no clock: the brief's item and brief types with their
+tolerant decoding, the brief's state rules (`BlobBriefState`: which page
+shows, which decisions are open, each closing on its own, a 409 `changed`
+taking the new revision, new items offered once, the poll delay), the
+glossary correction (`BlobGlossaryCorrector`, with the spell check passed
+in) and history's grouping (`BlobExchange`). The Blob and BlobMac targets
+depend on it; `BlobBrief` and `BlobGlossary` in `Blob/` are thin wrappers
+that read, answer, time and pass the system spell checker. Run the tests on
+any Mac, with no simulator and without building the app:
+
+```sh
+cd packages/clients/ios/BlobCore && swift test
+```
+
+It builds only the package (Foundation, Swift Testing) and runs in seconds.
+The sentence streamer, `BlobReply` and `BlobCues` stay in `Blob/` for now:
+they use `CueMarkers` (`OS1/Models/SayBlock.swift`), which the OS apps share.
+After moving code into the package, build the `Blob` scheme once for
+`generic/platform=iOS Simulator` and `BlobMac` for macOS to prove the app
+still compiles against it.
+
 ### Blob for Mac
 
 `BlobMac` builds the same `OS1/` and `Blob/` sources for macOS as `Blob.app`

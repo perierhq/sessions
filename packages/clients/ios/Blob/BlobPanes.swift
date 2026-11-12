@@ -1,3 +1,4 @@
+import BlobCore
 import SwiftUI
 
 /// Two panes on a wide surface, side by side across a vertical fold: the
