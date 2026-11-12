@@ -401,7 +401,7 @@ export function overviewMarkdown(o: LeadOverview): string {
     : `off (${o.lead.stage} stage when on)`;
   const lines = [
     `# ${o.project} at ${o.at}`,
-    `Lead: ${lead}; owner ${o.lead.owner ?? "not set"}; ${o.lead.dailyWakeLimit} wakes a day; ${o.lead.budgetUsdPerMonth === null ? "no dollar cap" : `dollar cap $${o.lead.budgetUsdPerMonth} a month`}.`,
+    `Lead: ${lead}; owner ${o.lead.owner ?? "not set"}; ${o.lead.dailyWakeLimit} extra wakes a day beyond its hourly schedule; ${o.lead.budgetUsdPerMonth === null ? "no dollar cap" : `dollar cap $${o.lead.budgetUsdPerMonth} a month`}.`,
     "",
     `## Incidents: ${o.incidents.open} open`,
     ...(o.incidents.items.length ? [untrustedLabel("incident titles")] : []),

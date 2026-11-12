@@ -168,6 +168,8 @@ export function takePendingWake<
 export const LEAD_UNAVAILABLE_REASON =
   "The project lead isn't running on this server";
 export const WAKE_CHECK_FAILED_REASON = "Its wake check failed";
+/** How a pause by a project lead's loop guard starts (server/leads/goal.ts). */
+export const LEAD_GUARD_REASON_PREFIX = "Loop guard";
 /** Why the runner paused a person's watch goal without running it: no
  *  watch on this server to ask (supervisor-watch.ts lifts it). */
 export const WATCH_UNAVAILABLE_REASON =
@@ -461,7 +463,18 @@ export async function updateGoal(
   }
 }
 
-/** Resume a paused/done goal: mark active and (re)schedule a wake. */
+/** The guard with today's holds lifted, as the owner's Resume on the
+ *  lead's question does: the wake limit for the rest of its day, and the
+ *  token trip. */
+export function liftGoalGuard(guard: GoalGuard): GoalGuard {
+  const { trippedAt: _at, trippedTokens: _tokens, ...rest } = guard;
+  return { ...rest, lifted: true };
+}
+
+/** Resume a paused/done goal: mark active and (re)schedule a wake. A
+ *  project lead its loop guard paused has the guard lifted too, so the
+ *  owner's resume here counts as their Resume on the lead's question
+ *  (whose card the next wake check closes). */
 export async function resumeGoal(
   id: string,
   firstWakeAt?: string,
@@ -477,6 +490,12 @@ export async function resumeGoal(
     status: "active",
     pauseReason: undefined,
     nextWakeAt,
+    ...(g.leadProject &&
+    g.guard &&
+    g.status === "paused" &&
+    g.pauseReason?.startsWith(LEAD_GUARD_REASON_PREFIX)
+      ? { guard: liftGoalGuard(g.guard) }
+      : {}),
   }));
   return next ?? { error: "Goal not found" };
 }

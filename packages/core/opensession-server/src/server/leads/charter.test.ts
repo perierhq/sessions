@@ -26,7 +26,7 @@ describe("leadCharter", () => {
       "Watch. You read and propose; you change nothing, not even something the owner approved.",
     );
     expect(text).toContain(
-      "You may wake 24 times a day, and one wake may use about 1,000,000 tokens. Past the wake limit you are paused until the owner resumes you or the day ends; past the token limit, until the owner resumes you or 12 hours pass.",
+      "Your own schedule wakes you at most once an hour; on top of that, events and the owner's answers may wake you 24 more times a day. One wake may use about 1,000,000 tokens. Past the wake limit you are paused until the owner resumes you or the day ends; past the token limit, until the owner resumes you or 12 hours pass.",
     );
     expect(text).toContain(
       "Your wakes wait while the owner's Claude accounts are near their limits.",

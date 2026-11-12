@@ -416,6 +416,54 @@ describe("answering and dismissing", () => {
     expect(result).toMatchObject({ ok: true, item: { state: "dismissed" } });
     expect(done).toEqual([{ user: "Ada", ids: [`supervisor:${item.id}`] }]);
   });
+
+  test("the raiser closes its own open items: expired, or answered with a fixed line and no handler", async () => {
+    const heard: string[] = [];
+    inbox.onSupervisorAnswer("lead:acme", (item) => {
+      heard.push(item.id);
+    });
+    const stale = await needsYou({ dedupeKey: "lead:acme:guard:wakes:old" });
+    const done1 = await needsYou({ dedupeKey: "lead:acme:proposal:ci" });
+    const keep = await needsYou({ dedupeKey: "lead:acme:other" });
+    clock += 1000;
+    const expired = await inbox.closeSupervisorItems(
+      "Ada",
+      (item) => item.dedupeKey === "lead:acme:guard:wakes:old",
+      { state: "expired" },
+    );
+    expect(expired).toMatchObject([{ id: stale.item.id, state: "expired" }]);
+    const answered = await inbox.closeSupervisorItems(
+      "Ada",
+      (item) => item.id === done1.item.id,
+      { state: "answered", answer: "Done by the lead under its rules" },
+    );
+    expect(answered).toMatchObject([
+      {
+        state: "answered",
+        answer: "Done by the lead under its rules",
+        answeredAt: clock,
+        briefedAt: clock,
+      },
+    ]);
+    expect(answered[0]!.answeredBy).toBeUndefined();
+    expect(heard).toEqual([]);
+    expect(done).toEqual([
+      { user: "Ada", ids: [`supervisor:${stale.item.id}`] },
+      { user: "Ada", ids: [`supervisor:${done1.item.id}`] },
+    ]);
+    // Closed items stay closed; nothing matching open writes nothing.
+    expect(
+      await inbox.closeSupervisorItems(
+        "Ada",
+        (item) => item.id !== keep.item.id,
+        {
+          state: "expired",
+        },
+      ),
+    ).toEqual([]);
+    const open = await inbox.listSupervisorItems("Ada", { state: "open" });
+    expect(open.map((item) => item.id)).toEqual([keep.item.id]);
+  });
 });
 
 describe("quiet hours", () => {

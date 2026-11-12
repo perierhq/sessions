@@ -652,7 +652,7 @@ export function pinnedLeadError(category: LeadCategory): string {
 }
 
 const LEAD_BUDGET_ERROR = `Lead dollar cap (lead.budgetUsdPerMonth) must be off or from $0.01 to $${MAX_LEAD_BUDGET_USD}`;
-const DAILY_WAKES_ERROR = `Lead wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to ${MAX_LEAD_DAILY_WAKES}`;
+const DAILY_WAKES_ERROR = `Lead extra wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to ${MAX_LEAD_DAILY_WAKES}`;
 const WAKE_TOKENS_ERROR = `Lead tokens a wake (lead.wakeTokenLimit) must be a whole number from ${MIN_LEAD_WAKE_TOKENS} to ${MAX_LEAD_WAKE_TOKENS}`;
 
 function validDailyWakes(v: unknown): v is number {

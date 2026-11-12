@@ -84,7 +84,10 @@ import type {
 import type { SignalWriter } from "../incidents/signal-store";
 import type { MergeMethod } from "../pr-contract";
 import { PROJECT_LEAD_ACTOR } from "../session-actors";
-import type { postSupervisorItem } from "../supervisor-inbox";
+import type {
+  closeSupervisorItems,
+  postSupervisorItem,
+} from "../supervisor-inbox";
 import { RULES } from "../support/policy";
 import type { sendDraft } from "../support/reply";
 import {
@@ -96,6 +99,7 @@ import {
   type SignalPatchAfter,
   type SignalPatchBefore,
   type SupportSendPin,
+  LEAD_RULES_APPROVER,
   claimAlone,
   claimApply,
   getRecord,
@@ -125,6 +129,28 @@ import {
  * act; watch always refuses.
  */
 export const APPROVED_RUNS_ONLY_AT_ACT: boolean = false;
+
+/** The answer a proposal's card closes with when the lead settled it
+ *  under its own rules, without the owner's answer. */
+export const DONE_BY_LEAD_ANSWER = "Done by the lead under its rules";
+
+/** The inbox items of proposals the lead ran under its own rules that
+ *  have settled (applied, failed or partial): their cards are done. */
+export function doneByRulesItemIds(
+  records: readonly LeadRecord[],
+): Set<string> {
+  return new Set(
+    records
+      .filter(
+        (r) =>
+          r.approval?.approvedBy === LEAD_RULES_APPROVER &&
+          (r.approval.state === "applied" ||
+            r.approval.state === "failed" ||
+            r.approval.state === "partial"),
+      )
+      .map((r) => r.proposal.itemId),
+  );
+}
 
 /** What the rules let run without the owner at the coordinate stage. */
 export const COORDINATE_STEPS: readonly LeadStepKind[] = ["autofix-pr"];
@@ -190,6 +216,7 @@ export interface LeadApplyDeps {
   getConversation(id: string): Promise<SupportConversation | null>;
   sendDraft: typeof sendDraft;
   postSupervisorItem: typeof postSupervisorItem;
+  closeSupervisorItems: typeof closeSupervisorItems;
 }
 
 // The project's settings, label and repositories come from the overview's
@@ -268,6 +295,8 @@ const liveDeps: LeadApplyDeps = {
     (await import("../support/reply")).sendDraft(...args),
   postSupervisorItem: async (...args) =>
     (await import("../supervisor-inbox")).postSupervisorItem(...args),
+  closeSupervisorItems: async (...args) =>
+    (await import("../supervisor-inbox")).closeSupervisorItems(...args),
 };
 
 let override: Partial<LeadApplyDeps> | undefined;
@@ -943,6 +972,29 @@ async function tellOwner(
   return posted.item.id;
 }
 
+/** The proposal's own card leaves the owner's inbox once the lead settled
+ *  it under its rules: the Applied or Couldn't apply item says how it went.
+ *  A failure is logged; the next wake check retries (leads/goal.ts). */
+async function closeProposalCard(
+  project: string,
+  doc: Pick<ProjectSettingsDocument, "lead">,
+  d: LeadApplyDeps,
+  itemId: string,
+): Promise<void> {
+  const owner = leadOwner(doc);
+  if (!owner) return;
+  const source = leadSource(project);
+  try {
+    await d.closeSupervisorItems(
+      owner,
+      (item) => item.source === source && item.id === itemId,
+      { state: "answered", answer: DONE_BY_LEAD_ANSWER },
+    );
+  } catch (error) {
+    logRaw(project, itemId, "closing the proposal's card", errorText(error));
+  }
+}
+
 // ── lead_apply ──────────────────────────────────────────────────────────────
 
 export type LeadApplyResult =
@@ -1186,6 +1238,8 @@ export async function leadApply(
   } catch (error) {
     logRaw(project, proposalId, "telling the owner", errorText(error));
   }
+  if (approval.approvedBy === LEAD_RULES_APPROVER)
+    await closeProposalCard(project, doc, d, proposal.itemId);
   const told = itemId ? ` The owner was told (${itemId}).` : "";
   if (!failure)
     return {

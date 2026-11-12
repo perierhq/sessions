@@ -25,6 +25,7 @@ import {
   __setLeadApprovalsDepsForTest,
   approve,
   getRecord,
+  listForProject,
   recordProposal,
 } from "./approvals";
 import {
@@ -54,6 +55,9 @@ let clock = NOW;
 let doc: ProjectSettingsDocument;
 let audits: Array<Record<string, unknown>> = [];
 let posts: Array<Record<string, unknown>> = [];
+/** The items closeSupervisorItems picked, from a fake inbox of one open
+ *  card per proposal, and how each was closed. */
+let closes: Array<{ user: string; ids: string[]; close: unknown }> = [];
 let prs: Map<string, PrSnapshot>;
 let merges: unknown[][] = [];
 let comments: unknown[][] = [];
@@ -183,6 +187,7 @@ beforeEach(() => {
   clock = NOW;
   audits = [];
   posts = [];
+  closes = [];
   merges = [];
   comments = [];
   writes = [];
@@ -275,6 +280,18 @@ beforeEach(() => {
         delivery: "none",
         revision: clock,
       };
+    }) as never,
+    closeSupervisorItems: (async (
+      user: string,
+      pick: (item: { id: string; source: string }) => boolean,
+      close: unknown,
+    ) => {
+      const ids = (await listForProject("acme"))
+        .map((r) => ({ id: r.proposal.itemId, source: "lead:acme" }))
+        .filter(pick)
+        .map((item) => item.id);
+      closes.push({ user, ids, close });
+      return [];
     }) as never,
   };
   __setLeadApplyDepsForTest(fakes);
@@ -1088,8 +1105,36 @@ describe("leadApply", () => {
       rule: expect.stringMatching(/^Alone: Fixes verified/),
     });
     expect(record?.approval?.login).toBeUndefined();
+    // Its card leaves the owner's inbox; the Applied item says how it went.
+    expect(closes).toEqual([
+      {
+        user: "Ada",
+        ids: [p.itemId],
+        close: {
+          state: "answered",
+          answer: "Done by the lead under its rules",
+        },
+      },
+    ]);
+    expect(posts.map((post) => post.title)).toEqual([
+      "Applied: Acme: Fixes verified by a second agent",
+    ]);
     expect(await leadApply("acme", p.id)).toMatchObject({ ok: false });
     expect(merges).toHaveLength(1);
+  });
+
+  test("a rules run that fails also closes its card", async () => {
+    withLead({ stage: "coordinate" }, { "ci-repair": "alone" });
+    autofixPrs.clear();
+    const p = await propose("ci-repair", [autofixStep()]);
+    expect(await leadApply("acme", p.id)).toMatchObject({ state: "failed" });
+    expect(closes.map((c) => c.ids)).toEqual([[p.itemId]]);
+  });
+
+  test("an approved run leaves the card to the owner's answer", async () => {
+    const p = await approved("fix-verified", [mergeStep()]);
+    expect(await leadApply("acme", p.id)).toMatchObject({ ok: true });
+    expect(closes).toEqual([]);
   });
 
   test("the owner tightening alone to asks first during the condition check claims nothing", async () => {
