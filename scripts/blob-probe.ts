@@ -9,18 +9,23 @@
  *   bun scripts/blob-probe.ts [scenario[,scenario]] [options]
  *
  * Scenarios (all, in this order, when none is named):
- *   open             ensure, glossary, brief with start=1, poll until ready
+ *   open             ensure, glossary, the timezone prefs, brief with
+ *                    start=1, poll until ready
  *   talk             send a message like the app, read the reply until settled
- *   history          current session's history, then previous sessions
+ *   history          page GET /api/supervisor/history as Blob does, back to
+ *                    an exchange from before the latest rotation
  *   brief-lifecycle  mark the brief seen, Done, read it again
- *   answer           stale revision → 409 changed, current revision → answered
+ *   answer           stale revision → 409 changed, read again → answered
  *
  * Options:
  *   --owner-read-only   allow running as the instance owner: only open
- *                       (without start) and history
+ *                       (no ensure, no start, no timezone write) and
+ *                       history; every HTTP request must be a GET
  *   --message <text>    what `talk` sends
  *   --item <id>         an open needs-you item in the probe member's inbox
  *                       for `answer` (no server route creates one)
+ *   --allow-answer      without --item, `answer` answers the brief's first
+ *                       decision (never with --owner-read-only)
  *   --brief-timeout <s> how long `open` polls a brief being written (180)
  *   --reply-timeout <s> how long `talk` waits for the reply to settle (300)
  *
@@ -30,6 +35,7 @@
  * Pure parts and checks: scripts/lib/blob-probe.ts.
  */
 import {
+  assertReadOnlyMethod,
   briefDecisions,
   briefKey,
   checkAnswer,
@@ -43,13 +49,17 @@ import {
   exchanges,
   fail,
   glossaryCount,
+  historyFoundEarlier,
+  outboxNext,
   ownerFromStatus,
   parseAuthStatus,
   parseBriefResponse,
   parseEnsure,
+  parseHistoryPage,
   parseItems,
   parseProbeArgs,
   planRun,
+  prependPage,
   probeToken,
   promptBody,
   renderBrief,
@@ -65,12 +75,15 @@ import {
   type Delivery,
   type Ensured,
   type HistoryRead,
+  type PastExchange,
   type ProbeBriefResponse,
+  type ProbeItem,
   type ProbeOptions,
   type PromptBody,
   type Scenario,
   type SignedIn,
   type Verdict,
+  timezoneToSet,
 } from "./lib/blob-probe";
 
 const HTTP_TIMEOUT_MS = 20_000;
@@ -79,7 +92,7 @@ const SOCKET_PING_MS = 20_000;
 const HISTORY_PAGE = 200;
 const HISTORY_MAX_PAGES = 25;
 const PREVIOUS_MAX = 3;
-const SEND_ATTEMPTS = 3;
+const SESSION_NOT_FOUND = "Session not found";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const say = (line = "") => console.log(line ? `  ${line}` : "");
@@ -91,10 +104,12 @@ interface Reply {
   body: unknown;
 }
 
-class Api {
+export class Api {
   constructor(
     readonly base: string,
     private readonly token: string,
+    /** --owner-read-only: GET only, and no socket. */
+    readonly readOnly: boolean,
   ) {}
 
   get authorization(): string {
@@ -102,8 +117,10 @@ class Api {
   }
 
   /** One request as OS1API makes it: Bearer token, JSON body. A network
-   *  failure is status 0 with the reason; the token never appears in it. */
+   *  failure is status 0 with the reason; the token never appears in it.
+   *  Read-only, anything but GET throws before it is sent. */
   async call(method: string, path: string, body?: unknown): Promise<Reply> {
+    assertReadOnlyMethod(method, this.readOnly);
     const headers = new Headers({ Authorization: this.authorization });
     if (body !== undefined) headers.set("Content-Type", "application/json");
     try {
@@ -156,6 +173,9 @@ class Socket {
   ) {}
 
   open(): Promise<void> {
+    // A socket can send prompts; read-only has no use for one.
+    if (this.api.readOnly)
+      return Promise.reject(new Error("read-only: no socket"));
     return new Promise((resolve, reject) => {
       // SAFETY: Bun's WebSocket takes `{ headers }` as its second argument,
       // as scripts/ws-stdio-proxy.ts uses it; the DOM type knows only protocols.
@@ -227,7 +247,9 @@ class Socket {
   }
 }
 
-/** Opens a socket and watches one session until its transcript_init. */
+/** Opens a socket and watches one session until its transcript_init. A
+ *  "Session not found" (the session isn't on disk yet) is watched again on
+ *  the outbox's backoff, inside its 120 s window. */
 async function watch(
   api: Api,
   sessionId: string,
@@ -235,32 +257,49 @@ async function watch(
   const stream = new SessionStream(sessionId);
   const socket = new Socket(api, (frame) => stream.apply(frame));
   await socket.open();
-  socket.send(watchFrame(sessionId));
-  const ready = await socket.until(
-    () => stream.initialized || stream.errors.length > 0,
-    HTTP_TIMEOUT_MS,
-  );
-  if (!stream.initialized) {
-    socket.close();
-    throw new Error(
-      stream.errors[0] ??
-        (ready ? "no transcript" : "no transcript_init in 20 s"),
+  const startedAt = Date.now();
+  for (let attempts = 1; ; attempts++) {
+    const errorsBefore = stream.errors.length;
+    socket.send(watchFrame(sessionId));
+    const ready = await socket.until(
+      () => stream.initialized || stream.errors.length > errorsBefore,
+      HTTP_TIMEOUT_MS,
     );
+    if (stream.initialized) return { socket, stream };
+    const error = stream.errors[errorsBefore];
+    const next =
+      error === SESSION_NOT_FOUND
+        ? outboxNext(
+            { kind: "missing", reason: error },
+            attempts,
+            Date.now() - startedAt,
+            Math.random(),
+          )
+        : null;
+    if (!next || "done" in next) {
+      socket.close();
+      throw new Error(
+        next && "done" in next && next.done.kind === "rejected"
+          ? next.done.reason
+          : (error ?? (ready ? "no transcript" : "no transcript_init in 20 s")),
+      );
+    }
+    say(`watch: ${error}, again in ${Math.round(next.waitMs / 1000)} s`);
+    await sleep(next.waitMs);
   }
-  return { socket, stream };
 }
 
 // ── Shared state ────────────────────────────────────────────────────────────
 
-interface Context {
+export interface Context {
   api: Api;
   me: SignedIn;
-  ownerReadOnly: boolean;
   ensured: Ensured | null;
   options: ProbeOptions;
 }
 
-/** POST /api/supervisor/ensure { user }, once per run, as on app launch. */
+/** POST /api/supervisor/ensure { user }, once per run, as on app launch.
+ *  Never read-only: the Api refuses the POST. */
 async function ensure(ctx: Context): Promise<Ensured> {
   if (ctx.ensured) return ctx.ensured;
   const reply = await ctx.api.call("POST", "/api/supervisor/ensure", {
@@ -285,13 +324,63 @@ async function readBrief(
   return parseBriefResponse(reply.body);
 }
 
+/** GET /api/supervisor/items?state=open (OS1API.supervisorItems). */
+async function readItems(ctx: Context): Promise<ProbeItem[]> {
+  const query = new URLSearchParams({
+    state: "open",
+    user: ctx.me.name,
+    limit: "100",
+  });
+  const reply = await ctx.api.call("GET", `/api/supervisor/items?${query}`);
+  if (reply.status !== 200) throw new Error(`items failed: ${errorOf(reply)}`);
+  return parseItems(reply.body);
+}
+
+/** BlobHomeView's launch task: reads the prefs and, when the server has no
+ *  zone, gives it this machine's (OS1API.ensureSupervisorTimezone). The app
+ *  ignores a failure here, so the probe only reports it. Read-only, it
+ *  says what it would set and sends nothing. */
+async function launchTimezone(ctx: Context): Promise<void> {
+  const query = new URLSearchParams({ user: ctx.me.name });
+  const prefs = await ctx.api.call("GET", `/api/supervisor/prefs?${query}`);
+  if (prefs.status !== 200) {
+    say(`prefs: ${errorOf(prefs)} (the app carries on)`);
+    return;
+  }
+  const device = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const zone = timezoneToSet(prefs.body, device);
+  if (!zone) {
+    say("prefs: a timezone is set, left alone");
+    return;
+  }
+  if (ctx.api.readOnly) {
+    say(`prefs: no timezone; the app would set ${zone} (read-only: not sent)`);
+    return;
+  }
+  const set = await ctx.api.call("PUT", "/api/supervisor/prefs", {
+    user: ctx.me.name,
+    timezone: zone,
+  });
+  say(
+    set.status === 200
+      ? `prefs: no timezone, set ${zone}`
+      : `prefs: setting ${zone} failed: ${errorOf(set)} (the app carries on)`,
+  );
+}
+
 // ── Scenarios ───────────────────────────────────────────────────────────────
 
 async function openScenario(ctx: Context): Promise<Verdict> {
-  const ensured = await ensure(ctx);
-  say(
-    `supervisor ${ensured.sessionId}, ${ensured.previousSessionIds.length} earlier session(s)`,
-  );
+  if (ctx.api.readOnly) {
+    say(
+      "read-only: no ensure (it can rotate the supervisor and start its watch goal), so no session id",
+    );
+  } else {
+    const ensured = await ensure(ctx);
+    say(
+      `supervisor ${ensured.sessionId}, ${ensured.previousSessionIds.length} earlier session(s)`,
+    );
+  }
   const glossary = await ctx.api.call("GET", "/api/blob/glossary");
   const terms = glossary.status === 200 ? glossaryCount(glossary.body) : null;
   say(
@@ -299,8 +388,9 @@ async function openScenario(ctx: Context): Promise<Verdict> {
       ? `glossary: ${errorOf(glossary)}`
       : `glossary: ${terms} term(s)`,
   );
+  await launchTimezone(ctx);
   // The owner's open is read-only: no start, so no brief turn on their budget.
-  const start = !ctx.ownerReadOnly;
+  const start = !ctx.api.readOnly;
   let response = await readBrief(ctx, start);
   const deadline = Date.now() + ctx.options.briefTimeoutMs;
   if (response.state === "preparing")
@@ -316,28 +406,36 @@ async function openScenario(ctx: Context): Promise<Verdict> {
   return checkOpen(response, response.state === "preparing");
 }
 
-/** Sends like the outbox: same clientId on every try, held on 401 and 5xx
- *  and network errors, given up on any other answer. */
+/** Sends like the outbox: the same clientId on every try; a 404 tried
+ *  again on the outbox's backoff for 120 s from queueing; 401, 5xx and
+ *  network errors held the same way; any other answer final. */
 async function deliver(
   ctx: Context,
   sessionId: string,
   body: PromptBody,
 ): Promise<Delivery> {
-  let last: Delivery = { kind: "retry", reason: "not sent" };
-  for (let attempt = 1; attempt <= SEND_ATTEMPTS; attempt++) {
+  const queuedAt = Date.now();
+  for (let attempts = 1; ; attempts++) {
     const reply = await ctx.api.call(
       "POST",
       `/api/sessions/${encodeURIComponent(sessionId)}/prompt`,
       body,
     );
-    last = reply.status
+    const delivery: Delivery = reply.status
       ? deliveryOutcome(reply.status, reply.body)
       : { kind: "retry", reason: errorOf(reply) };
-    if (last.kind !== "retry") return last;
-    say(`send attempt ${attempt} held: ${last.reason}`);
-    await sleep(1000 * 2 ** attempt);
+    const next = outboxNext(
+      delivery,
+      attempts,
+      Date.now() - queuedAt,
+      Math.random(),
+    );
+    if ("done" in next) return next.done;
+    say(
+      `send attempt ${attempts} held (${delivery.kind === "delivered" ? "" : delivery.reason}), again in ${Math.round(next.waitMs / 1000)} s`,
+    );
+    await sleep(next.waitMs);
   }
-  return last;
 }
 
 async function talkScenario(ctx: Context): Promise<Verdict> {
@@ -349,12 +447,11 @@ async function talkScenario(ctx: Context): Promise<Verdict> {
     const turn = new TalkTurn(clientId, performance.now());
     // Every frame from here moves the turn on.
     const observe = () => turn.observe(stream, performance.now());
+    // The first send, from a bare Session(id:): no effort or speed override.
     const body = promptBody({
       content: ctx.options.message,
       clientId,
       user: ctx.me.name,
-      effort: ensured.effort,
-      speed: ensured.speed,
     });
     say(`you: ${ctx.options.message}`);
     const delivery = await deliver(ctx, ensured.sessionId, body);
@@ -383,7 +480,8 @@ async function talkScenario(ctx: Context): Promise<Verdict> {
   }
 }
 
-/** Every page of a session's history, as "load earlier" walks it. */
+/** Every page of a session's transcript, as "load earlier" walks it. Only
+ *  to tell whether the sessions before a rotation hold exchanges at all. */
 async function readWhole(
   ctx: Context,
   sessionId: string,
@@ -409,46 +507,98 @@ async function readWhole(
   }
 }
 
+/** Blob's history as the app reads it: GET /api/supervisor/history, then
+ *  each older page with the `before` the last one returned, until an
+ *  exchange from before the latest rotation is in or history ends. */
+async function readHistoryPages(
+  ctx: Context,
+  currentSessionId: string | null,
+): Promise<
+  Omit<
+    HistoryRead,
+    "currentSessionId" | "previousSessionIds" | "earlierInTranscripts"
+  >
+> {
+  let held: PastExchange[] = [];
+  let before: string | null = null;
+  for (let pages = 1; pages <= HISTORY_MAX_PAGES; pages++) {
+    const query = before ? `?${new URLSearchParams({ before })}` : "";
+    const reply = await ctx.api.call("GET", `/api/supervisor/history${query}`);
+    const read = { exchanges: held, pages, complete: false };
+    if (reply.status === 404)
+      return { ...read, missingRoute: true, error: null };
+    if (reply.status !== 200)
+      return { ...read, missingRoute: false, error: errorOf(reply) };
+    const page = parseHistoryPage(reply.body);
+    if (!page)
+      return {
+        ...read,
+        missingRoute: false,
+        error: `page ${pages} doesn't decode as OS1API.SupervisorHistoryPage`,
+      };
+    held = prependPage(held, page);
+    const complete = page.before === null || page.before === before;
+    if (complete || historyFoundEarlier(held, currentSessionId))
+      return {
+        exchanges: held,
+        pages,
+        complete,
+        missingRoute: false,
+        error: null,
+      };
+    before = page.before;
+  }
+  return {
+    exchanges: held,
+    pages: HISTORY_MAX_PAGES,
+    complete: false,
+    missingRoute: false,
+    error: null,
+  };
+}
+
 async function historyScenario(ctx: Context): Promise<Verdict> {
-  const ensured = await ensure(ctx);
-  const current = await readWhole(ctx, ensured.sessionId);
-  const now = exchanges(current.stream.entries);
-  say(`current session: ${now.length} exchange(s)`);
-  for (const e of now.slice(-2))
+  const ensured = ctx.api.readOnly ? null : await ensure(ctx);
+  if (!ensured)
     say(
-      `  ${e.at ?? "?"} you: ${excerpt(e.said, 60)} / Blob: ${excerpt(e.reply, 60)}`,
+      "read-only: no ensure, so the current session can't be told apart; exchanges from two sessions prove a rotation",
+    );
+  const pages = await readHistoryPages(ctx, ensured?.sessionId ?? null);
+  say(
+    `history: ${pages.exchanges.length} exchange(s) in ${pages.pages} page(s)${pages.complete ? ", to the start" : ""}`,
+  );
+  for (const e of pages.exchanges.slice(-2))
+    say(
+      `  ${e.at === null ? "?" : new Date(e.at).toISOString()} [${e.sessionId}] you: ${excerpt(e.said, 60)} / Blob: ${excerpt(e.reply ?? "", 60)}`,
     );
   const read: HistoryRead = {
-    current: {
-      sessionId: ensured.sessionId,
-      exchanges: now.length,
-      complete: current.complete,
-    },
-    previous: [],
+    ...pages,
+    currentSessionId: ensured?.sessionId ?? null,
+    previousSessionIds: ensured?.previousSessionIds ?? null,
+    earlierInTranscripts: null,
   };
-  for (const id of ensured.previousSessionIds.slice(0, PREVIOUS_MAX)) {
-    try {
-      const earlier = await readWhole(ctx, id);
-      const found = exchanges(earlier.stream.entries);
-      read.previous.push({
-        sessionId: id,
-        exchanges: found.length,
-        error: null,
-      });
-      const last = found.at(-1);
-      say(
-        `before rotation ${id}: ${found.length} exchange(s)${last ? `, last: ${excerpt(last.said, 60)}` : ""}`,
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      read.previous.push({ sessionId: id, exchanges: 0, error: message });
-      say(`before rotation ${id}: ${message}`);
+  // History returned nothing from before the rotation: whether there was
+  // anything to return is read from those sessions' own transcripts.
+  if (
+    ensured?.previousSessionIds.length &&
+    read.complete &&
+    !read.missingRoute &&
+    !read.error &&
+    !read.exchanges.some((e) => e.sessionId !== ensured.sessionId)
+  ) {
+    let found = 0;
+    for (const id of ensured.previousSessionIds.slice(0, PREVIOUS_MAX)) {
+      try {
+        found += exchanges((await readWhole(ctx, id)).stream.entries).length;
+      } catch (error) {
+        say(
+          `before rotation ${id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
+    read.earlierInTranscripts = found;
+    say(`the sessions before the rotation hold ${found} exchange(s)`);
   }
-  if (ensured.previousSessionIds.length)
-    say(
-      "note: the app's ensure decodes only sessionId (OS1API.SupervisorEnsure), so Blob's history view pages the current session only",
-    );
   return checkHistory(read);
 }
 
@@ -474,57 +624,86 @@ async function briefLifecycleScenario(ctx: Context): Promise<Verdict> {
   return checkBriefAfterDone(before, after);
 }
 
-async function answerScenario(ctx: Context): Promise<Verdict> {
-  if (!ctx.options.item)
-    return skip(
-      "the server has no route that posts an item to an inbox (only the supervisor's own tools do); pass --item <id> with an open needs-you item in the probe member's inbox",
-    );
+/** The item to answer: --item from the open items, or with --allow-answer
+ *  the brief's first open decision, recommended option first. */
+async function answerTarget(
+  ctx: Context,
+): Promise<{ item: ProbeItem; source: "items" | "brief" } | Verdict> {
   const id = ctx.options.item;
-  const read = async () => {
-    const query = new URLSearchParams({
-      state: "open",
-      user: ctx.me.name,
-      limit: "100",
-    });
-    const reply = await ctx.api.call("GET", `/api/supervisor/items?${query}`);
-    if (reply.status !== 200)
-      throw new Error(`items failed: ${errorOf(reply)}`);
-    return parseItems(reply.body).find((item) => item.id === id) ?? null;
-  };
-  const item = await read();
-  if (!item) return fail(`no open item ${id} in ${ctx.me.name}'s inbox`);
-  if (item.kind !== "needs-you")
-    return fail(`item ${id} is ${item.kind}, not needs-you`);
+  if (id) {
+    const item = (await readItems(ctx)).find((i) => i.id === id);
+    if (!item) return fail(`no open item ${id} in ${ctx.me.name}'s inbox`);
+    if (item.kind !== "needs-you")
+      return fail(`item ${id} is ${item.kind}, not needs-you`);
+    return { item, source: "items" };
+  }
+  if (!ctx.options.allowAnswer)
+    return skip(
+      "the server has no route that posts an item to an inbox (only the supervisor's own tools do); pass --item <id> with an open needs-you item in the probe member's inbox, or --allow-answer to answer the brief's first decision",
+    );
+  const response = await readBrief(ctx, false);
+  const item = response.brief ? briefDecisions(response.brief)[0] : undefined;
+  if (!item)
+    return skip(
+      `--allow-answer: the brief has no open decision (state ${response.state})`,
+    );
+  return { item, source: "brief" };
+}
+
+/** After 409 changed, Blob reads again where the card came from
+ *  (BlobBrief.refresh: the brief, else the items) and shows the new card. */
+async function rereadItem(
+  ctx: Context,
+  id: string,
+  source: "items" | "brief",
+): Promise<ProbeItem | null> {
+  if (source === "brief") {
+    const response = await readBrief(ctx, false);
+    const found = response.brief
+      ? briefDecisions(response.brief).find((d) => d.id === id)
+      : undefined;
+    if (found) return found;
+  }
+  return (await readItems(ctx)).find((i) => i.id === id) ?? null;
+}
+
+async function answerScenario(ctx: Context): Promise<Verdict> {
+  const target = await answerTarget(ctx);
+  if ("status" in target) return target;
+  const { item, source } = target;
+  const id = item.id;
   if (item.steps.length)
     return skip(
       `item ${id} approves ${item.steps.length} step(s); the probe answers only items that run nothing`,
     );
   if (item.revision === null) return fail(`item ${id} carries no revision`);
-  say(`decision: ${item.title} [rev ${item.revision}]`);
-  const answer = item.options[0] ?? "ok";
+  say(`decision (${source}): ${item.title} [${id} rev ${item.revision}]`);
   const path = `/api/supervisor/items/${encodeURIComponent(id)}/answer`;
+  const answer = item.options[0] ?? "ok";
   const stale = await ctx.api.call("POST", path, {
     user: ctx.me.name,
     answer,
     revision: staleRevision(item.revision),
   });
   say(`stale revision ${staleRevision(item.revision)}: ${errorOf(stale)}`);
-  const reread = await read();
+  // One read and one answer again, as the owner taps the new card once.
+  const reread = await rereadItem(ctx, id, source);
   let fresh: Reply | null = null;
-  if (reread?.revision !== null && reread?.revision !== undefined) {
+  if (reread && reread.revision !== null) {
+    const again = reread.options[0] ?? answer;
     fresh = await ctx.api.call("POST", path, {
       user: ctx.me.name,
-      answer,
+      answer: again,
       revision: reread.revision,
     });
     say(
-      `revision ${reread.revision}, answering "${answer}": HTTP ${fresh.status}`,
+      `read again: rev ${reread.revision}, answering "${again}": HTTP ${fresh.status}`,
     );
   }
   return checkAnswer(stale, reread, fresh);
 }
 
-const RUNNERS: Record<Scenario, (ctx: Context) => Promise<Verdict>> = {
+export const RUNNERS: Record<Scenario, (ctx: Context) => Promise<Verdict>> = {
   open: openScenario,
   talk: talkScenario,
   history: historyScenario,
@@ -562,7 +741,9 @@ async function main(): Promise<number> {
     );
     return 2;
   }
-  const api = new Api(base, token);
+  // Read-only from the first request: an owner who planRun lets through
+  // has --owner-read-only, and a member who passed it gets the same.
+  const api = new Api(base, token, options.ownerReadOnly);
 
   const status = await api.call("GET", "/api/auth/status");
   const me =
@@ -588,7 +769,6 @@ async function main(): Promise<number> {
   const ctx: Context = {
     api,
     me,
-    ownerReadOnly: gate !== "member" || options.ownerReadOnly,
     ensured: null,
     options,
   };

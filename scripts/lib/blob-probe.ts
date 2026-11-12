@@ -46,12 +46,23 @@ export type Scenario = (typeof SCENARIOS)[number];
 /** What an owner may run with --owner-read-only: nothing that writes. */
 export const READ_ONLY_SCENARIOS: readonly Scenario[] = ["open", "history"];
 
+/** With --owner-read-only every HTTP request goes through this: anything
+ *  but GET throws before it is sent. POST /api/supervisor/ensure alone can
+ *  rotate the supervisor and start its watch goal. */
+export function assertReadOnlyMethod(method: string, readOnly: boolean): void {
+  if (readOnly && method.toUpperCase() !== "GET")
+    throw new Error(`read-only: refusing ${method.toUpperCase()}`);
+}
+
 export interface ProbeOptions {
   scenarios: Scenario[];
   ownerReadOnly: boolean;
   message: string;
   /** An open needs-you item in the probe user's inbox, for `answer`. */
   item: string | null;
+  /** `answer` may answer the brief's first decision when no --item is
+   *  given. Never with --owner-read-only. */
+  allowAnswer: boolean;
   briefTimeoutMs: number;
   replyTimeoutMs: number;
   help: boolean;
@@ -70,6 +81,7 @@ export function parseProbeArgs(argv: readonly string[]):
     ownerReadOnly: false,
     message: DEFAULT_MESSAGE,
     item: null,
+    allowAnswer: false,
     briefTimeoutMs: 180_000,
     replyTimeoutMs: 300_000,
     help: false,
@@ -85,6 +97,7 @@ export function parseProbeArgs(argv: readonly string[]):
     const next = () => argv[++i];
     if (arg === "-h" || arg === "--help") options.help = true;
     else if (arg === "--owner-read-only") options.ownerReadOnly = true;
+    else if (arg === "--allow-answer") options.allowAnswer = true;
     else if (arg === "--message") {
       const value = next()?.trim();
       if (!value) return { error: "--message needs text" };
@@ -108,6 +121,10 @@ export function parseProbeArgs(argv: readonly string[]):
       }
     }
   }
+  if (options.allowAnswer && options.ownerReadOnly)
+    return {
+      error: "--allow-answer answers a decision, so not with --owner-read-only",
+    };
   if (!options.scenarios.length)
     options.scenarios = options.ownerReadOnly
       ? [...READ_ONLY_SCENARIOS]
@@ -228,28 +245,39 @@ export function errorMessage(body: unknown): string {
   return str(record?.error) ?? str(record?.message) ?? "";
 }
 
-/** POST /api/supervisor/ensure: the session Blob talks to, the ones before
- *  each rotation (newest first), and the effort and speed a send carries. */
+/** POST /api/supervisor/ensure: the session Blob talks to and the ones
+ *  before each rotation (newest first). */
 export interface Ensured {
   sessionId: string;
   previousSessionIds: string[];
-  effort: string | null;
-  speed: string | null;
 }
 
 export function parseEnsure(body: unknown): Ensured | null {
   const record = obj(body);
   const sessionId = str(record?.sessionId);
   if (!record || !sessionId) return null;
-  const session = obj(record.session);
   return {
     sessionId,
     previousSessionIds: list(record.previousSessionIds).filter(
       (id): id is string => typeof id === "string" && !!id,
     ),
-    effort: str(session?.effort) || null,
-    speed: str(session?.speed) || null,
   };
+}
+
+/** The zone the app gives the server at launch, or null when it leaves the
+ *  prefs alone (OS1API.ensureSupervisorTimezone): only when the prefs'
+ *  timezone is exactly "" and the effective zone is empty or UTC. A
+ *  missing timezone decodes as nil there, which is not "", so it sets
+ *  nothing. `body` is GET /api/supervisor/prefs. */
+export function timezoneToSet(
+  body: unknown,
+  deviceZone: string,
+): string | null {
+  const prefs = obj(obj(body)?.prefs);
+  if (str(prefs?.timezone) !== "") return null;
+  const effective = str(prefs?.effectiveTimezone) ?? "";
+  if (effective && effective !== "UTC") return null;
+  return deviceZone || null;
 }
 
 /** GET /api/blob/glossary: how many terms, or null when it isn't a list. */
@@ -544,7 +572,10 @@ export function staleRevision(revision: number): number {
   return revision > 0 ? revision - 1 : revision + 1;
 }
 
-/** `answer`: a stale revision changes nothing, the current one closes it. */
+/** `answer`: a stale revision changes nothing; then, as Blob does after a
+ *  409 `changed` (BlobBrief.answer: "This changed", refresh), the item is
+ *  read again and answered once more with the revision read, which must
+ *  close it. A second `changed` is the loop the owner would be stuck in. */
 export function checkAnswer(
   stale: { status: number; body: unknown },
   stillOpen: ProbeItem | null,
@@ -557,16 +588,22 @@ export function checkAnswer(
     );
   if (!stillOpen || stillOpen.state !== "open")
     return fail("the item did not stay open after the stale answer");
-  if (!fresh) return fail("no answer was sent with the current revision");
+  if (!fresh) return fail("no answer was sent with the revision read again");
   const second = answerOutcome(fresh.status, fresh.body);
+  if (second === "changed")
+    return fail(
+      'the revision read again after 409 changed got 409 changed too: Blob would say "This changed" on every answer',
+    );
   if (second !== "ok")
     return fail(
-      `the current revision answered ${fresh.status} (${second}), expected 200`,
+      `the revision read again answered ${fresh.status} (${second}), expected 200`,
     );
   const state = parseItem(obj(fresh.body)?.item)?.state;
   if (state && state !== "answered")
     return fail(`the item is ${state} after the answer, expected answered`);
-  return pass("stale revision: 409 changed; current revision: answered");
+  return pass(
+    "stale revision: 409 changed; read again and answered once more: answered",
+  );
 }
 
 // ── Sending (OS1API.deliverPromptBody, Outbox) ──────────────────────────────
@@ -580,40 +617,39 @@ export interface PromptBody {
   clientId: string;
   busy: "steer";
   user?: string;
-  effort?: string;
   fastMode: boolean;
   speed: string;
   surface: typeof PHONE_SURFACE;
 }
 
-/** The body the outbox posts to /api/sessions/:id/prompt for a Blob
- *  message: `sendSteer`, so `busy: "steer"`, with the session's effort and
- *  speed and the outbox item's id as `clientId`. */
+/** The body the outbox posts to /api/sessions/:id/prompt for Blob's first
+ *  message: `sendSteer`, so `busy: "steer"`, and the outbox item's id as
+ *  `clientId`. Blob's view model starts from a bare `Session(id:)`
+ *  (BlobTextTalk.supervisorModel), so the first send carries no effort and
+ *  the default speed (SpeedSetting: standard, fastMode false), whatever the
+ *  session is set to. */
 export function promptBody(input: {
   content: string;
   clientId: string;
   user: string;
-  effort?: string | null;
-  speed?: string | null;
 }): PromptBody {
-  const speed = input.speed || "standard";
   const body: PromptBody = {
     content: input.content,
     clientId: input.clientId,
     busy: "steer",
-    // SpeedSetting.wireFastMode / wireSpeed for a speed this client can name.
-    fastMode: speed !== "standard",
-    speed,
+    fastMode: false,
+    speed: "standard",
     surface: PHONE_SURFACE,
   };
   if (input.user) body.user = input.user;
-  if (input.effort) body.effort = input.effort;
   return body;
 }
 
-/** How an outbox delivery ended (OS1API.deliverPrompt). */
+/** How an outbox delivery ended (OS1API.deliverPrompt, PromptDelivery):
+ *  `missing` is a 404, `retry` is unavailable (401, 5xx, no answer). */
 export type Delivery =
   | { kind: "delivered"; status: string }
+  | { kind: "missing"; reason: string }
   | { kind: "retry"; reason: string }
   | { kind: "rejected"; reason: string };
 
@@ -623,9 +659,47 @@ export function deliveryOutcome(status: number, body: unknown): Delivery {
     return { kind: "delivered", status: str(decoded?.status) ?? "started" };
   const reason =
     str(decoded?.error) ?? str(decoded?.message) ?? `HTTP ${status}`;
+  // A just-created session may not be on disk yet.
+  if (status === 404) return { kind: "missing", reason };
   // 401 and 5xx: the outbox holds the message and tries again.
   if (status === 401 || status >= 500) return { kind: "retry", reason };
   return { kind: "rejected", reason };
+}
+
+/** How long the outbox keeps trying a session that answers 404, from when
+ *  the message was queued (Outbox.flush, `.missing`). */
+export const OUTBOX_MISSING_WINDOW_MS = 120_000;
+
+/** The outbox's wait after a failed try: 2 s, 4 s, 8 s … capped at a
+ *  minute, plus up to a second of jitter (Outbox.backOff). `attempts`
+ *  counts this failure; `jitter` is 0…1. */
+export function outboxBackoffMs(attempts: number, jitter = 0): number {
+  return (Math.min(60, 2 ** Math.min(attempts, 6)) + jitter) * 1000;
+}
+
+/** What the outbox does after a try: done with the delivery, or wait and
+ *  send the same message again. A 404 past the window is failed, like
+ *  Outbox.markFailed. The app holds an unavailable message for as long as
+ *  it runs; the probe gives that the same window so a run ends. */
+export function outboxNext(
+  delivery: Delivery,
+  attempts: number,
+  ageMs: number,
+  jitter = 0,
+): { done: Delivery } | { waitMs: number } {
+  if (delivery.kind === "delivered" || delivery.kind === "rejected")
+    return { done: delivery };
+  if (ageMs > OUTBOX_MISSING_WINDOW_MS)
+    return {
+      done: {
+        kind: "rejected",
+        reason:
+          delivery.kind === "missing"
+            ? `still 404 after ${OUTBOX_MISSING_WINDOW_MS / 1000} s: ${delivery.reason}`
+            : `still unavailable after ${OUTBOX_MISSING_WINDOW_MS / 1000} s: ${delivery.reason}`,
+      },
+    };
+  return { waitMs: outboxBackoffMs(attempts, jitter) };
 }
 
 // ── The reply (BlobReply) ───────────────────────────────────────────────────
@@ -1076,36 +1150,142 @@ export function exchanges(entries: readonly Entry[]): Exchange[] {
   return out;
 }
 
+/** One exchange from GET /api/supervisor/history
+ *  (OS1API.SupervisorHistoryPage.Exchange). */
+export interface PastExchange {
+  id: string;
+  sessionId: string;
+  said: string;
+  reply: string | null;
+  at: number | null;
+}
+
+export interface HistoryPage {
+  /** Oldest first. */
+  exchanges: PastExchange[];
+  /** The cursor for the page before this one; null at the start. */
+  before: string | null;
+}
+
+/** A history page decoded as the app's Codable decodes it: `id`,
+ *  `sessionId` and `said` are required on every exchange, so one bad
+ *  exchange fails the whole page (the app then shows no more history).
+ *  Null when the app could not decode it. */
+export function parseHistoryPage(value: unknown): HistoryPage | null {
+  const page = obj(value);
+  if (!page || !Array.isArray(page.exchanges)) return null;
+  const exchanges: PastExchange[] = [];
+  for (const raw of page.exchanges) {
+    const e = obj(raw);
+    const id = str(e?.id);
+    const sessionId = str(e?.sessionId);
+    const said = str(e?.said);
+    if (!e || id === undefined || sessionId === undefined || said === undefined)
+      return null;
+    exchanges.push({
+      id,
+      sessionId,
+      said,
+      reply: str(e.reply) ?? null,
+      at: num(e.at) ?? null,
+    });
+  }
+  const before = page.before;
+  if (before !== undefined && before !== null && typeof before !== "string")
+    return null;
+  return { exchanges, before: before || null };
+}
+
+/** Adds an older page above what is held, as BlobTextTalk.loadEarlier
+ *  does: exchanges already held are dropped. */
+export function prependPage(
+  held: readonly PastExchange[],
+  page: HistoryPage,
+): PastExchange[] {
+  const known = new Set(held.map((e) => e.id));
+  return [...page.exchanges.filter((e) => !known.has(e.id)), ...held];
+}
+
+/** The sessions the exchanges come from, in the order first seen. */
+export function historySessions(exchanges: readonly PastExchange[]): string[] {
+  return [...new Set(exchanges.map((e) => e.sessionId))];
+}
+
+/** Whether paging may stop: an exchange from before the latest rotation is
+ *  in. Without the current session id (read-only), exchanges from two
+ *  sessions prove one. */
+export function historyFoundEarlier(
+  exchanges: readonly PastExchange[],
+  currentSessionId: string | null,
+): boolean {
+  return currentSessionId === null
+    ? historySessions(exchanges).length >= 2
+    : exchanges.some((e) => e.sessionId !== currentSessionId);
+}
+
+/** What the probe read of Blob's history (BlobTextTalk.loadEarlier pages
+ *  GET /api/supervisor/history with each page's `before`). */
 export interface HistoryRead {
-  current: { sessionId: string; exchanges: number; complete: boolean };
-  previous: Array<{
-    sessionId: string;
-    exchanges: number;
-    error: string | null;
-  }>;
+  /** The route answered 404: a server from before it. */
+  missingRoute: boolean;
+  /** Any other failure: a status, or a page the app can't decode. */
+  error: string | null;
+  /** Oldest first, across every page read. */
+  exchanges: PastExchange[];
+  pages: number;
+  /** The last page had no `before`: the start of history was reached. */
+  complete: boolean;
+  /** From ensure; null with --owner-read-only, which never calls it. */
+  currentSessionId: string | null;
+  previousSessionIds: string[] | null;
+  /** Exchanges the transcripts of the sessions before the rotation hold,
+   *  read only when the history returned none of theirs; null otherwise. */
+  earlierInTranscripts: number | null;
 }
 
 export function checkHistory(read: HistoryRead): Verdict {
-  if (!read.current.complete)
+  if (read.missingRoute)
     return fail(
-      `the current session's history stopped paging before its start (${read.current.exchanges} exchanges read)`,
+      "history stops at the current session: GET /api/supervisor/history is 404, so Blob pages only the live transcript",
     );
-  if (!read.previous.length)
+  if (read.error) return fail(`history failed: ${read.error}`);
+  const sessions = historySessions(read.exchanges);
+  const total = read.exchanges.length;
+  if (read.currentSessionId === null) {
+    if (sessions.length >= 2)
+      return pass(
+        `${total} exchange(s) from ${sessions.length} sessions in ${read.pages} page(s): exchanges from before the latest rotation are returned`,
+      );
+    return skip(
+      `read-only, so no ensure and no current session id: with exchanges from ${sessions.length === 1 ? "one session" : "no session"} it can't tell whether a rotation happened (${total} exchange(s), ${read.pages} page(s))`,
+    );
+  }
+  const current = read.currentSessionId;
+  const earlier = read.exchanges.filter((e) => e.sessionId !== current);
+  if (!read.previousSessionIds?.length)
+    return earlier.length
+      ? pass(
+          `${total} exchange(s), ${earlier.length} from a session ensure doesn't name`,
+        )
+      : pass(
+          `no rotation yet: ${total} exchange(s), all from the current session`,
+        );
+  if (earlier.length) {
+    const from = historySessions(earlier);
     return pass(
-      `no rotation yet: ${read.current.exchanges} exchange(s) in the current session, all reachable`,
+      `${earlier.length} exchange(s) from before the latest rotation (${from.join(", ")}), ${total} in ${read.pages} page(s)`,
     );
-  const latest = read.previous[0]!;
-  if (latest.error)
+  }
+  if (!read.complete)
     return fail(
-      `the session before the last rotation (${latest.sessionId}) could not be read: ${latest.error}`,
+      `${read.pages} page(s) read and none reached the sessions before the latest rotation (${total} exchange(s), all current)`,
     );
-  if (!latest.exchanges)
-    return fail(
-      `the session before the last rotation (${latest.sessionId}) has no exchanges to show`,
+  if (read.earlierInTranscripts === 0)
+    return skip(
+      "the sessions before the latest rotation hold no exchanges, so there is nothing for history to return",
     );
-  const older = read.previous.reduce((n, p) => n + p.exchanges, 0);
-  return pass(
-    `${read.current.exchanges} exchange(s) now, ${older} before ${read.previous.length} rotation(s), reachable through previousSessionIds`,
+  return fail(
+    `history stops at the current session: none of the ${read.earlierInTranscripts ?? "?"} exchange(s) before the latest rotation (${read.previousSessionIds[0]}) came back`,
   );
 }
 

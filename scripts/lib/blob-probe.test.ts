@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   answerOutcome,
+  assertReadOnlyMethod,
   briefDecisions,
   briefSummary,
   checkAnswer,
@@ -17,13 +18,19 @@ import {
   errorMessage,
   exchanges,
   glossaryCount,
+  historyFoundEarlier,
+  OUTBOX_MISSING_WINDOW_MS,
+  outboxBackoffMs,
+  outboxNext,
   ownerFromStatus,
   parseAuthStatus,
   parseBriefResponse,
   parseEnsure,
+  parseHistoryPage,
   parseItem,
   parseProbeArgs,
   planRun,
+  prependPage,
   probeToken,
   promptBody,
   renderBrief,
@@ -34,6 +41,9 @@ import {
   staleRevision,
   TalkTurn,
   talkResult,
+  timezoneToSet,
+  type HistoryRead,
+  type PastExchange,
   type ProbeOptions,
 } from "./blob-probe";
 
@@ -127,6 +137,14 @@ describe("options", () => {
     expect(parsed.message).toBe("hi");
     expect(parsed.item).toBe("x1");
     expect(parsed.replyTimeoutMs).toBe(30_000);
+    expect(parsed.allowAnswer).toBe(false);
+    expect(options(["answer", "--allow-answer"]).allowAnswer).toBe(true);
+  });
+
+  test("--allow-answer never goes with --owner-read-only", () => {
+    expect(
+      "error" in parseProbeArgs(["--owner-read-only", "--allow-answer"]),
+    ).toBe(true);
   });
 
   test("rejects unknown scenarios, options and bad values", () => {
@@ -183,19 +201,14 @@ describe("server and token", () => {
 });
 
 describe("responses", () => {
-  test("ensure: session, earlier sessions, effort and speed", () => {
+  test("ensure: session and earlier sessions", () => {
     expect(
       parseEnsure({
         sessionId: "s2",
         previousSessionIds: ["s1", 3, ""],
         session: { effort: "high", speed: "" },
       }),
-    ).toEqual({
-      sessionId: "s2",
-      previousSessionIds: ["s1"],
-      effort: "high",
-      speed: null,
-    });
+    ).toEqual({ sessionId: "s2", previousSessionIds: ["s1"] });
     expect(parseEnsure({ sessionId: "s2" })?.previousSessionIds).toEqual([]);
     expect(parseEnsure({ error: "missing user" })).toBeNull();
   });
@@ -220,6 +233,16 @@ describe("owner gate", () => {
     expect("refuse" in planRun("owner", asked)).toBe(true);
     expect("refuse" in planRun("unknown", asked)).toBe(true);
     expect(planRun("member", asked)).toEqual({ run: ["open"], skipped: [] });
+  });
+
+  test("read-only allows GET and throws on anything else", () => {
+    expect(() => assertReadOnlyMethod("GET", true)).not.toThrow();
+    expect(() => assertReadOnlyMethod("get", true)).not.toThrow();
+    for (const method of ["POST", "PUT", "PATCH", "DELETE", "post"])
+      expect(() => assertReadOnlyMethod(method, true)).toThrow(
+        `read-only: refusing ${method.toUpperCase()}`,
+      );
+    expect(() => assertReadOnlyMethod("POST", false)).not.toThrow();
   });
 
   test("with --owner-read-only, runs only open and history", () => {
@@ -359,6 +382,19 @@ describe("answer check", () => {
     ).toBe("PASS");
   });
 
+  test("fails a second changed: the loop Blob would be stuck in", () => {
+    const verdict = checkAnswer(
+      { status: 409, body: { error: "changed" } },
+      open,
+      {
+        status: 409,
+        body: { error: "changed" },
+      },
+    );
+    expect(verdict.status).toBe("FAIL");
+    expect(verdict.reason).toContain("This changed");
+  });
+
   test("fails a stale answer the server took", () => {
     expect(checkAnswer({ status: 200, body: {} }, open, null).reason).toContain(
       "expected 409 changed",
@@ -367,25 +403,61 @@ describe("answer check", () => {
 });
 
 describe("sending", () => {
-  test("the outbox body Blob sends", () => {
+  test("the first send carries no effort or speed override", () => {
     expect(
-      promptBody({
-        content: "hi",
-        clientId: "ID-1",
-        user: "Probe",
-        effort: "high",
-        speed: null,
-      }),
+      promptBody({ content: "hi", clientId: "ID-1", user: "Probe" }),
     ).toEqual({
       content: "hi",
       clientId: "ID-1",
       busy: "steer",
       user: "Probe",
-      effort: "high",
       fastMode: false,
       speed: "standard",
       surface: { app: "blob", panes: 1, width: "compact" },
     });
+  });
+
+  test("the outbox tries a 404 again for 120 s on its backoff", () => {
+    expect(outboxBackoffMs(1)).toBe(2000);
+    expect(outboxBackoffMs(3, 0.5)).toBe(8500);
+    expect(outboxBackoffMs(9)).toBe(60_000);
+    const missing = deliveryOutcome(404, { error: "Session not found" });
+    expect(missing).toEqual({ kind: "missing", reason: "Session not found" });
+    expect(outboxNext(missing, 1, 0)).toEqual({ waitMs: 2000 });
+    expect(outboxNext(missing, 2, OUTBOX_MISSING_WINDOW_MS)).toEqual({
+      waitMs: 4000,
+    });
+    const late = outboxNext(missing, 7, OUTBOX_MISSING_WINDOW_MS + 1);
+    expect(late).toEqual({
+      done: {
+        kind: "rejected",
+        reason: "still 404 after 120 s: Session not found",
+      },
+    });
+    expect(outboxNext({ kind: "retry", reason: "HTTP 503" }, 1, 0)).toEqual({
+      waitMs: 2000,
+    });
+    const rejected = { kind: "rejected", reason: "bad" } as const;
+    expect(outboxNext(rejected, 1, 0)).toEqual({ done: rejected });
+    const delivered = { kind: "delivered", status: "started" } as const;
+    expect(outboxNext(delivered, 1, 0)).toEqual({ done: delivered });
+  });
+
+  test("the launch timezone: set only when the prefs have none", () => {
+    const prefs = (timezone?: string, effectiveTimezone?: string) => ({
+      prefs: { timezone, effectiveTimezone },
+    });
+    expect(timezoneToSet(prefs("", "UTC"), "Europe/Warsaw")).toBe(
+      "Europe/Warsaw",
+    );
+    expect(timezoneToSet(prefs(""), "Europe/Warsaw")).toBe("Europe/Warsaw");
+    expect(timezoneToSet(prefs("", "Europe/Berlin"), "Europe/Warsaw")).toBe(
+      null,
+    );
+    expect(timezoneToSet(prefs("Europe/Berlin"), "Europe/Warsaw")).toBe(null);
+    // A missing timezone decodes as nil in the app, which is not "".
+    expect(timezoneToSet(prefs(), "Europe/Warsaw")).toBe(null);
+    expect(timezoneToSet({}, "Europe/Warsaw")).toBe(null);
   });
 
   test("delivery outcomes follow OS1API.deliverPrompt", () => {
@@ -394,6 +466,7 @@ describe("sending", () => {
       status: "steered",
     });
     expect(deliveryOutcome(503, null).kind).toBe("retry");
+    expect(deliveryOutcome(404, null).kind).toBe("missing");
     expect(deliveryOutcome(401, null).kind).toBe("retry");
     expect(deliveryOutcome(400, { error: "content required" })).toEqual({
       kind: "rejected",
@@ -628,28 +701,106 @@ describe("history", () => {
     ]);
   });
 
-  test("checks the session before the last rotation", () => {
-    const current = { sessionId: "now", exchanges: 2, complete: true };
-    expect(checkHistory({ current, previous: [] }).status).toBe("PASS");
+  const ex = (id: string, sessionId: string): PastExchange => ({
+    id,
+    sessionId,
+    said: id,
+    reply: null,
+    at: null,
+  });
+  const read = (over: Partial<HistoryRead>): HistoryRead => ({
+    missingRoute: false,
+    error: null,
+    exchanges: [],
+    pages: 1,
+    complete: true,
+    currentSessionId: "now",
+    previousSessionIds: ["old"],
+    earlierInTranscripts: null,
+    ...over,
+  });
+
+  test("history pages decode as strictly as the app's Codable", () => {
     expect(
-      checkHistory({
-        current,
-        previous: [{ sessionId: "old", exchanges: 5, error: null }],
-      }).status,
+      parseHistoryPage({
+        exchanges: [{ id: "x", sessionId: "s", said: "hi", at: 5 }],
+        before: "c",
+      }),
+    ).toEqual({
+      exchanges: [{ id: "x", sessionId: "s", said: "hi", reply: null, at: 5 }],
+      before: "c",
+    });
+    expect(parseHistoryPage({ exchanges: [], before: null })?.before).toBe(
+      null,
+    );
+    expect(parseHistoryPage({ exchanges: [{ id: "x", said: "hi" }] })).toBe(
+      null,
+    );
+    expect(parseHistoryPage({ before: "c" })).toBe(null);
+  });
+
+  test("an older page goes above, without repeats", () => {
+    const held = [ex("b", "now")];
+    expect(
+      prependPage(held, {
+        exchanges: [ex("a", "old"), ex("b", "now")],
+        before: null,
+      }).map((e) => e.id),
+    ).toEqual(["a", "b"]);
+    expect(historyFoundEarlier([ex("a", "now")], "now")).toBe(false);
+    expect(historyFoundEarlier([ex("a", "old")], "now")).toBe(true);
+    expect(historyFoundEarlier([ex("a", "old")], null)).toBe(false);
+    expect(historyFoundEarlier([ex("a", "old"), ex("b", "now")], null)).toBe(
+      true,
+    );
+  });
+
+  test("passes when exchanges from before the latest rotation come back", () => {
+    const verdict = checkHistory(
+      read({ exchanges: [ex("a", "old"), ex("b", "now")] }),
+    );
+    expect(verdict.status).toBe("PASS");
+    expect(verdict.reason).toContain("before the latest rotation (old)");
+    expect(
+      checkHistory(
+        read({ previousSessionIds: [], exchanges: [ex("b", "now")] }),
+      ).reason,
+    ).toContain("no rotation yet");
+  });
+
+  test("fails a 404, an error, and history that stops at the current session", () => {
+    expect(checkHistory(read({ missingRoute: true })).reason).toContain(
+      "history stops at the current session",
+    );
+    expect(checkHistory(read({ error: "HTTP 500" })).status).toBe("FAIL");
+    const stopped = checkHistory(
+      read({ exchanges: [ex("b", "now")], earlierInTranscripts: 4 }),
+    );
+    expect(stopped.status).toBe("FAIL");
+    expect(stopped.reason).toContain("history stops at the current session");
+    expect(
+      checkHistory(read({ exchanges: [ex("b", "now")], complete: false }))
+        .status,
+    ).toBe("FAIL");
+    expect(
+      checkHistory(
+        read({ exchanges: [ex("b", "now")], earlierInTranscripts: 0 }),
+      ).status,
+    ).toBe("SKIP");
+  });
+
+  test("read-only, two sessions prove a rotation; one can't tell", () => {
+    const readOnly = { currentSessionId: null, previousSessionIds: null };
+    expect(
+      checkHistory(
+        read({ ...readOnly, exchanges: [ex("a", "old"), ex("b", "now")] }),
+      ).status,
     ).toBe("PASS");
     expect(
-      checkHistory({
-        current,
-        previous: [
-          { sessionId: "old", exchanges: 0, error: "Session not found" },
-        ],
-      }).reason,
-    ).toContain("could not be read");
-    expect(
-      checkHistory({
-        current: { ...current, complete: false },
-        previous: [],
-      }).status,
-    ).toBe("FAIL");
+      checkHistory(read({ ...readOnly, exchanges: [ex("b", "now")] })).status,
+    ).toBe("SKIP");
+    expect(checkHistory(read({ ...readOnly, missingRoute: true })).status).toBe(
+      "FAIL",
+    );
   });
 });

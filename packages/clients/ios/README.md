@@ -996,13 +996,13 @@ then PASS, FAIL or SKIP with the reason for each scenario. Its parsing and
 checks are in `scripts/lib/blob-probe.ts`, each next to the Swift code it
 mirrors.
 
-| Scenario          | What it does                                                                                                                                                                                                                                                                                                                                      |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `open`            | `POST /api/supervisor/ensure`, `GET /api/blob/glossary`, `GET /api/supervisor/brief?start=1`, then polls every 10 s while the brief is being written. Shows what Blob says, the handled line, each decision with its revision and options, and a reopen line when the server sends one.                                                           |
-| `talk`            | Watches the supervisor session on `/ws`, posts a message to `/api/sessions/:id/prompt` as the outbox does (`clientId`, `busy: "steer"`, the phone's `surface`), and reads the reply as Blob does until it settles. Fails without a closed ` ```say ` block or on an error event; prints sent→accepted, accepted→first token and accepted→settled. |
-| `history`         | Pages the current session back to its start with `load_history`, then reads the sessions in `previousSessionIds`: exchanges from before the last rotation must be readable.                                                                                                                                                                       |
-| `brief-lifecycle` | Marks the brief seen (`POST /api/supervisor/brief/seen`), puts it away (Done makes no server call), and reads it again: while decisions are open, the brief needs a reopen line.                                                                                                                                                                  |
-| `answer`          | Answers an item with a stale revision (expects 409 `changed`), reads it again, then answers with the current revision (expects answered). No route posts items to an inbox, so it needs `--item <id>`: an open needs-you item in the probe member's inbox that approves no steps. Otherwise it skips.                                             |
+| Scenario          | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `open`            | `POST /api/supervisor/ensure`, `GET /api/blob/glossary`, the launch timezone (`GET /api/supervisor/prefs`, then `PUT` the machine's zone when the server has none, as `OS1API.ensureSupervisorTimezone` does), `GET /api/supervisor/brief?start=1`, then polls every 10 s while the brief is being written. Shows what Blob says, the handled line, each decision with its revision and options, and a reopen line when the server sends one.                                                                  |
+| `talk`            | Watches the supervisor session on `/ws`, posts a message to `/api/sessions/:id/prompt` as the outbox does for the first message (`clientId`, `busy: "steer"`, the phone's `surface`, no effort or speed override), and reads the reply as Blob does until it settles. A 404 on the send, or "Session not found" on the watch, is tried again on the outbox's backoff for 120 s. Fails without a closed ` ```say ` block or on an error event; prints sent→accepted, accepted→first token and accepted→settled. |
+| `history`         | Pages `GET /api/supervisor/history` as Blob does, each page with the last one's `before`, until an exchange from before the latest rotation is in. A 404 fails as "history stops at the current session", which is what the app shows on a server without the route.                                                                                                                                                                                                                                           |
+| `brief-lifecycle` | Marks the brief seen (`POST /api/supervisor/brief/seen`), puts it away (Done makes no server call), and reads it again: while decisions are open, the brief needs a reopen line.                                                                                                                                                                                                                                                                                                                               |
+| `answer`          | Answers an item with a stale revision (expects 409 `changed`), then does what Blob does after it: reads the item again and answers once more with that revision (expects answered; a second `changed` fails). No route posts items to an inbox, so it needs `--item <id>` (an open needs-you item in the probe member's inbox) or `--allow-answer` (the brief's first decision). Items that approve steps are skipped.                                                                                         |
 
 It runs as a dedicated member, never as the instance owner, because
 `talk`, `brief-lifecycle` and `answer` write to the signed-in person's
@@ -1030,17 +1030,18 @@ The token rides only in the `Authorization` header and is never printed.
 Before running anything the probe reads `/api/auth/status` and the
 owner-only `GET /api/blob/github`; when that says owner (200), or can't say
 (neither 200 nor 403), it refuses to run. `--owner-read-only` lets the owner
-run `open` without `start=1` (no brief turn is started) and `history`; it
-still calls ensure, as the app does on every launch, which rotates the
-supervisor session when a rotation is due. Other options: `--item <id>`,
+run `open` and `history` with GET requests only: no ensure (it can rotate
+the supervisor and start its watch goal), no `start=1`, no timezone write,
+and no socket. Without ensure there is no session id, so `history` passes
+only when it sees exchanges from two sessions and skips otherwise. Other
+options: `--item <id>`, `--allow-answer` (members only),
 `--brief-timeout <s>` (180), `--reply-timeout <s>` (300), `--help`. Exit
 code 1 when a scenario fails, 2 when the probe can't start.
 
 What it can't cover: anything on the device (speech, Parakeet, the
 speaker, layout), the outbox's disk queue and retries across launches, the
 socket's `supervisor_brief_ready` push, and the app's own local state, such
-as a brief put away with Done. It reads `previousSessionIds` for history,
-which the app doesn't decode yet.
+as a brief put away with Done.
 
 ## Architecture
 
