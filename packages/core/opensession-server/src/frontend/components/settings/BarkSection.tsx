@@ -15,6 +15,7 @@ import {
 } from "../../lib/api/bark";
 import { errorMessage } from "../../lib/error-message";
 import { Button } from "../../ui/button";
+import { cn } from "../../ui/cn";
 import { Input } from "../../ui/input";
 import {
   SettingCard,
@@ -25,9 +26,13 @@ import { Switch } from "../../ui/switch";
 import { getCurrentUser } from "../UserPicker";
 import { Select, SettingRow } from "./shared";
 
-// A field and its button take the whole row on a phone.
+// A field and its button take the whole row on a phone, at a finger's height.
 const FIELD_ROW = "phone:ml-0 phone:w-full phone:max-w-none phone:basis-full";
-const FIELD = "w-56 phone:w-full phone:text-input-phone";
+const TAP = "phone:min-h-11";
+const FIELD = `w-56 phone:w-full phone:text-input-phone ${TAP}`;
+// The select's trigger fills its parent by default, which pushes the Save
+// beside it onto a line of its own.
+const INLINE_SELECT = `w-auto ${TAP}`;
 
 type AlgorithmChoice = BarkAlgorithm | "off";
 
@@ -140,6 +145,7 @@ export function BarkSection() {
               />
               <Button
                 size="sm"
+                className={TAP}
                 variant="primary"
                 disabled={busy || !deviceKey.trim()}
                 onClick={() =>
@@ -153,6 +159,7 @@ export function BarkSection() {
               {data?.deviceKey && (
                 <Button
                   size="sm"
+                  className={TAP}
                   disabled={busy}
                   onClick={() => void save({ deviceKey: null })}
                 >
@@ -180,6 +187,7 @@ export function BarkSection() {
               />
               <Button
                 size="sm"
+                className={TAP}
                 variant="primary"
                 disabled={busy || server === null || server === data?.serverUrl}
                 onClick={() =>
@@ -200,11 +208,22 @@ export function BarkSection() {
               ? "Off. Turn on Push encryption in the Bark app to hide what Bark's server sees."
               : `Use the same algorithm, mode and key as the Bark app${modeValue === "GCM" ? " (padding noPadding)" : " (padding pkcs7)"}. The key is ${BARK_KEY_LENGTH[algorithmValue]} characters.`
           }
-          controlClassName={FIELD_ROW}
+          // With encryption on, its four controls take a line of their own
+          // rather than squeezing the description into a narrow column.
+          controlClassName={cn(
+            FIELD_ROW,
+            algorithmValue !== "off" && "ml-0 basis-full",
+          )}
           control={
-            <div className="flex flex-wrap items-center justify-end gap-2 phone:justify-start">
+            <div
+              className={cn(
+                "flex flex-wrap items-center gap-2 phone:justify-start",
+                algorithmValue === "off" && "justify-end",
+              )}
+            >
               <Select
                 label="Algorithm"
+                className={INLINE_SELECT}
                 value={algorithmValue}
                 options={[
                   { value: "off" as const, label: "Off" },
@@ -216,6 +235,7 @@ export function BarkSection() {
                 <>
                   <Select
                     label="Mode"
+                    className={INLINE_SELECT}
                     value={modeValue}
                     options={BARK_MODES.map((value) => ({
                       value,
@@ -227,7 +247,7 @@ export function BarkSection() {
                     type="password"
                     autoComplete="off"
                     aria-label="Encryption key"
-                    className={FIELD}
+                    className={cn(FIELD, "phone:w-auto phone:flex-[1_1_10rem]")}
                     value={encryptionKey}
                     onChange={(e) => setEncryptionKey(e.target.value)}
                     placeholder={
@@ -238,6 +258,7 @@ export function BarkSection() {
               )}
               <Button
                 size="sm"
+                className={TAP}
                 variant="primary"
                 disabled={busy || !encryptionChanged}
                 onClick={() => void saveEncryption()}
@@ -253,6 +274,7 @@ export function BarkSection() {
           control={
             <Select
               label="Decisions open in"
+              className={TAP}
               value={data?.openIn ?? "blob"}
               options={BARK_OPEN_IN.map((value: BarkOpenIn) => ({
                 value,
@@ -286,6 +308,7 @@ export function BarkSection() {
           control={
             <Button
               size="sm"
+              className={TAP}
               disabled={busy || !data?.deviceKey}
               onClick={() => void test()}
             >
