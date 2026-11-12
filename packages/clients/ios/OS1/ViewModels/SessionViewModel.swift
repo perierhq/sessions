@@ -2711,6 +2711,10 @@ final class SessionViewModel {
             }
             noteLocally(message, tone: NoticeTone.derived(fromText: message))
 
+        case .supervisorBriefReady:
+            // Blob's home watches for it on the supervisor session's socket.
+            NotificationCenter.default.post(name: .supervisorBriefReady, object: nil)
+
         default:
             break
         }

@@ -316,6 +316,20 @@ struct BlobSidePane<Side: View>: View {
             .defaultScrollAnchor(.top)
             .scrollBounceBehavior(.basedOnSize)
             .scrollIndicators(.hidden)
+            // Fades out at the edges like the page beside it, instead of
+            // being cut off by the screen's edge.
+            .mask {
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                        .frame(height: margins.top)
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 24)
+                    Color.clear
+                        .frame(height: max(0, margins.bottom - 24))
+                }
+                .ignoresSafeArea()
+            }
             .onChange(of: focus) { _, focus in
                 guard let focus, let index = ids.firstIndex(where: { $0.contains(focus.id) }) else { return }
                 if reduceMotion {

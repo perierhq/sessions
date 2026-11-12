@@ -809,15 +809,31 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   split across the panes, any other centered (`BlobColumns`,
   `BlobSplitRow`). The open Duo upright and the closed Duo keep one
   column.
-- Decisions (`Blob/BlobDecisions.swift`, `Blob/BlobDecisionView.swift`): the
-  supervisor's open `needs-you` items (`GET /api/supervisor/items`), read on
-  launch, when the app comes back and every minute while it is in front.
-  While Blob is idle it wakes and shows one at a time where replies render:
-  title, body with the block catalog, then the options as buttons, the first
-  (recommended) one filled. "Not now" hides it until the next launch;
-  long-press for "Dismiss", which closes it on the server. `fyi` items never
-  show on the home unless a link opens one. Blob reads each decision's first
-  paragraph aloud once, when it comes up. Every answer sends the item's
+- The morning brief (`Blob/BlobBrief.swift`, `Blob/BlobBriefView.swift`,
+  `Blob/BlobDecisionView.swift`), in place of a queue of cards. The server's
+  supervisor writes a brief once a day (`GET /api/supervisor/brief`, server:
+  `supervisor-brief.ts`): what Blob says, at most three decisions with a
+  recommended option each, what it handled, and how many items can wait.
+  Blob reads it with `start=1` when the app comes to the front, so a missing
+  brief for today gets prepared, then with a plain GET every minute and on
+  the socket's `supervisor_brief_ready`. While it is being written Blob
+  thinks and says "Putting your brief together." once. An unseen brief, while
+  Blob is idle, is said aloud (the bell still decides) and shown on one page:
+  what Blob said, one quiet line under it, "Handled 4 things · 3 can wait",
+  which opens to the handled lines, then the decisions; showing it posts
+  `/api/supervisor/brief/seen`. There is no "N of M". Only the first open
+  decision fills its recommended option, so the page has one primary action.
+  "Done" (or Esc on the Mac) puts the brief away; answering every decision
+  does too, and Blob goes idle. Later, items raised after a seen brief come up
+  once as "One new thing since this morning", in the same view. When the brief left
+  items for later, the write bar offers "What can wait?", which
+  sends an ordinary message to the supervisor. On two panes the brief
+  re-arranges: what Blob said and the quiet line stay with the conversation,
+  with the handled lines open, and the decisions take the second pane. The
+  Mac menu bar says "Brief ready" or "2 decisions". Each decision: title (without a leading "acme: " when the
+  line under it names the project), body with the block catalog, then the
+  options as buttons, the recommended one first; long-press for "Dismiss",
+  which closes it on the server. Every answer sends the item's
   `revision` as shown, so an approval binds to exactly that card. A lead's
   proposal with steps carries a structured `act` (server:
   `leads/item-acts.ts`); below the body, after a hairline, Blob draws it as
@@ -828,8 +844,8 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   `act.bodySuffix` the server names, never by matching text, and only when
   the section is drawn. An answer to a card that changed since it was read
   gets a 409 `changed` and closes nothing: Blob says "This changed. Have
-  another look." and shows the new card, which is keyed on id and revision,
-  read aloud again and holds its options for 0.6 s.
+  another look." and shows the new card, which is keyed on id and revision
+  and holds its options for 0.6 s.
 - Asks (`Blob/BlobAsk.swift`): when the supervisor's run stops on a
   question (`ask_question`) or a force merge to confirm
   (`force_merge_pull_request`), Blob shows it where replies render, before
@@ -925,15 +941,17 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   a wide surface act as the Duo's fold, to check the open Duo's layout on
   an iPad simulator (the Blob target is iPhone-only, so build it for one
   with `TARGETED_DEVICE_FAMILY=1,2` on the command line).
-  `BLOB_DEMO_DECISIONS=1` shows three canned decisions, the first with
-  steps. `BLOB_DEMO_REPLY_FILE=<path>` shows that file's markdown as the
+  `BLOB_DEMO_BRIEF=1` shows a canned unseen brief with three decisions, the
+  first with steps; `none` one with nothing to decide, `preparing` the
+  brief being written, `new` a seen brief with one new item since;
+  `BLOB_DEMO_BRIEF_EXPANDED=1` opens the handled lines. `BLOB_DEMO_REPLY_FILE=<path>` shows that file's markdown as the
   settled reply (a host path works in the simulator); add
   `BLOB_DEMO_STREAM=1` to stream it in instead, in chunks of 12 to 40
   characters about 8 times a second, settling at the end and starting
   again every 15 s.
   `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
   `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking, and
-  `BLOB_DEMO_TYPING=1` for text mode. `BLOB_DEMO_HEARD=<words>` holds
+  `BLOB_DEMO_TYPING=1` for text mode (`empty` with nothing typed). `BLOB_DEMO_HEARD=<words>` holds
   Blob listening with those words heard; with `BLOB_DEMO_THINKING=1`,
   thinking about them.
   `BLOB_DEMO_SHEET=settings|account|steps|connect` opens that sheet a
@@ -968,7 +986,7 @@ open /tmp/blobmac/Build/Products/Debug/Blob.app
 ```
 
 The `BLOB_DEMO*` variables work here too; pass them with
-`open --env BLOB_DEMO_DECISIONS=1 …`.
+`open --env BLOB_DEMO_BRIEF=1 …`.
 
 ## Architecture
 

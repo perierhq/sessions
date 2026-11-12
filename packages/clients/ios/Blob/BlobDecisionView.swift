@@ -16,16 +16,20 @@ import SwiftUI
 /// A card for an item rewritten while Blob had it (`revised`) holds its
 /// options for a moment, so a tap meant for the old card can't land on it.
 ///
-/// "Not now" skips it for this launch. Long-press for "Dismiss", which closes
-/// it on the server without an answer.
+/// The brief holds up to three of these on one page. Only one of them fills
+/// its recommended option (`prominent`), so the page has one primary action;
+/// the others keep the recommendation first, unfilled.
+///
+/// Long-press for "Dismiss", which closes it on the server without an answer.
 struct BlobDecisionView: View {
     let item: OS1API.SupervisorItem
-    /// 1-based place in the queue, and its length.
-    let position: Int
-    let count: Int
     let sending: Bool
+    /// This decision's recommended option is the page's filled button.
+    let prominent: Bool
+    /// One of the brief's decisions: the title leads, the body reads as
+    /// prose under Blob's own Say line.
+    var inBrief = false
     let answer: (String) -> Void
-    let notNow: () -> Void
     let dismiss: () -> Void
 
     @ScaledMetric(relativeTo: .subheadline) private var titleSize: CGFloat = 14
@@ -37,11 +41,11 @@ struct BlobDecisionView: View {
     static let revisedHold: Duration = .milliseconds(600)
 
     init(
-        item: OS1API.SupervisorItem, position: Int, count: Int, sending: Bool, revised: Bool = false,
-        answer: @escaping (String) -> Void, notNow: @escaping () -> Void, dismiss: @escaping () -> Void
+        item: OS1API.SupervisorItem, sending: Bool, prominent: Bool = true, inBrief: Bool = false,
+        revised: Bool = false, answer: @escaping (String) -> Void, dismiss: @escaping () -> Void
     ) {
-        self.item = item; self.position = position; self.count = count; self.sending = sending
-        self.answer = answer; self.notNow = notNow; self.dismiss = dismiss
+        self.item = item; self.sending = sending; self.prominent = prominent; self.inBrief = inBrief
+        self.answer = answer; self.dismiss = dismiss
         _holding = State(initialValue: revised)
     }
 
@@ -56,9 +60,9 @@ struct BlobDecisionView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
-                    .font(.system(size: titleSize, weight: .semibold))
-                    .lineSpacing(titleSize * 3 / 14)
+                Text(shownTitle)
+                    .font(inBrief ? .headline : .system(size: titleSize, weight: .semibold))
+                    .lineSpacing(inBrief ? 2 : titleSize * 3 / 14)
                     .foregroundStyle(OS1VisualStyle.text)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
@@ -74,8 +78,8 @@ struct BlobDecisionView: View {
                 if !reply.isEmpty {
                     // The card carries its script as the Say line, so it is
                     // not lost when reading aloud is off.
-                    BlobReplyView(reply: reply, sayStyle: .line)
-                        .padding(.top, 10)
+                    BlobReplyView(reply: reply, sayStyle: inBrief ? .prose : .line)
+                        .padding(.top, inBrief ? 8 : 10)
                 }
                 if let act = item.act, !act.steps.isEmpty {
                     BlobActSection(act: act)
@@ -93,17 +97,6 @@ struct BlobDecisionView: View {
             // Motion.
             .disabled(holding)
             .padding(.top, 18)
-
-            if showsNotNow {
-                Button("Not now", action: notNow)
-                    .font(.footnote)
-                    .foregroundStyle(OS1VisualStyle.textDim)
-                    .buttonStyle(.plain)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-                    .padding(.top, 4)
-                    .accessibilityHint("Shows it again next time you open Blob")
-            }
         }
         .disabled(sending)
         .task {
@@ -119,20 +112,31 @@ struct BlobDecisionView: View {
         .accessibilityAction(named: "Dismiss", dismiss)
     }
 
-    /// "betterbahn · 2h ago · 1 of 3"
+    /// The title without a leading "acme: " when the meta line under it
+    /// already names the project, so the project isn't said twice.
+    var shownTitle: String { Self.shownTitle(item.title, project: item.project) }
+
+    static func shownTitle(_ title: String, project: String?) -> String {
+        guard let project, !project.isEmpty else { return title }
+        let prefix = project + ": "
+        guard title.count > prefix.count,
+              title.range(of: prefix, options: [.anchored, .caseInsensitive]) != nil
+        else { return title }
+        let rest = title.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? title : rest.prefix(1).uppercased() + rest.dropFirst()
+    }
+
+    /// "betterbahn · 2h ago"
     private var meta: String? {
-        let parts = [item.project, ago(.narrow), place].compactMap { $0 }.filter { !$0.isEmpty }
+        let parts = [item.project, ago(.narrow)].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
     }
 
-    /// The same, as VoiceOver reads it: "betterbahn, 2 hours ago, decision 1 of 3".
+    /// The same, as VoiceOver reads it: "betterbahn, 2 hours ago".
     private var metaSpoken: String? {
-        let parts = [item.project, ago(.wide), count > 1 ? "decision \(position) of \(count)" : nil]
-            .compactMap { $0 }.filter { !$0.isEmpty }
+        let parts = [item.project, ago(.wide)].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
-
-    private var place: String? { count > 1 ? "\(position) of \(count)" : nil }
 
     private func ago(_ style: Date.RelativeFormatStyle.UnitsStyle) -> String? {
         item.created.map { date in
@@ -142,13 +146,13 @@ struct BlobDecisionView: View {
         }
     }
 
-    /// An option that already says "Not now" does that job, and answers it.
-    private var showsNotNow: Bool {
-        !item.options.contains { $0.caseInsensitiveCompare("Not now") == .orderedSame }
-    }
-
     private func optionButton(_ option: String, number: Int) -> some View {
-        BlobOptionButton(label: option, number: number, role: number == 1 ? .recommended : .plain) {
+        BlobOptionButton(
+            label: option,
+            number: number,
+            role: number == 1 && prominent ? .recommended : .plain,
+            recommended: number == 1
+        ) {
             answer(option)
         }
     }
@@ -273,9 +277,11 @@ struct BlobOptionButton: View {
     var detail: String?
     let number: Int
     let role: BlobOptionRole
+    /// Read as recommended, filled or not.
+    var recommended: Bool? = nil
     let action: () -> Void
 
-    private var primary: Bool { role == .recommended }
+    private var primary: Bool { recommended ?? (role == .recommended) }
 
     private var ink: Color {
         switch role {
