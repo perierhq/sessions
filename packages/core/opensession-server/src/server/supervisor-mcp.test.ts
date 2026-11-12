@@ -19,6 +19,8 @@ import {
   SUPERVISOR_MCP_SERVER,
   withoutSupervisorWithheld,
 } from "./supervisor-mcp";
+import { __setSupervisorMemoryWriterDepsForTest } from "./supervisor-memory-writer";
+import { __setSupervisorStatusDepsForTest } from "./supervisor-status";
 
 // The ledger tools write under the state dir: a scratch one.
 const root = mkdtempSync(join(tmpdir(), "supervisor-mcp-test-"));
@@ -111,12 +113,95 @@ describe("opensession-supervisor wiring", () => {
       "blob_open_issue",
       "blob_review",
       "dismiss_item",
+      "incidents",
       "list_items",
+      "owner_memory",
       "post_item",
       "read_ledger",
       "reply_in_thread",
+      "support_waiting",
       "watch_for",
     ]);
+  });
+
+  test("incidents and support_waiting read the status sources", async () => {
+    withSession({ supervisor: true });
+    __setSupervisorStatusDepsForTest({
+      now: () => Date.parse("2026-11-11T12:00:00Z"),
+      roster: async () => [
+        {
+          project: "acme",
+          label: "Acme",
+          enabled: true,
+          stage: "watch",
+          owner: "Ada",
+        },
+      ],
+      listIncidents: async () => [],
+      getIncident: async () => null,
+      listInboxes: async () => [],
+    });
+    try {
+      expect((await call("incidents", {})).text).toBe("No open incidents.");
+      expect((await call("incidents", { id: "inc-x" })).text).toBe(
+        "No incident with that id.",
+      );
+      // Outside the schema: refused before any read.
+      expect((await call("incidents", { state: "bogus" })).isError).toBe(true);
+      expect((await call("support_waiting", {})).text).toContain(
+        "Acme: 0 waiting for a person",
+      );
+      expect((await call("support_waiting", { project: "bobs" })).text).toBe(
+        "No project by that name among the ones the owner leads.",
+      );
+    } finally {
+      __setSupervisorStatusDepsForTest(undefined);
+    }
+  });
+
+  test("owner_memory writes the session owner's scope, with the writer's checks", async () => {
+    withSession({ supervisor: true });
+    const written: Array<{ scopeKey: string; text: string; by?: string }> = [];
+    const notes: string[] = [];
+    const restore = __setSupervisorMemoryWriterDepsForTest({
+      notify: async (_user, fact) => {
+        notes.push(fact);
+      },
+      now: () => Date.parse("2026-11-11T12:00:00Z"),
+      enabled: () => true,
+      write: async (input) => {
+        written.push(input);
+        return true;
+      },
+      sessionLink: async (id) => `https://os.example.test/session/${id}`,
+    });
+    try {
+      const added = await call("owner_memory", {
+        action: "add",
+        text: "Ada reviews pull requests in the morning.",
+        kind: "preference",
+      });
+      expect(added.isError).toBeFalsy();
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatchObject({
+        scopeKey: "user-ada",
+        by: "supervisor",
+      });
+      expect(notes).toEqual(["Ada reviews pull requests in the morning."]);
+      const missing = await call("owner_memory", { action: "add" });
+      expect(missing.isError).toBe(true);
+      const noId = await call("owner_memory", {
+        action: "correct",
+        text: "Ada reviews in the evening.",
+      });
+      expect(noId).toMatchObject({
+        isError: true,
+        text: "Give the id of the entry to correct.",
+      });
+      expect(written).toHaveLength(1);
+    } finally {
+      restore();
+    }
   });
 
   test("the ledger tools read and append the owner's ledger, bounded", async () => {

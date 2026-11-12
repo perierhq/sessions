@@ -291,12 +291,15 @@ import {
 import { deskStateContext } from "./desk-state";
 import { blobSurfaceContext } from "./blob-surface";
 import {
+  itemsNamedInReply,
   markSupervisorAnswersBriefed,
+  markSupervisorItemsShown,
   supervisorInboxContext,
   supervisorStyleContext,
   supervisorClockContext,
 } from "./supervisor-inbox";
 import { recordOwnerSpoke } from "./supervisor-clock";
+import { supervisorStatusContext } from "./supervisor-status";
 import {
   SUPERVISOR_WITHHELD_SERVERS,
   supervisorInboxOwner,
@@ -3358,6 +3361,7 @@ async function runSessionPromptInner(
     ? undefined
     : supervisorInboxOwner(session, user);
   let briefedAnswers: string[] = [];
+  let listedItems: Array<{ id: string; title: string }> = [];
   let seedDue = false;
   if (inboxOwner) {
     // When the owner spoke before this turn; this turn's time replaces it
@@ -3366,7 +3370,7 @@ async function runSessionPromptInner(
     const previousSpoke = await recordOwnerSpoke(session).catch(
       () => session.supervisorOwnerSpoke?.at,
     );
-    const [inbox, style, clock] = await Promise.all([
+    const [inbox, style, clock, status] = await Promise.all([
       supervisorInboxContext(inboxOwner).catch(() => undefined),
       // The owner's report style (BLUF, SBAR or plain), one line, also
       // per turn so a change keeps the prompt cache.
@@ -3374,10 +3378,16 @@ async function runSessionPromptInner(
       // The owner's local time and how long since they last spoke, so Blob
       // greets once a day rather than every turn (supervisor-clock.ts).
       supervisorClockContext(inboxOwner, previousSpoke).catch(() => undefined),
+      // Each project the owner leads: open incidents, the lead's last note,
+      // support waiting and pull requests waiting on them, from catalog
+      // data only (supervisor-status.ts).
+      supervisorStatusContext(inboxOwner).catch(() => undefined),
     ]);
+    if (status) prompt = `${status}\n\n${prompt}`;
     if (inbox) {
       prompt = `${inbox.context}\n\n${prompt}`;
       briefedAnswers = inbox.answered;
+      listedItems = inbox.listed;
     }
     if (style) prompt = `${style}\n\n${prompt}`;
     if (clock) prompt = `${clock}\n\n${prompt}`;
@@ -4313,6 +4323,22 @@ async function runSessionPromptInner(
           "[supervisor-inbox] could not mark answers briefed:",
           error instanceof Error ? error.message : error,
         ),
+    );
+  // Being in the briefing showed the owner nothing; the items this
+  // completed reply named (id or whole title) were put in front of them, so
+  // the next briefings list those after unseen ones, then fold or park them
+  // (supervisor-inbox.ts itemsNamedInReply, briefPlace). Blob marks the
+  // decisions it displays itself (POST /api/supervisor/items/shown).
+  const namedItems =
+    inboxOwner && listedItems.length && !endedWithError && !runFailure
+      ? itemsNamedInReply(listedItems, assistantText)
+      : [];
+  if (inboxOwner && namedItems.length)
+    await markSupervisorItemsShown(inboxOwner, namedItems).catch((error) =>
+      console.warn(
+        "[supervisor-inbox] could not mark items shown:",
+        error instanceof Error ? error.message : error,
+      ),
     );
   // Likewise the seed: once a turn that carried it completed, later turns of
   // this session leave it out. A failed turn carries it again.

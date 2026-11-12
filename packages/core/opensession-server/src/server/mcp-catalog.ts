@@ -688,7 +688,7 @@ export const MCP_SERVER_CATALOG: McpServerCatalogEntry[] = [
     ],
     runClasses: ["interactive"],
     condition: "Only on a supervisor session (session.supervisor).",
-    note: "Acts on the inbox of the session's owner only (supervisor-inbox.ts). ask_pat starts the GitHub agent's existing PR flows (agents/github/trigger.ts) as the owner, on registered repos only, with no free text. watch_for records a follow-up for the owner's watch (supervisor-watch.ts). A supervisor session gets no opensession-schedule.",
+    note: "Acts on the inbox of the session's owner only (supervisor-inbox.ts). ask_pat starts the GitHub agent's existing PR flows (agents/github/trigger.ts) as the owner, on registered repos only, with no free text. watch_for records a follow-up for the owner's watch (supervisor-watch.ts). incidents and support_waiting read the incident store and the support index (supervisor-status.ts). owner_memory lists, adds and corrects facts in the owner's personal memory scope only, with the memory writer's checks (supervisor-memory-writer.ts). A supervisor session gets no opensession-schedule.",
     build: () => createSupervisorMcpServer({ user: USER }),
   },
   {

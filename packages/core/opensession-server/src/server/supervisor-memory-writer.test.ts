@@ -502,6 +502,248 @@ describe("writer run", () => {
   });
 });
 
+describe("owner_memory", () => {
+  type Entry = import("./supervisor-memory-writer").OwnerMemoryEntry;
+  let entries: Entry[];
+  let updates: Array<{ id: string; patch: unknown }>;
+  let notes: Array<{ user: string; fact: string }>;
+
+  beforeEach(() => {
+    entries = [
+      {
+        id: "m-own",
+        scopeKey: "user-ada",
+        summary: "Acme's canonical domain is .com.",
+        kind: "reference",
+        state: "active",
+        by: "supervisor",
+        tags: ["supervisor"],
+      },
+      {
+        id: "m-said",
+        scopeKey: "user-ada",
+        summary: "Ada reviews pull requests in the morning.",
+        kind: "preference",
+        state: "active",
+        by: "Ada",
+      },
+      {
+        id: "m-writer",
+        scopeKey: "user-ada",
+        summary: "Ada prefers short replies.",
+        kind: "preference",
+        state: "active",
+        by: "Ada",
+        tags: ["supervisor"],
+      },
+      {
+        id: "m-team",
+        scopeKey: "team",
+        summary: "The team ships on Fridays.",
+        kind: "reference",
+        state: "active",
+      },
+      {
+        id: "m-old",
+        scopeKey: "user-ada",
+        summary: "Old fact.",
+        kind: "reference",
+        state: "superseded",
+      },
+    ];
+    updates = [];
+    notes = [];
+    restore();
+    restore = writer.__setSupervisorMemoryWriterDepsForTest({
+      now: () => NOW,
+      enabled: () => true,
+      write: async (input) => {
+        if (failWrite) throw failWrite;
+        written.push(input);
+        return true;
+      },
+      sessionLink: async (id) => `https://os.example.test/session/${id}`,
+      entries: async (scopeKey) =>
+        entries.filter((e) => e.scopeKey === scopeKey && e.state === "active"),
+      get: async (id) => entries.find((e) => e.id === id) ?? null,
+      update: async (id, patch) => {
+        updates.push({ id, patch });
+      },
+      notify: async (user, fact) => {
+        notes.push({ user, fact });
+      },
+    });
+  });
+
+  test("lists the owner's active personal facts with their ids", async () => {
+    const result = await writer.listOwnerMemory("Ada");
+    expect(result).toEqual({
+      ok: true,
+      message: [
+        "- [m-own] (reference) Acme's canonical domain is .com.",
+        "- [m-said] (preference) Ada reviews pull requests in the morning.",
+        "- [m-writer] (preference) Ada prefers short replies.",
+      ].join("\n"),
+    });
+  });
+
+  test("adds a fact to the owner's scope through the writer's path", async () => {
+    const result = await writer.addOwnerMemory(
+      "Ada",
+      { text: "Acme is back on the .eu domain fully.", kind: "decision" },
+      "os-sup",
+    );
+    expect(result.ok).toBe(true);
+    expect(written).toEqual([
+      {
+        scopeKey: "user-ada",
+        text: "Acme is back on the .eu domain fully.",
+        kind: "decision",
+        source: "https://os.example.test/session/os-sup",
+        by: "supervisor",
+        via: "supervisor",
+        tags: ["supervisor"],
+      },
+    ]);
+    expect(notes).toEqual([
+      { user: "Ada", fact: "Acme is back on the .eu domain fully." },
+    ]);
+  });
+
+  test("a repeat posts nothing; a failed post doesn't fail the save", async () => {
+    restore();
+    restore = writer.__setSupervisorMemoryWriterDepsForTest({
+      now: () => NOW,
+      enabled: () => true,
+      write: async () => false,
+      notify: async (user, fact) => {
+        notes.push({ user, fact });
+      },
+    });
+    const again = await writer.addOwnerMemory("Ada", {
+      text: "Prefers short replies.",
+      kind: "preference",
+    });
+    expect(again).toEqual({ ok: true, message: "Already remembered." });
+    expect(notes).toEqual([]);
+    restore();
+    restore = writer.__setSupervisorMemoryWriterDepsForTest({
+      now: () => NOW,
+      enabled: () => true,
+      write: async () => true,
+      notify: async () => {
+        throw new Error("inbox down");
+      },
+    });
+    expect(
+      (
+        await writer.addOwnerMemory("Ada", {
+          text: "Prefers short replies.",
+          kind: "preference",
+        })
+      ).ok,
+    ).toBe(true);
+  });
+
+  test("the fyi is the fixed copy with the fact quoted", () => {
+    expect(writer.memorySavedItem("Ada prefers short replies.")).toEqual({
+      title: 'Blob saved to memory: "Ada prefers short replies."',
+      body: '"Ada prefers short replies."',
+    });
+    const long = writer.memorySavedItem("x".repeat(300));
+    expect(long.title.length).toBeLessThanOrEqual(120);
+    expect(long.title).toEndWith('…"');
+    expect(long.body).toBe(`"${"x".repeat(300)}"`);
+  });
+
+  test("refuses what the writer refuses: secrets, contact data, bad kinds", async () => {
+    for (const [text, kind, why] of [
+      ["Deploy key is ghp_" + "a".repeat(36), "reference", "secret"],
+      ["Jan is at jan@example.test", "reference", "email"],
+      ["Prefers short replies.", "mood", "Unknown kind"],
+      ["Away this week.", "status", "future expiry"],
+      ["x".repeat(400), "reference", "Too long"],
+    ] as const) {
+      const result = await writer.addOwnerMemory("Ada", { text, kind });
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain(why);
+    }
+    expect(written).toEqual([]);
+  });
+
+  test("corrects an entry only in the owner's own scope", async () => {
+    const fixed = await writer.correctOwnerMemory("Ada", "m-own", {
+      text: "Acme's canonical domain is .eu again.",
+    });
+    expect(fixed).toEqual({
+      ok: true,
+      message: "Corrected [m-own]: Acme's canonical domain is .eu again.",
+    });
+    expect(updates).toEqual([
+      {
+        id: "m-own",
+        patch: {
+          text: "Acme's canonical domain is .eu again.",
+          kind: "reference",
+          expires: null,
+        },
+      },
+    ]);
+    for (const id of ["m-team", "m-old", "m-nope"]) {
+      const refused = await writer.correctOwnerMemory("Ada", id, {
+        text: "Something else.",
+      });
+      expect(refused.ok).toBe(false);
+      expect(refused.message).toContain("Team and project memory");
+    }
+    // Another person's supervisor can't reach Ada's entry either.
+    expect(
+      (await writer.correctOwnerMemory("Grace", "m-own", { text: "No." })).ok,
+    ).toBe(false);
+    expect(updates).toHaveLength(1);
+    expect(notes).toEqual([
+      { user: "Ada", fact: "Acme's canonical domain is .eu again." },
+    ]);
+  });
+
+  test("won't rewrite a fact the owner wrote; the writer's own it may", async () => {
+    const refused = await writer.correctOwnerMemory("Ada", "m-said", {
+      text: "Ada reviews pull requests after lunch.",
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.message).toContain("The owner wrote that fact");
+    expect(updates).toEqual([]);
+    expect(notes).toEqual([]);
+    expect(
+      (
+        await writer.correctOwnerMemory("Ada", "m-writer", {
+          text: "Ada prefers very short replies.",
+        })
+      ).ok,
+    ).toBe(true);
+    expect(updates.map((u) => u.id)).toEqual(["m-writer"]);
+  });
+
+  test("says so when memory isn't kept in repositories, or a write fails", async () => {
+    failWrite = Object.assign(new Error("credential found"), {
+      name: "SecretInMemoryError",
+    });
+    expect(
+      (
+        await writer.addOwnerMemory("Ada", {
+          text: "Prefers short replies.",
+          kind: "preference",
+        })
+      ).message,
+    ).toBe("Not saved: credential found");
+    restore();
+    restore = writer.__setSupervisorMemoryWriterDepsForTest({
+      enabled: () => false,
+    });
+    expect((await writer.listOwnerMemory("Ada")).ok).toBe(false);
+  });
+});
+
 describe("debounce", () => {
   test("waits five quiet minutes; each turn restarts the wait; one run", async () => {
     await setRecord({ sessionId: "os-sup", previous: [] });

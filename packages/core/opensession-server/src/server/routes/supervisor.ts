@@ -10,6 +10,7 @@
  *                                               → { items: [{ ...item, revision, act? }] }
  *   POST /api/supervisor/items/:id/answer       { user, answer, revision? }
  *   POST /api/supervisor/items/:id/dismiss      { user }
+ *   POST /api/supervisor/items/shown            { user, ids } → { marked }, Blob showed these open items
  *   GET  /api/supervisor/leads                  → { leads: LeadRosterEntry[] }, every project's lead
  *   GET  /api/supervisor/prefs?user=
  *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle?, watch?: { enabled?, everyMinutes?, activeStart?, activeEnd? }, memoryWriter? }
@@ -33,6 +34,7 @@ import {
   dismissSupervisorItem,
   getSupervisorPrefs,
   listSupervisorItems,
+  markSupervisorItemsShown,
   setSupervisorPrefs,
   type CloseResult,
   type SupervisorItemKind,
@@ -50,6 +52,7 @@ const STATES: readonly SupervisorItemState[] = [
   "expired",
 ];
 const KINDS: readonly SupervisorItemKind[] = ["needs-you", "fyi"];
+const MAX_SHOWN_IDS = 100;
 
 function missingUser(): Response {
   return Response.json({ error: "missing user" }, { status: 400 });
@@ -108,6 +111,29 @@ export async function handleSupervisorRoutes(
     // Each item with the revision an answer names, and a lead's item with
     // the steps its approval runs, read from the record (leads/item-acts.ts).
     return Response.json({ items: await withItemActs(items) });
+  }
+
+  // Blob displayed these open items to the owner: the supervisor's
+  // briefing lists them after unseen ones and folds repeats
+  // (supervisor-inbox.ts briefPlace). Besides a reply that names an item,
+  // this is the only way an item counts as shown.
+  // TODO(ios): call this from the Blob app when it displays a decision
+  // (OS1API.supervisorItems callers); no client calls it yet.
+  if (path === "/api/supervisor/items/shown" && req.method === "POST") {
+    const body = await req.json().catch(() => null);
+    const user = requestUser(ctx, body?.user);
+    if (!user) return missingUser();
+    const ids: unknown = body?.ids;
+    if (
+      !Array.isArray(ids) ||
+      !ids.length ||
+      ids.length > MAX_SHOWN_IDS ||
+      !ids.every((id) => typeof id === "string" && id.length <= 80)
+    )
+      return Response.json({ error: "invalid ids" }, { status: 400 });
+    return Response.json({
+      marked: await markSupervisorItemsShown(user, ids as string[]),
+    });
   }
 
   const action = ITEM_ACTION.exec(path);
