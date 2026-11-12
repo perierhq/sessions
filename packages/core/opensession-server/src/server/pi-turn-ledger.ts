@@ -37,6 +37,10 @@ export class PiTurnLedger {
   // as model output strands the rest of the account pool. (The Anthropic side's
   // equivalent gate is `partial.content.length === 0`.)
   sawStreamedOutput = false;
+  /** Who served the turn when a gateway picked the account (Mainspring's
+   *  `X-Mainspring-*` headers, pi-mainspring.ts mainspringAuditFields).
+   *  Rides on the audit closer. Never a credential. */
+  servedBy: Record<string, unknown> = {};
   private turnEnded = false;
 
   constructor(
@@ -93,6 +97,13 @@ export class PiTurnLedger {
   }
 
   usageAuditFields(): Record<string, unknown> {
+    return {
+      ...this.servedBy,
+      ...this.usageOnlyAuditFields(),
+    };
+  }
+
+  private usageOnlyAuditFields(): Record<string, unknown> {
     return this.sawUsage
       ? {
           input_tokens: this.usage.inputTokens,

@@ -2,6 +2,8 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { SessionSpeed } from "@tellahq/opensession-protocol/session";
 import type { RunAgentOpts } from "./agent-runner";
 import type { AnthropicRateLimitSnapshot } from "./anthropic-rate-limit";
+import type { MainspringResponseSnapshot } from "./mainspring";
+import { mainspringTurnFailure } from "./pi-mainspring";
 import { audit } from "./audit";
 import { pickClaudeAccount } from "./claude-account-pick";
 import {
@@ -113,6 +115,10 @@ export interface PiAccountWalk {
   /** This turn already moved off an account over a native 429 that was not
    *  the subscription's limit. Such a rotation happens at most once. */
   throttleRotated?: boolean;
+  /** A failure through Mainspring moved this turn to the direct Claude
+   *  accounts ("Fall back to direct accounts" is on). Later attempts bind
+   *  directly. */
+  mainspringFellBack?: boolean;
   cancelled?: boolean;
 }
 
@@ -215,6 +221,13 @@ export class PiAttemptAccounts {
   // none. Lets the terminal say the pool is dry instead of echoing one
   // account's limit as if nothing else had been tried.
   claudePoolRefusal: string | undefined;
+  // Set when this attempt's requests go to Mainspring: it picks the
+  // account, so a failure is classified from its answer (pi-mainspring.ts),
+  // and there is nothing local to bench or rotate to.
+  viaMainspring = false;
+  // The latest Mainspring response's headers (status, Retry-After, the
+  // account that served it).
+  mainspring: MainspringResponseSnapshot | undefined;
   private readonly walk: PiAccountWalk;
   private readonly providerID: string;
   private readonly modelID: string;
@@ -250,6 +263,14 @@ export class PiAttemptAccounts {
   }
 
   isUsageLimit(message: string): boolean {
+    if (this.viaMainspring)
+      return (
+        mainspringTurnFailure({
+          message,
+          snapshot: this.mainspring,
+          modelID: this.modelID,
+        })?.usageLimit === true
+      );
     return isPiUsageLimitShape(
       message,
       this.providerID,

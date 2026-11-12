@@ -87,6 +87,11 @@ The UI writes these files with mode `0600`:
 | `~/.opensession/xai-accounts.json`    | SuperGrok / X Premium sign-ins (xAI OAuth tokens)                                   |
 | `~/.opensession/model-providers.json` | Third-party provider keys, base URLs, picker models, and optional pool restrictions |
 
+Claude can also run on a Mainspring gateway instead of these accounts:
+the owner sets its address and key in Settings → Providers → Mainspring and
+turns on "Route Claude through Mainspring". See
+[mainspring.md](mainspring.md).
+
 SuperGrok accounts sign in by device code from Settings → Providers. Their
 models appear in the picker as `pi/xai-oauth/<model>` and every request goes
 through xAI's `cli-chat-proxy.grok.com`, so it draws on the subscription's

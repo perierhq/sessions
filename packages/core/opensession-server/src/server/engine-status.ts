@@ -7,6 +7,21 @@ import { configuredInteractiveDefaultModel } from "./model-catalog";
 import { modelProviders } from "./model-providers";
 import { piConfigPath, piEngineEnabled } from "./pi-config";
 import { homeDir } from "./paths";
+import {
+  mainspringConfigured,
+  mainspringRoutesClaude,
+  readMainspringRecordSync,
+  type MainspringRecord,
+} from "./mainspring";
+
+/** Mainspring passed its last Test: the key listed models at the address.
+ *  Saving a new address drops that list (mainspring.ts). */
+function mainspringTested(record: MainspringRecord): boolean {
+  return (
+    mainspringConfigured(record) &&
+    Object.keys(record.models?.models ?? {}).length > 0
+  );
+}
 
 function engineConfigLabel(): string {
   const home = homeDir();
@@ -46,6 +61,11 @@ export function engineStatus(): EngineStatus {
   ).length;
   const defaultModel = configuredInteractiveDefaultModel();
   const provider = accountProviderForModel(defaultModel);
+  const mainspring = readMainspringRecordSync();
+  // Claude turns go to Mainspring, which picks the account: the local pool
+  // doesn't decide whether Claude can run.
+  const claudeViaMainspring =
+    mainspringRoutesClaude(mainspring) && mainspringTested(mainspring);
   const base = {
     piEnabled: enabled,
     claudeAccounts,
@@ -69,7 +89,7 @@ export function engineStatus(): EngineStatus {
       true,
     );
   }
-  if (provider === "claude" && !claudeAvailable) {
+  if (provider === "claude" && !claudeAvailable && !claudeViaMainspring) {
     return blocked(
       "No usable Claude accounts are available for the default model.",
       "Add a Claude account under Workspace → Setup, or wait for an exhausted account to reset.",
@@ -92,6 +112,7 @@ export function engineStatus(): EngineStatus {
     !claudeAvailable &&
     !codexAvailable &&
     !xaiAvailable &&
+    !mainspringTested(mainspring) &&
     !Object.keys(modelProviders()).length
   ) {
     return blocked(

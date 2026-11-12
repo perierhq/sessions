@@ -25,6 +25,7 @@ import {
   BRIDGE_PROVIDER_IDS,
   PROVIDER_APIS,
   PROVIDER_ID_RE,
+  RESERVED_PROVIDER_IDS,
   addPickerModel,
   defaultPickerModelsForProvider,
   maskProviderKey,
@@ -551,6 +552,12 @@ export async function handleConnectionsRoutes(
         {
           error: `"${id}" runs on a subscription account pool (Settings → Providers), not a raw API key`,
         },
+        { status: 400 },
+      );
+    }
+    if (RESERVED_PROVIDER_IDS.has(id)) {
+      return Response.json(
+        { error: `"${id}" has its own settings under Providers` },
         { status: 400 },
       );
     }

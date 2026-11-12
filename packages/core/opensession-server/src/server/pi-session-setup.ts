@@ -14,6 +14,8 @@ import {
   type AnthropicRateLimitSnapshot,
 } from "./anthropic-rate-limit";
 import { xaiSubscriptionModelEfforts } from "./xai-accounts";
+import type { MainspringResponseSnapshot } from "./mainspring";
+import { enableMainspringRequestHooks } from "./pi-mainspring";
 import { enableXaiProxyPayload } from "./xai-payload";
 import { enableOpenaiFastMode } from "./openai-auth";
 import { openaiServiceTier } from "./openai-service-tier";
@@ -523,6 +525,8 @@ export function installPiPayloadHooks(
     unifiedSessionId: string | undefined;
     runKey: string;
     onRateLimit: (snapshot: AnthropicRateLimitSnapshot) => void;
+    /** Each Mainspring response's headers, failed ones included. */
+    onMainspringResponse?: (snapshot: MainspringResponseSnapshot) => void;
   },
 ): void {
   const {
@@ -533,6 +537,7 @@ export function installPiPayloadHooks(
     unifiedSessionId,
     runKey,
     onRateLimit,
+    onMainspringResponse,
   } = input;
   const { model: piModel } = binding;
   // Pi's provider supports `service_tier`, but its simple-stream adapter
@@ -581,6 +586,15 @@ export function installPiPayloadHooks(
     // its onResponse hook never sees a 429: read the limit status and reset
     // off each response here instead.
     enableAnthropicRateLimitCapture(session.agent, onRateLimit);
+  }
+  // Mainspring turns (pi-mainspring.ts): the session id as
+  // metadata.user_id for account affinity, and its response headers read
+  // for the error mapping and the turn's audit.
+  if (binding.mainspring) {
+    enableMainspringRequestHooks(session.agent, {
+      sessionId: binding.mainspring.sessionId,
+      onResponse: (snapshot) => onMainspringResponse?.(snapshot),
+    });
   }
   // SuperGrok turns ride the cli-chat-proxy, which rejects several stock
   // Responses fields (xai-payload.ts). Same hook, no host extension.

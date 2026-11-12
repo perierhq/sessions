@@ -12,6 +12,8 @@ import {
   type AnthropicRateLimitSnapshot,
 } from "./anthropic-rate-limit";
 import type { CodexAccount } from "./codex-accounts";
+import type { MainspringResponseSnapshot } from "./mainspring";
+import { enableMainspringRequestHooks } from "./pi-mainspring";
 
 const oauth: CodexAccount = {
   id: "oauth-1",
@@ -653,6 +655,142 @@ describe("createPiRuntimeBinding", () => {
         resetAt: resetSeconds * 1000,
       },
     ]);
+  });
+
+  test("Claude through Mainspring skips the pool and sends the key, X-Session-ID and metadata.user_id to <base>/v1/messages", async () => {
+    const h = harness();
+    h.deps.loadSdk = prewarmPiSdk;
+    const binding = await createPiRuntimeBinding(
+      input("anthropic", "claude-sonnet-5-5", h, {
+        mainspring: {
+          baseUrl: "https://mainspring.example.test",
+          key: "sk-ms-test-key-9876",
+          sessionId: "os-session-1",
+        },
+      }),
+    );
+    // No local account was picked or bound.
+    expect(h.calls.some(([name]) => name === "pickClaudeAccount")).toBe(false);
+    expect(binding.pickedClaude).toBeUndefined();
+    expect(binding.usesNativeAnthropic).toBe(false);
+    expect(binding.mainspring).toEqual({ sessionId: "os-session-1" });
+    expect(binding.model.provider).toBe("mainspring");
+    expect(binding.model.api).toBe("anthropic-messages");
+    // pi's own pricing for the model carries over.
+    expect(binding.model.cost.cacheRead).toBe(0.1);
+    const requests: Array<{ url: string; headers: Headers; body: any }> = [];
+    const fetch = async (url: unknown, init: any) => {
+      requests.push({
+        url: String(url),
+        headers: new Headers(init.headers),
+        body: JSON.parse(init.body),
+      });
+      return new Response(
+        JSON.stringify({
+          type: "error",
+          error: {
+            type: "rate_limit_error",
+            message: "every Claude account is resting",
+          },
+        }),
+        {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": "3600",
+            "x-should-retry": "false",
+          },
+        },
+      );
+    };
+    const seen: MainspringResponseSnapshot[] = [];
+    const agent: {
+      onPayload?: (payload: unknown, model: any) => unknown;
+      streamFunction: (model: any, context: any, options: any) => any;
+    } = {
+      streamFunction: (model, context, options) =>
+        binding.runtime.streamSimple(model, context, options),
+    };
+    enableMainspringRequestHooks(agent, {
+      sessionId: binding.mainspring!.sessionId,
+      onResponse: (snapshot) => seen.push(snapshot),
+    });
+    const result = await (
+      await agent.streamFunction(
+        binding.model,
+        {
+          systemPrompt: "Run instructions",
+          messages: [{ role: "user", content: "hi", timestamp: 1 }],
+        },
+        { fetch, sessionId: "pi-session", onPayload: agent.onPayload },
+      )
+    ).result();
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toStartWith("429 ");
+    expect(requests).toHaveLength(1);
+    const [{ url, headers, body }] = requests;
+    // The Anthropic SDK adds `?beta=true` for its beta messages client.
+    expect(url.split("?")[0]).toBe(
+      "https://mainspring.example.test/v1/messages",
+    );
+    expect(headers.get("x-api-key")).toBe("sk-ms-test-key-9876");
+    expect(headers.get("x-session-id")).toBe("os-session-1");
+    // Not a Claude subscription token: no OAuth identity.
+    expect(headers.get("anthropic-beta") ?? "").not.toContain("oauth");
+    expect(body.model).toBe("claude-sonnet-5-5");
+    expect(body.metadata).toEqual({ user_id: "os-session-1" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.httpStatus).toBe(429);
+    expect(seen[0]!.resetAt).toBeGreaterThan(Date.now());
+  });
+
+  test("a non-Claude Mainspring model uses Chat Completions at <base>/v1", async () => {
+    const h = harness();
+    h.deps.loadSdk = prewarmPiSdk;
+    const binding = await createPiRuntimeBinding(
+      input("mainspring", "gpt-5.6-terra", h, {
+        mainspring: {
+          baseUrl: "https://mainspring.example.test",
+          key: "sk-ms-test-key-9876",
+          sessionId: "os-session-1",
+        },
+      }),
+    );
+    expect(binding.model.api).toBe("openai-completions");
+    const requests: Array<{ url: string; headers: Headers }> = [];
+    const fetch = async (url: unknown, init: any) => {
+      requests.push({ url: String(url), headers: new Headers(init.headers) });
+      return new Response(JSON.stringify({ error: { message: "captured" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    await binding.runtime
+      .streamSimple(
+        binding.model,
+        {
+          systemPrompt: "Run instructions",
+          messages: [{ role: "user", content: "hi", timestamp: 1 }],
+        } as any,
+        { fetch, sessionId: "pi-session" } as any,
+      )
+      .result();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toBe(
+      "https://mainspring.example.test/v1/chat/completions",
+    );
+    expect(requests[0]!.headers.get("authorization")).toBe(
+      "Bearer sk-ms-test-key-9876",
+    );
+    expect(requests[0]!.headers.get("x-session-id")).toBe("os-session-1");
+  });
+
+  test("pi/mainspring without a target fails before loading pi", async () => {
+    const h = harness();
+    await expect(
+      createPiRuntimeBinding(input("mainspring", "gpt-5.6-terra", h)),
+    ).rejects.toThrow("Mainspring is not set up");
+    expect(h.calls.some(([name]) => name === "loadSdk")).toBe(false);
   });
 
   test("binds a configured third-party provider plan then its key", async () => {

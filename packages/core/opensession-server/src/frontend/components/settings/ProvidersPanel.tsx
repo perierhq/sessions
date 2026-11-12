@@ -2,6 +2,7 @@ import { SettingsHeader, SettingsPanel } from "../../ui/settings";
 import { ModelDefaultsSection } from "../Models";
 import { ModelProvidersPanel } from "../ModelProviders";
 import { ProviderAccountsSection } from "./ModelAccounts";
+import { MainspringSection } from "./MainspringSection";
 
 /** Providers: everything behind the model a run uses. Which model it starts
  * on, the subscription accounts it draws from and how close each one is to its
@@ -18,6 +19,9 @@ export function ProvidersPanel() {
       <ModelDefaultsSection />
       {/* The pool those models run on, and how full each account is. */}
       <ProviderAccountsSection />
+      {/* Owner only: Claude through a Mainspring gateway instead of the
+          accounts above. Renders nothing for anyone else. */}
+      <MainspringSection />
       {/* Last: one row per model, Auto on all of them until someone pins
 			    one, so it sits below everything people came here to read. */}
       <ModelProvidersPanel />

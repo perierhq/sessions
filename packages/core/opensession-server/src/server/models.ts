@@ -25,6 +25,14 @@ import {
   xaiSubscriptionPickerModels,
 } from "./xai-accounts";
 import { XAI_OAUTH_PROVIDER } from "./xai-provider-id";
+import {
+  MAINSPRING_PROVIDER,
+  isClaudeModelId,
+  mainspringCatalogModel,
+  mainspringConfigured,
+  mainspringPickerModels,
+  readMainspringRecordSync,
+} from "./mainspring";
 
 // "claude" and "codex" are LEGACY provider tags: the CLI-era engines and the
 // removed direct-SDK engines stored them on sessions (and readers still key
@@ -108,6 +116,14 @@ export function modelEfforts(
     (/^gpt-5\./.test(slug) || slug === "gpt-6-astra")
   )
     return OPENAI_EFFORTS;
+  // A Claude model through Mainspring has Claude's ladder; anything else
+  // the levels its /v1/models row lists.
+  if (provider === MAINSPRING_PROVIDER) {
+    if (isClaudeModelId(slug))
+      return modelEfforts(`pi/anthropic/${slug}`, providers);
+    const listed = mainspringCatalogModel(slug)?.efforts;
+    if (listed?.length) return [...listed];
+  }
   if (provider === "anthropic") {
     if (slug.startsWith("claude-haiku-4-5")) return ["high", "max"];
     if (/^claude-(?:fable|opus|sonnet|haiku)-/.test(slug))
@@ -426,6 +442,10 @@ export function piModelLabel(
       ? configuredCatalogModel(provider, rest.join("/"), providers)
       : undefined;
   if (configured?.name) return configured.name;
+  if (provider === MAINSPRING_PROVIDER) {
+    const name = mainspringCatalogModel(rest.join("/"))?.name;
+    if (name) return `${name.replace(/^Claude\s+/i, "")} (Mainspring)`;
+  }
   if (provider === XAI_OAUTH_PROVIDER) {
     const name = xaiSubscriptionModelName(rest.join("/"));
     if (name) return name;
@@ -463,12 +483,15 @@ export function refreshPickerModels(): void {
         .map(([id]) => id),
     );
     const subscriptionXai = hasXaiAccounts();
+    const mainspring = readMainspringRecordSync();
+    const viaMainspring = mainspringConfigured(mainspring);
     const usable = (id: string) => {
       const provider = id.split("/")[1] || "";
       return (
         BRIDGE_PROVIDER_IDS.has(provider) ||
         keyed.has(provider) ||
-        (provider === XAI_OAUTH_PROVIDER && subscriptionXai)
+        (provider === XAI_OAUTH_PROVIDER && subscriptionXai) ||
+        (provider === MAINSPRING_PROVIDER && viaMainspring)
       );
     };
     // Subscription-backed models are the normal catalog, not legacy direct-SDK
@@ -480,6 +503,7 @@ export function refreshPickerModels(): void {
       ...(piEngineEnabled() ? xaiSubscriptionPickerModels() : []),
       ...piPickerModels(),
       ...configuredPickerModels(),
+      ...(piEngineEnabled() ? mainspringPickerModels(mainspring) : []),
     ];
     // Deduplicate after routing: the seeded native id `gpt-6.1-sol` and a
     // retained compatibility id `pi/openai/gpt-6.1-sol` are different input

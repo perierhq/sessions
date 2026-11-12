@@ -126,6 +126,13 @@ import {
   piPoolDryTerminal,
 } from "./pi-terminal";
 import { streamTimingMarks } from "./stream-timing";
+import {
+  mainspringAuditFields,
+  mainspringTurnFailure,
+  resolveMainspringRoute,
+  type MainspringRoute,
+} from "./pi-mainspring";
+import { piErrorContent } from "./pi-usage-limit";
 
 export { PI_STATE_DIR } from "./pi-common";
 export {
@@ -426,6 +433,66 @@ async function* runPiAttempt(
     return true;
   };
 
+  // Where this attempt's provider requests go (pi-mainspring.ts): resolved
+  // in the try below, read by the terminal and catch paths.
+  let mainspringRoute: MainspringRoute = { kind: "direct" };
+  /** A failure through Mainspring, reworded (fixed copy, the 429 flagged
+   *  as a usage limit, the 401 as needing the owner), or undefined when it
+   *  is not one Mainspring names. */
+  const mainspringTerminal = (
+    terminal: StreamEvent,
+    message: string,
+  ): { terminal: StreamEvent; usageLimit: boolean } | undefined => {
+    if (!accounts.viaMainspring || terminal.type !== "error") return undefined;
+    const mapped = mainspringTurnFailure({
+      message,
+      snapshot: accounts.mainspring,
+      modelID: parsed.modelID,
+    });
+    if (!mapped) return undefined;
+    const { usageLimitExhausted: _dropped, ...rest } = terminal;
+    return {
+      terminal: {
+        ...rest,
+        content: piErrorContent(mapped.text, parsed.providerID),
+        ...(mapped.usageLimit ? { usageLimitExhausted: true } : {}),
+      },
+      usageLimit: mapped.usageLimit,
+    };
+  };
+  /** With "Fall back to direct accounts" on, move a Claude turn that failed
+   *  through Mainspring to the local accounts: the walk replays it (or
+   *  continues the native session after streamed output) on a direct
+   *  binding. False when the owner left the fallback off. */
+  const takeMainspringFallback = (errorText: string): boolean => {
+    if (
+      mainspringRoute.kind !== "mainspring" ||
+      !mainspringRoute.fallbackDirect
+    )
+      return false;
+    if (ledger.sawStreamedOutput && !session?.sessionManager) return false;
+    console.warn(
+      `[pi-runner] Mainspring failed (${parsed.modelID}): falling back to the direct Claude accounts`,
+    );
+    audit({
+      ...auditBase,
+      direction: "out",
+      kind: "mainspring_fallback",
+      error: errorText,
+    });
+    if (ledger.sawStreamedOutput) walk.continuation = session?.sessionManager;
+    walk.mainspringFellBack = true;
+    walk.rotate = true;
+    ledger.reachedTerminal = true;
+    ledger.end({
+      ok: false,
+      pi_session_id: ledger.piSessionId,
+      ...ledger.usageAuditFields(),
+      error: errorText,
+    });
+    return true;
+  };
+
   // Debug only (OPENSESSION_STREAM_TIMING=1): where run start-up time goes.
   const setupTiming = streamTimingMarks("pi_setup", {
     sessionId: unifiedSessionId,
@@ -496,6 +563,34 @@ async function* runPiAttempt(
       mergeGuard,
     } = await resolvePiRunAuthority(opts, remote);
     setupTiming.mark("authority");
+    // Mainspring (pi-mainspring.ts): pi/mainspring/* always, pi/anthropic/*
+    // while Claude is routed there. A route that cannot be served throws
+    // here, before any account is touched.
+    const mainspringSessionId = claudeSessionKey || unifiedSessionId || runKey;
+    mainspringRoute = await resolveMainspringRoute({
+      providerID: parsed.providerID,
+      modelID: parsed.modelID,
+      sessionId: mainspringSessionId,
+      accountId: opts.accountId,
+      accountStrict: opts.accountStrict,
+      fellBack: walk.mainspringFellBack,
+    });
+    if (mainspringRoute.kind === "error")
+      throw new Error(mainspringRoute.message);
+    accounts.viaMainspring = mainspringRoute.kind === "mainspring";
+    // A web tool's Claude side request follows the same routing as a
+    // Claude turn, so it never reaches the local accounts silently either.
+    const claudeSideRoute =
+      parsed.providerID === "anthropic"
+        ? mainspringRoute
+        : await resolveMainspringRoute({
+            providerID: "anthropic",
+            modelID: webSearchModelId("anthropic", undefined),
+            sessionId: mainspringSessionId,
+            accountId: opts.accountId,
+            accountStrict: opts.accountStrict,
+            fellBack: walk.mainspringFellBack,
+          });
     const bindingDependencies = {
       readOpenaiAccounts: () => readModelProviderConfig()?.openaiAccounts,
       readXaiAccounts: () => readModelProviderConfig()?.xaiAccounts,
@@ -518,12 +613,18 @@ async function* runPiAttempt(
       usageCredits: opts.usageCredits,
       speed,
       excludedOpenaiAccountIds: walk.excluded,
+      ...(mainspringRoute.kind === "mainspring"
+        ? { mainspring: mainspringRoute.target }
+        : {}),
       onAccountEvidence: (evidence) => accounts.onEvidence(evidence),
       beforeRuntimeLoad: (evidence) => {
         const picked = evidencePoolRef(evidence, "picked");
         audit({
           ...auditBase,
           direction: "in",
+          ...(mainspringRoute.kind === "mainspring"
+            ? { via: "mainspring" }
+            : {}),
           ...(picked
             ? {
                 account: picked.masked,
@@ -544,7 +645,13 @@ async function* runPiAttempt(
     });
     const { sdk, runtime, model: piModel } = binding;
 
-    const cliEnv = piCliPoolEnv({ opts, remote, accountUser, runKey });
+    const cliEnv = piCliPoolEnv({
+      opts,
+      remote,
+      accountUser,
+      runKey,
+      claudeRoute: claudeSideRoute,
+    });
     const bashEnv = await buildPiBashEnv({
       opts,
       remote,
@@ -583,7 +690,10 @@ async function* runPiAttempt(
     // one is when it has accounts.
     const webConnected = (provider: SearchProviderId) =>
       provider === parsed.providerID ||
-      (provider === "anthropic" ? hasClaudeAccounts() : hasCodexAccounts());
+      (provider === "anthropic"
+        ? claudeSideRoute.kind === "mainspring" ||
+          (claudeSideRoute.kind === "direct" && hasClaudeAccounts())
+        : hasCodexAccounts());
     const webTools = piWebTools({
       policy,
       webFetchHosts: opts.webFetchHosts,
@@ -627,9 +737,18 @@ async function* runPiAttempt(
           speed,
           auditBase,
         });
+        if (provider === "anthropic" && claudeSideRoute.kind === "error")
+          throw new Error(claudeSideRoute.message);
+        const sideMainspring =
+          provider === "anthropic" && claudeSideRoute.kind === "mainspring"
+            ? claudeSideRoute.target
+            : undefined;
         const bound = await createPiRuntimeBinding({
           providerID: provider,
           modelID,
+          ...(sideMainspring
+            ? { mainspring: { ...sideMainspring, catalogRow: undefined } }
+            : {}),
           affinityKey: affinity,
           claudeSessionKey: side.claudeSessionKey,
           unifiedSessionId: unifiedSessionId || runKey,
@@ -753,6 +872,10 @@ async function* runPiAttempt(
       runKey,
       onRateLimit: (snapshot) => {
         accounts.rateLimit = snapshot;
+      },
+      onMainspringResponse: (snapshot) => {
+        accounts.mainspring = snapshot;
+        if (snapshot.account) ledger.servedBy = mainspringAuditFields(snapshot);
       },
     });
     await logPiSessionStart(session, {
@@ -1017,8 +1140,22 @@ async function* runPiAttempt(
       session,
     });
     let terminal = settled.terminal;
-    const terminalUsageLimit = settled.usageLimit;
+    let terminalUsageLimit = settled.usageLimit;
     const terminalMessage = settled.message;
+    // Through Mainspring: its fixed copy, and the fallback to the direct
+    // accounts when the owner turned it on.
+    const viaMainspring = mainspringTerminal(terminal, terminalMessage);
+    if (viaMainspring) {
+      terminal = viaMainspring.terminal;
+      terminalUsageLimit = viaMainspring.usageLimit;
+      if (takeMainspringFallback(String(terminal.content))) {
+        yield {
+          type: "runner_notice",
+          text: "Mainspring couldn't serve this turn. Continuing on the direct Claude accounts.",
+        };
+        return;
+      }
+    }
     // Usage-limit terminal on a pi/openai run: sideline the picked codex
     // account BEFORE yielding, so the fallback walk's next hop (and every
     // other engine's pick) skips it — shared sideline state with previous runner,
@@ -1089,6 +1226,34 @@ async function* runPiAttempt(
       return;
     }
     const message: string = e?.message || String(e);
+    // A provider failure through Mainspring that surfaced as a throw.
+    const viaMainspring = mainspringTerminal(
+      { type: "error", content: message },
+      message,
+    );
+    if (viaMainspring) {
+      if (takeMainspringFallback(String(viaMainspring.terminal.content))) {
+        yield {
+          type: "runner_notice",
+          text: "Mainspring couldn't serve this turn. Continuing on the direct Claude accounts.",
+        };
+        return;
+      }
+      ledger.reachedTerminal = true;
+      ledger.end({
+        ok: false,
+        pi_session_id: ledger.piSessionId,
+        ...ledger.usageAuditFields(),
+        error: viaMainspring.terminal.content,
+      });
+      yield {
+        ...viaMainspring.terminal,
+        provider: PROVIDER,
+        model,
+        ...ledger.usageField(),
+      };
+      return;
+    }
     // Honor the flag on pre-init throws (dry pool, expired seed): their
     // distinctive text never matches the classifier — previous runner-runner's
     // catch parity.

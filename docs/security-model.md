@@ -881,6 +881,48 @@ user (automations, incident agents, reviews) when a signed-in person turns on
   prompt injection. Prefer read-only connector credentials.
 - Undo it with the same switch, or remove the field from `mcp-config.json`.
 
+## Mainspring key
+
+The Mainspring key (`sk-ms-…`, [setup/mainspring.md](setup/mainspring.md))
+spends every subscription pooled behind the gateway, so it is held like the
+other instance credentials:
+
+- Only the verified instance owner can read or change the Mainspring
+  settings (`routes/mainspring.ts`, the same check as Blob's GitHub
+  account). A claimed name, an automation, or an instance without sign-in
+  gets 401 or 403.
+- The key is a workspace secret (`workspace-secrets.ts`, purpose
+  `mainspring.key`). `model-providers.json` holds only its ref and last four
+  characters. No API response, audit line or log carries it; a failed Test
+  reports a fixed reason and never echoes Mainspring's body.
+- It is resolved only by `mainspring.ts` and handed to pi as the provider's
+  API key in the process that runs the turn. It is never put in a prompt.
+  The one environment that carries it is the `claudeCliEnv` run's
+  (deepsec's Claude workers, `pi-run-env.ts`), and only while Claude is
+  routed through Mainspring: that environment carries a pool Claude OAuth
+  token on the direct route, and the key takes its place
+  (`ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_BASE_URL` set to the address).
+  The key can reach more than that one token: every account behind
+  Mainspring, and every provider the key allows. Create a key for this
+  server limited to the Claude provider, with a daily token cap, under
+  Mainspring's Keys page. A Sandbox command never gets it, as with the
+  OAuth token.
+- The address must be `https://`, or `http://` on a tailnet, private or
+  loopback host. Link-local (169.254.0.0/16, fe80::/10) and cloud metadata
+  addresses (`metadata.google.internal`, `metadata.*.internal`,
+  100.100.100.200, fd00:ec2::254) are refused when saved and again after
+  DNS resolution on every request the server makes. Those requests dial
+  only the addresses that were checked, never follow a redirect (a redirect
+  is an error, so the key never goes to another host), and read at most
+  1 MB of a body (`GET /v1/models`, `GET /v1/pool`). Pointing an existing
+  key at a new host requires pasting the key again, so a saved key never
+  goes to a server it wasn't entered for.
+- A session pinned to one subscription keeps its pinned account; routing
+  Claude through Mainspring never widens a strict pin. Its side requests (a
+  web tool's Claude request, the run's Claude workers) follow the same
+  rule. A failure through Mainspring moves to the direct accounts only when
+  the owner turned on "Fall back to direct accounts".
+
 ## Fixed-subscription sessions (opt-in)
 
 A session's `accountId` is normally a soft pin: when the pinned account is
