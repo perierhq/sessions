@@ -1,3 +1,4 @@
+import BlobCore
 import SwiftUI
 
 /// Blob's home: an empty screen with Blob asleep in its slot. Tap it to talk;

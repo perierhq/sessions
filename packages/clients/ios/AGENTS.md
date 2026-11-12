@@ -67,6 +67,10 @@ ssh tella-mac-node '
 ```
 
 - Always build BOTH schemes: `#if os(macOS)` blocks only compile in `OS1Mac`.
+- Blob's pure logic lives in the `BlobCore` package, and `swift test` in
+  `BlobCore/` runs its tests in seconds with no simulator and no app build.
+  Put new view-free, network-free Blob rules there, with tests (README,
+  "Blob logic tests").
 - Keep `-skipMacroValidation` on noninteractive builds. SwiftStreamingMarkdown's
   exact pinned dependency graph includes the Equatable compiler macro.
 - A Mac-target `errSecInternalComponent` CodeSign failure over SSH is the build

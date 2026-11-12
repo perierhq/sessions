@@ -1,3 +1,4 @@
+import BlobCore
 import Foundation
 import Observation
 import os

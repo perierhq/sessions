@@ -29,6 +29,10 @@ packages:
     url: https://github.com/FluidInference/FluidAudio
     exactVersion: 0.18.3
     traits: []
+  # Blob only: its pure logic (the brief's rules, the glossary correction,
+  # history's exchanges), tested with `swift test` in BlobCore/.
+  BlobCore:
+    path: BlobCore
 targets:
   OS1:
     type: application
@@ -167,6 +171,8 @@ targets:
         product: HighlightSwift
       - package: FluidAudio
         product: FluidAudio
+      - package: BlobCore
+        product: BlobCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: pl.sessions.blob
@@ -204,6 +210,8 @@ targets:
         product: HighlightSwift
       - package: FluidAudio
         product: FluidAudio
+      - package: BlobCore
+        product: BlobCore
     entitlements:
       path: BlobMac.entitlements
       properties:
