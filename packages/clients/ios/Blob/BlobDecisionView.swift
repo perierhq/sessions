@@ -60,7 +60,7 @@ struct BlobDecisionView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
+                Text(shownTitle)
                     .font(inBrief ? .headline : .system(size: titleSize, weight: .semibold))
                     .lineSpacing(inBrief ? 2 : titleSize * 3 / 14)
                     .foregroundStyle(OS1VisualStyle.text)
@@ -110,6 +110,20 @@ struct BlobDecisionView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Dismiss", dismiss)
+    }
+
+    /// The title without a leading "acme: " when the meta line under it
+    /// already names the project, so the project isn't said twice.
+    var shownTitle: String { Self.shownTitle(item.title, project: item.project) }
+
+    static func shownTitle(_ title: String, project: String?) -> String {
+        guard let project, !project.isEmpty else { return title }
+        let prefix = project + ": "
+        guard title.count > prefix.count,
+              title.range(of: prefix, options: [.anchored, .caseInsensitive]) != nil
+        else { return title }
+        let rest = title.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? title : rest.prefix(1).uppercased() + rest.dropFirst()
     }
 
     /// "betterbahn · 2h ago"

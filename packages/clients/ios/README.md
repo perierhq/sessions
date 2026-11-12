@@ -819,18 +819,19 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   the socket's `supervisor_brief_ready`. While it is being written Blob
   thinks and says "Putting your brief together." once. An unseen brief, while
   Blob is idle, is said aloud (the bell still decides) and shown on one page:
-  the decisions inline, then one quiet line, "Handled 4 things · 3 can wait",
-  which opens to the handled lines; showing it posts
+  what Blob said, one quiet line under it, "Handled 4 things · 3 can wait",
+  which opens to the handled lines, then the decisions; showing it posts
   `/api/supervisor/brief/seen`. There is no "N of M". Only the first open
   decision fills its recommended option, so the page has one primary action.
-  "Close" (or Esc on the Mac) puts the brief away; answering every decision
+  "Done" (or Esc on the Mac) puts the brief away; answering every decision
   does too, and Blob goes idle. Later, items raised after a seen brief come up
   once as "One new thing since this morning", in the same view. When the brief left
   items for later, the write bar offers "What can wait?", which
   sends an ordinary message to the supervisor. On two panes the brief
   re-arranges: what Blob said and the quiet line stay with the conversation,
-  the decisions take the second pane. The Mac menu bar says "Brief ready" or
-  "2 decisions". Each decision: title, body with the block catalog, then the
+  with the handled lines open, and the decisions take the second pane. The
+  Mac menu bar says "Brief ready" or "2 decisions". Each decision: title (without a leading "acme: " when the
+  line under it names the project), body with the block catalog, then the
   options as buttons, the recommended one first; long-press for "Dismiss",
   which closes it on the server. Every answer sends the item's
   `revision` as shown, so an approval binds to exactly that card. A lead's

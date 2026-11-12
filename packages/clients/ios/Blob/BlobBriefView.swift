@@ -2,12 +2,14 @@ import SwiftUI
 
 /// The brief on Blob's page: what Blob said, the decisions it picked, and
 /// one quiet line for what it handled and what can wait, which opens to the
-/// handled lines. "Close" puts the whole page away; it is not "Not now",
-/// which a decision may carry as an option and which answers it.
+/// handled lines. The quiet line sits right under what Blob said, above the
+/// decisions. "Done" puts the whole page away; it is not "Not now", which a
+/// decision may carry as an option and which answers it.
 ///
 /// On two panes the page re-arranges rather than stretching: what Blob said
 /// and the quiet line stay with the conversation (`.conversation`), the
-/// decisions go to the second pane (`.decisions`).
+/// decisions go to the second pane (`.decisions`). There the handled lines
+/// start open, since the pane has the room; on one pane they start closed.
 struct BlobBriefView: View {
     enum Part { case all, conversation, decisions }
 
@@ -15,8 +17,13 @@ struct BlobBriefView: View {
     let page: BlobBrief.Page
     var part: Part = .all
 
-    @State private var expanded = BlobBriefView.demoExpanded
+    @State private var expanded: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(brief: BlobBrief, page: BlobBrief.Page, part: Part = .all) {
+        self.brief = brief; self.page = page; self.part = part
+        _expanded = State(initialValue: part == .conversation || Self.demoExpanded)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -25,18 +32,18 @@ struct BlobBriefView: View {
                     .accessibilityLabel("Blob says: \(page.say)")
                     .padding(.bottom, 28)
             }
-            if part != .conversation {
-                decisions
-            }
             if part != .decisions {
                 footer
-                    .padding(.top, part == .conversation ? 0 : 20)
+                    .padding(.bottom, part == .all ? 20 : 0)
+            }
+            if part != .conversation {
+                decisions
             }
         }
         .frame(maxWidth: 560, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityAction(named: "Close brief") { brief.dismiss() }
+        .accessibilityAction(named: "Done with brief") { brief.dismiss() }
     }
 
     private var decisions: some View {
@@ -66,7 +73,7 @@ struct BlobBriefView: View {
         .animation(.easeOut(duration: 0.2), value: brief.note?.line)
     }
 
-    /// "Handled 4 things · 3 can wait", which opens, then "Close".
+    /// "Handled 4 things · 3 can wait", which opens, then "Done".
     private var footer: some View {
         VStack(alignment: .leading, spacing: 0) {
             if summary == nil {
@@ -118,7 +125,7 @@ struct BlobBriefView: View {
     }
 
     private var closeButton: some View {
-        Button(page.decisions.isEmpty ? "Done" : "Close") { brief.dismiss() }
+        Button("Done") { brief.dismiss() }
             .font(.footnote)
             .foregroundStyle(OS1VisualStyle.textDim)
             .buttonStyle(.plain)
