@@ -4,9 +4,9 @@ import Foundation
 /// and kept: the layout, every element's sketch, the elements that carry
 /// words and the VoiceOver reading order, all in board points. The camera
 /// is never part of it: the app applies the camera as a transform, so a pan
-/// or a pinch rebuilds nothing. Sketches are in board points and scale
-/// with the camera's transform, stroke and all, so no zoom bucket is
-/// needed.
+/// or a pinch rebuilds nothing. Sketches are vector paths in board points
+/// and stay sharp under any transform, so they need no zoom bucket; the
+/// words do (`BoardWords`), since text scaled as a layer blurs.
 public struct BoardScene: Sendable {
     /// One painted element: its place, and its sketch when it draws one.
     public struct Mark: Sendable, Equatable {
@@ -87,6 +87,72 @@ public struct BoardSceneKey: Sendable, Hashable {
         count = snapshot.elements.count
         self.noteSize = noteSize
         self.fonts = fonts
+    }
+}
+
+/// A scene's words laid out at one settled zoom, in surface points from
+/// board (0, 0): text set at its size times the zoom, not a 100% layer
+/// scaled up, so it stays sharp. Built when a gesture or a camera move
+/// settles on a new zoom bucket (`BoardCamera.zoomBucket`); while a pinch
+/// runs, the app scales the last one by `live zoom / zoom`.
+public struct BoardWords: Sendable {
+    /// One element's words at this zoom.
+    public struct Placed: Sendable, Equatable {
+        public var item: BoardLayout.Item
+        /// Its box at this zoom, or nil for an arrow label.
+        public var frame: BoardRect?
+        /// An arrow label's centre at this zoom.
+        public var label: BoardPoint?
+        public var id: String { item.element.id }
+    }
+
+    public let key: BoardWordsKey
+    /// The zoom everything is set at: `BoardCamera.zoom(bucket:)`.
+    public let zoom: Double
+    public let placed: [Placed]
+
+    public init(_ scene: BoardScene, bucket: Int) {
+        let zoom = BoardCamera.zoom(bucket: bucket)
+        key = BoardWordsKey(scene: scene.key, bucket: bucket)
+        self.zoom = zoom
+        placed = scene.words.compactMap { item in
+            if case .arrow = item.element.content {
+                guard let mid = scene.layout.arrows[item.element.id]?.middle else { return nil }
+                return Placed(item: item, frame: nil, label: mid * zoom)
+            }
+            guard let r = item.frame else { return nil }
+            return Placed(item: item, frame: BoardRect(x: r.x * zoom, y: r.y * zoom, w: r.w * zoom, h: r.h * zoom), label: nil)
+        }
+    }
+}
+
+/// What a scene's words depend on: the scene, and the zoom bucket they are
+/// set at. Pans never change it; a pinch changes it once, when it ends.
+public struct BoardWordsKey: Sendable, Hashable {
+    public var scene: BoardSceneKey
+    public var bucket: Int
+
+    public init(scene: BoardSceneKey, bucket: Int) {
+        self.scene = scene
+        self.bucket = bucket
+    }
+}
+
+/// Ink widths for the zoom the board rests at. The sketches are paths in
+/// board points, so a width in board points grows and shrinks with the
+/// camera; at rest it is never thinner on screen than `minimum`, so a
+/// zoomed-out board keeps visible lines. While a pinch runs the width
+/// stays the one set for the last settled zoom and rides the transform.
+public enum BoardStroke {
+    /// Blob's sketches: 1.6 board points, at least 1 pt on screen.
+    public static func sketch(zoom: Double) -> Double { width(1.6, minimum: 1, zoom: zoom) }
+    /// The edge of a ref's clean shape: 1 board point, at least 0.5 pt.
+    public static func edge(zoom: Double) -> Double { width(1, minimum: 0.5, zoom: zoom) }
+
+    /// `base` board points, or wider where that would be under `minimum`
+    /// surface points at `zoom`. In board points.
+    public static func width(_ base: Double, minimum: Double, zoom: Double) -> Double {
+        max(base, minimum / max(zoom, BoardCamera.minZoom))
     }
 }
 

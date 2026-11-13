@@ -34,6 +34,9 @@ final class BlobBoard {
     /// What the canvas draws, per revision and note size (BlobCore
     /// `BoardScene`, with its sketches as paths).
     @ObservationIgnored private let scenes = BoardDerivedCache<BoardSceneKey, BlobBoardScene>(limit: 8)
+    /// A scene's words set at a settled zoom (BlobCore `BoardWords`), per
+    /// scene and zoom bucket. Text only: the ink is vector and needs none.
+    @ObservationIgnored private let words = BoardDerivedCache<BoardWordsKey, BlobBoardWords>(limit: 8)
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     /// The fonts' generation the kept scenes were measured with.
     @ObservationIgnored private var measuredFonts = 0
@@ -55,11 +58,21 @@ final class BlobBoard {
         let fonts = BlobHand.fonts.generation
         if fonts != measuredFonts {
             scenes.removeAll()
+            words.removeAll()
             measuredFonts = fonts
         }
         let key = BoardSceneKey(snapshot, noteSize: noteSize, fonts: fonts)
         return scenes.value(key, valid: { $0.core.draws(snapshot, key: key) }) {
             BlobBoardScene(BoardScene(snapshot, key: key, measureNote: BlobHand.measure(size: noteSize)))
+        }
+    }
+
+    /// A scene's words set at the zoom bucket the camera rests on. A pan
+    /// never asks for another; a pinch asks once, when it ends.
+    func words(_ scene: BlobBoardScene, bucket: Int) -> BlobBoardWords {
+        let key = BoardWordsKey(scene: scene.core.key, bucket: bucket)
+        return words.value(key, valid: { $0.scene === scene }) {
+            BlobBoardWords(BoardWords(scene.core, bucket: bucket), scene: scene)
         }
     }
 
@@ -161,6 +174,11 @@ final class BlobBoardCamera {
     private(set) var move: Move?
     /// Fit framed what changed; the next tap goes back to the origin.
     var fitted = false
+    /// The zoom bucket the board's words are set at: where the camera last
+    /// came to rest. A pinch leaves it alone, so its frames only scale the
+    /// words already set; when the pinch or a move settles, the words are
+    /// set again at the new zoom and drawn 1:1, sharp.
+    private(set) var rendered = BoardCamera.home.zoomBucket
 
     struct Move: Equatable {
         var from: BoardCamera
@@ -188,7 +206,7 @@ final class BlobBoardCamera {
     func go(to target: BoardCamera, animated: Bool) {
         let from = at(.now)
         resting = target
-        report()
+        rest()
         guard animated, from != target else { move = nil; return }
         let next = Move(from: from, to: target, start: .now)
         move = next
@@ -198,8 +216,16 @@ final class BlobBoardCamera {
         }
     }
 
+    /// The camera came to rest where it is: its words are set at its zoom,
+    /// and it goes to the server.
+    func rest() {
+        let bucket = resting.zoomBucket
+        if bucket != rendered { rendered = bucket }
+        report()
+    }
+
     /// A gesture frame took the camera: any move stops where it is. Not
-    /// reported until the gesture ends (`report()`).
+    /// reported, nor its words set again, until the gesture ends (`rest()`).
     func take(_ camera: BoardCamera) {
         if move != nil { move = nil }
         resting = camera
@@ -247,19 +273,42 @@ final class BlobBoardScene {
     let core: BoardScene
     /// Each element's sketch, in board points, by id.
     let paths: [String: Path]
+    /// Clean shapes by id, in board points: a ref's card and its status
+    /// dot, or a sketched shape's fill. Built here so no frame makes one.
+    let clean: [String: (shape: Path, dot: Path?)]
 
     init(_ core: BoardScene) {
         self.core = core
         var paths: [String: Path] = [:]
+        var clean: [String: (shape: Path, dot: Path?)] = [:]
         for mark in core.marks {
             if let sketch = mark.sketch { paths[mark.id] = Path(sketch) }
+            if case .shape(let box, let kind, _) = mark.item.element.content {
+                let dot = mark.item.element.ref == nil ? nil
+                    : Path(ellipseIn: CGRect(x: box.x + 12, y: box.y + 12, width: 8, height: 8))
+                clean[mark.id] = (BoardColor.cleanPath(box, kind: kind), dot)
+            }
         }
         self.paths = paths
+        self.clean = clean
     }
 
     func ref(_ ref: String?) -> BoardRefInfo? {
         guard let ref else { return nil }
         return core.refs[ref] ?? .missing
+    }
+}
+
+/// A scene's words at one settled zoom (BlobCore `BoardWords`). Compared by
+/// identity, like the scene: a new one is a new scene or zoom bucket.
+final class BlobBoardWords {
+    let core: BoardWords
+    /// The scene the words were set from; a new scene sets them again.
+    let scene: BlobBoardScene
+
+    init(_ core: BoardWords, scene: BlobBoardScene) {
+        self.core = core
+        self.scene = scene
     }
 }
 
@@ -277,10 +326,12 @@ enum BlobHand {
     @MainActor static func register() {
         guard !registered else { return }
         registered = true
+        if let url = Bundle.main.url(forResource: "Kalam-Regular", withExtension: "ttf") {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
+        // Registered before any scene exists, so nothing to measure again
+        // now; from here a font or Dynamic Type change does.
         fonts.watch()
-        guard let url = Bundle.main.url(forResource: "Kalam-Regular", withExtension: "ttf") else { return }
-        CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
-        fonts.changed()
     }
 
     @MainActor private static var registered = false

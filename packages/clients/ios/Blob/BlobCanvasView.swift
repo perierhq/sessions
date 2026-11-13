@@ -14,11 +14,14 @@ import AppKit
 /// content past the edge. Gestures move the camera, never the board.
 ///
 /// Everything drawn is derived once per revision (`BlobBoard.scene`: the
-/// layout, the sketches as paths, the words, the reading order) and laid
-/// out in board points; the camera is a transform over it. A pan or a
-/// pinch frame rebuilds nothing: the ink strokes cached paths under the
-/// camera's transform, and the words and the reading order are moved and
-/// scaled as a whole.
+/// layout, the sketches and clean shapes as paths, the words, the reading
+/// order) and laid out in board points; the camera is a transform over it.
+/// A pan or a pinch frame rebuilds nothing: the ink strokes cached paths
+/// under the camera's transform, the reading order moves with it, and the
+/// words, set at the zoom the camera last rested on (`BlobBoard.words`),
+/// are scaled by the live zoom over that one. When a pinch or a camera
+/// move settles, the camera lands on a zoom bucket and the words are set
+/// again at it, so text at rest is drawn 1:1 and sharp at any zoom.
 ///
 /// Board (0, 0) is the top-left of the content area on every device; the
 /// trailing inset (the closed Duo's 84 pt strip, the open Duo's rail) is
@@ -45,7 +48,7 @@ struct BlobCanvasView: View {
     @State private var armed = false
 
     /// How far past the top a pull must go before letting go shows history.
-    private static let pullToReveal = 64.0
+    static let pullToReveal = 64.0
 
     /// Dynamic Type for the board: notes from 16 pt up to 22 (spec "Notes"),
     /// and board text by the same factor at most, since positions are
@@ -55,39 +58,24 @@ struct BlobCanvasView: View {
     }
 
     private var noteSize: Double { Self.noteSize(scaledBody: scaledBody) }
-    private var dark: Bool { colorScheme == .dark }
     private var camera: BlobBoardCamera { board.camera }
 
+    /// Reads only what changes with a revision, the text size or a settled
+    /// zoom; the camera's every frame is the stage's, below.
     var body: some View {
         let scene = board.scene(snapshot, noteSize: noteSize)
-        TimelineView(.animation(paused: camera.move == nil)) { timeline in
-            let now = camera.at(timeline.date)
-            let origin = now.toView(BoardPoint(0, 0), in: viewport)
-            ZStack(alignment: .topLeading) {
-                ink(scene, now, front: false)
-                BoardWordsLayer(scene: scene, noteSize: noteSize, dark: dark)
-                    .equatable()
-                    .scaleEffect(now.zoom, anchor: .topLeading)
-                    .offset(x: origin.x, y: origin.y)
-                ink(scene, now, front: true)
-            }
-            .frame(width: viewport.size.w, height: viewport.size.h, alignment: .topLeading)
-            .mask(alignment: .topLeading) {
-                // The trailing strip is chrome: no board under it.
-                Rectangle()
-                    .frame(width: viewport.content.w, height: viewport.size.h)
-                    .offset(x: viewport.leading)
-            }
-            .accessibilityHidden(true)
-            .overlay(alignment: .topLeading) {
-                BoardReadingLayer(scene: scene, viewport: viewport, open: open, focused: reveal)
-                    .equatable()
-                    .scaleEffect(now.zoom, anchor: .topLeading)
-                    .offset(x: origin.x, y: origin.y)
-            }
-            .overlay(alignment: .topLeading) { controls(scene, now) }
-            .overlay(alignment: .top) { pullHint(now) }
-        }
+        BoardStage(
+            board: board,
+            scene: scene,
+            words: board.words(scene, bucket: camera.rendered),
+            viewport: viewport,
+            noteSize: noteSize,
+            dark: colorScheme == .dark,
+            reduceMotion: reduceMotion,
+            pulling: dragStart != nil,
+            armed: armed,
+            open: open
+        )
         .contentShape(Rectangle())
         .gesture(SimultaneousGesture(pan, pinch))
     }
@@ -114,7 +102,8 @@ struct BlobCanvasView: View {
                     armed = false
                     pulledPastTop()
                 }
-                settle()
+                // A pinch still running settles when it ends.
+                if pinchStart == nil { settle(anchor: nil) }
             }
     }
 
@@ -129,28 +118,83 @@ struct BlobCanvasView: View {
                     in: viewport
                 ))
             }
-            .onEnded { _ in
+            .onEnded { value in
                 pinchStart = nil
-                settle()
+                settle(anchor: BoardPoint(value.startLocation.x, value.startLocation.y))
             }
     }
 
-    /// Back inside the board after a gesture, and where it ended goes to
-    /// the server.
-    private func settle() {
-        let settled = camera.resting.settled
-        if settled != camera.resting {
+    /// After a gesture: onto a zoom bucket (about the pinch's centre, or
+    /// the middle of the screen), back inside the board, the words set
+    /// again at the zoom it rests on, and where it ended to the server.
+    private func settle(anchor: BoardPoint?) {
+        let resting = camera.resting
+        let center = anchor ?? viewport.content.center
+        let settled = resting.snapped(anchor: center, in: viewport).settled
+        if settled != resting {
             camera.go(to: settled, animated: !reduceMotion)
         } else {
-            camera.report()
+            camera.rest()
+        }
+    }
+}
+
+/// The board under the live camera: the one view that reads the camera,
+/// so a pan or a pinch frame re-evaluates this and nothing above it. The
+/// scene and the words come in built; this only places them.
+private struct BoardStage: View {
+    let board: BlobBoard
+    let scene: BlobBoardScene
+    let words: BlobBoardWords
+    let viewport: BoardViewport
+    let noteSize: Double
+    let dark: Bool
+    let reduceMotion: Bool
+    /// A drag is running, for the pull hint.
+    let pulling: Bool
+    let armed: Bool
+    var open: (BoardHitTest.Hit) -> Void
+
+    private var camera: BlobBoardCamera { board.camera }
+
+    var body: some View {
+        TimelineView(.animation(paused: camera.move == nil)) { timeline in
+            let now = camera.at(timeline.date)
+            let origin = now.toView(BoardPoint(0, 0), in: viewport)
+            let wordsScale = now.zoom / words.core.zoom
+            ZStack(alignment: .topLeading) {
+                ink(now, front: false)
+                BoardWordsLayer(words: words, noteSize: noteSize, dark: dark)
+                    .equatable()
+                    // 1 at rest: the words are set at this zoom. Only a
+                    // pinch or a move in flight scales them.
+                    .scaleEffect(wordsScale, anchor: .topLeading)
+                    .offset(x: origin.x, y: origin.y)
+                ink(now, front: true)
+            }
+            .frame(width: viewport.size.w, height: viewport.size.h, alignment: .topLeading)
+            .mask(alignment: .topLeading) {
+                // The trailing strip is chrome: no board under it.
+                Rectangle()
+                    .frame(width: viewport.content.w, height: viewport.size.h)
+                    .offset(x: viewport.leading)
+            }
+            .accessibilityHidden(true)
+            .overlay(alignment: .topLeading) {
+                BoardReadingLayer(scene: scene, viewport: viewport, reduceMotion: reduceMotion, open: open, focused: reveal)
+                    .equatable()
+                    .scaleEffect(now.zoom, anchor: .topLeading)
+                    .offset(x: origin.x, y: origin.y)
+            }
+            .overlay(alignment: .topLeading) { controls(now) }
+            .overlay(alignment: .top) { pullHint(now) }
         }
     }
 
-    /// VoiceOver moved to an element: off camera, the camera goes to it.
-    private func reveal(_ id: String) {
-        guard let spot = board.scene(snapshot, noteSize: noteSize).core.reading.first(where: { $0.line.id == id }),
-              let next = camera.at(.now).revealing(spot.frame, in: viewport)
-        else { return }
+    /// VoiceOver moved to an element at `frame` (board points): off camera,
+    /// the camera goes to it.
+    private func reveal(_ frame: BoardRect) {
+        guard let next = camera.at(.now).revealing(frame, in: viewport) else { return }
         camera.go(to: next, animated: !reduceMotion)
     }
 
@@ -159,35 +203,40 @@ struct BlobCanvasView: View {
     /// Blob's marks and the clean shapes of refs, behind the text (`front`
     /// false) or over it (z ≥ 1, like a circle drawn around a card). The
     /// paths are the scene's, in board points; only the transform changes
-    /// with the camera.
-    private func ink(_ scene: BlobBoardScene, _ camera: BoardCamera, front: Bool) -> some View {
+    /// with the camera. Widths are set for the zoom the words rest at, so
+    /// they follow the transform through a pinch and are set again with
+    /// the words when it settles.
+    private func ink(_ camera: BoardCamera, front: Bool) -> some View {
+        let scene = scene
         let visible = camera.visible(in: viewport).insetBy(-120)
         let origin = camera.toView(BoardPoint(0, 0), in: viewport)
         let dark = dark
         let ink = BoardColor.color(.ink, dark: dark)
         let quiet = BoardColor.color(.quiet, dark: dark)
         let edge = BoardColor.color(.ink2, dark: dark).opacity(0.5)
+        let rested = words.core.zoom
+        let stroke = StrokeStyle(lineWidth: BoardStroke.sketch(zoom: rested), lineCap: .round, lineJoin: .round)
+        let edgeWidth = BoardStroke.edge(zoom: rested)
         return Canvas { context, _ in
             context.transform = CGAffineTransform(a: camera.zoom, b: 0, c: 0, d: camera.zoom, tx: origin.x, ty: origin.y)
-            let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round)
             for mark in scene.core.marks where mark.front == front {
                 let el = mark.item.element
                 if let frame = mark.item.frame, !frame.intersects(visible) { continue }
-                if case .shape(let box, let kind, _) = el.content {
+                if case .shape(_, let kind, _) = el.content, let clean = scene.clean[mark.id] {
                     if el.ref != nil {
                         // A shape bound to a real object: crisp, quiet fill,
                         // radius 12, a dot in the object's status colour.
-                        let path = BoardColor.cleanPath(box, kind: kind)
-                        context.fill(path, with: .color(quiet))
-                        context.stroke(path, with: .color(edge), lineWidth: 1)
+                        context.fill(clean.shape, with: .color(quiet))
+                        context.stroke(clean.shape, with: .color(edge), lineWidth: edgeWidth)
                         let tone = scene.ref(el.ref).map { $0.ok ? $0.statusTone : .ink2 } ?? .ink2
-                        context.fill(Path(ellipseIn: CGRect(x: box.x + 12, y: box.y + 12, width: 8, height: 8)),
-                                     with: .color(BoardColor.color(tone, dark: dark)))
+                        if let dot = clean.dot {
+                            context.fill(dot, with: .color(BoardColor.color(tone, dark: dark)))
+                        }
                         continue
                     }
                     if let fill = el.style.fill, kind != .line {
                         let tint = fill == .quiet ? quiet : BoardColor.color(fill, dark: dark).opacity(0.12)
-                        context.fill(BoardColor.cleanPath(box, kind: kind), with: .color(tint))
+                        context.fill(clean.shape, with: .color(tint))
                     }
                 }
                 guard let path = scene.paths[mark.id] else { continue }
@@ -204,7 +253,7 @@ struct BlobCanvasView: View {
     /// and More (pans to content past an edge). In the Duo's strip where
     /// there is one, as on the designs; otherwise at the trailing edge.
     @ViewBuilder
-    private func controls(_ scene: BlobBoardScene, _ now: BoardCamera) -> some View {
+    private func controls(_ now: BoardCamera) -> some View {
         let strip = viewport.trailing >= 60
         let x = strip ? viewport.size.w - viewport.trailing + 36 : viewport.size.w - viewport.trailing - 38
         let fitY = strip ? (viewport.fold == nil ? 178 : 114) : viewport.top + 30
@@ -262,11 +311,11 @@ struct BlobCanvasView: View {
     @ViewBuilder
     private func pullHint(_ now: BoardCamera) -> some View {
         let pull = -now.origin.y * now.zoom
-        if dragStart != nil, pull > 12 {
+        if pulling, pull > 12 {
             Text(armed ? "Release for earlier" : "Earlier")
                 .font(.caption2)
                 .foregroundStyle(OS1VisualStyle.textDim)
-                .opacity(min(1, pull / Self.pullToReveal))
+                .opacity(min(1, pull / BlobCanvasView.pullToReveal))
                 .padding(.top, viewport.top + pull / 2 - 6)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
@@ -304,25 +353,29 @@ enum BoardColor {
     }
 }
 
-/// Text, ref cards, images, frame titles, notes and arrow labels, each at
-/// its place in board points. Built once per scene: the canvas scales and
-/// moves the whole layer with the camera, and `Equatable` keeps SwiftUI
-/// from rebuilding it on a pan or pinch frame.
+/// Text, ref cards, images, frame titles, notes and arrow labels, set at
+/// the zoom the camera rests on (`BoardWords`), in surface points from
+/// board (0, 0): fonts, paddings and boxes all times that zoom, so the text
+/// is laid out and rasterized at the size it shows. Built once per scene
+/// and zoom bucket; `Equatable` keeps SwiftUI from rebuilding it on a pan
+/// or pinch frame, which only moves and scales it.
 private struct BoardWordsLayer: View, Equatable {
-    let scene: BlobBoardScene
+    let words: BlobBoardWords
     let noteSize: Double
     let dark: Bool
 
     static func == (a: Self, b: Self) -> Bool {
-        a.scene === b.scene && a.noteSize == b.noteSize && a.dark == b.dark
+        a.words === b.words && a.noteSize == b.noteSize && a.dark == b.dark
     }
 
+    private var scene: BlobBoardScene { words.scene }
+    private var zoom: Double { words.core.zoom }
     private var textScale: Double { noteSize / BlobHand.baseSize }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ForEach(scene.core.words, id: \.element.id) { item in
-                element(item)
+            ForEach(words.core.placed, id: \.id) { placed in
+                element(placed)
             }
         }
         .allowsHitTesting(false)
@@ -331,11 +384,12 @@ private struct BoardWordsLayer: View, Equatable {
     private func color(_ token: BoardToken) -> Color { BoardColor.color(token, dark: dark) }
 
     @ViewBuilder
-    private func element(_ item: BoardLayout.Item) -> some View {
-        let el = item.element
+    private func element(_ placed: BoardWords.Placed) -> some View {
+        let el = placed.item.element
+        let z = zoom
         switch el.content {
         case .text(_, _, _, _, let role, let text, let sub, let status):
-            if let r = item.frame {
+            if let r = placed.frame {
                 Group {
                     if el.ref != nil {
                         refCard(el, text: text, sub: sub, status: status, height: r.h)
@@ -347,7 +401,7 @@ private struct BoardWordsLayer: View, Equatable {
                 .offset(x: r.x, y: r.y)
             }
         case .frame(_, let title?):
-            if let r = item.frame {
+            if let r = placed.frame {
                 Text(title)
                     .font(font(.meta))
                     .foregroundStyle(color(.ink2))
@@ -356,16 +410,16 @@ private struct BoardWordsLayer: View, Equatable {
                     .offset(x: r.x, y: r.y)
             }
         case .image(_, let src, let fit, _):
-            if let r = item.frame {
+            if let r = placed.frame {
                 BoardImageTile(src: src, fit: fit, quiet: color(.quiet))
                     .frame(width: r.w, height: r.h)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 8 * z, style: .continuous))
                     .offset(x: r.x, y: r.y)
             }
         case .note(_, let text, _):
-            if let r = item.frame {
+            if let r = placed.frame {
                 Text(text)
-                    .font(.custom(BlobHand.fontName, fixedSize: noteSize))
+                    .font(.custom(BlobHand.fontName, fixedSize: noteSize * z))
                     .foregroundStyle(color(.ink))
                     .lineLimit(2)
                     .frame(width: r.w, height: r.h, alignment: .topLeading)
@@ -373,14 +427,13 @@ private struct BoardWordsLayer: View, Equatable {
                     .offset(x: r.x, y: r.y)
             }
         case .arrow(_, _, _, let label?):
-            if let route = scene.core.layout.arrows[el.id] {
-                let mid = route.middle
+            if let mid = placed.label {
                 Text(label)
                     .font(font(.meta))
                     .foregroundStyle(color(.ink2))
                     .multilineTextAlignment(.center)
-                    .frame(width: 120)
-                    .offset(x: mid.x - 60, y: mid.y - 18)
+                    .frame(width: 120 * z)
+                    .offset(x: mid.x - 60 * z, y: mid.y - 18 * z)
             }
         default:
             EmptyView()
@@ -388,7 +441,7 @@ private struct BoardWordsLayer: View, Equatable {
     }
 
     private func font(_ role: BoardTextRole) -> Font {
-        .system(size: role.size * textScale, weight: role.semibold ? .semibold : .regular)
+        .system(size: role.size * textScale * zoom, weight: role.semibold ? .semibold : .regular)
     }
 
     /// A plain text element. `style.color` colours the main line, or the
@@ -400,7 +453,7 @@ private struct BoardWordsLayer: View, Equatable {
         let mainColor = color((subTakesColor ? nil : colored) ?? role.defaultToken)
         let subColor = color((subTakesColor ? colored : nil) ?? .ink2)
         let tail = [status, sub].compactMap { $0 }.joined(separator: " · ")
-        return VStack(alignment: .leading, spacing: 2) {
+        return VStack(alignment: .leading, spacing: 2 * zoom) {
             if let text {
                 Text(text)
                     .font(font(role))
@@ -429,12 +482,13 @@ private struct BoardWordsLayer: View, Equatable {
         let subLine = sub.map { BoardLiveText.fill($0, ref) } ?? ""
         let statusText = Text(statusLine).foregroundStyle(color(tone))
         let line = subLine.isEmpty ? statusText : Text("\(statusText) \u{00B7} \(subLine)")
-        return HStack(alignment: .top, spacing: 10) {
+        let z = zoom
+        return HStack(alignment: .top, spacing: 10 * z) {
             Circle()
                 .fill(color(tone))
-                .frame(width: 8, height: 8)
-                .padding(.top, 5 * textScale)
-            VStack(alignment: .leading, spacing: 2) {
+                .frame(width: 8 * z, height: 8 * z)
+                .padding(.top, 5 * textScale * z)
+            VStack(alignment: .leading, spacing: 2 * z) {
                 Text(title)
                     .font(font(.title))
                     .foregroundStyle(color(found ? .ink : .ink2))
@@ -445,28 +499,33 @@ private struct BoardWordsLayer: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 14)
-        .padding(.vertical, 10)
+        .padding(.leading, 12 * z)
+        .padding(.trailing, 14 * z)
+        .padding(.vertical, 10 * z)
         .frame(minHeight: height, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(color(.quiet)))
+        .background(RoundedRectangle(cornerRadius: 12 * z, style: .continuous).fill(color(.quiet)))
     }
 }
 
 /// VoiceOver: one element per line of the board's reading order (BlobCore
 /// `BoardReading`, the same words as the text fallback), over the element
 /// it reads, in board points. Built once per scene; the canvas moves and
-/// scales it with the camera. Only refs carry an action (they open);
-/// focusing an element off camera brings the camera to it (`focused`).
+/// scales it with the camera (frames, not pixels, so no zoom bucket).
+/// Only refs carry an action (they open); focusing an element off camera
+/// brings the camera to it (`focused`, with the element's board box).
 private struct BoardReadingLayer: View, Equatable {
     let scene: BlobBoardScene
-    /// Compared so `focused` never acts on a stale surface.
+    /// Compared, with Reduce Motion, so `focused` never acts on a stale
+    /// surface or animates against the setting.
     let viewport: BoardViewport
+    let reduceMotion: Bool
     var open: (BoardHitTest.Hit) -> Void
-    var focused: (String) -> Void
+    var focused: (BoardRect) -> Void
     @AccessibilityFocusState private var focus: String?
 
-    static func == (a: Self, b: Self) -> Bool { a.scene === b.scene && a.viewport == b.viewport }
+    static func == (a: Self, b: Self) -> Bool {
+        a.scene === b.scene && a.viewport == b.viewport && a.reduceMotion == b.reduceMotion
+    }
 
     var body: some View {
         let spots = scene.core.reading
@@ -488,7 +547,7 @@ private struct BoardReadingLayer: View, Equatable {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Board")
         .onChange(of: focus) { _, id in
-            if let id { focused(id) }
+            if let id, let spot = scene.core.reading.first(where: { $0.line.id == id }) { focused(spot.frame) }
         }
     }
 }

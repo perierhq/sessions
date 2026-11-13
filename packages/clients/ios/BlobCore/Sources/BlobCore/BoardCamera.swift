@@ -102,6 +102,28 @@ public struct BoardCamera: Sendable, Equatable {
         return BoardCamera(origin: origin, zoom: zoom)
     }
 
+    /// The zoom in hundredths, the grid a camera rests on: the app sets
+    /// the board's text at a bucket's zoom, and a camera at rest sits
+    /// exactly on one, so its text is drawn at 1:1, never scaled.
+    public var zoomBucket: Int { Self.bucket(zoom) }
+
+    public static func bucket(_ zoom: Double) -> Int {
+        Int((min(maxZoom, max(minZoom, zoom)) * 100).rounded())
+    }
+
+    /// A bucket's zoom. The one expression for it, so a camera snapped to
+    /// a bucket and text set at that bucket share the exact value.
+    public static func zoom(bucket: Int) -> Double { Double(bucket) / 100 }
+
+    /// On its zoom bucket, the board point under `anchor` (a surface
+    /// point) staying where it is. A camera that rests after a pinch.
+    public func snapped(anchor: BoardPoint, in viewport: BoardViewport) -> BoardCamera {
+        let target = Self.zoom(bucket: zoomBucket)
+        guard target != zoom else { return self }
+        let pinned = toBoard(anchor, in: viewport)
+        return BoardCamera(origin: pinned - (anchor - viewport.contentOrigin) * (1 / target), zoom: target)
+    }
+
     /// Back inside the board after a gesture: the origin never left of or
     /// above board (0, 0).
     public var settled: BoardCamera {
@@ -116,7 +138,9 @@ public struct BoardCamera: Sendable, Equatable {
         let c = viewport.content
         let zx = c.w / max(1, rect.w + 2 * padding)
         let zy = c.h / max(1, rect.h + 2 * padding)
-        let zoom = min(1, max(minZoom, min(zx, zy)))
+        let raw = min(1, max(minZoom, min(zx, zy)))
+        // Down to its bucket, so it still fits and its text is set 1:1.
+        let zoom = max(minZoom, Self.zoom(bucket: Int((raw * 100 + 1e-9).rounded(.down))))
         let origin = BoardPoint(max(0, rect.x - padding), max(0, rect.y - padding))
         return BoardCamera(origin: origin, zoom: zoom)
     }

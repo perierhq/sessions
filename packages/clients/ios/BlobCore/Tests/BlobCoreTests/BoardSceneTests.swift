@@ -145,3 +145,73 @@ struct BoardRevealTests {
         #expect(next.origin.x == 0)
     }
 }
+
+struct BoardWordsTests {
+    @Test func `words are set at the bucket's zoom, boxes scaled with it`() throws {
+        let board = try DemoBoards.load("release")
+        let scene = BoardScene(board, key: BoardSceneKey(board, noteSize: 16))
+        let words = BoardWords(scene, bucket: 150)
+        #expect(words.zoom == 1.5)
+        #expect(words.placed.count == scene.words.count)
+        for placed in words.placed {
+            if let frame = placed.frame, let r = placed.item.frame {
+                #expect(frame == BoardRect(x: r.x * 1.5, y: r.y * 1.5, w: r.w * 1.5, h: r.h * 1.5))
+            } else {
+                let mid = try #require(scene.layout.arrows[placed.id]?.middle)
+                #expect(placed.label == mid * 1.5)
+            }
+        }
+    }
+
+    @Test func `a pan and a pinch build no words; settling on a new zoom builds once`() throws {
+        let board = try DemoBoards.load("release")
+        let scene = BoardScene(board, key: BoardSceneKey(board, noteSize: 16))
+        let cache = BoardDerivedCache<BoardWordsKey, BoardWords>()
+        func words(_ bucket: Int) -> BoardWords {
+            cache.value(BoardWordsKey(scene: scene.key, bucket: bucket)) { BoardWords(scene, bucket: bucket) }
+        }
+        // The text is set at the zoom the camera last rested on; a pinch
+        // only scales it until it ends.
+        var camera = BoardCamera.home
+        let rested = camera.zoomBucket
+        for _ in 0..<60 {
+            camera = camera.panned(by: BoardPoint(-3, -1)).zoomed(by: 1.01, anchor: BoardPoint(100, 100), in: .duoClosed)
+            _ = words(rested)
+        }
+        #expect(cache.builds == 1)
+        camera = camera.snapped(anchor: BoardPoint(100, 100), in: .duoClosed)
+        let settled = words(camera.zoomBucket)
+        #expect(cache.builds == 2)
+        #expect(settled.zoom == camera.zoom)
+        // Back to a zoom seen before: kept.
+        _ = words(rested)
+        #expect(cache.builds == 2)
+    }
+
+    @Test func `snapping lands exactly on the bucket and keeps the anchor`() {
+        let anchor = BoardPoint(140, 220)
+        let camera = BoardCamera(origin: BoardPoint(30, 40), zoom: 1.23456)
+        let snapped = camera.snapped(anchor: anchor, in: .duoClosed)
+        #expect(snapped.zoom == BoardCamera.zoom(bucket: 123))
+        #expect(snapped.zoomBucket == 123)
+        let before = camera.toBoard(anchor, in: .duoClosed)
+        let after = snapped.toBoard(anchor, in: .duoClosed)
+        #expect(abs(before.x - after.x) < 1e-9 && abs(before.y - after.y) < 1e-9)
+        #expect(snapped.snapped(anchor: anchor, in: .duoClosed) == snapped)
+    }
+
+    @Test func `fit rests on a bucket and still fits`() {
+        let rect = BoardRect(x: 0, y: 0, w: 1234, h: 300)
+        let fit = BoardCamera.fitting(rect, in: .duoClosed)
+        #expect(fit.zoom == BoardCamera.zoom(bucket: fit.zoomBucket))
+        #expect(fit.visible(in: .duoClosed).w >= rect.w + 48 - 1e-9)
+    }
+
+    @Test func `strokes keep a visible width at rest`() {
+        #expect(BoardStroke.sketch(zoom: 1) == 1.6)
+        #expect(BoardStroke.sketch(zoom: 2) == 1.6)
+        #expect(BoardStroke.sketch(zoom: 0.25) * 0.25 == 1)
+        #expect(BoardStroke.edge(zoom: 0.25) * 0.25 == 0.5)
+        #expect(BoardStroke.edge(zoom: 1) == 1)
+    }
+}
