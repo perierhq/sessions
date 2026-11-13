@@ -71,8 +71,11 @@ export function pwaManifest(
     // silently lands on whatever was already open — and there is no history
     // entry behind it, so Back does nothing either.
     launch_handler: { client_mode: "navigate-existing" },
-    // Match the current dark page and chrome surfaces. WebKit exposes the
-    // manifest background if its standalone window is briefly letterboxed.
+    // The dark palette's `--bg` and `--topbar-bg` (styles/base-theme.css),
+    // written out because the server cannot read the tokens. They only cover
+    // the moment before the page loads: background_color for a splash screen,
+    // theme_color for the status bar and caption band until
+    // lib/theme-color.ts sets the theme-color meta from the live tokens.
     background_color: "#1c1c1c",
     theme_color: "#222222",
     icons: [

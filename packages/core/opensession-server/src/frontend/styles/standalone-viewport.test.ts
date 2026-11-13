@@ -4,7 +4,7 @@ import { runInNewContext } from "node:vm";
 import type { PanReleaseRecord } from "../lib/viewport-readout";
 
 // Execute the actual pre-paint bootstrap with a controllable WebKit window.
-// Chromium phone emulation cannot reproduce iOS standalone letterboxing.
+// Chromium phone emulation cannot reproduce iOS standalone viewport panning.
 const html = await Bun.file(new URL("../index.html", import.meta.url)).text();
 const bootstrap = html.slice(
   html.indexOf("var iphoneStandalone ="),
@@ -118,130 +118,21 @@ function viewportHarness(standalone = true) {
 }
 
 describe("standalone viewport recovery", () => {
-  test("failed correction stays bounded but retries on foreground without a reload", () => {
+  test("the window height is left to WebKit through every lifecycle event", () => {
     const app = viewportHarness();
-    app.expectHeight("844px");
-    app.advance(300);
-    app.expectHeight("");
-    const writes = app.writes;
-    app.fireWindow("resize");
-    app.advance(1000);
-    expect(app.writes).toBe(writes);
-
-    app.document.hidden = true;
-    app.fireDocument("visibilitychange");
-    app.document.hidden = false;
-    app.fireDocument("visibilitychange");
-    app.expectHeight("844px");
-    app.advance(450);
-    app.window.innerHeight = 844;
-    app.advance(550);
-    app.expectHeight("844px");
-  });
-
-  test("a persistently short window still releases the override after resume", () => {
-    const app = viewportHarness();
-    app.advance(300);
-    app.fireWindow("pageshow");
-    app.advance(1000);
-    app.expectHeight("");
-    const writes = app.writes;
-    app.advance(10_000);
-    expect(app.writes).toBe(writes);
-  });
-
-  test("background geometry cannot reject an accepted full-height window", () => {
-    const app = viewportHarness();
-    app.window.innerHeight = 844;
-    app.advance(300);
-    app.fireWindow("resize");
-    app.document.hidden = true;
-    app.fireDocument("visibilitychange");
-    app.window.innerHeight = 0;
-    app.advance(1000);
-    app.expectHeight("844px");
-    app.fireWindow("resize");
-    app.advance(300);
-    app.expectHeight("844px");
-  });
-
-  test("a foldable opening retries a correction its closed screen rejected", () => {
-    const app = viewportHarness();
-    app.advance(300);
-    app.expectHeight("");
-    // Same width: a keyboard or toolbar resize, which must not retry.
-    app.fireWindow("resize");
-    app.advance(1000);
-    app.expectHeight("");
-    // A new width with no orientationchange: the device opened.
-    app.window.innerWidth = 820;
-    app.fireWindow("resize");
-    app.expectHeight("844px");
-    app.window.innerHeight = 844;
-    app.advance(1000);
-    app.expectHeight("844px");
-  });
-
-  test("a screen shorter than the window never sets the roots", () => {
-    const app = viewportHarness();
-    app.window.innerHeight = 844;
-    app.advance(300);
-    app.expectHeight("844px");
-    // The other display of a foldable, reported across the fold.
-    app.window.innerWidth = 820;
-    app.window.innerHeight = 880;
-    app.fireWindow("resize");
-    app.expectHeight("");
-    app.advance(1000);
-    app.expectHeight("");
-  });
-
-  test("keyboard dismissal retries after kb-open is cleared and the animation settles", () => {
-    const app = viewportHarness();
-    app.advance(300);
-    app.keyboard(true);
-    app.window.innerHeight = 500;
-    app.fireWindow("pageshow");
-    app.advance(1000);
-    app.expectHeight("");
-    app.fireDocument("focusout");
-    app.expectHeight("");
-    app.keyboard(false);
-    app.advance(250);
-    app.expectHeight("844px");
-    app.window.innerHeight = 844;
-    app.advance(750);
-    app.expectHeight("844px");
-  });
-
-  test("moving between text fields does not force full-screen height over a keyboard", () => {
-    const app = viewportHarness();
-    app.advance(300);
-    app.keyboard(true);
-    app.fireDocument("focusout");
-    app.advance(1000);
-    app.expectHeight("");
-  });
-
-  test("rotation supersedes pending checks of the old screen height", () => {
-    const app = viewportHarness();
-    app.advance(200);
-    app.window.screen.height = 390;
-    app.window.innerHeight = 390;
-    app.fireWindow("orientationchange");
-    app.advance(1000);
-    app.expectHeight("390px");
-  });
-
-  test("browser tabs never get the standalone correction", () => {
-    const app = viewportHarness(false);
-    app.fireWindow("pageshow");
-    app.fireDocument("focusout");
-    app.fireDocument("visibilitychange");
-    app.advance(1000);
+    // A foldable: screen reports the closed display while the app is open.
+    app.window.innerWidth = 867;
+    app.window.innerHeight = 669;
+    app.window.screen.height = 678;
+    for (const name of ["resize", "orientationchange", "pageshow"])
+      app.fireWindow(name);
+    for (const name of ["visibilitychange", "focusout", "DOMContentLoaded"])
+      app.fireDocument(name);
+    app.advance(2000);
     app.expectHeight("");
     expect(app.writes).toBe(0);
   });
+
   test("a phantom visual viewport pan with nothing focused is released once it rests", () => {
     const app = viewportHarness();
     app.advance(1000);

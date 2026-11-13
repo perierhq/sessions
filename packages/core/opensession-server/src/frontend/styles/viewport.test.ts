@@ -12,33 +12,28 @@ describe("app viewport", () => {
     expect(root).not.toMatch(/height:\s*100(?:d|l|s)?vh/);
   });
 
-  test("focused text fields release the physical-screen override for keyboard panning", async () => {
+  test("the installed app is a web app through its manifest, not the legacy metas", async () => {
+    const html = await Bun.file(HTML).text();
+
+    // Measured on an iPhone Duo: apple-mobile-web-app-capable with a
+    // black-translucent status bar cuts the unfolded standalone window short
+    // by the status-bar inset. The manifest's display: standalone is enough.
+    expect(html).not.toContain('name="apple-mobile-web-app-capable"');
+    expect(html).not.toContain('name="apple-mobile-web-app-status-bar-style"');
+    expect(html).toContain('name="apple-mobile-web-app-title"');
+    expect(html).toContain('name="theme-color"');
+    // Safe-area insets (home indicator, side insets) still apply.
+    expect(html).toContain("viewport-fit=cover");
+  });
+
+  test("nothing forces the document roots to the screen height", async () => {
+    const html = await Bun.file(HTML).text();
     const css = await readBaseCss();
 
-    expect(css).toMatch(
-      /html:has\(body\.kb-open\),\s*body\.kb-open\s*\{[^}]*height:\s*100%\s*!important/,
-    );
-  });
-
-  test("standalone iPhones expand both document roots to the physical screen", async () => {
-    const html = await Bun.file(HTML).text();
-
-    expect(html).toContain('matchMedia("(display-mode: standalone)").matches');
-    expect(html).toContain('setRootHeight(height + "px")');
-    expect(html).toContain("window.screen.height");
-  });
-
-  test("a window that stays short gives the forced height back", async () => {
-    const html = await Bun.file(HTML).text();
-
-    // Forcing the roots past the visible window is only safe while WebKit
-    // answers by growing that window. Without this check the composer sits
-    // below the fold on every launch, unreachable by scrolling.
-    expect(html).toContain("window.innerHeight >= height - 1");
-    expect(html).toContain("standaloneFillTaken = false");
-    expect(html).toContain('setRootHeight("")');
-    // An open keyboard shrinks the window deliberately, so it must not be
-    // read as the correction having failed.
-    expect(html).toContain("keyboardOpen()");
+    // screen.height reports the closed display on an open foldable, so a
+    // root forced to it is taller or shorter than the window it sits in.
+    expect(html).not.toContain("window.screen.height");
+    expect(html).not.toContain("style.height");
+    expect(css).not.toMatch(/body\.kb-open\s*\{[^}]*height:/);
   });
 });

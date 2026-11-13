@@ -98,9 +98,11 @@ const APP_HEADER_OVERLAY =
   // The fade is thinned deliberately. It used to be SOLID `--bg` for its first
   // half, which is exactly the band the controls sit in, so each control was
   // backed by an opaque plate of the page colour and had nothing to be
-  // translucent against. Full strength survives only across the status-bar
-  // strip, where the clock has to stay legible; from there down the blur is
-  // what does the work, which is how an iOS scroll edge behaves.
+  // translucent against. Full strength survives only at the top edge, which
+  // meets the installed app's opaque status bar: iOS paints that bar with
+  // theme-color, which lib/theme-color.ts keeps at `--bg`, so the two join
+  // without a seam. From there down the blur is what does the work, which is
+  // how an iOS scroll edge behaves.
   "phone:before:[background:linear-gradient(to_bottom,var(--bg)_0%,color-mix(in_srgb,var(--bg)_55%,transparent)_52%,color-mix(in_srgb,var(--bg)_18%,transparent)_78%,transparent_100%)] " +
   "phone:before:backdrop-blur-[20px] phone:before:backdrop-saturate-[1.4] " +
   "phone:before:[-webkit-mask-image:linear-gradient(to_bottom,#000_0%,#000_62%,transparent_100%)] " +

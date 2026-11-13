@@ -99,19 +99,11 @@ body {
 
 #root {
   /* Fill the viewport-locked body instead of measuring another viewport unit.
-	   In standalone iPhone mode index.html corrects WebKit's short viewport by
-	   setting the document-flow roots to screen.height before the app mounts. */
+	   Nothing sets the roots to a measured height: the installed iPhone app
+	   fills its window once index.html drops the legacy black-translucent
+	   metas, and screen.height is the wrong display on an open foldable. */
   height: 100%;
   overflow: hidden;
-}
-
-/* The standalone correction is for the resting window only. When a text field
-   focuses, release its inline screen.height so WebKit can pan the original
-   viewport above the keyboard. The keyboard covers the letterboxed strip while
-   this class is present, and removing the class restores full device height. */
-html:has(body.kb-open),
-body.kb-open {
-  height: 100% !important;
 }
 
 /* A palette is a surface you type into, so the page behind it must hold still.
