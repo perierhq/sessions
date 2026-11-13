@@ -960,6 +960,10 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   `BLOB_DEMO_STREAM=1` to stream it in instead, in chunks of 12 to 40
   characters about 8 times a second, settling at the end and starting
   again every 15 s.
+  `BLOB_DEMO_BOARD=release|morning` draws the designed release or
+  morning board from bundled JSON (`Board/blob-demo-*.json`, built from
+  the designs and accepted by the server's `applyBoardOps`) with its Say
+  line, no server needed.
   `BLOB_DEMO_THINKING=1` cycles fake thinking steps; add `BLOB_DEMO=1` and
   `BLOB_DEMO_AT=6.3` to hold Blob in the middle, thinking, and
   `BLOB_DEMO_TYPING=1` for text mode (`empty` with nothing typed). `BLOB_DEMO_HEARD=<words>` holds
@@ -970,6 +974,42 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   account" over settings, `steps` wants `BLOB_DEMO_THINKING=1`, and
   `connect` is More options on the first-run screen (a device with no
   server).
+- The board (`Blob/BlobBoard.swift`, `Blob/BlobCanvasView.swift`, logic in
+  BlobCore's `Board*.swift`): Blob's one persistent board
+  (`GET /api/supervisor/board`, server: `blob-board.ts`), drawn natively.
+  It is the surface of the quiet home while it holds anything (an empty
+  board leaves the home as it was), and a settled reply with a
+  ` ```canvas ` fence shows the revision it names (`?revision=`), with the
+  reply's Say line and quick replies bottom-leading over it; the fence's
+  plain-text fallback is never drawn. The brief, a reply without a board,
+  a question and history keep the page. `supervisor_board_changed` on the
+  socket reads it again. Blob's own marks (shapes, arrows, strokes,
+  leaders, outlined frames) are sketchy, in ink only, seeded by element
+  id so a redraw never wobbles; elements with a `ref` are clean cards with
+  a dot in their status colour and open on a tap (a PR or check opens its
+  link; an object without one shows its live fields in a sheet). Text is
+  SF Pro in its type-scale role; notes are Kalam Regular (`Board/Kalam`,
+  SIL OFL 1.1 with its `OFL.txt`), registered at run time, 16 pt scaling
+  with Dynamic Type up to 22 pt; board text scales by the same factor at
+  most, since positions are data. Images load only from this server's
+  media routes (`BoardImageSource`, checked again before fetching). One
+  camera over the board, held in `BlobBoard` above the view: board (0, 0)
+  is the content area's top-left inside the leading and top insets, and
+  the trailing inset (the closed Duo's 84 pt strip, the open Duo's rail)
+  is chrome. Pan with a finger, pinch from 25% to 200%; Fit (in the strip
+  on the Duo, top trailing elsewhere) frames what the last reply touched
+  (`/board/versions`), and again goes back to the origin; More pans to
+  content past an edge. Opening the Duo widens the camera and keeps its
+  origin, so the leading screen is the closed view, point for point;
+  text, notes and refs an older board left on the fold's band (board
+  x 455.5–495.5) are moved off it by the smallest step, as the server does
+  for new ones. On the board Blob rests in the strip (closed) or low on
+  the fold (open). Pulling down past the board's top shows history.
+  VoiceOver reads the board in the text fallback's order and words
+  (`BoardReading`): left screen first, top to bottom, a note right after
+  its anchor as "Note on <anchor>: <text>"; refs are buttons. Camera moves
+  are a short ease, a jump under Reduce Motion. Each message's `surface`
+  carries the camera as `viewport` (`BoardViewportReport`).
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 
@@ -982,8 +1022,13 @@ shows, which decisions are open, each closing on its own, a 409 `changed`
 taking the new revision, new items offered once, the poll delay, the
 `reopen` line and reopening the brief), the glossary correction
 (`BlobGlossaryCorrector`, with the spell check passed in), history's
-grouping (`BlobExchange`) and the server's history pages
-(`BlobHistoryPages`: merged oldest first, without duplicates). The Blob and BlobMac targets
+grouping (`BlobExchange`), the server's history pages
+(`BlobHistoryPages`: merged oldest first, without duplicates), and the
+board: tolerant decoding, layout (notes beside their anchors, arrows
+routed between bound edges, text off the fold), the camera (the closed
+and open Duo, the Mac window, pan, pinch, Fit and More), seeded sketch
+paths, ref hit testing, the reading order and the ` ```canvas ` fence;
+the board tests read the bundled demo boards in `Blob/Board/`. The Blob and BlobMac targets
 depend on it; `BlobBrief` and `BlobGlossary` in `Blob/` are thin wrappers
 that read, answer, time and pass the system spell checker. Run the tests on
 any Mac, with no simulator and without building the app:

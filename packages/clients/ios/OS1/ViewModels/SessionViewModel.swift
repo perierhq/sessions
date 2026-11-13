@@ -2715,6 +2715,10 @@ final class SessionViewModel {
             // Blob's home watches for it on the supervisor session's socket.
             NotificationCenter.default.post(name: .supervisorBriefReady, object: nil)
 
+        case .supervisorBoardChanged(_, let revision):
+            // Blob's board view re-reads the board.
+            NotificationCenter.default.post(name: .supervisorBoardChanged, object: revision)
+
         default:
             break
         }

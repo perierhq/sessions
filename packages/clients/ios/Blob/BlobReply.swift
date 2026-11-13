@@ -1,3 +1,4 @@
+import BlobCore
 import Foundation
 
 /// A supervisor reply split the way the server asks it to write one
@@ -86,7 +87,9 @@ struct BlobReply: Equatable {
             spoken = BlobSentenceStreamer.plain(CueMarkers.strip(raw))
             say = CueMarkers.withoutDirections(spoken)
             let rest = lines[min(index, lines.count)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            show = [overflow, rest].filter { !$0.isEmpty }.joined(separator: "\n\n")
+            // A ```canvas fence is the board, drawn by the canvas; its text
+            // is the fallback for where the board can't render.
+            show = CanvasFence.removing(from: [overflow, rest].filter { !$0.isEmpty }.joined(separator: "\n\n"))
             scripted = true
             return
         }
@@ -99,7 +102,7 @@ struct BlobReply: Equatable {
         }
         say = Self.plain(CueMarkers.strip(said.joined(separator: " ")))
         spoken = say
-        show = lines[index...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        show = CanvasFence.removing(from: lines[index...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
         scripted = false
     }
 

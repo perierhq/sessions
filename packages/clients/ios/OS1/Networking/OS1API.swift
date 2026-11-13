@@ -2546,6 +2546,38 @@ enum OS1API {
         return try await get("/api/supervisor/history\(query)")
     }
 
+    /// Blob's board (server: blob-board.ts), the latest or a kept
+    /// `revision` (a reply's ```canvas fence names one), with its refs'
+    /// live fields. The types and their tolerant decoding are BlobCore's.
+    static func supervisorBoard(revision: Int? = nil) async throws -> BoardSnapshot {
+        try await get("/api/supervisor/board" + (revision.map { "?revision=\($0)" } ?? ""))
+    }
+
+    private struct BoardVersionsPage: Decodable, Sendable {
+        struct Version: Decodable, Sendable {
+            let revision: Int?
+            let touched: [String]?
+        }
+        let versions: [Version]?
+    }
+
+    /// What the reply that wrote `revision` added, updated or moved, for
+    /// "Fit what changed" (`/board/versions`, newest first).
+    static func supervisorBoardTouched(revision: Int) async throws -> [String] {
+        let page: BoardVersionsPage = try await get("/api/supervisor/board/versions?before=\(revision + 1)&limit=1")
+        return page.versions?.first { $0.revision == revision }?.touched ?? []
+    }
+
+    /// A board image's bytes. Only this server's own media routes load
+    /// (`BoardImageSource`), checked here again before anything is fetched.
+    static func boardImage(src: String) async throws -> Data {
+        guard BoardImageSource.isAllowed(src),
+              let base = ServerConfig.shared.baseURL,
+              let url = URL(string: base.absoluteString + src)
+        else { throw APIError.badURL }
+        return try await responseData(for: ServerConfig.shared.authorizedRequest(url))
+    }
+
     private struct SupervisorBriefSeen: Decodable, Sendable { let seenAt: Double? }
 
     /// The owner saw the brief for `day`.

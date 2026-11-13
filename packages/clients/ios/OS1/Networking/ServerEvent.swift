@@ -82,6 +82,9 @@ enum ServerEvent: Sendable {
     /// The owner's supervisor wrote a morning brief: Blob re-reads it
     /// (server: supervisor-brief.ts). Sent to every socket of that person.
     case supervisorBriefReady(user: String)
+    /// Blob's board has a new revision (server: blob-board.ts): Blob
+    /// re-reads it. Sent to every socket of its owner.
+    case supervisorBoardChanged(user: String, revision: Int?)
     /// One sidebar row changed, already scoped by the server to the lens this
     /// socket subscribed with (`sessions_subscribe`).
     case sessionRow(Session)
@@ -283,6 +286,9 @@ enum ServerEvent: Sendable {
         case "supervisor_brief_ready":
             guard let user = frame.user else { return .ignored }
             return .supervisorBriefReady(user: user)
+        case "supervisor_board_changed":
+            guard let user = frame.user else { return .ignored }
+            return .supervisorBoardChanged(user: user, revision: frame.revision?.value)
         case "reply_suggestions":
             guard let id = frame.sessionId else { return .ignored }
             // The server sends null to retire the row. Treat it as an empty
@@ -377,6 +383,9 @@ enum ServerEvent: Sendable {
 extension Notification.Name {
     /// Posted on the main actor when a socket hears `supervisor_brief_ready`.
     static let supervisorBriefReady = Notification.Name("os1.supervisorBriefReady")
+    /// Posted on the main actor when a socket hears `supervisor_board_changed`;
+    /// `object` is the new revision, when the frame carried one.
+    static let supervisorBoardChanged = Notification.Name("os1.supervisorBoardChanged")
 }
 
 /// The per-user sidebar maps the server pushes change notices for, by the
@@ -629,8 +638,19 @@ private struct RawFrame: Decodable {
         }
     }
 
+    /// A whole number, or nothing: a frame whose `revision` is something
+    /// else still decodes.
+    struct LossyInt: Decodable {
+        let value: Int?
+        init(from decoder: Decoder) throws {
+            value = try? decoder.singleValueContainer().decode(Int.self)
+        }
+    }
+
     let type: String
     let id: LossyString?
+    /// supervisor_board_changed: the board's new revision.
+    let revision: LossyInt?
     let row: LossySession?
     let sessionId: String?
     let bootId: String?

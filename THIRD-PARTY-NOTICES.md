@@ -23,6 +23,15 @@ The Open Session website uses Inter. Copyright 2016 The Inter Project Authors.
 Inter is licensed under the SIL Open Font License 1.1. See
 `THIRD-PARTY-LICENSES/OFL-1.1.txt`.
 
+## Kalam
+
+The Blob apps (iOS and macOS) bundle Kalam Regular for Blob's handwritten
+notes on its board. Copyright (c) 2014, Indian Type Foundry. Kalam is
+licensed under the SIL Open Font License 1.1, with no Reserved Font Name.
+The licence ships with the font in the apps
+(`packages/clients/ios/Blob/Board/Kalam/OFL.txt`) and is in
+`THIRD-PARTY-LICENSES/OFL-1.1.txt`.
+
 ## BusyBox
 
 Open Session's Firecracker root filesystem builder downloads BusyBox 1.35.0
