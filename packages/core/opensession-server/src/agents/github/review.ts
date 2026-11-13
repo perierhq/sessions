@@ -111,7 +111,7 @@ import {
   priorReviewSection,
 } from "./review-context";
 import { learnedRulesSection } from "./learned-rules";
-import { repoForFullName } from "./constants";
+import { isBlobPost, repoForFullName } from "./constants";
 import { refreshApprovalGate } from "./approval-gate";
 import {
   admitPublicReview,
@@ -505,7 +505,11 @@ export async function runReview(
             preThreads,
             isGithubBotLogin,
           ),
-          humanThreadLines: openHumanThreadLines(preThreads, isGithubBotLogin),
+          humanThreadLines: openHumanThreadLines(
+            preThreads,
+            isGithubBotLogin,
+            isBlobPost,
+          ),
         })
       : "";
 
@@ -1332,7 +1336,7 @@ async function postReview(
   if (!force) {
     for (const t of existingThreads) {
       if (
-        isGithubBotLogin(t.rootAuthor) &&
+        (isGithubBotLogin(t.rootAuthor) || isBlobPost(t.comments[0]?.body)) &&
         !t.isResolved &&
         !t.isOutdated &&
         t.path &&

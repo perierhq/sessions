@@ -143,16 +143,21 @@ export function classifyPriorFindings(
   return out.slice(-MAX_DIGEST_FINDINGS);
 }
 
-/** Open inline threads started by human reviewers — their concerns, verbatim-ish. */
+/** Open inline threads started by human reviewers — their concerns, verbatim-ish.
+ *  `isOwnPost` tells our own posts by their body: Blob posting from the
+ *  owner's account has a person's login, and only its marker says it is
+ *  ours (constants.ts isBlobPost). */
 export function openHumanThreadLines(
   threads: ReviewThread[],
   isBot: (login: string) => boolean,
+  isOwnPost: (body: string) => boolean = () => false,
 ): string[] {
   return threads
     .filter(
       (t) =>
         t.rootAuthor &&
         !isBot(t.rootAuthor) &&
+        !isOwnPost(t.comments[0]?.body ?? "") &&
         !t.isResolved &&
         t.comments[0]?.body.trim(),
     )

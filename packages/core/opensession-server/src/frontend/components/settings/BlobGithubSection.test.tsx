@@ -92,6 +92,53 @@ describe("BlobGithubSection", () => {
     expect(shown).not.toContain("Post on GitHub");
   });
 
+  test("not set up: Post as offers Blob's account or mine, each explained", () => {
+    const own = view(notSetUp);
+    const shown = text(own);
+    expect(shown).toContain("Post as");
+    expect(shown).toContain(
+      "Blob's account A GitHub account of its own, so its posts show under Blob's name.",
+    );
+    expect(shown).toContain("My account");
+    expect(shown).toContain("Your own comments stay yours.");
+    expect(own.match(/role="radio"/g)).toHaveLength(2);
+    expect(own).toMatch(/role="radio"[^>]*aria-checked="true"/);
+    // Blob's own steps until the owner picks their account.
+    expect(shown).toContain("Sign up a GitHub account for Blob");
+  });
+
+  test("my account: the owner's purpose, steps and token hint", () => {
+    const html = view(notSetUp, { as: "owner" });
+    const shown = text(html);
+    expect(shown).toContain(
+      "Blob can comment, review and label on GitHub under your account. Each post ends with a line saying Blob wrote it. It never closes, approves, pushes or merges.",
+    );
+    expect(shown).toContain(
+      "On your GitHub account, create a fine-grained token limited to the repositories Blob may use",
+    );
+    expect(shown).not.toContain("Sign up a GitHub account for Blob");
+    expect(shown).toContain(
+      "A fine-grained token on your account, limited to the chosen repositories, with Issues and Pull requests read and write.",
+    );
+    expect(html).toMatch(/type="password"[^>]*aria-describedby="[^"]+"/);
+    expect(html).toContain(
+      'href="https://github.com/perierhq/sessions/blob/main/docs/setup/github.md#posting-as-your-own-account"',
+    );
+  });
+
+  test("Blob's own recorded account can't switch from here", () => {
+    const shown = text(view({ ...notSetUp, login: "acme-blob" }));
+    expect(shown).not.toContain("Post as");
+  });
+
+  test("set up with my account: says so, and the choice is gone", () => {
+    const shown = text(view({ ...setUp, as: "owner", login: "ada" }));
+    expect(shown).toContain("@ada");
+    expect(shown).toContain("Your account. Each post is signed as Blob.");
+    expect(shown).not.toContain("Post as");
+    expect(text(view(setUp))).not.toContain("Each post is signed as Blob");
+  });
+
   test("a removed token keeps the account's login and asks for a new one", () => {
     const shown = text(view({ ...notSetUp, login: "acme-blob" }));
     expect(shown).toContain("Blob's account is @acme-blob . Paste a new token");

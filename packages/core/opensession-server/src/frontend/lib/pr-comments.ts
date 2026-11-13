@@ -1,5 +1,8 @@
 import { GITHUB_BOT_LOGINS } from "./brand";
 
+/** Ends every post by Blob on GitHub (agents/github/constants.ts). */
+const BLOB_MARKER = "<!-- os:blob -->";
+
 /** Superseded automated reviews remain on GitHub for history, not as actionable discussion. */
 export function isOutdatedReviewComment(body: string): boolean {
   return /<!--\s*os-review-outdated\s*-->/.test(body);
@@ -44,5 +47,8 @@ export function isMachinePrComment(comment: {
   const body = comment.body || "";
   if (RELAYED_BY_PERSON.test(body)) return false;
   if (isBotAuthor(comment.author)) return true;
+  // Blob ends every post with its marker; from the owner's account the
+  // author is a person, so the marker alone says it is Blob's.
+  if (body.includes(BLOB_MARKER)) return true;
   return /^\s*(?:<!--|\[[a-z][a-z0-9-]*\]:\s*#)/i.test(body);
 }

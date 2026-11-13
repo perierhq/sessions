@@ -23,6 +23,7 @@ import {
   blobComment,
   blobLabel,
   blobOpenIssue,
+  blobRequestRefusal,
   blobReview,
   blobSupervisorPoster,
   blobTextRefusal,
@@ -104,7 +105,12 @@ let previousStore: SessionKernelStore | undefined;
 
 /** A fresh instance: three GitHub repositories, Blob set up and on. */
 async function setup(
-  blob: { enabled?: boolean; publicRepos?: string[]; labels?: string[] } = {},
+  blob: {
+    enabled?: boolean;
+    publicRepos?: string[];
+    labels?: string[];
+    as?: "own-account" | "owner";
+  } = {},
   extra: Record<string, unknown> = {},
 ): Promise<void> {
   writeFileSync(
@@ -130,12 +136,13 @@ async function setup(
     now: () => now,
     fetch: async () =>
       Response.json(
-        { login: "acme-blob" },
+        { login: blob.as === "owner" ? "ada" : "acme-blob" },
         { headers: { "github-authentication-token-expiration": EXPIRES } },
       ),
   });
   const saved = await setBlobGithubSettings(
     {
+      ...(blob.as ? { as: blob.as } : {}),
       token: TOKEN,
       repos: ["acme/widget", "acme/docs", "acme/site"],
       publicRepos: blob.publicRepos ?? ["acme/docs"],
@@ -143,6 +150,7 @@ async function setup(
       enabled: blob.enabled ?? true,
     },
     "Ada",
+    { signedInLogin: "ada" },
   );
   restore();
   expect(saved.ok).toBe(true);
@@ -839,5 +847,153 @@ describe("review findings", () => {
       ok: false,
       message: `Blob already wrote ${BLOB_WRITES_PER_INSTANCE_HOUR} times on GitHub for the team this hour. Try again later.`,
     });
+  });
+});
+
+describe("posting as the owner's account", () => {
+  async function refused(
+    run: () => Promise<{ ok: boolean; message?: string }>,
+    pattern: RegExp,
+  ) {
+    const result = await run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(pattern);
+    expect(calls).toEqual([]);
+    expect(audits).toEqual([]);
+  }
+
+  beforeEach(async () => {
+    await setup({ as: "owner" }, { policy: { privateTerms: ["globex"] } });
+  });
+
+  test("every post is signed as Blob, the owner's assistant, with the marker", async () => {
+    expect(blobConfig()).toMatchObject({ as: "owner", login: "ada" });
+    expect((await comment("Thanks!", ADA_POSTS, "acme/docs")).ok).toBe(true);
+    expect(calls[0]!.body.body).toBe(
+      "Thanks!\n\n<sub>Written by Blob, Ada's assistant</sub><!-- os:blob -->",
+    );
+    expect(calls[0]!.auth).toBe(`Bearer ${TOKEN}`);
+    // A private repository links the session, as with Blob's own account.
+    expect((await comment()).ok).toBe(true);
+    expect(calls[1]!.body.body).toBe(
+      "Looks good to me.\n\n<sub>Written by Blob, Ada's assistant · [session](https://sessions.example.test/session/os-sup-ada)</sub><!-- os:blob -->",
+    );
+    const review = await blobReview(ADA_POSTS, {
+      repo: "acme/docs",
+      pr: 4,
+      body: "Two notes.",
+      comments: [{ path: "src/a.ts", line: 3, body: "Null here?" }],
+    });
+    expect(review.ok).toBe(true);
+    expect(calls[2]!.body.event).toBe("COMMENT");
+    expect(calls[2]!.body.comments[0].body).toEndWith(
+      "<sub>Written by Blob, Ada's assistant</sub><!-- os:blob -->",
+    );
+    expect(audits[0]).toMatchObject({ user: "Ada", actor: "Blob" });
+  });
+
+  test("only for the owner: never a teammate's supervisor or another owner", async () => {
+    const bob = await blobSupervisorPoster("Bob");
+    await refused(() => comment("Hi", bob), /posts only for the owner/);
+    await refused(
+      () => comment("Hi", { owner: "Bob", sessionId: "os-sup-bob" }),
+      /posts only for the owner/,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("refused once the roster names someone else as the owner", async () => {
+    restores.push(
+      __setBlobGithubDepsForTest({
+        now: () => now,
+        fetch: async () => {
+          throw new Error("must not reach GitHub");
+        },
+        repoIsPrivate: async (repo) => visibility[repo] ?? null,
+        instanceOwner: async () => ({ name: "Bob Example", github: "bob" }),
+      }),
+    );
+    await refused(() => comment(), /no longer the owner's login/);
+  });
+
+  test("the public-repository guards stay: listed repositories, private terms, mentions", async () => {
+    await refused(
+      () => comment("Hi", ADA_POSTS, "acme/site"),
+      /not on Blob's list of public repositories/,
+    );
+    await refused(
+      () => comment("Globex asked for this", ADA_POSTS, "acme/docs"),
+      /private term "globex"/,
+    );
+    await refused(
+      () => comment("cc @dependabot", ADA_POSTS, "acme/docs"),
+      /isn't a teammate/,
+    );
+    await refused(
+      () => comment("/deploy now", ADA_POSTS, "acme/docs"),
+      /slash command/,
+    );
+    await refused(
+      () => comment("Hi", ADA_POSTS, "acme/other"),
+      /not one of Blob's repositories/,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("nothing closes, approves, edits or merges", () => {
+    const repo = "/repos/acme/docs";
+    expect(
+      blobRequestRefusal("PATCH", `${repo}/issues/4`, { state: "closed" }),
+    ).toMatch(/never closes, approves/);
+    expect(
+      blobRequestRefusal("PATCH", `${repo}/pulls/4`, { state: "closed" }),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("POST", `${repo}/pulls/4/reviews`, {
+        event: "APPROVE",
+      }),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("POST", `${repo}/pulls/4/reviews`, {
+        event: "REQUEST_CHANGES",
+      }),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("POST", `${repo}/pulls/4/reviews`, {}),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("PUT", `${repo}/pulls/4/merge`, {}),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("PATCH", `${repo}/issues/comments/9`, { body: "x" }),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("POST", `${repo}/issues`, {
+        title: "x",
+        body: "y",
+        state: "closed",
+      }),
+    ).not.toBeNull();
+    // What Blob does post.
+    expect(
+      blobRequestRefusal("POST", `${repo}/issues/4/comments`, { body: "x" }),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal("POST", `${repo}/pulls/4/reviews`, {
+        event: "COMMENT",
+      }),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal("POST", `${repo}/issues`, { title: "x", body: "y" }),
+    ).toBeNull();
+    expect(blobRequestRefusal("GET", `${repo}/labels/bug`)).toBeNull();
+    expect(
+      blobRequestRefusal("POST", `${repo}/issues/4/labels`, {
+        labels: ["bug"],
+      }),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal("DELETE", `${repo}/issues/4/labels/bug`),
+    ).toBeNull();
   });
 });

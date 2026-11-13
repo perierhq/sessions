@@ -1277,13 +1277,33 @@ export function githubBotLogins(): string[] {
 
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
+/** Whose GitHub account Blob posts as (`integrations.github.blob.as`):
+ *  `own-account`, the default, is Blob's machine user; `owner` is the
+ *  instance owner's own account, each post signed as Blob and recognised by
+ *  its `<!-- os:blob -->` marker alone (github-blob.ts). */
+export type BlobGithubAs = "own-account" | "owner";
+
+function blobGithubRecord(): Record<string, unknown> | undefined {
+  const blob = configuredIntegration("github").blob;
+  return blob && typeof blob === "object" && !Array.isArray(blob)
+    ? (blob as Record<string, unknown>)
+    : undefined;
+}
+
+/** Whose account Blob posts as; `own-account` unless set to `owner`. */
+export function blobGithubAs(): BlobGithubAs {
+  return blobGithubRecord()?.as === "owner" ? "owner" : "own-account";
+}
+
 /** The login of Blob's GitHub machine user (`integrations.github.blob.login`,
  *  recorded by github-blob.ts when its token is saved), or "" when none is
- *  set. Only the login: the token is github-blob.ts's alone. */
+ *  set. Only the login: the token is github-blob.ts's alone. When Blob
+ *  posts as the owner's account there is no machine user, so this is ""
+ *  and the owner's login is never a bot login nor reserved. */
 export function blobGithubLogin(): string {
-  const blob = configuredIntegration("github").blob;
-  if (!blob || typeof blob !== "object" || Array.isArray(blob)) return "";
-  const login = (blob as Record<string, unknown>).login;
+  const blob = blobGithubRecord();
+  if (!blob || blobGithubAs() === "owner") return "";
+  const login = blob.login;
   return typeof login === "string" && GITHUB_LOGIN.test(login.trim())
     ? login.trim()
     : "";

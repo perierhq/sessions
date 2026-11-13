@@ -49,7 +49,11 @@ interface HarnessState {
   confirms: ConfirmRequest[];
 }
 
-function harness(token = "") {
+function harness(
+  token = "",
+  as?: "own-account" | "owner",
+  current: BlobGithub = settings,
+) {
   const state: HarnessState = {
     saved: null,
     token,
@@ -58,8 +62,9 @@ function harness(token = "") {
     confirms: [],
   };
   const act = blobGithubActions({
-    settings,
+    settings: current,
     token,
+    as,
     setSaved: (next) => (state.saved = next),
     setToken: (value) => (state.token = value),
     setTokenError: (message) => (state.tokenError = message),
@@ -71,6 +76,29 @@ function harness(token = "") {
 }
 
 describe("blobGithubActions", () => {
+  test("the Post as choice goes up with the token when it changes", async () => {
+    const notSetUp: BlobGithub = {
+      ...settings,
+      login: null,
+      expiresAt: null,
+      tokenSet: false,
+      enabled: false,
+    };
+    const calls = fakeServer({ status: 200, body: { blob: settings } });
+    await harness("github_pat_abc", "owner", notSetUp).act.saveToken();
+    await harness("github_pat_abc", "own-account", notSetUp).act.saveToken();
+    await harness("github_pat_abc", "owner", {
+      ...notSetUp,
+      as: "owner",
+    }).act.saveToken();
+    expect(calls.map((c) => c.body)).toEqual([
+      { token: "github_pat_abc", as: "owner" },
+      // Blob's own account is what an older server already means.
+      { token: "github_pat_abc" },
+      { token: "github_pat_abc" },
+    ]);
+  });
+
   test("a saved token empties the field; a refused one stays", async () => {
     const calls = fakeServer({ status: 200, body: { blob: settings } });
     const ok = harness("  github_pat_abc  ");

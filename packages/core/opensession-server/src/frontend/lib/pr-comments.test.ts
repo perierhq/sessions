@@ -32,6 +32,18 @@ describe("isMachinePrComment", () => {
     ).toBe(true);
   });
 
+  test("Blob's post from the owner's account is a machine comment; the owner's own is not", () => {
+    expect(
+      isMachinePrComment({
+        author: "ada",
+        body: "Looks right.\n\n<sub>Written by Blob, Ada's assistant</sub><!-- os:blob -->",
+      }),
+    ).toBe(true);
+    expect(
+      isMachinePrComment({ author: "ada", body: "Looks right to me." }),
+    ).toBe(false);
+  });
+
   test("a comment the bot relayed for a person stays", () => {
     expect(
       isMachinePrComment({

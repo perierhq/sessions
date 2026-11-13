@@ -19,7 +19,7 @@ import { writeJsonAtomic } from "../../server/shared/atomic-write";
 import { existsSync, readFileSync } from "fs";
 import { defaultRepo, isGithubBotLogin } from "../../server/config";
 import { oneShot } from "../../server/one-shot";
-import { repoForFullName } from "./constants";
+import { isBlobPost, repoForFullName } from "./constants";
 import { FIXED_REPLY_MARKER, type ReviewThread } from "./github-rest";
 import {
   suppressDecision,
@@ -184,6 +184,9 @@ export async function harvestReplySignals(
         (c) =>
           c.login &&
           !isGithubBotLogin(c.login) &&
+          // Blob posting from the owner's account: a person's login, but
+          // our words.
+          !isBlobPost(c.body) &&
           !c.body.includes(FIXED_REPLY_MARKER) &&
           c.body.trim(),
       )

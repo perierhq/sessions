@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { isBlobPost } from "./constants";
 import type { FeedbackRecord } from "./feedback-gates";
 import type { ReviewThread } from "./github-rest";
 import {
@@ -188,5 +189,29 @@ describe("openHumanThreadLines", () => {
     );
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("why sync here?");
+  });
+
+  test("Blob's thread from the owner's account is ours by its marker", () => {
+    const lines = openHumanThreadLines(
+      [
+        thread({
+          rootAuthor: "ada",
+          comments: [
+            {
+              login: "ada",
+              body: "Null here?\n\n<sub>Written by Blob, Ada's assistant</sub><!-- os:blob -->",
+            },
+          ],
+        }),
+        thread({
+          rootAuthor: "ada",
+          comments: [{ login: "ada", body: "please keep this sync" }],
+        }),
+      ],
+      isBot,
+      isBlobPost,
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("please keep this sync");
   });
 });

@@ -95,8 +95,17 @@ export const TRIGGER_LABELS = [
   LABEL_ISSUE,
 ] as const;
 
-/** Ends every post by Blob's GitHub machine user (server/github-blob.ts). */
+/** Ends every post by Blob on GitHub (server/github-blob.ts), from its
+ *  machine user or from the owner's account. */
 export const BLOB_MARKER = "<!-- os:blob -->";
+
+/** Whether a GitHub body is Blob's post. When Blob posts as the owner's
+ *  account (`integrations.github.blob.as: "owner"`) its author is a person,
+ *  so the marker is the only sign the text is ours; a post by the owner
+ *  without it stays a person's. */
+export function isBlobPost(body: string | null | undefined): boolean {
+  return !!body && body.includes(BLOB_MARKER);
+}
 
 export function labelMatches(name: string, expected: string): boolean {
   return name === expected;

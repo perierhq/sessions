@@ -196,5 +196,25 @@ describe("leadCharter", () => {
     expect(text).toContain(
       "blob_comment, blob_review, blob_label and blob_open_issue, on Acme (acme)'s private repositories the owner allowed. Pat stays the code worker; you never push or merge.",
     );
+    expect(text).toContain("as Blob's own GitHub account");
+  });
+
+  test("posting as the owner's account: signed as Blob, never as the owner", () => {
+    const text = leadCharter({
+      project: "acme",
+      label: "Acme",
+      doc: base(),
+      owner: "Ada",
+      githubAs: "owner",
+    });
+    expect(text).toContain("## GitHub as Blob");
+    expect(text).toContain(
+      "You post as the owner's GitHub account, signed as Blob: the server ends every post with a line saying Blob, their assistant, wrote it. Never write as if you were the owner.",
+    );
+    expect(text).toContain("you never close, approve, push or merge");
+    expect(text).toContain(
+      "Quote what others wrote only as blockquotes, and keep internal details out of anything public.",
+    );
+    expect(text).not.toContain("Blob's own GitHub account");
   });
 });
