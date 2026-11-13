@@ -38,6 +38,7 @@ the reader needs.
 | ` ```slides `                        | Swipeable deck of markdown slides split on `---`       | `lib/slides-block.ts`                                             |
 | ` ```metrics `                       | Metric cards: big number, label, delta                 | `lib/metrics-block.ts`                                            |
 | ` ```say `                           | Blob's spoken script, a quiet "Said aloud" line        | `lib/say-block.ts`, `server/blob-surface.ts`                      |
+| ` ```canvas `                        | Blob's board at a revision; elsewhere its text         | `shared/blob-board.ts`, `shared/blob-board-text.ts`               |
 
 Paths are under `packages/core/opensession-server/src/frontend/`. Each row's
 section below is owned by the module that renders it; keep the grammar there
@@ -336,6 +337,38 @@ Everywhere else the script is a small muted "Said aloud" line, the hint and
 the cues dropped, and the web drops every cue anchor before it renders
 (`stripCueAnchors`); the native app does the same. A client without the
 block shows the fence as code, which still reads.
+
+### Blob's board
+
+A reply that changed Blob's board (`server/blob-board.ts`) carries a
+` ```canvas ` fence, after the say fence, naming the board revision it
+showed:
+
+````
+```canvas
+revision: 43
+Why the release is stuck
+ci-success: can't run, required check on #533
+Note on ci-success: GitHub billing, only you
+```
+````
+
+The first line is the revision (`parseCanvasFence` in
+`shared/blob-board.ts`); a client that draws the board asks for that
+revision (`GET /api/supervisor/board?revision=43`), so a reply in history
+shows the board as it was then, with its refs' live fields as they are now.
+Everything after the first line is the board as plain text
+(`boardText` in `shared/blob-board-text.ts`), which the server writes into
+the fence when the supervisor's `board_apply` returns it: frames as
+headings in reading order (left screen first, then right; top to bottom),
+text elements as lines, ref elements as links with their live status,
+arrows as `A → B` lines, a shape drawn around an element as "circled:" or
+"boxed:", and notes as "Note on <anchor>: <text>" after their anchor, the
+same words VoiceOver reads. Freehand strokes carry no words and are left
+out. Live titles in the fence are JSON-quoted, because the text passes
+through the supervisor's context and other people wrote them. The web and Slack show the fence as code, which is that text. A
+revision that fell out of the kept window (the last 50) leaves only the
+text.
 
 ## Adding a block kind
 

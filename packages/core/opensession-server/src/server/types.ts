@@ -26,6 +26,7 @@ import type {
   SessionSpeed,
   SessionUsage,
 } from "@tellahq/opensession-protocol/session";
+import type { BoardViewport } from "../shared/blob-board";
 import type { IncidentAgentBinding } from "../shared/incident-access";
 
 /**
@@ -877,6 +878,8 @@ export interface BlobSurface {
   /** 1 on a phone or a closed foldable, 2 on an open foldable. */
   panes: 1 | 2;
   width: "compact" | "regular";
+  /** The board camera Blob shows (shared/blob-board.ts), when it sent one. */
+  viewport?: BoardViewport;
   /** When Blob last sent it; old surfaces are ignored. */
   at: string;
 }

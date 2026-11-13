@@ -124,6 +124,11 @@ export const APPLICATION_CATALOG_NAMESPACES = [
   // were dropped (supervisor-merge-queue.ts). New, so its legacy directory
   // is missing and imports as empty.
   "supervisor-merge-queues",
+  // Blob's board, one document per owner keyed by canonicalName(user), and
+  // its last 50 versions keyed `<owner key>~<revision>` (blob-board.ts).
+  // New, so their legacy directories are missing and import as empty.
+  "blob-boards",
+  "blob-board-versions",
 ] as const;
 
 export type ApplicationCatalogNamespace =

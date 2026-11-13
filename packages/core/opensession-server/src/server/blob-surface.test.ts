@@ -1,14 +1,121 @@
 import { describe, expect, test } from "bun:test";
 import {
   blobSurfaceContext,
+  boardViewportLines,
+  freshBlobSurface,
   maybePersistBlobSurface,
   NOT_IN_BLOB,
   parseBlobSurface,
+  parseBoardViewport,
 } from "./blob-surface";
 import { wrapContext } from "./prompt-context";
 import type { UnifiedSession } from "./types";
 
 const now = new Date("2026-11-10T09:00:00.000Z");
+
+const OPEN_VIEWPORT = {
+  w: 951,
+  h: 669,
+  origin: [0, 0] as [number, number],
+  zoom: 1,
+  hinge: [455.5, 495.5] as [number, number],
+  strip: [867, 951] as [number, number],
+  closed: { w: 382, h: 678 },
+};
+
+describe("board camera", () => {
+  test("reads the camera Blob sends with the surface", () => {
+    expect(
+      parseBlobSurface(
+        { app: "blob", panes: 2, width: "regular", viewport: OPEN_VIEWPORT },
+        now,
+      ),
+    ).toEqual({
+      panes: 2,
+      width: "regular",
+      viewport: OPEN_VIEWPORT,
+      at: now.toISOString(),
+    });
+    // A Mac window: no fold, no strip; origin and zoom default.
+    expect(parseBoardViewport({ w: 1280, h: 748 })).toEqual({
+      w: 1280,
+      h: 748,
+      origin: [0, 0],
+      zoom: 1,
+    });
+  });
+
+  test("drops a malformed camera and keeps the rest of the surface", () => {
+    for (const viewport of [
+      { ...OPEN_VIEWPORT, w: -1 },
+      { ...OPEN_VIEWPORT, zoom: 9 },
+      { ...OPEN_VIEWPORT, hinge: [495.5, 455.5] },
+      { ...OPEN_VIEWPORT, hinge: [455.5, 2000] },
+      { ...OPEN_VIEWPORT, origin: ["0", 0] },
+      { ...OPEN_VIEWPORT, closed: { w: 0, h: 1 } },
+      "wide",
+    ]) {
+      expect(parseBoardViewport(viewport)).toBeUndefined();
+      expect(
+        parseBlobSurface(
+          { app: "blob", panes: 2, width: "regular", viewport },
+          now,
+        ),
+      ).toEqual({ panes: 2, width: "regular", at: now.toISOString() });
+    }
+  });
+
+  test("tells the turn what is visible, where the fold is and what closed shows", () => {
+    const lines = boardViewportLines(OPEN_VIEWPORT).join("\n");
+    expect(lines).toContain(
+      "Camera now: the open Duo, 951×669 pt at board (0, 0), zoom 1. Visible board: x 0–867, y 0–669 (the clock strip on the trailing edge is not board).",
+    );
+    expect(lines).toContain(
+      "The fold: board x 455.5–495.5 at the home camera. No text there",
+    );
+    expect(lines).toContain("Closed, the camera shows x 0–382");
+    const panned = boardViewportLines({
+      ...OPEN_VIEWPORT,
+      origin: [500, 100],
+      zoom: 2,
+    }).join("\n");
+    expect(panned).toContain("Visible board: x 500–933.5, y 100–434.5");
+    expect(boardViewportLines(undefined).join("\n")).toContain(
+      "No camera came with this message. Assume the closed Duo",
+    );
+    const context = blobSurfaceContext(
+      {
+        supervisor: true,
+        blobSurface: {
+          panes: 2,
+          width: "regular",
+          viewport: OPEN_VIEWPORT,
+          at: now.toISOString(),
+        },
+      },
+      now,
+    );
+    expect(context).toContain("board_read");
+    expect(context).toContain("Camera now: the open Duo");
+  });
+
+  test("a stale surface carries no camera", () => {
+    const at = new Date(now.getTime() - 31 * 60_000).toISOString();
+    expect(
+      freshBlobSurface(
+        {
+          blobSurface: {
+            panes: 1,
+            width: "compact",
+            viewport: OPEN_VIEWPORT,
+            at,
+          },
+        },
+        now,
+      ),
+    ).toBeUndefined();
+  });
+});
 
 describe("Blob surface", () => {
   test("reads only a well-formed Blob surface", () => {

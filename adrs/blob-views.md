@@ -73,3 +73,9 @@ catalog. There is no `blob_show` tool and no second channel.
   shows each exchange in the arrangement it had. Visuals spanning both
   panes are not done: a wide block stays in the trailing pane until a
   reply needs more.
+- Update 2026-11-13: Blob also answers on a board of its own, one per
+  owner, kept across replies and edited by id with the supervisor's
+  `board_read` and `board_apply` (`server/blob-board.ts`). It is still a
+  block: a reply that changed it carries a ` ```canvas ` fence naming the
+  board revision, with the board as plain text inside, so history and
+  every other client keep working (docs/blocks.md, "Blob's board").

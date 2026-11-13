@@ -79,12 +79,12 @@ touches an in-process tool:
 | [`opensession-self`](#opensession-self) | 2 | automation | Only with the human-set `selfImprove` flag on that automation. |
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
-| [`opensession-supervisor`](#opensession-supervisor) | 20 | interactive | Only on a supervisor session (session.supervisor). |
+| [`opensession-supervisor`](#opensession-supervisor) | 22 | interactive | Only on a supervisor session (session.supervisor). |
 | [`opensession-watch`](#opensession-watch) | 7 | goal wake | Only on a person's watch goal (goal.watchOwner). |
 | [`opensession-lead`](#opensession-lead) | 9 | goal wake | Only on a project lead's goal (goal.leadProject). |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-43 servers, 232 tools.
+43 servers, 234 tools.
 
 ## opensession-sessions
 
@@ -1605,7 +1605,7 @@ The supervisor's inbox: decisions leads raised for the owner.
 - **Wired in** `packages/core/opensession-server/src/server/interactive-mcp.ts`, `packages/core/opensession-server/src/server/run-session.ts`
 - **Runs** interactive
 - **Condition** Only on a supervisor session (session.supervisor).
-- **Note** Acts on the inbox of the session's owner only (supervisor-inbox.ts). ask_pat starts the GitHub agent's existing PR flows (agents/github/trigger.ts) as the owner, on registered repos only, with no free text. watch_for records a follow-up for the owner's watch (supervisor-watch.ts). incidents and support_waiting read the incident store and the support index (supervisor-status.ts). owner_memory lists, adds and corrects facts in the owner's personal memory scope only, with the memory writer's checks (supervisor-memory-writer.ts). A supervisor session gets no opensession-schedule.
+- **Note** Acts on the inbox of the session's owner only (supervisor-inbox.ts). ask_pat starts the GitHub agent's existing PR flows (agents/github/trigger.ts) as the owner, on registered repos only, with no free text. watch_for records a follow-up for the owner's watch (supervisor-watch.ts). incidents and support_waiting read the incident store and the support index (supervisor-status.ts). owner_memory lists, adds and corrects facts in the owner's personal memory scope only, with the memory writer's checks (supervisor-memory-writer.ts). board_read and board_apply read and edit the owner's board in the Blob app only, compare-and-set on its revision (blob-board.ts); refs resolve to the owner's projects only (blob-board-refs.ts). A supervisor session gets no opensession-schedule.
 
 ### `list_items`
 
@@ -1654,6 +1654,18 @@ How often you handled things alone versus asked the owner, per day: what a lead'
 `mcp__opensession-supervisor__post_item` · input: `kind` ("needs-you" | "fyi", required), `title` (string, required), `body` (string), `options` (string[]), `project` (string), `dedupe_key` (string), `urgency` ("normal" | "now" | "down")
 
 Raise something to the owner. kind needs-you is a decision only they can make: two short lines and the options, recommended option first. It waits for their next morning brief without a push, unless urgency is now (pushed at once, held in quiet hours) or down. fyi is told in the morning brief. The same dedupe_key updates an open item instead of adding another.
+
+### `board_read`
+
+`mcp__opensession-supervisor__board_read` · input: none
+
+Read the owner's board in the Blob app: its revision, the camera they have now (what is visible, the Duo's fold, the closed view), and every element with its id, box, ref and the ref's live status. Read it before you change it, and edit by id.
+
+### `board_apply`
+
+`mcp__opensession-supervisor__board_apply` · input: `expected_revision` (integer, required), `ops` (object[], required)
+
+Change the owner's board with ops, applied in order, all or none, on the revision you read (expected_revision from board_read; a board that moved on is refused, read it again). Ops: {op:"add", el}, {op:"update", id, set} (null clears a field; id and type never change), {op:"move", id, x, y}, {op:"remove", id} (also removes the arrows and notes bound to it, reported), {op:"clear", keep:[ids]} only to start over. Elements: id (letters, digits, -), x, y, w, h in points from the top-left of the first screen, z, style {stroke, fill, color} with tokens ink, ink2, tangerine, green, red, amber, quiet (one tangerine element per board; arrows, strokes and shapes without a ref are ink), ref "kind:locator" for a real object (pr:<project>#<n>, check:<project>#<n>/<name>, incident:<project>/<id>, thread:<project>/<conversation id>, release:<project>@<version>, project:<project>); the board shows its live status and the owner can tap it. Types: frame, text, shape, arrow, stroke, image, note. frame {title?, region?: a project of the owner's, one per project}; text {role: stat|title|supporting|meta|say, text?, sub?, status?, h optional; with a ref, text may use {ref.title} and {ref.status}}; shape {kind: rect|ellipse|diamond|line, points? for a line}; arrow {start, end: {id, side?} or {x, y}, bend? -0.5..0.5, label?}; stroke {points: [[x, y], ...] relative to x, y}; image {src: one of this server's media paths (/media?path=<absolute path>, /api/plain/attachments/<id>, /api/support/conversations/<id>/attachments/<id>, /gh-asset/<id>?repo=<repo>), never an external URL, fit?, alt?}; note {anchor: {id, side: top|right|bottom|left, dx?, dy?}, text: at most 5 words, plain, leader?}: a note has no box, follows its anchor and is never the only place a fact appears. The server clamps what you touched to the board, moves text off the Duo's fold and says so; it never moves anything else. The result gives the canvas fence to put in your reply.
 
 ### `incidents`
 
