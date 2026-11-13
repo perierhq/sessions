@@ -6,6 +6,10 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
+    <!-- Only until the bundle's stylesheet is in: lib/theme-color.ts then sets
+       it from the token along the page's top edge, per layout and theme. This
+       script cannot, since the tokens load after it. Matches the manifest's
+       theme_color (routes/static-assets.ts). -->
     <meta name="theme-color" content="#222222" />
     <!-- No apple-mobile-web-app-capable or apple-mobile-web-app-status-bar-style:
        the manifest's display: standalone already makes the Home Screen install
@@ -81,12 +85,6 @@
             accents.indexOf(accent) >= 0 ? accent : "sky",
           );
           h.style.colorScheme = eff;
-          var m = document.querySelector('meta[name="theme-color"]');
-          // --bg-raised (sidebar + WCO titlebar surface): the desktop PWA paints
-          // the window-controls caption band with theme-color, so match the
-          // titlebar. Keep in sync with lib/theme.ts applyTheme().
-          if (m)
-            m.setAttribute("content", eff === "light" ? "#f6f6f6" : "#222222");
         } catch (e) {}
       })();
     </script>

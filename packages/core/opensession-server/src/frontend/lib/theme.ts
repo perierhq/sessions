@@ -1,4 +1,5 @@
 import { repairDesktopPalettePaint } from "./palette-repaint";
+import { syncThemeColor, watchThemeColor } from "./theme-color";
 
 // Appearance theme: follow the OS ("system", the default) or force light/dark.
 // Stored per-browser in localStorage — it's an appearance/device preference, not
@@ -32,20 +33,14 @@ export function effectiveTheme(
 }
 
 // Paint the resolved theme onto <html> so the variable palette + native UI (form
-// controls, scrollbars, via color-scheme) switch, and keep the PWA status-bar
-// color in sync.
+// controls, scrollbars, via color-scheme) switch, and keep theme-color (the
+// installed app's status bar and caption band) on the new palette.
 export function applyTheme(pref: ThemePref = getThemePref()) {
   const eff = effectiveTheme(pref);
   const html = document.documentElement;
   html.dataset.theme = eff;
   html.style.colorScheme = eff;
-  const meta = document.querySelector('meta[name="theme-color"]');
-  // Match --bg-raised (the sidebar + WCO titlebar surface), not --bg: in an
-  // installed desktop PWA the OS paints the window-controls caption band (behind
-  // the traffic lights) with theme-color, so anything else leaves that strip a
-  // different colour from our own titlebar. Keep in sync with index.html.
-  if (meta)
-    meta.setAttribute("content", eff === "light" ? "#f6f6f6" : "#222222");
+  syncThemeColor();
   repairDesktopPalettePaint();
 }
 
@@ -89,4 +84,5 @@ if (
   // Belt-and-suspenders with index.html's pre-paint script: apply on import so
   // the theme is correct even if that inline script is ever dropped.
   applyTheme();
+  watchThemeColor();
 }
