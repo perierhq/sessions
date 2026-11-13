@@ -223,9 +223,12 @@ struct BlobHomeView: View {
             }
             .onChange(of: panes) { _, panes in BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
             // The camera goes with each message, so Blob knows what is on
-            // screen closed and open (server: blob-surface.ts).
-            .onChange(of: BoardViewportReport(viewport: viewport, camera: board.camera), initial: true) { _, report in
-                BlobSurfaceReport.viewport = report.json
+            // screen closed and open (server: blob-surface.ts). The home
+            // reports the surface; the canvas reports the camera when a
+            // gesture or a move ends. The home never reads the camera, so a
+            // pan never redraws it.
+            .onChange(of: viewport, initial: true) { _, viewport in
+                board.camera.report(in: viewport)
             }
             // History lays this exchange out the way it is shown now.
             .onChange(of: split && !currentVisuals.isEmpty ? text.currentExchangeId : nil, initial: true) { _, id in
@@ -282,10 +285,11 @@ struct BlobHomeView: View {
             if scenePhase == .active { brief.startPolling() } else { brief.stopPolling() }
             if scenePhase == .active { board.refresh() }
         }
-        // A new revision of the board: read it again. A reply that showed
-        // one pins it while the reply is on screen.
-        .onReceive(NotificationCenter.default.publisher(for: .supervisorBoardChanged)) { _ in
-            board.refresh()
+        // A new revision of the board: read it again, unless the board on
+        // screen already has it. A reply that showed one pins it while the
+        // reply is on screen.
+        .onReceive(NotificationCenter.default.publisher(for: .supervisorBoardChanged)) { note in
+            board.refresh(announced: note.object as? Int)
         }
         .onChange(of: canvasRevision, initial: true) { _, revision in board.show(revision: revision) }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: boardShown)

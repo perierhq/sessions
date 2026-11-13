@@ -147,6 +147,25 @@ public struct BoardCamera: Sendable, Equatable {
         return BoardCamera(origin: BoardPoint(max(0, next - margin), origin.y), zoom: zoom)
     }
 
+    /// The camera that brings `rect` into view with the least pan, at the
+    /// same zoom, `margin` board points clear of the edges; nil when it is
+    /// already in view. For VoiceOver focus on an element off camera. A
+    /// box bigger than the camera shows its top-left. Never left of or
+    /// above the board's origin.
+    public func revealing(_ rect: BoardRect, in viewport: BoardViewport, margin: Double = 24) -> BoardCamera? {
+        let v = visible(in: viewport)
+        if v.contains(BoardPoint(rect.minX, rect.minY)) && v.contains(BoardPoint(rect.maxX, rect.maxY)) { return nil }
+        func axis(_ lo: Double, _ hi: Double, _ start: Double, _ span: Double) -> Double {
+            if hi - lo + 2 * margin > span || lo - margin < start { return lo - margin }
+            if hi + margin > start + span { return hi + margin - span }
+            return start
+        }
+        let x = axis(rect.minX, rect.maxX, v.minX, v.w)
+        let y = axis(rect.minY, rect.maxY, v.minY, v.h)
+        let next = BoardCamera(origin: BoardPoint(max(0, x), max(0, y)), zoom: zoom)
+        return next == self ? nil : next
+    }
+
     /// Back toward the start after More on the leading side.
     public func revealingLeading(in viewport: BoardViewport) -> BoardCamera {
         let v = visible(in: viewport)

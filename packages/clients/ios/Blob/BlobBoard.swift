@@ -3,6 +3,9 @@ import CoreText
 import Foundation
 import Observation
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// Blob's board (server: blob-board.ts): the board the canvas draws, its
 /// camera, and the revision a reply pinned. The model, layout, camera
@@ -11,7 +14,8 @@ import SwiftUI
 ///
 /// The camera lives here, above the view, so a size change (the Duo
 /// opening or closing) never resets it: the leading screen keeps the same
-/// board at the same points.
+/// board at the same points. It is its own observable (`BlobBoardCamera`),
+/// so a pan redraws the canvas and never the home that holds it.
 @MainActor
 @Observable
 final class BlobBoard {
@@ -21,27 +25,18 @@ final class BlobBoard {
     private var pinnedBoards: [Int: BoardSnapshot] = [:]
     /// The revision a reply on screen showed, or nil for the latest.
     private(set) var pinned: Int?
-
-    /// Where the camera rests. Gestures and buttons move it; the board
-    /// never moves.
-    var camera = BoardCamera.home
-    /// A camera move the canvas animates (Fit, More, settling after a
-    /// drag); nil when the camera rests.
-    private(set) var move: Move?
-    /// Fit framed what changed; the next tap goes back to the origin.
-    private(set) var fitted = false
-
-    struct Move: Equatable {
-        var from: BoardCamera
-        var to: BoardCamera
-        var start: Date
-        static let duration = 0.35
-    }
+    /// Where the camera rests and how it moves. Not observed through the
+    /// board: only the canvas reads it.
+    @ObservationIgnored let camera = BlobBoardCamera()
 
     /// `touched` per revision, read when Fit first needs it.
     @ObservationIgnored private var touched: [Int: [String]] = [:]
-    @ObservationIgnored private var layouts: [LayoutKey: BoardLayout] = [:]
+    /// What the canvas draws, per revision and note size (BlobCore
+    /// `BoardScene`, with its sketches as paths).
+    @ObservationIgnored private let scenes = BoardDerivedCache<BoardSceneKey, BlobBoardScene>(limit: 8)
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    /// The fonts' generation the kept scenes were measured with.
+    @ObservationIgnored private var measuredFonts = 0
 
     /// The board to draw: the pinned revision once it is read, else the
     /// latest.
@@ -53,37 +48,36 @@ final class BlobBoard {
         return latest
     }
 
-    /// The board's layout for a note size, cached: drawing and gestures
-    /// read it every frame.
-    func layout(_ snapshot: BoardSnapshot, noteSize: Double) -> BoardLayout {
-        let key = LayoutKey(revision: snapshot.revision, latest: snapshot.latestRevision,
-                            stamp: snapshot.updatedAt, count: snapshot.elements.count, noteSize: noteSize)
-        if let layout = layouts[key] { return layout }
-        if layouts.count > 8 { layouts.removeAll() }
-        let layout = BoardLayout(elements: snapshot.elements, measureNote: BlobHand.measure(size: noteSize))
-        layouts[key] = layout
-        return layout
-    }
-
-    private struct LayoutKey: Hashable {
-        var revision: Int
-        var latest: Int
-        var stamp: Double
-        var count: Int
-        var noteSize: Double
+    /// What the canvas draws for a board at a note size, built once per
+    /// revision: drawing and gestures read it every frame.
+    func scene(_ snapshot: BoardSnapshot, noteSize: Double) -> BlobBoardScene {
+        // A face registered or the text size changed: measure notes again.
+        let fonts = BlobHand.fonts.generation
+        if fonts != measuredFonts {
+            scenes.removeAll()
+            measuredFonts = fonts
+        }
+        let key = BoardSceneKey(snapshot, noteSize: noteSize, fonts: fonts)
+        return scenes.value(key, valid: { $0.core.draws(snapshot, key: key) }) {
+            BlobBoardScene(BoardScene(snapshot, key: key, measureNote: BlobHand.measure(size: noteSize)))
+        }
     }
 
     // MARK: Reading
 
-    /// Reads the latest board. A newer read replaces one on its way.
-    func refresh() {
+    /// Reads the latest board. A newer read replaces one on its way; a
+    /// change the socket announced (`announced`) that the board on screen
+    /// already has is skipped, and a read older than the board on screen
+    /// is dropped.
+    func refresh(announced: Int? = nil) {
         #if DEBUG
         if Self.demo != nil { loadDemo(); return }
         #endif
+        guard BoardRevisions.needsRead(announced: announced, have: latest) else { return }
         refreshTask?.cancel()
         refreshTask = Task {
             guard let board = try? await OS1API.supervisorBoard() else { return }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, BoardRevisions.accepts(board, over: latest) else { return }
             latest = board
         }
     }
@@ -103,45 +97,15 @@ final class BlobBoard {
         }
     }
 
-    // MARK: Camera
-
-    /// The camera at `date`, part way through a move.
-    func camera(at date: Date) -> BoardCamera {
-        guard let move else { return camera }
-        let t = min(1, date.timeIntervalSince(move.start) / Move.duration)
-        // Ease out: quick to start, settling gently.
-        let eased = 1 - pow(1 - t, 3)
-        return move.from.interpolated(to: move.to, t: eased)
-    }
-
-    /// Moves the camera to `target`: animated, or at once under Reduce
-    /// Motion.
-    func go(to target: BoardCamera, animated: Bool) {
-        let from = camera(at: .now)
-        camera = target
-        guard animated, from != target else { move = nil; return }
-        let next = Move(from: from, to: target, start: .now)
-        move = next
-        Task {
-            try? await Task.sleep(for: .seconds(Move.duration))
-            if move == next { move = nil }
-        }
-    }
-
-    /// A gesture took the camera: any move stops where it is.
-    func takeCamera(_ camera: BoardCamera) {
-        move = nil
-        self.camera = camera
-        fitted = false
-    }
+    // MARK: Fit
 
     /// "Fit what changed": frames what the last reply touched; tapped
     /// again, back to the origin.
     func fit(in viewport: BoardViewport, noteSize: Double, animated: Bool) {
         guard let board = shown else { return }
-        if fitted {
-            fitted = false
-            go(to: .home, animated: animated)
+        if camera.fitted {
+            camera.fitted = false
+            camera.go(to: .home, animated: animated)
             return
         }
         let revision = board.revision
@@ -155,10 +119,10 @@ final class BlobBoard {
                     ids = read
                 }
             }
-            let layout = layout(board, noteSize: noteSize)
+            let layout = scene(board, noteSize: noteSize).core.layout
             guard let rect = layout.bounds(of: ids) ?? layout.bounds else { return }
-            fitted = true
-            go(to: BoardCamera.fitting(rect, in: viewport), animated: animated)
+            camera.go(to: BoardCamera.fitting(rect, in: viewport), animated: animated)
+            camera.fitted = true
         }
     }
 
@@ -183,6 +147,122 @@ final class BlobBoard {
     #endif
 }
 
+/// The board's camera: where it rests, the move the canvas animates, and
+/// what goes to the server about it. Its own observable so a pan or a pinch
+/// redraws the canvas, never the home.
+@MainActor
+@Observable
+final class BlobBoardCamera {
+    /// Where the camera rests. Gestures and buttons move it; the board
+    /// never moves.
+    private(set) var resting = BoardCamera.home
+    /// A camera move the canvas animates (Fit, More, settling after a
+    /// drag, VoiceOver focus); nil when the camera rests.
+    private(set) var move: Move?
+    /// Fit framed what changed; the next tap goes back to the origin.
+    var fitted = false
+
+    struct Move: Equatable {
+        var from: BoardCamera
+        var to: BoardCamera
+        var start: Date
+        static let duration = 0.35
+    }
+
+    /// The surface the camera last reported on.
+    @ObservationIgnored private var viewport: BoardViewport?
+    @ObservationIgnored private var throttle = BoardReportThrottle()
+    @ObservationIgnored private let clock = Date()
+
+    /// The camera at `date`, part way through a move.
+    func at(_ date: Date) -> BoardCamera {
+        guard let move else { return resting }
+        let t = min(1, date.timeIntervalSince(move.start) / Move.duration)
+        // Ease out: quick to start, settling gently.
+        let eased = 1 - pow(1 - t, 3)
+        return move.from.interpolated(to: move.to, t: eased)
+    }
+
+    /// Moves the camera to `target`: animated, or at once under Reduce
+    /// Motion. Where it ends goes to the server.
+    func go(to target: BoardCamera, animated: Bool) {
+        let from = at(.now)
+        resting = target
+        report()
+        guard animated, from != target else { move = nil; return }
+        let next = Move(from: from, to: target, start: .now)
+        move = next
+        Task {
+            try? await Task.sleep(for: .seconds(Move.duration))
+            if move == next { move = nil }
+        }
+    }
+
+    /// A gesture frame took the camera: any move stops where it is. Not
+    /// reported until the gesture ends (`report()`).
+    func take(_ camera: BoardCamera) {
+        if move != nil { move = nil }
+        resting = camera
+        if fitted { fitted = false }
+    }
+
+    // MARK: Report
+
+    /// The camera goes with each message, so Blob knows what is on screen
+    /// closed and open (server: blob-surface.ts). Called when the surface
+    /// changes; the camera reports itself after a move or a gesture.
+    func report(in viewport: BoardViewport) {
+        guard viewport != self.viewport else { return }
+        self.viewport = viewport
+        report()
+    }
+
+    /// Writes the report at most once per 500 ms (BlobCore
+    /// `BoardReportThrottle`); a write held back carries the latest camera.
+    func report() {
+        switch throttle.request(at: Date().timeIntervalSince(clock)) {
+        case .send:
+            write()
+        case .wait(let delay):
+            Task {
+                try? await Task.sleep(for: .seconds(delay))
+                throttle.fired(at: Date().timeIntervalSince(clock))
+                write()
+            }
+        case .folded:
+            break
+        }
+    }
+
+    private func write() {
+        guard let viewport else { return }
+        BlobSurfaceReport.viewport = BoardViewportReport(viewport: viewport, camera: resting).json
+    }
+}
+
+/// A BlobCore `BoardScene` with its sketches as SwiftUI paths, built once
+/// per revision (`BlobBoard.scene`). Compared by identity: a new scene is a
+/// new revision, note size or font.
+final class BlobBoardScene {
+    let core: BoardScene
+    /// Each element's sketch, in board points, by id.
+    let paths: [String: Path]
+
+    init(_ core: BoardScene) {
+        self.core = core
+        var paths: [String: Path] = [:]
+        for mark in core.marks {
+            if let sketch = mark.sketch { paths[mark.id] = Path(sketch) }
+        }
+        self.paths = paths
+    }
+
+    func ref(_ ref: String?) -> BoardRefInfo? {
+        guard let ref else { return nil }
+        return core.refs[ref] ?? .missing
+    }
+}
+
 /// Blob's hand: Kalam Regular (Indian Type Foundry, SIL Open Font License
 /// 1.1, `Board/Kalam/OFL.txt`), the one character face, used only by notes.
 enum BlobHand {
@@ -191,15 +271,22 @@ enum BlobHand {
     static let baseSize = 16.0
     static let maxSize = 22.0
 
-    /// Registers the bundled face once, for this process.
+    /// Registers the bundled face once, for this process. Called at launch
+    /// (`BlobApp.init`), before any board is laid out, so notes are never
+    /// measured in a fallback face.
     @MainActor static func register() {
         guard !registered else { return }
         registered = true
+        fonts.watch()
         guard let url = Bundle.main.url(forResource: "Kalam-Regular", withExtension: "ttf") else { return }
         CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        fonts.changed()
     }
 
     @MainActor private static var registered = false
+
+    /// When fonts or Dynamic Type change, for the board's note measures.
+    @MainActor static let fonts = BlobFonts()
 
     /// A note's box at `size`: the measured text, wrapped at 180 pt scaled
     /// with the size, two lines at most.
@@ -219,6 +306,32 @@ enum BlobHand {
                 CGSize(width: maxWidth, height: lineHeight * 2 + 1), nil
             )
             return BoardSize(min(maxWidth, ceil(fit.width) + 4), lineHeight * 2)
+        }
+    }
+}
+
+/// A generation that moves when the registered fonts or the Dynamic Type
+/// size change. The board keys its measured scenes on it, and the canvas
+/// reads it, so a change measures notes again and redraws.
+@MainActor
+@Observable
+final class BlobFonts {
+    private(set) var generation = 0
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+
+    func changed() { generation &+= 1 }
+
+    /// Starts listening, once, for the life of the app.
+    func watch() {
+        guard observers.isEmpty else { return }
+        var names = [Notification.Name(kCTFontManagerRegisteredFontsChangedNotification as String)]
+        #if os(iOS)
+        names.append(UIContentSizeCategory.didChangeNotification)
+        #endif
+        observers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.changed() }
+            }
         }
     }
 }
