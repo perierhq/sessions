@@ -108,6 +108,7 @@ describe("opensession-supervisor wiring", () => {
       "answer_item",
       "append_ledger",
       "ask_pat",
+      "autonomy_report",
       "blob_comment",
       "blob_label",
       "blob_open_issue",
@@ -160,6 +161,18 @@ describe("opensession-supervisor wiring", () => {
     } finally {
       __setSupervisorStatusDepsForTest(undefined);
     }
+  });
+
+  test("post_item refuses the dedupe keys the server keeps for itself", async () => {
+    withSession({ supervisor: true });
+    const refused = await call("post_item", {
+      kind: "needs-you",
+      title: "Let the lead do CI repair alone?",
+      options: ["Yes, let it", "Keep asking"],
+      dedupe_key: "autonomy:acme:ci-repair",
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('may not start with "autonomy:"');
   });
 
   test("owner_memory writes the session owner's scope, with the writer's checks", async () => {

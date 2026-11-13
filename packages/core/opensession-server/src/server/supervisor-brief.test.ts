@@ -56,6 +56,8 @@ let session: string | null = "os-sup-ada";
 let failDeliver = false;
 let restoreInbox: () => void = () => {};
 let restoreBrief: () => void = () => {};
+let prepared: string[] = [];
+let ledgerFails = false;
 
 beforeEach(() => {
   rmSync(join(root, ".opensession-supervisor-items"), {
@@ -70,6 +72,8 @@ beforeEach(() => {
   announced = [];
   session = "os-sup-ada";
   failDeliver = false;
+  prepared = [];
+  ledgerFails = false;
   restoreInbox = inbox.__setSupervisorInboxDepsForTest({
     now: () => clock,
     notify: async (user, event) => {
@@ -98,6 +102,19 @@ beforeEach(() => {
       items.map((item) => ({ ...item, revision: item.updatedAt })),
     announce: async (user, day) => {
       announced.push({ user, day });
+    },
+    ledger: async (_user, view) => {
+      if (ledgerFails) throw new Error("approvals unreadable");
+      return {
+        day: "2026-07-01",
+        handledAlone: 2,
+        askedYou: view.items.filter((i) => i.kind === "needs-you").length,
+        byCategory: [],
+      };
+    },
+    prepareDecisions: async (user) => {
+      prepared.push(`${user}@${delivered.length}`);
+      return null;
     },
   });
 });
@@ -139,6 +156,22 @@ async function record() {
   const view = await inbox.readSupervisorBriefView("Ada");
   return brief.cleanBriefRecord(view.brief);
 }
+
+describe("the ledger", () => {
+  test("GET carries today's handled alone vs asked you, or null when it can't be read", async () => {
+    await decision("Ship 1.19.0?", "a");
+    expect((await brief.getSupervisorBrief("Ada")).ledger).toEqual({
+      day: "2026-07-01",
+      handledAlone: 2,
+      askedYou: 1,
+      byCategory: [],
+    });
+    ledgerFails = true;
+    const read = await brief.getSupervisorBrief("Ada");
+    expect(read.ledger).toBeNull();
+    expect(read.state).toBe("none");
+  });
+});
 
 describe("the record", () => {
   test("decisions must be open needs-you items of the owner's, at most three", async () => {
@@ -287,6 +320,35 @@ describe("the record", () => {
 });
 
 describe("the brief turn", () => {
+  test("a turn prepares the autonomy decision before it is delivered; a failure never holds it up", async () => {
+    await decision("Ship 1.19.0?", "a");
+    clock = at("2026-07-01T09:00:00Z");
+    expect((await inbox.sweepSupervisorInbox()).briefs).toBe(1);
+    expect(prepared).toEqual(["Ada@0"]);
+    expect(delivered).toHaveLength(1);
+
+    const restore = brief.__setBriefDepsForTest({
+      now: () => clock,
+      currentSessionId: async () => session,
+      ensureSessionId: async () => "os-sup-ada",
+      deliver: async (sessionId, text, deliveryId) => {
+        delivered.push({ sessionId, text, deliveryId });
+      },
+      prepareDecisions: async () => {
+        throw new Error("projects unreadable");
+      },
+    });
+    try {
+      clock = at("2026-07-01T10:00:00Z");
+      const run = await brief.startBriefTurn("Ada", "refresh");
+      expect(run.started).toBe(true);
+      if (run.started) expect(await run.delivered).toBe(true);
+      expect(delivered).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+
   test("the sweep starts it at the digest time, once a day, in the supervisor session", async () => {
     await decision("Ship 1.19.0?", "a");
     clock = at("2026-07-01T08:59:00Z");
@@ -467,8 +529,7 @@ describe("the brief turn", () => {
       preparingSince: clock,
     });
     // The delivery runs after the answer.
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(delivered).toHaveLength(1);
     // Opening again while it runs starts nothing more.
     await brief.getSupervisorBrief("Ada", { start: true });

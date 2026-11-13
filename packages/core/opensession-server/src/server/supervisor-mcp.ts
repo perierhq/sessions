@@ -28,6 +28,8 @@
  * (supervisor-brief.ts): close what is stale or a duplicate with a reason,
  * then store the brief Blob says, checked against the inbox. `read_brief`
  * reads it back, for "what was my brief?" after a rotation.
+ * `autonomy_report` reads how often Blob handled things alone versus asked
+ * the owner (supervisor-autonomy.ts).
  *
  * The inbox and ledger tools are built here once and shared with the
  * watch's own server (supervisor-watch-mcp.ts).
@@ -35,6 +37,11 @@
 import { z } from "zod";
 import { personaName } from "./config";
 import { ASK_PAT_ACTIONS, askPat } from "./supervisor-ask-pat";
+import {
+  AUTONOMY_MAX_DAYS,
+  AUTONOMY_WINDOW_DAYS,
+  autonomyReport,
+} from "./supervisor-autonomy";
 import { blobGithubTools } from "./blob-github-tools";
 import { blobSupervisorPoster } from "./github-blob";
 import { createSdkMcpServer, tool } from "./inprocess-mcp";
@@ -75,11 +82,13 @@ import {
   answerSupervisorItem,
   dismissSupervisorItems,
   CLOSE_REASON_LEN,
+  dedupeKeyAllowed,
   dismissSupervisorItemAsSupervisor,
   MAX_CLOSE_IDS,
   listSupervisorItems,
   MAX_LIST,
   postSupervisorItem,
+  RESERVED_DEDUPE_PREFIX,
   supervisorInboxKey,
   type SupervisorDismissResult,
   type SupervisorItem,
@@ -200,6 +209,13 @@ export function postItemTool(
         ),
     },
     async (args) => {
+      if (args.dedupe_key && !dedupeKeyAllowed(source, args.dedupe_key.trim()))
+        return {
+          ...text(
+            `Not posted: dedupe_key may not start with "${RESERVED_DEDUPE_PREFIX}", which the server keeps for its own items. Use another key.`,
+          ),
+          isError: true,
+        };
       const downRefused =
         args.urgency === "down" &&
         !!allowDown &&
@@ -475,6 +491,20 @@ export function createSupervisorMcpServer(ctx: {
         "Read the owner's latest morning brief as Blob showed it: its day, whether they saw it, what Blob said, what you handled, the decisions still open with the option you recommended, how many items wait as later, and what came in since. Use it when the owner asks what their brief said or what is still waiting from it. Only reads: it never writes or starts a brief.",
         {},
         async () => text(await describeSupervisorBrief(user)),
+      ),
+      tool(
+        "autonomy_report",
+        `How often you handled things alone versus asked the owner, per day: what a lead's own rules ran (autofix runs among them), what you or your watch closed with a reason, the brief's handled lines, and the needs-you items raised to the owner by source and category with how each ended. Then, for the last ${AUTONOMY_WINDOW_DAYS} days, the owner's answers per project and lead category, and the categories the server may ask the owner to let the lead do alone. Only reads.`,
+        {
+          days: z
+            .number()
+            .int()
+            .min(1)
+            .max(AUTONOMY_MAX_DAYS)
+            .optional()
+            .describe("Days back, today included. Default 7."),
+        },
+        async (args) => text(await autonomyReport(user, args.days ?? 7)),
       ),
       postItemTool(user, "supervisor"),
       incidentsTool(user),

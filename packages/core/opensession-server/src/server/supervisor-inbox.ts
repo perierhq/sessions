@@ -146,6 +146,19 @@ const BODY_LEN = SUPERVISOR_BODY_LEN;
 const SOURCE_LEN = 80;
 const PROJECT_LEN = 80;
 const DEDUPE_LEN = 200;
+/** The dedupe-key prefix kept for the server's own "let the lead do it
+ *  alone" items (supervisor-autonomy.ts), whose source starts with it too.
+ *  Any other source posting such a key is refused, so nothing else can
+ *  take over or pre-empt one of those items. */
+export const RESERVED_DEDUPE_PREFIX = "autonomy:";
+
+/** Whether `source` may post `dedupeKey`. */
+export function dedupeKeyAllowed(source: string, dedupeKey: string): boolean {
+  return (
+    !dedupeKey.startsWith(RESERVED_DEDUPE_PREFIX) ||
+    source.startsWith(RESERVED_DEDUPE_PREFIX)
+  );
+}
 const OPTION_LEN = 120;
 const MAX_OPTIONS = 6;
 const ANSWER_LEN = 2000;
@@ -688,6 +701,10 @@ export async function postSupervisorItem(
         : undefined,
   };
   const dedupeKey = text(input.dedupeKey, DEDUPE_LEN) || undefined;
+  if (dedupeKey && !dedupeKeyAllowed(source, dedupeKey))
+    throw new Error(
+      `dedupe key prefix ${RESERVED_DEDUPE_PREFIX} is reserved for the server`,
+    );
 
   const outcome: {
     item: SupervisorItem | null;
