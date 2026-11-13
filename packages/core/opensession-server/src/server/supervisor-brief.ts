@@ -43,6 +43,7 @@ import {
   type SupervisorItem,
 } from "./supervisor-inbox";
 import type { ShownSupervisorItem } from "./leads/item-acts";
+import type { AutonomyLedger } from "./supervisor-autonomy";
 import { inQuietHours, localClock } from "./supervisor-quiet-hours";
 
 export const BRIEF_MAX_DECISIONS = 3;
@@ -143,6 +144,12 @@ export interface BriefDeps {
   expand(items: SupervisorItem[]): Promise<ShownSupervisorItem[]>;
   /** Tell the owner's open clients a brief was written. */
   announce(user: string, day: string): Promise<void>;
+  /** Today's handled alone vs asked you (supervisor-autonomy.ts), from the
+   *  inbox view the brief read. */
+  ledger(user: string, view: SupervisorBriefView): Promise<AutonomyLedger>;
+  /** Before a brief turn: raise at most one "let the lead do it alone"
+   *  decision (supervisor-autonomy.ts prepareAutonomyProposal). */
+  prepareDecisions(user: string): Promise<unknown>;
 }
 
 const liveDeps: BriefDeps = {
@@ -172,6 +179,10 @@ const liveDeps: BriefDeps = {
     const { broadcastToUser } = await import("./ws-hub");
     broadcastToUser(user, { type: BRIEF_READY_EVENT, user, day });
   },
+  ledger: async (user, view) =>
+    (await import("./supervisor-autonomy")).autonomyLedger(user, view),
+  prepareDecisions: async (user) =>
+    (await import("./supervisor-autonomy")).prepareAutonomyProposal(user),
 };
 
 /** The socket frame a written brief sends: { type, user, day }. Blob
@@ -462,6 +473,14 @@ async function deliverRun(user: string, run: BriefRun): Promise<boolean> {
         ? await deps.currentSessionId(user)
         : await deps.ensureSessionId(user);
     if (!sessionId) throw new Error("no supervisor session");
+    // A decision the server prepares is in the inbox before the turn
+    // reads it; one that couldn't be prepared never holds the brief up.
+    await deps.prepareDecisions(user).catch((error: unknown) => {
+      console.warn(
+        `[supervisor-brief] ${user}: no autonomy decision prepared:`,
+        error instanceof Error ? error.message : error,
+      );
+    });
     await deps.deliver(
       sessionId,
       briefNotice(run.day),
@@ -856,6 +875,9 @@ export interface BriefResponse {
   /** The quiet line Blob's idle home shows to open the brief again after
    *  it was seen or put away (`briefReopenLine`); null when there is none. */
   reopen: null | { line: string };
+  /** Today's handled alone vs asked you (supervisor-autonomy.ts); null
+   *  when its records couldn't be read. */
+  ledger: AutonomyLedger | null;
 }
 
 /**
@@ -916,6 +938,13 @@ export async function getSupervisorBrief(
         .filter((item) => item.createdAt > brief.asOf && !inBrief.has(item.id))
         .sort((a, b) => b.createdAt - a.createdAt)
     : [];
+  const ledger = deps.ledger(user, view).catch((error: unknown) => {
+    console.warn(
+      `[supervisor-brief] ${user}: no ledger:`,
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  });
   let payload: BriefResponse["brief"] = null;
   if (brief) {
     const decided = brief.decisions.filter((d) => openById.has(d.itemId));
@@ -966,6 +995,7 @@ export async function getSupervisorBrief(
       record.brief?.day !== record.fallbackDay
         ? { day: record.fallbackDay, ...record.fallbackCounts }
         : null,
+    ledger: await ledger,
   };
 }
 

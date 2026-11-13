@@ -108,6 +108,7 @@ describe("opensession-supervisor wiring", () => {
       "answer_item",
       "append_ledger",
       "ask_pat",
+      "autonomy_report",
       "blob_comment",
       "blob_label",
       "blob_open_issue",

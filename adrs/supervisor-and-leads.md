@@ -279,7 +279,9 @@ brief (`supervisor-brief.ts`).
   while the day lasts, "Last brief: 1 decision waiting" for an older brief with decisions
   still open, and null otherwise or while a brief is being written. The supervisor reads it
   back with `read_brief` (read-only, never starts a turn), so "what was my brief?" works
-  after a rotation. The brief routes take the signed-in person only (`verifiedPerson`), never a claimed `user`
+  after a rotation. The GET also returns `ledger`, today's handled alone vs asked you
+  (`server/supervisor-autonomy.ts`), and the supervisor reads the days and the 14-day answers
+  per lead category with `autonomy_report`. The brief routes take the signed-in person only (`verifiedPerson`), never a claimed `user`
   or the automation principal (401), so a turn starts only for the person it spends on. A written brief sends the socket frame
   `supervisor_brief_ready`.
 - **The push.** A scheduled brief pushes "Your morning brief is ready" once, after quiet

@@ -79,12 +79,12 @@ touches an in-process tool:
 | [`opensession-self`](#opensession-self) | 2 | automation | Only with the human-set `selfImprove` flag on that automation. |
 | [`opensession-github`](#opensession-github) | 4 | Slack loop | – |
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
-| [`opensession-supervisor`](#opensession-supervisor) | 19 | interactive | Only on a supervisor session (session.supervisor). |
+| [`opensession-supervisor`](#opensession-supervisor) | 20 | interactive | Only on a supervisor session (session.supervisor). |
 | [`opensession-watch`](#opensession-watch) | 7 | goal wake | Only on a person's watch goal (goal.watchOwner). |
 | [`opensession-lead`](#opensession-lead) | 9 | goal wake | Only on a project lead's goal (goal.leadProject). |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-43 servers, 231 tools.
+43 servers, 232 tools.
 
 ## opensession-sessions
 
@@ -1642,6 +1642,12 @@ Store the owner's morning brief, the last step of a brief turn (your charter, "T
 `mcp__opensession-supervisor__read_brief` · input: none
 
 Read the owner's latest morning brief as Blob showed it: its day, whether they saw it, what Blob said, what you handled, the decisions still open with the option you recommended, how many items wait as later, and what came in since. Use it when the owner asks what their brief said or what is still waiting from it. Only reads: it never writes or starts a brief.
+
+### `autonomy_report`
+
+`mcp__opensession-supervisor__autonomy_report` · input: `days` (integer)
+
+How often you handled things alone versus asked the owner, per day: what a lead's own rules ran (autofix runs among them), what you or your watch closed with a reason, the brief's handled lines, and the needs-you items raised to the owner by source and category with how each ended. Then, for the last 14 days, the owner's answers per project and lead category, and the categories the server may ask the owner to let the lead do alone. Only reads.
 
 ### `post_item`
 

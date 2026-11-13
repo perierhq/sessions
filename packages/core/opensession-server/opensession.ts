@@ -159,6 +159,7 @@ import { startIncidentNotifications } from "./src/server/incidents/notifier";
 import { startSupportNotifications } from "./src/server/support/notify";
 import { startSupervisorInbox } from "./src/server/supervisor-inbox";
 import { startProjectLeads } from "./src/server/leads/goal";
+import { startSupervisorAutonomy } from "./src/server/supervisor-autonomy";
 import { startSupervisorWatch } from "./src/server/supervisor-watch";
 import { startSupervisorMergeQueues } from "./src/server/supervisor-merge-queue";
 import { startSupportRetention } from "./src/server/support/retention";
@@ -964,6 +965,11 @@ if (!g.__opensessionBooted) {
     // its settings; the owner's answers reach the lead's ledger.
     startProjectLeads().catch((error: unknown) =>
       console.error("[leads] start failed:", error),
+    );
+    // The owner's Yes to "let the lead do it alone" changes the project's
+    // lead rule through the settings write (supervisor-autonomy.ts).
+    startSupervisorAutonomy().catch((error: unknown) =>
+      console.error("[autonomy] start failed:", error),
     );
     // The supervisor's watch: a background goal per person that wakes on
     // leads' items, incidents, workers' reports and its schedule, and
