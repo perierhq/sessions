@@ -181,6 +181,63 @@ describe("element schema", () => {
     }
   });
 
+  test("text refuses what push text strips", () => {
+    for (const bad of [
+      "tab\there",
+      "del\u007f",
+      "c1\u0085",
+      "rlo\u202Egnp.exe",
+      "lri\u2066x\u2069",
+      "mark\u200F",
+      "alm\u061C",
+      "line\u2028sep",
+      "para\u2029sep",
+    ]) {
+      const parsed = parseBoardElement(text("t", 0, 0, { text: bad }));
+      expect(parsed).toMatchObject({ ok: false });
+      expect(!parsed.ok && parsed.error).toBe("text: one line of plain text");
+    }
+    expect(
+      parseBoardElement(text("t", 0, 0, { text: "Zażółć — ok ✓" })).ok,
+    ).toBe(true);
+  });
+
+  test("images load from this server's media routes only", () => {
+    const image = (src: string) => ({
+      id: "i",
+      type: "image",
+      x: 0,
+      y: 0,
+      w: 10,
+      h: 10,
+      src,
+    });
+    for (const ok of [
+      "/media?path=/tmp/a.png",
+      `/media?path=${encodeURIComponent("/home/u/shot-1.png")}`,
+      "/media?path=%2Ftmp%2Fa.png&v=3",
+      "/api/plain/attachments/att_123",
+      "/api/support/conversations/sc_1/attachments/att_2",
+      "/gh-asset/0b8f6c1e-1a2b-4c3d-8e9f-0123456789ab?repo=acme",
+    ])
+      expect([ok, parseBoardElement(image(ok)).ok]).toEqual([ok, true]);
+    for (const bad of [
+      "https://example.test/a.png",
+      "http://example.test/a.png",
+      "//example.test/a.png",
+      "data:image/png;base64,AAAA",
+      "/media?path=/tmp/../etc/passwd.png",
+      "/media?path=%2Ftmp%2F..%2Fx.png",
+      "/media?path=relative.png",
+      "/media?path=/tmp/a.png&url=https://example.test",
+      "/api/plain/attachments/../../admin",
+    ]) {
+      const parsed = parseBoardElement(image(bad));
+      expect([bad, parsed.ok]).toEqual([bad, false]);
+      expect(!parsed.ok && parsed.error).toStartWith("src: ");
+    }
+  });
+
   test("notes are five plain words at most", () => {
     const note = (t: string) => ({
       id: "n",

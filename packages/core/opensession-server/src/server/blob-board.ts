@@ -230,6 +230,10 @@ export async function applyBoard(
     const expired = board.revision - BOARD_LIMITS.versions;
     if (expired >= 1) await versions().delete(versionKey(owner, expired));
   } catch (error) {
+    // A delete that fails leaves the expired version document behind. It is
+    // never read (readBoardVersion refuses revisions outside the window) and
+    // the key is per revision, so it costs storage only; a later sweep of
+    // keys below the window could remove such orphans. Not done in v1.
     console.warn(
       "[board] version write failed:",
       error instanceof Error ? error.message : error,

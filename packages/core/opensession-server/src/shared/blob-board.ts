@@ -19,6 +19,7 @@
  * compare-and-set live in server/blob-board.ts.
  */
 import { z } from "zod";
+import { hasUnsafeTextChars } from "./safe-text";
 
 /** Bumped when a stored board can no longer be read as is. */
 export const BOARD_SCHEMA = 1;
@@ -204,13 +205,58 @@ export type ResolvedRef =
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
-const CONTROL = /[\u0000-\u001f\u007f]/;
+// The characters push text strips (controls, bidi, line separators) are
+// refused here, so the board shows what its text says.
 const line = (max: number) =>
   z
     .string()
     .min(1)
     .max(max)
-    .refine((s) => !CONTROL.test(s), "one line of plain text");
+    .refine((s) => !hasUnsafeTextChars(s), "one line of plain text");
+
+/**
+ * Where a board image may load from: this server's own media routes, as
+ * same-origin paths. No external host in v1, so a board never makes the
+ * owner's client fetch a URL the model wrote. To allow a host later, add an
+ * exact `^https://<host>/` pattern to BOARD_IMAGE_ROUTES (https only, no
+ * wildcards), allow the host in the clients' img-src, and name it in
+ * docs/security-model.md.
+ */
+export const BOARD_IMAGE_ROUTES: readonly RegExp[] = [
+  // routes/plain.ts: a Plain thread's attachment.
+  /^\/api\/plain\/attachments\/[A-Za-z0-9_-]{1,120}$/,
+  // routes/support.ts: an email conversation's attachment.
+  /^\/api\/support\/conversations\/[A-Za-z0-9_-]{1,120}\/attachments\/[A-Za-z0-9_-]{1,120}$/,
+  // routes/media.ts: a GitHub user attachment of a registered repo.
+  /^\/gh-asset\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\?repo=[A-Za-z0-9._-]{1,120}$/i,
+];
+
+/** routes/media.ts: `/media?path=<absolute path>` (encoded or not, an
+ *  optional `v`), no traversal. */
+function isOwnMediaPath(src: string): boolean {
+  if (!src.startsWith("/media?")) return false;
+  let params: URLSearchParams;
+  try {
+    params = new URL(src, "http://board.invalid").searchParams;
+  } catch {
+    return false;
+  }
+  if ([...params.keys()].some((k) => k !== "path" && k !== "v")) return false;
+  const path = params.get("path") ?? "";
+  return (
+    path.startsWith("/") &&
+    !path.startsWith("//") &&
+    !path.includes("..") &&
+    !/\s/.test(path)
+  );
+}
+
+export function isBoardImageSource(src: string): boolean {
+  return (
+    isOwnMediaPath(src) ||
+    BOARD_IMAGE_ROUTES.some((pattern) => pattern.test(src))
+  );
+}
 
 const id = z
   .string()
@@ -316,9 +362,9 @@ export const imageSchema = z.strictObject({
   src: z
     .string()
     .max(BOARD_LIMITS.srcChars)
-    .regex(
-      /^(https:\/\/|\/media\?path=)\S+$/,
-      "an https:// URL or a /media?path= path",
+    .refine(
+      isBoardImageSource,
+      "one of this server's media paths (/media?path=<absolute path>, /api/plain/attachments/<id>, /api/support/conversations/<id>/attachments/<id>, /gh-asset/<id>?repo=<repo>); no external URLs",
     ),
   fit: z.enum(["contain", "cover"]).optional(),
   alt: line(BOARD_LIMITS.altChars).optional(),

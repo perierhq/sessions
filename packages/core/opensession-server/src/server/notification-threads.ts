@@ -541,21 +541,8 @@ export function bannerText(
   return { title, body };
 }
 
-// Bidirectional overrides, embeddings, isolates and marks.
-const BIDI = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
-
-/**
- * Text as it may appear in a push: one line, no control or bidi characters
- * (a lock screen must show what the text says, not what it hides).
- */
-export function pushSafeText(value: string): string {
-  return value
-    .replace(/\s+/g, " ")
-    .replace(/\p{Cc}/gu, "")
-    .replace(BIDI, "")
-    .replace(/ {2,}/g, " ")
-    .trim();
-}
+// One character class for push text and the board (shared/safe-text.ts).
+export { pushSafeText } from "../shared/safe-text";
 
 export function unreadCount(doc: NotificationDocument): number {
   return doc.threads.filter((thread) => thread.unread && !thread.done).length;

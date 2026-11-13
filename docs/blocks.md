@@ -365,7 +365,8 @@ text elements as lines, ref elements as links with their live status,
 arrows as `A → B` lines, a shape drawn around an element as "circled:" or
 "boxed:", and notes as "Note on <anchor>: <text>" after their anchor, the
 same words VoiceOver reads. Freehand strokes carry no words and are left
-out. The web and Slack show the fence as code, which is that text. A
+out. Live titles in the fence are JSON-quoted, because the text passes
+through the supervisor's context and other people wrote them. The web and Slack show the fence as code, which is that text. A
 revision that fell out of the kept window (the last 50) leaves only the
 text.
 

@@ -736,10 +736,13 @@ Blob answers on one board per owner (`adrs/blob-views.md`,
   exactly like a missing one, and shows as plain text. Resolution is
   bounded (100 refs a read) and cached per owner for 30 seconds.
 - **Data, not instructions.** Live titles (pull requests, incidents,
-  customer subjects) are written by other people; `board_read` quotes them
-  as data. Note and text fields are plain text, checked by a strict schema
-  (`shared/blob-board.ts`); an image is an https URL or a `/media` path,
-  which clients load like any transcript image.
+  customer subjects) are written by other people; `board_read` and the
+  board text `board_apply` returns quote them as data (JSON-quoted, clipped,
+  one safe line). Note and text fields are plain text, checked by a strict
+  schema (`shared/blob-board.ts`) that refuses the characters push text
+  strips (`shared/safe-text.ts`). An image loads only from this server's own
+  media routes (`/media?path=`, Plain and support attachments, `/gh-asset/`),
+  never an external host; `BOARD_IMAGE_ROUTES` says how to allow one.
 - **No lost writes.** `board_apply` names the revision it read; the write
   is a compare-and-set in the catalog, and a board that moved on is refused
   with its revision.
