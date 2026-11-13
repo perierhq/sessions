@@ -82,11 +82,13 @@ import {
   answerSupervisorItem,
   dismissSupervisorItems,
   CLOSE_REASON_LEN,
+  dedupeKeyAllowed,
   dismissSupervisorItemAsSupervisor,
   MAX_CLOSE_IDS,
   listSupervisorItems,
   MAX_LIST,
   postSupervisorItem,
+  RESERVED_DEDUPE_PREFIX,
   supervisorInboxKey,
   type SupervisorDismissResult,
   type SupervisorItem,
@@ -207,6 +209,13 @@ export function postItemTool(
         ),
     },
     async (args) => {
+      if (args.dedupe_key && !dedupeKeyAllowed(source, args.dedupe_key.trim()))
+        return {
+          ...text(
+            `Not posted: dedupe_key may not start with "${RESERVED_DEDUPE_PREFIX}", which the server keeps for its own items. Use another key.`,
+          ),
+          isError: true,
+        };
       const downRefused =
         args.urgency === "down" &&
         !!allowDown &&

@@ -604,10 +604,15 @@ steps. Paths below are under `packages/core/opensession-server/src/`.
   (`server/leads/conditions.ts`).
 - **A lead gets more room only from the owner's tap.** Before a brief turn
   the server may raise one needs-you item asking to let a lead do a
-  category alone, when the owner approved that category every time, at
-  least three times, in 14 days and its rule is Asks first
-  (`server/supervisor-autonomy.ts`). Never for the pinned categories,
-  banning users, rotating keys or support replies (`NEVER_PROPOSE`). Only
+  category alone, when the owner approved every item asked in that
+  category, at least three times, in 14 days and its rule is Asks first
+  (`server/supervisor-autonomy.ts`). A dismissal, an expiry or an answer
+  the supervisor recorded blocks it. Only the allowlisted categories are
+  proposed (`PROPOSABLE`: signal rule changes, major dependency upgrades,
+  public releases, CI repair); a new category is never proposed until it
+  is added there. The `autonomy:` dedupe-key prefix is the server's: the
+  inbox refuses it from any other source. After the change the owner gets
+  an fyi naming where to change it back. Only
   the owner's own first-option answer, signed in to the item's revision
   and in the lead owner's inbox, changes the rule, and it does so through
   `updateProjectDocument`, which lets only the instance owner or the lead's

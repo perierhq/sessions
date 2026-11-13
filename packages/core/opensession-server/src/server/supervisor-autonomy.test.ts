@@ -6,7 +6,7 @@
  * path. Runs on the in-memory kernel store with a fake clock.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { DEFAULT_LEAD_RULES } from "../shared/project-lead";
+import { DEFAULT_LEAD_RULES, type LeadCategory } from "../shared/project-lead";
 import { useIncidentTestKernel } from "./incidents/testing/kernel-fixture";
 import type { LeadRecord } from "./leads/approvals";
 import { __setLegacyEnvironmentForTest } from "./projects/legacy";
@@ -18,6 +18,7 @@ import {
   AUTONOMY_NO,
   AUTONOMY_SOURCE_PREFIX,
   AUTONOMY_YES,
+  PROPOSABLE,
   __setAutonomyDepsForTest,
   askedHistory,
   autonomyCandidates,
@@ -28,12 +29,14 @@ import {
   handleAutonomyAnswer,
   itemCategory,
   prepareAutonomyProposal,
+  proposable,
   type AutonomyLeadProject,
 } from "./supervisor-autonomy";
 import {
   __resetSupervisorInboxForTest,
   __setSupervisorInboxDepsForTest,
   answerSupervisorItem,
+  dismissSupervisorItem,
   dismissSupervisorItems,
   listSupervisorItems,
   onSupervisorAnswer,
@@ -345,6 +348,56 @@ describe("asking less", () => {
     expect((await candidates()).candidates).toEqual([]);
   });
 
+  test("three approvals and one dismissal make no candidate", async () => {
+    await answeredTimes("dependency-major", ["1", "1", "1"]);
+    const dismissed = await asked("dependency-major", "dismissed");
+    await dismissSupervisorItem("Ada", dismissed.id);
+    const { history, candidates: found } = await candidates();
+    expect(history[0]).toMatchObject({
+      asked: 4,
+      approved: 3,
+      declined: 0,
+      other: 0,
+      unanswered: 1,
+    });
+    expect(found).toEqual([]);
+  });
+
+  test("a still open item blocks it too", async () => {
+    await answeredTimes("public-release", ["1", "1", "1"]);
+    await asked("public-release", "still open");
+    expect((await candidates()).candidates).toEqual([]);
+  });
+
+  test("only allowlisted categories are ever proposed", () => {
+    expect([...PROPOSABLE].sort()).toEqual([
+      "ci-repair",
+      "dependency-major",
+      "public-release",
+      "signal-rule-change",
+    ]);
+    // A category added later is not proposable until it is allowlisted.
+    const made = "deploy-production" as unknown as LeadCategory;
+    const rules = { ...DEFAULT_LEAD_RULES, [made]: "asks-first" };
+    expect(proposable(made, { rules })).toBe(false);
+    const history = [
+      {
+        project: "acme",
+        category: made,
+        asked: 5,
+        approved: 5,
+        declined: 0,
+        other: 0,
+        unanswered: 0,
+      },
+    ];
+    expect(
+      autonomyCandidates(history, [
+        { ...lead("acme"), lead: { enabled: true, rules } },
+      ]),
+    ).toEqual([]);
+  });
+
   test("never for pinned, identity or customer-facing categories, a rule not asks first, or a lead that is off", async () => {
     leads = [
       lead("acme", {
@@ -479,6 +532,35 @@ describe("the owner's answer", () => {
         login: "ada",
       },
     ]);
+    const fyi = await listSupervisorItems("Ada", { kind: "fyi" });
+    expect(fyi).toHaveLength(1);
+    expect(fyi[0]).toMatchObject({
+      source: "autonomy:acme",
+      title: "Acme lead now does major dependency upgrades alone.",
+      body: "Change it back in Settings, Acme, Lead.",
+    });
+    // The open fyi holds back no further proposal.
+    await answerSupervisorItem("Ada", item.id, AUTONOMY_NO, "owner");
+    for (const i of [1, 2, 3]) {
+      const next = await asked("public-release", `p${i}`);
+      await answerSupervisorItem("Ada", next.id, "1", "owner");
+    }
+    expect(await prepareAutonomyProposal("Ada")).toBeTruthy();
+  });
+
+  test("only the server posts an autonomy dedupe key", async () => {
+    for (const source of ["supervisor", "watch", "lead:acme"])
+      await expect(
+        postSupervisorItem({
+          user: "Ada",
+          source,
+          kind: "needs-you",
+          title: "Let the lead do it alone?",
+          options: [AUTONOMY_YES, AUTONOMY_NO],
+          dedupeKey: "autonomy:acme:dependency-major",
+        }),
+      ).rejects.toThrow("reserved");
+    expect(await listSupervisorItems("Ada", {})).toEqual([]);
   });
 
   test("a rule that moved since, or a pinned category, changes nothing", async () => {

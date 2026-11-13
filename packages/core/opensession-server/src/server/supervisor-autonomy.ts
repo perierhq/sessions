@@ -28,13 +28,15 @@
  * else its dedupe key), else the source's first segment ("watch",
  * "supervisor").
  *
- * Asking less: over the last 14 days, when the owner answered a project's
- * lead category with its first option (approve) every time, at least
- * AUTONOMY_REPEAT times, and the project's rule for it is still Asks first,
- * the brief turn gets one needs-you item asking "Let the lead do it alone
- * from now on?" (`prepareAutonomyProposal`). Never for the categories in
- * NEVER_PROPOSE (money, identity, customer-facing replies, production
- * data): those change only from the project's settings. Only the owner's
+ * Asking less: over the last 14 days, when the owner answered every item a
+ * project's lead raised in a category with its first option (approve), at
+ * least AUTONOMY_REPEAT times, and the project's rule for it is still Asks
+ * first, the brief turn gets one needs-you item asking "Let the lead do it
+ * alone from now on?" (`prepareAutonomyProposal`). A dismissal, an expiry,
+ * an answer the supervisor recorded or any other answer in the window
+ * blocks it. Only the categories in PROPOSABLE are ever proposed; every
+ * other one, and any category added later, changes only from the project's
+ * settings. Only the owner's
  * own first-option answer, signed in (a GitHub login) to the revision they
  * saw, changes the rule, through the project settings' write path
  * (projects/store.ts updateProjectDocument), which lets only the instance
@@ -44,14 +46,15 @@
  */
 import {
   LEAD_CATEGORY_LABELS,
-  PINNED_ONLY_YOU,
   isLeadCategory,
+  isPinnedOnlyYou,
   leadLevel,
   type LeadCategory,
   type ProjectLeadSettings,
 } from "../shared/project-lead";
 import type { LeadRecord } from "./leads/approvals";
 import {
+  RESERVED_DEDUPE_PREFIX,
   supervisorInboxKey,
   type PostSupervisorItemInput,
   type SupervisorAnswerContext,
@@ -65,7 +68,7 @@ import { localClock } from "./supervisor-quiet-hours";
  *  repeated here so this module loads nothing of the leads at import. */
 const LEAD_PREFIX = "lead:";
 /** The source of the "let the lead do it alone" items: `autonomy:<project>`. */
-export const AUTONOMY_SOURCE_PREFIX = "autonomy:";
+export const AUTONOMY_SOURCE_PREFIX = RESERVED_DEDUPE_PREFIX;
 /** Days of answers the proposals look at. */
 export const AUTONOMY_WINDOW_DAYS = 14;
 /** The same answer this many times, and never another, before Blob asks. */
@@ -77,15 +80,28 @@ export const AUTONOMY_NO = "Keep asking";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Categories Blob never proposes loosening, whatever the answers say:
- *  the ones pinned to the owner (money, contracts, production data), the
- *  identity ones (banning users, rotating keys) and customer-facing
- *  replies. The owner can still change them in the project's settings. */
-export const NEVER_PROPOSE: readonly LeadCategory[] = [
-  ...PINNED_ONLY_YOU,
-  "ban-user",
-  "rotate-key",
-  "support-routine-reply",
+/** The only categories Blob may propose letting a lead do alone. An
+ *  allowlist: a category added to LEAD_CATEGORIES is never proposed until
+ *  it is added here on purpose. Each one stays inside the project's own
+ *  repositories and tooling, touches no money, identity, customer or
+ *  production data, and can be undone by a later change:
+ *  - signal-rule-change: edits the project's own alerting rules; a bad
+ *    rule is visible in the next signals and reverted the same way.
+ *  - dependency-major: lands as a pull request through the project's CI
+ *    and merge gate; a bad upgrade is reverted with another.
+ *  - public-release: cuts a release from code that already passed review
+ *    and CI; a bad one is followed by a fix release.
+ *  - ci-repair: fixes the project's own CI configuration or tests in a
+ *    pull request; its default is already Alone, so proposing it only
+ *    returns a rule the owner tightened to its default.
+ *  Everything else, in particular PINNED_ONLY_YOU (money, contracts,
+ *  production data), banning users, rotating keys and customer-facing
+ *  replies, changes only from the project's settings. */
+export const PROPOSABLE: readonly LeadCategory[] = [
+  "signal-rule-change",
+  "dependency-major",
+  "public-release",
+  "ci-repair",
 ];
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -401,21 +417,25 @@ export function askedHistory(
   );
 }
 
-/** Whether Blob may ever ask to let the lead do `category` alone: it is not
- *  one Blob never proposes, and the rule is Asks first now. */
+/** Whether Blob may ever ask to let the lead do `category` alone: it is
+ *  in PROPOSABLE, never pinned to the owner, and the rule is Asks first
+ *  now. */
 export function proposable(
   category: LeadCategory,
   lead: Pick<ProjectLeadSettings, "rules">,
 ): boolean {
   return (
-    !NEVER_PROPOSE.includes(category) &&
+    PROPOSABLE.includes(category) &&
+    !isPinnedOnlyYou(category) &&
     leadLevel(lead.rules, category) === "asks-first"
   );
 }
 
-/** The groups the owner approved every time, at least AUTONOMY_REPEAT
- *  times, in a project whose lead is on and still asks first for them.
- *  Most approvals first. */
+/** The groups where the owner approved every item asked in the window, at
+ *  least AUTONOMY_REPEAT times, in a project whose lead is on and still
+ *  asks first for them. A dismissed, expired, still open, settled or
+ *  supervisor-recorded item, a decline or any other answer blocks the
+ *  group. Most approvals first. */
 export function autonomyCandidates(
   history: readonly AskedHistory[],
   leads: readonly AutonomyLeadProject[],
@@ -426,7 +446,7 @@ export function autonomyCandidates(
       const lead = byProject.get(row.project);
       if (!lead?.lead.enabled || !proposable(row.category, lead.lead))
         return [];
-      if (row.approved < AUTONOMY_REPEAT || row.declined || row.other)
+      if (row.approved < AUTONOMY_REPEAT || row.approved !== row.asked)
         return [];
       return [{ ...row, label: lead.label }];
     })
@@ -529,7 +549,7 @@ export function autonomyReportText(input: {
   lines.push("", "Could ask the owner to let the lead do it alone:");
   if (!input.candidates.length)
     lines.push(
-      `- Nothing yet: a category qualifies once the owner approved it ${AUTONOMY_REPEAT} times in ${AUTONOMY_WINDOW_DAYS} days and never answered otherwise, while its rule is Asks first. Never for ${NEVER_PROPOSE.join(", ")}.`,
+      `- Nothing yet: a category qualifies once the owner approved every item asked in it, at least ${AUTONOMY_REPEAT} times in ${AUTONOMY_WINDOW_DAYS} days, while its rule is Asks first. Only for ${PROPOSABLE.join(", ")}.`,
     );
   for (const c of input.candidates)
     lines.push(
@@ -745,7 +765,14 @@ export async function prepareAutonomyProposal(
   const autonomyItems = view.items.filter((item) =>
     item.source.startsWith(AUTONOMY_SOURCE_PREFIX),
   );
-  if (autonomyItems.some((item) => item.state === "open")) return null;
+  // An open fyi (the rule changed, or the change was refused) is no
+  // decision waiting, so it does not hold the next proposal back.
+  if (
+    autonomyItems.some(
+      (item) => item.kind === "needs-you" && item.state === "open",
+    )
+  )
+    return null;
   const raised = new Set(autonomyItems.map((item) => item.dedupeKey));
   const history = askedHistory(
     events,
@@ -788,7 +815,7 @@ export type AutonomyAnswerResult =
  * the lead's owner, changes the project's rule for the category from Asks
  * first to Alone, through the settings write that lets only the instance
  * owner or the lead's owner loosen a lead. Anything else changes nothing.
- * A refused write is told to the owner as an fyi.
+ * The changed rule, or a refused write, is told to the owner as an fyi.
  */
 export async function handleAutonomyAnswer(
   item: SupervisorItem,
@@ -826,8 +853,21 @@ export async function handleAutonomyAnswer(
     changed: result.ok,
     ...(result.ok ? {} : { error: result.error }),
   });
-  if (result.ok) return { changed: true };
   const what = LEAD_CATEGORY_LABELS[category].toLowerCase();
+  if (result.ok) {
+    await deps
+      .post({
+        user: item.user,
+        source: item.source,
+        project,
+        kind: "fyi",
+        title: `${lead.label} lead now does ${what} alone.`.slice(0, 120),
+        body: `Change it back in Settings, ${lead.label}, Lead.`,
+        dedupeKey: `${item.dedupeKey}:alone`,
+      })
+      .catch(() => {});
+    return { changed: true };
+  }
   await deps
     .post({
       user: item.user,
