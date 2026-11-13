@@ -16,11 +16,16 @@ const harness = createHookHarness();
 const realReact = await import("react");
 mock.module("react", () => reactWithHarness({ ...realReact }, harness));
 
-const { LeadSection, LeadBudgetDialog, LeadWakesDialog, LEAD_HEADROOM_HINT } =
-  await import("./LeadSection");
+const {
+  LeadSection,
+  LeadBudgetDialog,
+  LeadFocusDialog,
+  LeadWakesDialog,
+  LEAD_HEADROOM_HINT,
+} = await import("./LeadSection");
 const { SettingLinkRow } = await import("../incidents/SettingLinkRow");
 const { SettingsHint } = await import("../../../ui/settings");
-const { Input } = await import("../../../ui/input");
+const { Input, Textarea } = await import("../../../ui/input");
 const { Switch } = await import("../../../ui/switch");
 const { OptionSelect } = await import("../../../ui/select");
 const { InlineAlert } = await import("../../../ui/state");
@@ -170,4 +175,67 @@ test("the wakes dialog saves a whole number", async () => {
   find(dialog.output(), SettingsDialog)!.props.onSave!();
   await settle();
   expect(saves).toEqual([{ lead: { dailyWakeLimit: 12 } }]);
+});
+
+/** A change event as LeadFocusDialog reads it. */
+function typed(value: string): never {
+  // SAFETY: LeadFocusDialog's onChange reads only currentTarget.value.
+  return { currentTarget: { value } } as never;
+}
+
+test("what the lead is for: a preview, a dialog with a placeholder, and saving the owner's words", async () => {
+  const section = harness.mount(LeadSection, {
+    view: withLead({
+      enabled: true,
+      focus: "Maintain this open-source app for its contributors.\nMore.",
+    }),
+    onSave,
+  });
+  const row = find(
+    section.output(),
+    SettingLinkRow,
+    (p) => p.title === "What this lead is for",
+  );
+  expect(row?.props.value).toBe("Maintain this open-source app for its c…");
+  const focus = find(section.output(), LeadFocusDialog);
+  const dialog = harness.mount(LeadFocusDialog, focus!.props);
+  const area = find(dialog.output(), Textarea);
+  expect(area?.props.placeholder).toStartWith("For example: Maintain this");
+  area!.props.onChange!(typed("  Triage issues first.  "));
+  await settle();
+  find(dialog.output(), SettingsDialog)!.props.onSave!();
+  await settle();
+  expect(saves).toEqual([{ lead: { focus: "Triage issues first." } }]);
+});
+
+test("an empty focus clears it; one past the limit can't be saved", async () => {
+  const dialog = harness.mount(LeadFocusDialog, {
+    open: true,
+    onClose: () => {},
+    focus: "Old words",
+    onSave: (focus: string | null) => onSave({ lead: { focus } }),
+  });
+  const area = () => find(dialog.output(), Textarea)!;
+  area().props.onChange!(typed("x".repeat(1501)));
+  await settle();
+  expect(find(dialog.output(), SettingsDialog)?.props.canSave).toBe(false);
+  area().props.onChange!(typed("   "));
+  await settle();
+  find(dialog.output(), SettingsDialog)!.props.onSave!();
+  await settle();
+  expect(saves).toEqual([{ lead: { focus: null } }]);
+});
+
+test("without a focus the row says Not set", () => {
+  const section = harness.mount(LeadSection, {
+    view: withLead({ enabled: true }),
+    onSave,
+  });
+  expect(
+    find(
+      section.output(),
+      SettingLinkRow,
+      (p) => p.title === "What this lead is for",
+    )?.props.value,
+  ).toBe("Not set");
 });

@@ -773,8 +773,16 @@ export interface BlobPoster {
    *  repositories only. */
   sessionId?: string;
   /** A project lead: only this project's repositories, and only private
-   *  ones. */
-  lead?: { project: string; repos: string[] };
+   *  ones, unless `recordedStep`. */
+  lead?: {
+    project: string;
+    repos: string[];
+    /** A step of a recorded proposal that lead_apply runs (the owner
+     *  approved it, or set the lead's rules to let it run). It may also
+     *  post on a public repository listed in `publicRepos`, for an
+     *  owner who may post there (`privateOnly` unset). */
+    recordedStep?: boolean;
+  };
   /** Private repositories only: a teammate's supervisor, since nothing on
    *  the instance says which public repositories they may speak on
    *  (blobSupervisorPoster). */
@@ -1061,7 +1069,7 @@ async function prepare(
     repo.public === true ? false : await deps.repoIsPrivate(repo.ghRepo);
   const isPrivate = looked === true;
   if (!isPrivate) {
-    if (poster.lead)
+    if (poster.lead && !poster.lead.recordedStep)
       return refuse(
         `${repo.ghRepo} is public or its visibility is unknown. A lead posts on private repositories only.`,
       );
@@ -1244,7 +1252,7 @@ async function onUnauthorized(record: BlobGithubRecord): Promise<void> {
 }
 
 interface WriteSpec {
-  action: "comment" | "review" | "label" | "issue";
+  action: "comment" | "review" | "label" | "issue" | "close";
   repo: string;
   /** The issue or pull request; absent for a new issue. */
   number?: number;
@@ -1478,6 +1486,51 @@ export function blobLabel(
       ]
         .filter(Boolean)
         .join("; ") + ".",
+  });
+}
+
+/** Close an issue (`completed` or `not_planned`) or a pull request as
+ *  Blob. An issue that turns out to be a pull request, or the other way
+ *  round, is refused; one already closed counts as done. */
+export function blobClose(
+  poster: BlobPoster,
+  input: {
+    repo: string;
+    number: number;
+    pullRequest: boolean;
+    reason?: "completed" | "not_planned";
+  },
+): Promise<BlobWriteResult> {
+  const what = input.pullRequest ? "pull request" : "issue";
+  return write(poster, {
+    action: "close",
+    repo: input.repo,
+    number: input.number,
+    texts: [],
+    run: async (p) => {
+      const base = `/repos/${repoPath(p.ghRepo)}`;
+      const found = await githubCall(
+        p.token,
+        "GET",
+        `${base}/issues/${input.number}`,
+      );
+      if (found.status !== 200) return found;
+      const issue = obj(found.json);
+      if (!!issue?.pull_request !== input.pullRequest)
+        return {
+          refused: `#${input.number} in ${p.ghRepo} is ${input.pullRequest ? "an issue" : "a pull request"}, not ${input.pullRequest ? "a pull request" : "an issue"}.`,
+        };
+      if (issue?.state === "closed") return { status: 200, json: issue };
+      return input.pullRequest
+        ? githubCall(p.token, "PATCH", `${base}/pulls/${input.number}`, {
+            state: "closed",
+          })
+        : githubCall(p.token, "PATCH", `${base}/issues/${input.number}`, {
+            state: "closed",
+            state_reason: input.reason ?? "completed",
+          });
+    },
+    ok: (json) => `Closed the ${what}${where(json)}`,
   });
 }
 

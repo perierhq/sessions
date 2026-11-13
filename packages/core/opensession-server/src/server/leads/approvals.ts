@@ -42,6 +42,10 @@ export const STALE_APPLY_MS = 30 * 60 * 1000;
 export const MAX_RECORDS = 200;
 export const MAX_STEPS = 10;
 export const MAX_PROMPT_LEN = 4000;
+/** A blob-comment step's body. */
+export const MAX_COMMENT_LEN = 4000;
+/** Labels one blob-label step adds or removes. */
+export const MAX_STEP_LABELS = 10;
 const SUBJECT_LEN = 200;
 const REASON_LEN = 200;
 const NAME_LEN = 120;
@@ -91,7 +95,37 @@ export type LeadStep =
        *  server (report.ts checkLeadAct), never taken from the lead: the
        *  send refuses when the draft's target moved since. */
       pin?: SupportSendPin;
+    }
+  /** Maintaining a public repository: Blob's GitHub account comments,
+   *  labels or closes (github-blob.ts, under its guards); the App approves
+   *  a workflow run of an outside contributor's pull request. */
+  | { kind: "blob-comment"; ghRepo: string; number: number; body: string }
+  | {
+      kind: "blob-label";
+      ghRepo: string;
+      number: number;
+      add: string[];
+      remove: string[];
+    }
+  | {
+      kind: "close-issue";
+      ghRepo: string;
+      number: number;
+      reason: CloseReason;
+    }
+  | { kind: "close-pr"; ghRepo: string; number: number; headSha: string }
+  | {
+      kind: "approve-run";
+      ghRepo: string;
+      /** The pull request the run is for. */
+      number: number;
+      runId: number;
+      /** The pull request's head the owner approved running. */
+      headSha: string;
     };
+
+/** GitHub's state_reason for a closed issue. */
+export type CloseReason = "completed" | "not_planned";
 
 /** Where a support draft goes: its one address and the message it
  *  answers (shared/support.ts SupportDraft). */
@@ -107,11 +141,16 @@ export type LeadStepKind = LeadStep["kind"];
 export const STEP_CATEGORIES: Readonly<
   Record<LeadStepKind, readonly LeadCategory[]>
 > = {
-  "merge-pr": ["fix-verified", "public-release", "ci-repair"],
+  "merge-pr": ["fix-verified", "public-release", "ci-repair", "pr-merge"],
   "autofix-pr": ["ci-repair"],
   "spawn-worker": ["fix-verified", "ci-repair"],
   "signal-patch": ["signal-rule-change"],
   "support-send": ["support-routine-reply"],
+  "blob-comment": ["issue-triage", "contributor-ci", "pr-merge", "pr-close"],
+  "blob-label": ["issue-triage"],
+  "close-issue": ["issue-triage"],
+  "close-pr": ["pr-close"],
+  "approve-run": ["contributor-ci"],
 };
 
 export function stepFitsCategory(
@@ -309,6 +348,31 @@ function prompt(value: unknown): string {
   return trimmed;
 }
 
+function commentBody(value: unknown): string {
+  if (typeof value !== "string") fail("body must be a string");
+  const trimmed = value.trim();
+  if (!trimmed) fail("body is empty");
+  if (trimmed.length > MAX_COMMENT_LEN)
+    fail(`body is longer than ${MAX_COMMENT_LEN} characters`);
+  if (UNSAFE_TEXT.test(trimmed)) fail("body has control characters");
+  return trimmed;
+}
+
+function labels(value: unknown, label: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) fail(`${label} must be a list`);
+  if (value.length > MAX_STEP_LABELS)
+    fail(`${label} has more than ${MAX_STEP_LABELS} labels`);
+  const out = value.map((entry) => line(entry, `${label}[]`, 100));
+  return [...new Set(out)];
+}
+
+function runId(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)
+    fail("runId must be a positive integer");
+  return value;
+}
+
 function dependsOn(value: unknown, label: string): string[] {
   if (!Array.isArray(value)) fail(`${label}.dependsOn must be a list`);
   if (value.length > MAX_DEPENDS_ON)
@@ -466,9 +530,89 @@ function stepOf(value: unknown): LeadStep {
         ...(raw.pin !== undefined ? { pin: pinOf(raw.pin) } : {}),
       };
     }
+    case "blob-comment": {
+      const raw = object(value, "blob-comment", [
+        "kind",
+        "ghRepo",
+        "number",
+        "body",
+      ]);
+      return {
+        kind: "blob-comment",
+        ghRepo: ghRepo(raw.ghRepo),
+        number: prNumber(raw.number),
+        body: commentBody(raw.body),
+      };
+    }
+    case "blob-label": {
+      const raw = object(value, "blob-label", [
+        "kind",
+        "ghRepo",
+        "number",
+        "add",
+        "remove",
+      ]);
+      const add = labels(raw.add, "add");
+      const remove = labels(raw.remove, "remove");
+      if (!add.length && !remove.length)
+        fail("blob-label adds or removes no label");
+      return {
+        kind: "blob-label",
+        ghRepo: ghRepo(raw.ghRepo),
+        number: prNumber(raw.number),
+        add,
+        remove,
+      };
+    }
+    case "close-issue": {
+      const raw = object(value, "close-issue", [
+        "kind",
+        "ghRepo",
+        "number",
+        "reason",
+      ]);
+      if (raw.reason !== "completed" && raw.reason !== "not_planned")
+        fail("reason must be completed or not_planned");
+      return {
+        kind: "close-issue",
+        ghRepo: ghRepo(raw.ghRepo),
+        number: prNumber(raw.number),
+        reason: raw.reason,
+      };
+    }
+    case "close-pr": {
+      const raw = object(value, "close-pr", [
+        "kind",
+        "ghRepo",
+        "number",
+        "headSha",
+      ]);
+      return {
+        kind: "close-pr",
+        ghRepo: ghRepo(raw.ghRepo),
+        number: prNumber(raw.number),
+        headSha: headSha(raw.headSha),
+      };
+    }
+    case "approve-run": {
+      const raw = object(value, "approve-run", [
+        "kind",
+        "ghRepo",
+        "number",
+        "runId",
+        "headSha",
+      ]);
+      return {
+        kind: "approve-run",
+        ghRepo: ghRepo(raw.ghRepo),
+        number: prNumber(raw.number),
+        runId: runId(raw.runId),
+        headSha: headSha(raw.headSha),
+      };
+    }
     default:
       fail(
-        "step kind must be merge-pr, autofix-pr, spawn-worker, signal-patch or support-send",
+        "step kind must be merge-pr, autofix-pr, spawn-worker, signal-patch, support-send, blob-comment, blob-label, close-issue, close-pr or approve-run",
       );
   }
 }

@@ -106,6 +106,9 @@ export interface LeadGoalDeps {
   projectLabel(project: string): string | undefined;
   /** Whether the project is a registered repository (the goal's repo). */
   isRepo(project: string): boolean;
+  /** Whether the project is a repository GitHub confirms is public, so
+   *  outside people contribute and the lead maintains it. Unknown is no. */
+  isPublicRepo(project: string): Promise<boolean>;
   getGoal(id: string): Promise<Goal | null>;
   listGoals: (typeof import("../goals"))["listGoals"];
   createGoal: (typeof import("../goals"))["createGoal"];
@@ -146,6 +149,14 @@ const liveDeps: LeadGoalDeps = {
   },
   projectLabel: (project) => configuredRepos()[project]?.label,
   isRepo: (project) => Object.hasOwn(configuredRepos(), project),
+  isPublicRepo: async (project) => {
+    const repo = configuredRepos()[project];
+    if (!repo) return false;
+    if (typeof repo.public === "boolean") return repo.public;
+    if (repo.host === "codestorage" || !repo.ghRepo) return false;
+    const { repoIsPrivate } = await import("../repo-visibility");
+    return (await repoIsPrivate(repo.ghRepo)) === false;
+  },
   getGoal: async (id) => (await import("../goals")).getGoal(id),
   listGoals: async () => (await import("../goals")).listGoals(),
   createGoal: async (...args) => (await import("../goals")).createGoal(...args),
@@ -207,6 +218,8 @@ export function leadGoalFields(
   doc: ProjectSettingsDocument,
   d: Pick<LeadGoalDeps, "projectLabel" | "isRepo"> = deps(),
   reportStyle: ReportStyle = DEFAULT_REPORT_STYLE,
+  /** A public repository with outside contributors (isPublicRepo). */
+  maintainer = false,
 ): LeadGoalFields {
   return {
     name: `Lead: ${d.projectLabel(project) || project}`,
@@ -218,6 +231,7 @@ export function leadGoalFields(
       reportStyle,
       persona: personaName(),
       githubAs: blobGithubAs(),
+      maintainer,
     }),
     mode: "ask",
     repo: d.isRepo(project) ? project : undefined,
@@ -239,7 +253,8 @@ async function leadGoalFieldsNow(
   const style = owner
     ? await d.reportStyle(owner).catch(() => DEFAULT_REPORT_STYLE)
     : DEFAULT_REPORT_STYLE;
-  return leadGoalFields(project, doc, d, style);
+  const maintainer = await d.isPublicRepo(project).catch(() => false);
+  return leadGoalFields(project, doc, d, style, maintainer);
 }
 
 function sameFields(goal: Goal, fields: LeadGoalFields) {

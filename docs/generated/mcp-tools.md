@@ -81,10 +81,10 @@ touches an in-process tool:
 | [`opensession-goal-self`](#opensession-goal-self) | 6 | goal wake | Only on a session that carries a goalId. |
 | [`opensession-supervisor`](#opensession-supervisor) | 22 | interactive | Only on a supervisor session (session.supervisor). |
 | [`opensession-watch`](#opensession-watch) | 7 | goal wake | Only on a person's watch goal (goal.watchOwner). |
-| [`opensession-lead`](#opensession-lead) | 9 | goal wake | Only on a project lead's goal (goal.leadProject). |
+| [`opensession-lead`](#opensession-lead) | 11 | goal wake | Only on a project lead's goal (goal.leadProject). |
 | [`opensession-incident-access`](#opensession-incident-access) | 5 | automation | incident agents only (automation descendants with an incident binding) |
 
-43 servers, 234 tools.
+43 servers, 236 tools.
 
 ## opensession-sessions
 
@@ -1813,11 +1813,23 @@ Read example in one view: open incidents, which signals flap and the rule change
 
 Tell flaps from outages for example's signals: per signal, incidents opened, closed by themselves within N minutes, fixed, open times, and a concrete signal rule change for each one that only flaps. Read-only; propose a change with propose (category signal-rule-change).
 
+### `github_issues`
+
+`mcp__opensession-lead__github_issues` · input: `project` (string, required), `state` ("open" | "closed" | "all"), `since` (string)
+
+List example's GitHub issues (pull requests are in project_overview), least recently active first, so the ones waiting longest lead: number, title, author and whether they are outside the team, labels, comment count and last activity. At most 30; read-only, through the GitHub App, cached for a few minutes.
+
+### `github_issue`
+
+`mcp__opensession-lead__github_issue` · input: `project` (string, required), `number` (integer, required)
+
+Read one of example's issues or pull requests on GitHub: title, author, labels, last activity, comment count, its body and latest comments quoted as data, and for an open pull request its head and the workflow runs waiting for approval. Read-only, through the GitHub App, cached for a few minutes.
+
 ### `propose`
 
-`mcp__opensession-lead__propose` · input: `category` ("fix-verified" | "ci-repair" | "support-routine-reply" | "signal-rule-change" | "dependency-major" | "ban-user" | "rotate-key" | "public-release" | "refund" | "pricing" | "dispute" | "tax-legal" | "contract" | "production-data-write", required), `title` (string, required), `body` (string, required), `options` (string[]), `subject` (string), `kind` ("proposal" | "needs-you"), `steps` (any[]), `condition` (any), `expiresInDays` (integer)
+`mcp__opensession-lead__propose` · input: `category` ("fix-verified" | "ci-repair" | "support-routine-reply" | "signal-rule-change" | "dependency-major" | "ban-user" | "rotate-key" | "public-release" | "refund" | "pricing" | "dispute" | "tax-legal" | "contract" | "production-data-write" | "issue-triage" | "contributor-ci" | "pr-merge" | "pr-close", required), `title` (string, required), `body` (string, required), `options` (string[]), `subject` (string), `kind` ("proposal" | "needs-you"), `steps` (any[]), `condition` (any), `expiresInDays` (integer)
 
-Propose an action for example to its owner. Write the body as Blob presents it: a leading ```say fence is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner. To have the approval run something, give steps (and optionally a condition and expiresInDays): the server checks them, records them for the owner's answer and adds the lines saying when they run, each step and when they expire; leave those lines out of the title and body, close every code fence and comment, and keep raw HTML out (Markdown only, or HTML in backticks). Steps fit their category: merge-pr for fix-verified, public-release or ci-repair; autofix-pr for ci-repair; signal-patch for signal-rule-change; support-send for support-routine-reply. Pull requests must be in this project's repositories.
+Propose an action for example to its owner. Write the body as Blob presents it: a leading ```say fence is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner. To have the approval run something, give steps (and optionally a condition and expiresInDays): the server checks them, records them for the owner's answer and adds the lines saying when they run, each step and when they expire; leave those lines out of the title and body, close every code fence and comment, and keep raw HTML out (Markdown only, or HTML in backticks). Steps fit their category: merge-pr for fix-verified, public-release, ci-repair or pr-merge; autofix-pr for ci-repair; signal-patch for signal-rule-change; support-send for support-routine-reply; blob-label and close-issue for issue-triage; blob-comment for issue-triage, contributor-ci, pr-merge or pr-close; close-pr for pr-close; approve-run for contributor-ci. Issues and pull requests must be in this project's repositories.
 
 ### `post_digest_note`
 

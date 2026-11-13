@@ -63,6 +63,26 @@ export function leadRuleRows(lead: ProjectLeadSettings): LeadRuleRow[] {
   }));
 }
 
+export const LEAD_FOCUS_TITLE = "What this lead is for";
+export const LEAD_FOCUS_PLACEHOLDER =
+  "For example: Maintain this open-source app. Answer outside contributors within a day, keep the issue tracker tidy, and get good pull requests merged.";
+const FOCUS_PREVIEW_CHARS = 40;
+
+/** The row's value: the focus's first line, cut short, or Not set. */
+export function leadFocusPreview(focus: string | undefined): string {
+  const first = focus?.trim().split("\n")[0]?.trim() ?? "";
+  if (!first) return "Not set";
+  return first.length > FOCUS_PREVIEW_CHARS
+    ? `${first.slice(0, FOCUS_PREVIEW_CHARS - 1).trimEnd()}…`
+    : first;
+}
+
+/** What the focus dialog saves: null clears it. */
+export function leadFocusPatch(text: string): string | null {
+  const trimmed = text.trim();
+  return trimmed ? trimmed : null;
+}
+
 export type LeadStatus = "off" | "starting" | "running";
 
 /** Off, on but without its goal yet (the server starts one), or running. */
@@ -82,7 +102,7 @@ export function applyLeadPatch(
   view: ProjectSettingsView,
   patch: ProjectLeadPatch,
 ): ProjectSettingsView {
-  const { owner, rules, ...rest } = patch;
+  const { owner, focus, rules, ...rest } = patch;
   const lead: ProjectLeadSettings = {
     ...view.document.lead,
     ...rest,
@@ -90,6 +110,8 @@ export function applyLeadPatch(
   };
   if (owner === null) delete lead.owner;
   else if (owner !== undefined) lead.owner = owner;
+  if (focus === null || focus?.trim() === "") delete lead.focus;
+  else if (focus !== undefined) lead.focus = focus.trim();
   return { ...view, document: { ...view.document, lead } };
 }
 

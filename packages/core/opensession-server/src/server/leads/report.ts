@@ -301,7 +301,7 @@ export function checkLeadAct(
         error: `Step ${n}: ${step.kind} doesn't fit ${label}; it serves only ${listOf(fits)}`,
       };
     }
-    if (step.kind === "merge-pr" || step.kind === "autofix-pr") {
+    if ("ghRepo" in step) {
       const repo = repoRefusal(step.ghRepo, ctx.repos);
       if ("error" in repo)
         return { ok: false, error: `Step ${n}: ${repo.error}` };
@@ -610,6 +610,19 @@ function sha(headSha: string): string {
   return headSha.slice(0, 7);
 }
 
+/** Text the owner reads in full, indented and fenced, so nothing in it
+ *  reads as the server's lines. */
+function fenced(text: string): string {
+  const longest = Math.max(
+    2,
+    ...(text.match(/`+/g) ?? []).map((run) => run.length),
+  );
+  const fence = "`".repeat(longest + 1);
+  return [`${fence}text`, ...text.split("\n"), fence]
+    .map((row) => (row ? `   ${row}` : ""))
+    .join("\n");
+}
+
 const METHOD_COPY = {
   merge: "with a merge commit",
   squash: "squashed",
@@ -631,17 +644,23 @@ export function stepCopy(
       return `Change the ${names[step.signalId] ?? step.signalId} check: ${patchCopy(step.after, names)}`;
     case "support-send":
       return `Send reply draft ${step.draftId} in support conversation ${step.conversationId}`;
-    case "spawn-worker": {
-      const longest = Math.max(
-        2,
-        ...(step.prompt.match(/`+/g) ?? []).map((run) => run.length),
-      );
-      const fence = "`".repeat(longest + 1);
-      const body = [`${fence}text`, ...step.prompt.split("\n"), fence]
-        .map((row) => (row ? `   ${row}` : ""))
-        .join("\n");
-      return `Start a worker with this prompt:\n${body}`;
-    }
+    case "blob-comment":
+      return `Comment as Blob on #${step.number} in ${step.ghRepo}:\n${fenced(step.body)}`;
+    case "blob-label":
+      return `Label #${step.number} in ${step.ghRepo} as Blob: ${[
+        step.add.length ? `add ${step.add.join(", ")}` : "",
+        step.remove.length ? `remove ${step.remove.join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("; ")}`;
+    case "close-issue":
+      return `Close issue #${step.number} in ${step.ghRepo} as Blob, ${step.reason === "completed" ? "as done" : "as not planned"}`;
+    case "close-pr":
+      return `Close PR #${step.number} in ${step.ghRepo} as Blob, while it is at ${sha(step.headSha)}`;
+    case "approve-run":
+      return `Approve workflow run ${step.runId} for PR #${step.number} in ${step.ghRepo} at ${sha(step.headSha)}: it runs the contributor's code in CI`;
+    case "spawn-worker":
+      return `Start a worker with this prompt:\n${fenced(step.prompt)}`;
   }
 }
 

@@ -581,6 +581,21 @@ steps. Paths below are under `packages/core/opensession-server/src/`.
     rules and autonomy decide as for any automatic send. The recipient is
     pinned by the server when the lead proposes, and a person who stopped
     the draft or acted on the conversation since wins.
+  - **Triage on GitHub** (`blob-comment`, `blob-label`, `close-issue`,
+    `close-pr`) posts as Blob's machine user through `server/github-blob.ts`
+    with every guard below. Only as a recorded step may a lead post on a
+    public repository, and only one listed in `publicRepos`, for a lead
+    owner who may post there (`blobSupervisorPoster`); the lead's own
+    `blob_*` tools stay private-only. `close-pr` runs only while the pull
+    request is still at the head the owner saw.
+  - **Approving a workflow run** (`approve-run`, category
+    `contributor-ci`) runs an outside contributor's code in the project's
+    CI, with whatever its workflows can reach (caches, self-hosted
+    runners, the run's token). Its
+    category asks first by default. The App approves with its own
+    `actions: write` mint (`GITHUB_APP_ACTIONS_PERMISSIONS`), only while
+    the pull request is open and still at the approved head, and only a run
+    of this repository for that head.
   - **Starting a worker** (`spawn-worker`) is refused. `spawn_task` would
     start a fully trusted session for the owner (interactive trust, their
     user, AWS credentials, interactive-only MCP servers), and the restricted
@@ -618,6 +633,13 @@ steps. Paths below are under `packages/core/opensession-server/src/`.
   `updateProjectDocument`, which lets only the instance owner or the lead's
   owner loosen a lead. An answer the supervisor records, a dismiss or a
   close changes nothing.
+- **The owner's focus is the owner's.** `lead.focus`, the owner's words
+  on what the lead is for (at most 1,500 characters), is quoted at the top
+  of the lead's charter. Changing or clearing it counts as giving the lead
+  more room (`loosenedLeadFields`), so only the instance owner or the lead's
+  owner may. The lead's GitHub reads (`github_issues`, `github_issue`,
+  `server/leads/github-issues.ts`) use the App's read token, its own
+  project's repository only, and quote what others wrote as data.
 - **Only-you categories are only prepared.** Refunds, pricing, disputes,
   tax and legal, contracts and writes to production data are pinned to the
   owner (`PINNED_ONLY_YOU`, `shared/project-lead.ts`); settings can't lower

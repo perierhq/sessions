@@ -86,6 +86,15 @@ export const GITHUB_APP_CHECKS_PERMISSIONS: Record<string, string> = {
   metadata: "read",
 };
 
+/** The workflow-run approval token: a project lead's approve-run step
+ *  (server/leads/apply.ts), which approves an outside contributor's
+ *  workflow run after the owner said yes. Its own mint, so an installation
+ *  without `actions: write` loses only that step. */
+export const GITHUB_APP_ACTIONS_PERMISSIONS: Record<string, string> = {
+  actions: "write",
+  metadata: "read",
+};
+
 /** Repository-scoped token projected only to trusted GitHub code workflows.
  * It can push/reply and inspect the failing checks and workflow logs it must
  * diagnose, but remains bound to the one owner-verified repository. */

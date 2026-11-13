@@ -4,6 +4,8 @@ import { READY_4_OF_6 } from "../../../shared/project-settings-fixtures";
 import { ApiError } from "../api/request";
 import {
   applyLeadPatch,
+  leadFocusPatch,
+  leadFocusPreview,
   leadRuleRows,
   leadSaveErrorText,
   leadStageHelp,
@@ -19,7 +21,7 @@ describe("lead section model", () => {
       ...lead,
       rules: { ...lead.rules, refund: "alone", "ci-repair": "asks-first" },
     });
-    expect(rows).toHaveLength(14);
+    expect(rows).toHaveLength(18);
     const refund = rows.find((r) => r.category === "refund");
     expect(refund).toMatchObject({ level: "only-you", pinned: true });
     expect(rows.find((r) => r.category === "ci-repair")).toMatchObject({
@@ -70,6 +72,22 @@ describe("lead section model", () => {
       applyLeadPatch(capped, { budgetUsdPerMonth: null }).document.lead
         .budgetUsdPerMonth,
     ).toBeNull();
+  });
+
+  test("the focus previews its first line and saves trimmed, empty as null", () => {
+    expect(leadFocusPreview(undefined)).toBe("Not set");
+    expect(leadFocusPreview("  \n")).toBe("Not set");
+    expect(leadFocusPreview("Short.\nSecond line")).toBe("Short.");
+    expect(leadFocusPatch("  Words  ")).toBe("Words");
+    expect(leadFocusPatch("   ")).toBeNull();
+  });
+
+  test("a focus patch paints, and null clears it", () => {
+    const set = applyLeadPatch(READY_4_OF_6, { focus: " Maintain it. " });
+    expect(set.document.lead.focus).toBe("Maintain it.");
+    expect(
+      applyLeadPatch(set, { focus: null }).document.lead.focus,
+    ).toBeUndefined();
   });
 
   test("refusals keep the server's reason", () => {

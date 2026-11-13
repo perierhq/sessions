@@ -96,6 +96,7 @@ beforeEach(() => {
     now: () => clock,
     projectLabel: () => "Acme",
     isRepo: (id) => id === PROJECT,
+    isPublicRepo: async () => false,
   });
   restoreInbox = __setSupervisorInboxDepsForTest({
     now: () => clock,
@@ -146,6 +147,38 @@ async function leadGoal() {
 }
 
 describe("ensureLeadGoal", () => {
+  test("the charter carries the owner's focus and, on a public repository, the maintainer's duties", async () => {
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      isPublicRepo: async (id) => id === PROJECT,
+    });
+    await setLead({ enabled: true, focus: "Maintain Acme for its users." });
+    await ensureLeadGoal(PROJECT);
+    const mission = (await leadGoal()).mission;
+    expect(mission).toContain("> Maintain Acme for its users.");
+    expect(mission).toContain("## Maintaining the repository");
+    // Changing the focus rewrites the charter on the next check.
+    await setLead({ focus: "Triage issues first." });
+    await ensureLeadGoal(PROJECT);
+    expect((await leadGoal()).mission).toContain("> Triage issues first.");
+  });
+
+  test("a visibility lookup that fails reads as private", async () => {
+    __setLeadGoalDepsForTest({
+      now: () => clock,
+      projectLabel: () => "Acme",
+      isRepo: (id) => id === PROJECT,
+      isPublicRepo: async () => {
+        throw new Error("GitHub down");
+      },
+    });
+    await setLead({ enabled: true });
+    await ensureLeadGoal(PROJECT);
+    expect((await leadGoal()).mission).not.toContain("## Maintaining");
+  });
+
   test("nothing while the lead is off", async () => {
     expect(await ensureLeadGoal(PROJECT)).toEqual({ action: "none" });
     expect((await getProjectDocument(PROJECT)).lead.goalId).toBeUndefined();

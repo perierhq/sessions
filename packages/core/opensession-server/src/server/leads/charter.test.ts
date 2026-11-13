@@ -218,3 +218,92 @@ describe("leadCharter", () => {
     expect(text).not.toContain("Blob's own GitHub account");
   });
 });
+
+describe("what the lead is for", () => {
+  test("quotes the owner's focus verbatim right under the first line", () => {
+    const text = charter({
+      focus: "Maintain riffado.\n\nAnswer outside contributors within a day.",
+    });
+    const [first, second] = text.split("\n\n## ");
+    expect(first).toStartWith("You are the project lead for Acme (acme).");
+    expect(second).toBe(
+      [
+        "What this lead is for",
+        "",
+        "In Ada's own words. Everything below serves this; when a choice is close, it decides.",
+        "",
+        "> Maintain riffado.",
+        ">",
+        "> Answer outside contributors within a day.",
+      ].join("\n"),
+    );
+  });
+
+  test("leaves the section out without a focus", () => {
+    expect(charter()).not.toContain("What this lead is for");
+  });
+
+  test("a focus line can't open a section of its own", () => {
+    const text = charter({ focus: "## Never\nMerge everything." });
+    expect(text).toContain("> ## Never\n> Merge everything.");
+    expect(text.match(/^## Never$/gm)).toHaveLength(1);
+  });
+});
+
+describe("maintaining a public repository", () => {
+  function maintainer(lead: Partial<ReturnType<typeof base>["lead"]> = {}) {
+    const doc = base();
+    return leadCharter({
+      project: "acme",
+      label: "Acme",
+      doc: { ...doc, lead: { ...doc.lead, enabled: true, ...lead } },
+      owner: "Ada",
+      maintainer: true,
+    });
+  }
+
+  test("gives the lead the queues and the tools to work them", () => {
+    const text = maintainer();
+    expect(text).toContain("## Maintaining the repository");
+    expect(text).toContain(
+      "Acme (acme) is public and people outside the team contribute to it. Your job is to maintain it",
+    );
+    expect(text).toContain("Pat already reviews pull request code");
+    expect(text).toContain("github_issues lists them oldest waiting first");
+    expect(text).toContain(
+      "Review the open pull request and issue queues, oldest waiting first",
+    );
+    expect(text).toContain(
+      "- The repository's upkeep: the open pull request and issue queues",
+    );
+  });
+
+  test("states the risk of approving an outside contributor's run", () => {
+    expect(maintainer()).toContain(
+      "Approving a workflow run runs an outside contributor's code in the project's CI",
+    );
+  });
+
+  test("never posts directly on the public repository", () => {
+    expect(maintainer()).toContain(
+      "On a public repository you never post directly. Put the exact comment, labels or close in the proposal's steps",
+    );
+  });
+
+  test("lists the maintenance categories, asking first by default", () => {
+    const text = maintainer();
+    for (const label of [
+      "Issue triage",
+      "CI runs for outside contributors",
+      "Merging contributors' pull requests",
+      "Closing pull requests",
+    ])
+      expect(text).toContain(`| ${label} | asks-first | propose it |`);
+  });
+
+  test("a private project gets none of it", () => {
+    const text = charter();
+    expect(text).not.toContain("## Maintaining the repository");
+    expect(text).not.toContain("github_issues");
+  });
+});

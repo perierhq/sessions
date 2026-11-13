@@ -27,6 +27,7 @@ import { configuredIntegration } from "./config";
 import { githubGitCredentialEnv } from "./github-git-credential";
 import { writeFileAtomic } from "./shared/atomic-write";
 import {
+  GITHUB_APP_ACTIONS_PERMISSIONS as ACTIONS_PERMISSIONS,
   GITHUB_APP_CHECKS_PERMISSIONS as CHECKS_PERMISSIONS,
   GITHUB_APP_CODE_PERMISSIONS as CODE_PERMISSIONS,
   GITHUB_APP_READ_PERMISSIONS as READ_PERMISSIONS,
@@ -282,9 +283,14 @@ export interface GithubInstallationCredential {
 
 /** Which permission set a service mint asks for. `checks` exists only for the
  *  approval gate's check runs; see GITHUB_APP_CHECKS_PERMISSIONS. */
-type MintScope = "read" | "write" | "checks";
+type MintScope = "read" | "write" | "checks" | "actions";
 
-function mintScope(opts: { write?: boolean; checks?: boolean }): MintScope {
+function mintScope(opts: {
+  write?: boolean;
+  checks?: boolean;
+  actions?: boolean;
+}): MintScope {
+  if (opts.actions) return "actions";
   return opts.checks ? "checks" : opts.write ? "write" : "read";
 }
 
@@ -292,6 +298,7 @@ const MINT_PERMISSIONS: Record<MintScope, Record<string, string>> = {
   read: READ_PERMISSIONS,
   write: WRITE_PERMISSIONS,
   checks: CHECKS_PERMISSIONS,
+  actions: ACTIONS_PERMISSIONS,
 };
 
 export async function githubAppInstallationToken(
@@ -303,6 +310,7 @@ export async function githubAppInstallationToken(
 async function installationCredential(opts: {
   write?: boolean;
   checks?: boolean;
+  actions?: boolean;
   owner?: string;
 }): Promise<GithubInstallationCredential | null> {
   const { clientId } = githubUserAuthSettings();
@@ -418,6 +426,8 @@ export async function githubInstallationCredential(
     write?: boolean;
     /** Mint the approval gate's checks-only set instead of read/write. */
     checks?: boolean;
+    /** Mint the workflow-run approval set (GITHUB_APP_ACTIONS_PERMISSIONS). */
+    actions?: boolean;
     repo?: string;
     owner?: string;
   } = {},
@@ -429,6 +439,7 @@ export async function githubInstallationCredential(
   return installationCredential({
     ...(opts.write ? { write: true } : {}),
     ...(opts.checks ? { checks: true } : {}),
+    ...(opts.actions ? { actions: true } : {}),
     ...(owner ? { owner } : {}),
   });
 }

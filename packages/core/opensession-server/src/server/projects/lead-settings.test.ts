@@ -338,3 +338,67 @@ test("clearing the owner", async () => {
   if ("error" in cleared) throw new Error(cleared.error);
   expect(cleared.lead.owner).toBeUndefined();
 });
+
+const FOCUS_ERROR =
+  "What the lead is for (lead.focus) must be text of at most 1500 characters";
+
+test("the owner sets, trims and clears what the lead is for", async () => {
+  const set = await write({
+    focus: "  Maintain the app.\r\nAnswer contributors within a day.  ",
+  });
+  if ("error" in set) throw new Error(set.error);
+  expect(set.lead.focus).toBe(
+    "Maintain the app.\nAnswer contributors within a day.",
+  );
+  expect(kit.audits.at(-1)?.fields).toContain("lead.focus");
+  const blank = await write({ focus: "   " });
+  if ("error" in blank) throw new Error(blank.error);
+  expect(blank.lead.focus).toBeUndefined();
+  await write({ focus: "Keep it tidy." });
+  const cleared = await write({ focus: null });
+  if ("error" in cleared) throw new Error(cleared.error);
+  expect(cleared.lead.focus).toBeUndefined();
+});
+
+test("the focus is bounded and plain text", async () => {
+  for (const focus of ["x".repeat(1501), "bell\u0007", 42, ["a"]])
+    expect(await write({ focus })).toEqual({ error: FOCUS_ERROR, status: 400 });
+  const longest = await write({ focus: "x".repeat(1500) });
+  if ("error" in longest) throw new Error(longest.error);
+  expect(longest.lead.focus).toHaveLength(1500);
+});
+
+test("only the instance owner or the lead's owner changes the focus", async () => {
+  for (const actor of [agent, grace])
+    expect(await write({ focus: "Ship faster." }, actor)).toEqual({
+      error: LOOSEN,
+      status: 403,
+    });
+  await write({ focus: "Maintain it." });
+  // Clearing it changes what the lead does too.
+  expect(await write({ focus: null }, grace)).toEqual({
+    error: LOOSEN,
+    status: 403,
+  });
+  expect((await getProjectDocument("acme-web")).lead.focus).toBe(
+    "Maintain it.",
+  );
+});
+
+test("a stored focus reads back; a malformed one reads as unset", async () => {
+  const doc = await getProjectDocument("acme-web");
+  await projectDocuments().set("acme-web", {
+    ...doc,
+    lead: { ...doc.lead, focus: "Triage issues." },
+    revision: 2,
+  });
+  expect((await getProjectDocument("acme-web")).lead.focus).toBe(
+    "Triage issues.",
+  );
+  await projectDocuments().set("acme-web", {
+    ...doc,
+    lead: { ...doc.lead, focus: "x".repeat(2000) },
+    revision: 3,
+  });
+  expect((await getProjectDocument("acme-web")).lead.focus).toBeUndefined();
+});

@@ -937,6 +937,7 @@ export function changedFieldPaths(
     "wakeTokenLimit",
     "goalId",
     "owner",
+    "focus",
   ] as const)
     if (before.lead[field] !== after.lead[field]) out.push(`lead.${field}`);
   for (const category of LEAD_CATEGORIES)

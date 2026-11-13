@@ -33,6 +33,10 @@ export const LEAD_CATEGORIES = [
   "tax-legal",
   "contract",
   "production-data-write",
+  "issue-triage",
+  "contributor-ci",
+  "pr-merge",
+  "pr-close",
 ] as const;
 export type LeadCategory = (typeof LEAD_CATEGORIES)[number];
 
@@ -51,6 +55,10 @@ export const LEAD_CATEGORY_LABELS: Record<LeadCategory, string> = {
   "tax-legal": "Tax and legal",
   contract: "Contracts",
   "production-data-write": "Writes to production data",
+  "issue-triage": "Issue triage",
+  "contributor-ci": "CI runs for outside contributors",
+  "pr-merge": "Merging contributors' pull requests",
+  "pr-close": "Closing pull requests",
 };
 
 /** Categories that stay with the owner whatever the settings say: a patch
@@ -80,6 +88,15 @@ export const DEFAULT_LEAD_RULES: Readonly<Record<LeadCategory, LeadLevel>> = {
   "tax-legal": "only-you",
   contract: "only-you",
   "production-data-write": "only-you",
+  // Maintaining a public repository. Each one speaks or acts in public for
+  // the project, so each asks first until the owner says otherwise.
+  // contributor-ci approves a workflow run on an outside contributor's
+  // pull request: that runs their code in the project's CI, with whatever
+  // the workflows can reach.
+  "issue-triage": "asks-first",
+  "contributor-ci": "asks-first",
+  "pr-merge": "asks-first",
+  "pr-close": "asks-first",
 };
 
 /** Alone categories whose action at the coordinate stage is spawning a
@@ -103,6 +120,8 @@ export const MAX_LEAD_DAILY_WAKES = 1_000;
 export const DEFAULT_LEAD_WAKE_TOKENS = 1_000_000;
 export const MIN_LEAD_WAKE_TOKENS = 10_000;
 export const MAX_LEAD_WAKE_TOKENS = 50_000_000;
+/** Characters in the owner's note on what the lead is for. */
+export const MAX_LEAD_FOCUS_CHARS = 1_500;
 
 export interface ProjectLeadSettings {
   enabled: boolean;
@@ -119,9 +138,13 @@ export interface ProjectLeadSettings {
   goalId?: string;
   /** The person the lead answers to. */
   owner?: string;
+  /** The owner's own words on what the lead is for, quoted at the top of
+   *  its charter (leads/charter.ts). At most MAX_LEAD_FOCUS_CHARS. */
+  focus?: string;
 }
 
-/** What the project page may send; `owner: null` clears the owner. */
+/** What the project page may send; `owner: null` clears the owner and
+ *  `focus: null` (or empty) clears the focus. */
 export interface ProjectLeadPatch {
   enabled?: boolean;
   stage?: LeadStage;
@@ -131,6 +154,7 @@ export interface ProjectLeadPatch {
   dailyWakeLimit?: number;
   wakeTokenLimit?: number;
   owner?: string | null;
+  focus?: string | null;
 }
 
 /** One project's lead as GET /api/supervisor/leads lists it: the summary
