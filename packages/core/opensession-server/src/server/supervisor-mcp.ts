@@ -31,6 +31,10 @@
  * `autonomy_report` reads how often Blob handled things alone versus asked
  * the owner (supervisor-autonomy.ts).
  *
+ * `board_read` and `board_apply` read and edit the owner's board in the
+ * Blob app (blob-board-tools.ts, blob-board.ts), with the camera from the
+ * session's Blob surface.
+ *
  * The inbox and ledger tools are built here once and shared with the
  * watch's own server (supervisor-watch-mcp.ts).
  */
@@ -43,6 +47,7 @@ import {
   autonomyReport,
 } from "./supervisor-autonomy";
 import { blobGithubTools } from "./blob-github-tools";
+import { boardApplyTool, boardReadTool } from "./blob-board-tools";
 import { blobSupervisorPoster } from "./github-blob";
 import { createSdkMcpServer, tool } from "./inprocess-mcp";
 import {
@@ -381,6 +386,19 @@ export function createSupervisorMcpServer(ctx: {
   sessionId?: string;
 }) {
   const user = ctx.user;
+  const board = {
+    user,
+    // The camera the owner has now, from the session's Blob surface.
+    viewport: async () => {
+      if (!ctx.sessionId) return undefined;
+      const [{ findSessionAsync }, { freshBlobSurface }] = await Promise.all([
+        import("./session-cache"),
+        import("./blob-surface"),
+      ]);
+      const session = await findSessionAsync(ctx.sessionId);
+      return session ? freshBlobSurface(session)?.viewport : undefined;
+    },
+  };
   return createSdkMcpServer({
     name: SUPERVISOR_MCP_SERVER,
     version: "1.0.0",
@@ -507,6 +525,8 @@ export function createSupervisorMcpServer(ctx: {
         async (args) => text(await autonomyReport(user, args.days ?? 7)),
       ),
       postItemTool(user, "supervisor"),
+      boardReadTool(board),
+      boardApplyTool(board),
       incidentsTool(user),
       supportWaitingTool(user),
       ownerMemoryTool(user, ctx.sessionId),

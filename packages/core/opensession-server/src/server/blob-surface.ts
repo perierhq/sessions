@@ -4,13 +4,23 @@
  * to the supervisor (supervisor.ts, adrs/supervisor-and-leads.md), not the
  * Desk, so only supervisor sessions listen.
  *
- * Blob sends `surface: { app: "blob", panes, width }` with each prompt. It is
+ * Blob sends `surface: { app: "blob", panes, width, viewport? }` with each
+ * prompt; `viewport` is the board camera (shared/blob-board.ts BoardViewport):
+ * its size, origin and zoom, the fold's band and the clock strip on an open
+ * Duo, and the closed camera's size. It is
  * persisted on the session file like the composer's effort and speed
  * (maybePersistEffort/Speed), so a queued or resumed turn still sees it, and
  * cleared by a prompt that carries none, so the same supervisor opened on the
  * web goes back to ordinary replies. A supervisor turn then gets it as wrapped
  * per-turn context, the way it already gets `deskStateContext`.
  */
+import {
+  BOARD_LIMITS,
+  DUO_CLOSED,
+  DUO_OPEN,
+  visibleRect,
+  type BoardViewport,
+} from "../shared/blob-board";
 import { wrapContext } from "./prompt-context";
 import { touchNativeSession } from "./session-cache";
 import type { BlobSurface, UnifiedSession } from "./types";
@@ -34,7 +44,113 @@ export function parseBlobSurface(
         ? "compact"
         : undefined;
   if (!panes || !width) return undefined;
-  return { panes, width, at: now.toISOString() };
+  const viewport = parseBoardViewport(r.viewport);
+  return {
+    panes,
+    width,
+    ...(viewport ? { viewport } : {}),
+    at: now.toISOString(),
+  };
+}
+
+const CAMERA_MAX = 10_000;
+
+function num(value: unknown, min: number, max: number): number | undefined {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= min &&
+    value <= max
+    ? value
+    : undefined;
+}
+
+function pair(
+  value: unknown,
+  min: number,
+  max: number,
+): [number, number] | undefined {
+  if (!Array.isArray(value) || value.length !== 2) return undefined;
+  const a = num(value[0], min, max);
+  const b = num(value[1], min, max);
+  return a !== undefined && b !== undefined ? [a, b] : undefined;
+}
+
+/** The board camera Blob reports, validated; anything malformed is no
+ *  viewport (the turn still gets the rest of the surface). */
+export function parseBoardViewport(raw: unknown): BoardViewport | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const w = num(r.w, 1, CAMERA_MAX);
+  const h = num(r.h, 1, CAMERA_MAX);
+  const origin = pair(
+    r.origin ?? [0, 0],
+    -BOARD_LIMITS.size,
+    2 * BOARD_LIMITS.size,
+  );
+  const zoom = num(r.zoom ?? 1, 0.25, 2);
+  if (w === undefined || h === undefined || !origin || zoom === undefined)
+    return undefined;
+  const band = (value: unknown) => {
+    if (value === undefined) return undefined;
+    const p = pair(value, 0, w);
+    return p && p[0] < p[1] ? p : null;
+  };
+  const hinge = band(r.hinge);
+  const strip = band(r.strip);
+  if (hinge === null || strip === null) return undefined;
+  let closed: { w: number; h: number } | undefined;
+  if (r.closed !== undefined) {
+    const c = r.closed as Record<string, unknown> | null;
+    const cw = num(c?.w, 1, CAMERA_MAX);
+    const ch = num(c?.h, 1, CAMERA_MAX);
+    if (cw === undefined || ch === undefined) return undefined;
+    closed = { w: cw, h: ch };
+  }
+  return {
+    w,
+    h,
+    origin,
+    zoom,
+    ...(hinge ? { hinge } : {}),
+    ...(strip ? { strip } : {}),
+    ...(closed ? { closed } : {}),
+  };
+}
+
+const pt = (n: number) => String(Math.round(n * 2) / 2);
+
+/** The board lines of the turn's Blob context: the camera now, what it
+ *  shows, the fold and the closed camera, and the placement rule. */
+export function boardViewportLines(
+  viewport: BoardViewport | undefined,
+): string[] {
+  const lines = [
+    "Your board: the Blob app shows one board of yours, kept across replies. Read it with opensession-supervisor board_read and edit it with board_apply, by id.",
+  ];
+  if (!viewport) {
+    lines.push(
+      `No camera came with this message. Assume the closed Duo: put what the owner must see first in x 0–${DUO_CLOSED.w}, what can wait at x ≥ ${DUO_OPEN.hinge[1]}, and no text in the band x ${DUO_OPEN.hinge[0]}–${DUO_OPEN.hinge[1]}.`,
+    );
+    return lines;
+  }
+  const view = visibleRect(viewport);
+  const kind = viewport.hinge
+    ? "the open Duo"
+    : viewport.closed
+      ? "the closed Duo"
+      : "a single screen";
+  lines.push(
+    `Camera now: ${kind}, ${pt(viewport.w)}×${pt(viewport.h)} pt at board (${pt(viewport.origin[0])}, ${pt(viewport.origin[1])}), zoom ${viewport.zoom}. Visible board: x ${pt(view.x)}–${pt(view.x + view.w)}, y ${pt(view.y)}–${pt(view.y + view.h)}${viewport.strip ? " (the clock strip on the trailing edge is not board)" : ""}.`,
+  );
+  if (viewport.hinge)
+    lines.push(
+      `The fold: board x ${pt(viewport.hinge[0])}–${pt(viewport.hinge[1])} at the home camera. No text there: the server moves text off it and tells you.`,
+    );
+  if (viewport.closed)
+    lines.push(
+      `Closed, the camera shows x 0–${pt(viewport.closed.w)}: put what the owner must see first there, so it is on screen closed and open; use x ≥ ${pt(viewport.hinge?.[1] ?? DUO_OPEN.hinge[1])} for what can wait a pan.`,
+    );
+  return lines;
 }
 
 /**
@@ -74,6 +190,18 @@ export const SAY_SHOW_LINES = [
 export const NOT_IN_BLOB =
   "Not in Blob this turn: write a normal reply with no say fence.";
 
+/** The session's Blob surface while it is fresh, else undefined. */
+export function freshBlobSurface(
+  session: Pick<UnifiedSession, "blobSurface">,
+  now: Date = new Date(),
+): BlobSurface | undefined {
+  const s = session.blobSurface;
+  const at = s ? Date.parse(s.at) : NaN;
+  if (!s || !Number.isFinite(at) || now.getTime() - at > FRESH_MS)
+    return undefined;
+  return s;
+}
+
 /** The context note for this turn: where Blob shows the reply, or
  *  `NOT_IN_BLOB`. Nothing for a session that isn't the supervisor. */
 export function blobSurfaceContext(
@@ -81,10 +209,8 @@ export function blobSurfaceContext(
   now: Date = new Date(),
 ): string | undefined {
   if (!session.supervisor) return undefined;
-  const s = session.blobSurface;
-  const at = s ? Date.parse(s.at) : NaN;
-  if (!s || !Number.isFinite(at) || now.getTime() - at > FRESH_MS)
-    return wrapContext(NOT_IN_BLOB, "blob-surface");
+  const s = freshBlobSurface(session, now);
+  if (!s) return wrapContext(NOT_IN_BLOB, "blob-surface");
   const room =
     s.panes === 2
       ? "two panes side by side (an open foldable): a view may put a chart or table in one and the detail in the other"
@@ -93,9 +219,12 @@ export function blobSurfaceContext(
         : "one wide screen";
   return wrapContext(
     [
-      `This reply is shown in the Blob app on ${room}, under a small character that speaks for you.`,
-      ...SAY_SHOW_LINES,
-    ].join(" "),
+      [
+        `This reply is shown in the Blob app on ${room}, under a small character that speaks for you.`,
+        ...SAY_SHOW_LINES,
+      ].join(" "),
+      boardViewportLines(s.viewport).join(" "),
+    ].join("\n\n"),
     "blob-surface",
   );
 }

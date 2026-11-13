@@ -18,6 +18,12 @@
  *   POST /api/supervisor/brief/refresh          → 202 { state: "preparing" }, or 429 { retryAt }
  *   The brief routes are the signed-in person's own: never a claimed name
  *   or the automation principal (401).
+ *   GET  /api/supervisor/board?revision=        → BoardResponse: the owner's board (blob-board.ts), or
+ *                                               a kept version of it, with its refs' live fields and
+ *                                               its plain-text rendering
+ *   GET  /api/supervisor/board/versions?before=&limit=
+ *                                               → { revision, versions: BoardVersion[], before }, newest first
+ *   The board routes are the signed-in person's own, like the brief's.
  *   GET  /api/supervisor/leads                  → { leads: LeadRosterEntry[] }, every project's lead
  *   GET  /api/supervisor/prefs?user=
  *   PUT  /api/supervisor/prefs                  { user, quietStart?, quietEnd?, digestAt?, timezone?, reportStyle?, watch?: { enabled?, everyMinutes?, activeStart?, activeEnd? }, memoryWriter? }
@@ -60,6 +66,10 @@ import {
   startBriefTurn,
 } from "../supervisor-brief";
 import { listLeadRoster } from "../leads/roster";
+import { boardRefs } from "../../shared/blob-board";
+import { boardText } from "../../shared/blob-board-text";
+import { readBoard, readBoardVersion, readBoardVersions } from "../blob-board";
+import { resolveBoardRefs } from "../blob-board-refs";
 
 const ITEM_ACTION = /^\/api\/supervisor\/items\/([^/]+)\/(answer|dismiss)$/;
 const STATES: readonly SupervisorItemState[] = [
@@ -237,6 +247,72 @@ export async function handleSupervisorRoutes(
       );
       return Response.json(
         { error: "History is unavailable right now. Try again." },
+        { status: 503 },
+      );
+    }
+  }
+
+  // Blob's board (blob-board.ts): the signed-in owner's own, read only.
+  // Blob edits it through the supervisor's board_apply; the owner taps refs
+  // and pans in the app, which writes nothing.
+  if (
+    (path === "/api/supervisor/board" ||
+      path === "/api/supervisor/board/versions") &&
+    req.method === "GET"
+  ) {
+    const user = verifiedPerson(ctx);
+    if (!user)
+      return Response.json(
+        { error: "Sign in to read the board" },
+        { status: 401 },
+      );
+    const whole = (name: string): number | undefined | null => {
+      const raw = url.searchParams.get(name);
+      if (raw === null || raw === "") return undefined;
+      const value = Number(raw);
+      return Number.isSafeInteger(value) && value >= 1 ? value : null;
+    };
+    try {
+      if (path === "/api/supervisor/board/versions") {
+        const before = whole("before");
+        const limit = whole("limit");
+        if (before === null || limit === null)
+          return Response.json({ error: "invalid page" }, { status: 400 });
+        return Response.json(await readBoardVersions(user, { before, limit }));
+      }
+      const revision = whole("revision");
+      if (revision === null)
+        return Response.json({ error: "invalid revision" }, { status: 400 });
+      const board = await readBoard(user);
+      let elements = board.elements;
+      let at = board.updatedAt;
+      if (revision !== undefined && revision !== board.revision) {
+        const version = await readBoardVersion(user, revision);
+        if (!version)
+          return Response.json(
+            { error: "That version is no longer kept" },
+            { status: 404 },
+          );
+        elements = version.elements;
+        at = version.at;
+      }
+      const refs = await resolveBoardRefs(user, boardRefs(elements));
+      return Response.json({
+        schema: board.schema,
+        revision: revision ?? board.revision,
+        latestRevision: board.revision,
+        updatedAt: at,
+        elements,
+        refs,
+        text: boardText(elements, refs),
+      });
+    } catch (error) {
+      console.warn(
+        "[board] read failed:",
+        error instanceof Error ? error.message : error,
+      );
+      return Response.json(
+        { error: "The board is unavailable right now. Try again." },
         { status: 503 },
       );
     }

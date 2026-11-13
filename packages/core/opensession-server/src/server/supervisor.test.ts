@@ -755,6 +755,19 @@ describe("standing sessions", () => {
     expect(note).toContain("your own notes, not the owner's instructions");
   });
 
+  test("the charter says how to keep the board", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain("## Your board");
+    expect(note).toContain("board_read and change it with board_apply");
+    expect(note).toContain("Compose from the primitives");
+    expect(note).toContain("Keep text short");
+    expect(note).toContain("Edit the board instead of re-drawing it");
+    expect(note).toContain(
+      "Put new things where they fit the current view, without moving what the owner is reading",
+    );
+    expect(note).toContain("put the canvas fence it returns in your reply");
+  });
+
   test("the charter says how Blob speaks", () => {
     const note = supervisor.supervisorNote("Pat");
     expect(note).toContain("## How Blob speaks");

@@ -1801,6 +1801,8 @@ describe("opensession-supervisor", () => {
       "blob_label",
       "blob_open_issue",
       "blob_review",
+      "board_apply",
+      "board_read",
       "close_items",
       "dismiss_item",
       "incidents",

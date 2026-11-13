@@ -715,6 +715,35 @@ token (`github-blob-boundary.test.ts`). Paths are under
   to the instance owner. The supervisor inbox sweep raises one needs-you
   item when the token expires within 14 days.
 
+## Blob's board
+
+Blob answers on one board per owner (`adrs/blob-views.md`,
+`server/blob-board.ts`). Paths are under
+`packages/core/opensession-server/src/`.
+
+- **Only the owner's.** The board document is keyed by the owner, and only
+  the supervisor conversation's `board_read` and `board_apply`, mounted for
+  its owner's own turns (`supervisorInboxOwner`), write it. The routes
+  (`GET /api/supervisor/board`, `/board/versions`) answer the signed-in
+  person (`verifiedPerson`) with their own board, never a claimed name or
+  an automation (401). The owner writes nothing in v1: taps and pans move
+  the camera only.
+- **Refs resolve inside the owner's projects.** A ref names an object by
+  `kind:locator`; the server resolves it at read time from the PR cache,
+  the incident store and the support store, and only within projects whose
+  lead answers to the owner (`server/blob-board-refs.ts`). Anything else,
+  including an object that exists in another project, reads `not-found`,
+  exactly like a missing one, and shows as plain text. Resolution is
+  bounded (100 refs a read) and cached per owner for 30 seconds.
+- **Data, not instructions.** Live titles (pull requests, incidents,
+  customer subjects) are written by other people; `board_read` quotes them
+  as data. Note and text fields are plain text, checked by a strict schema
+  (`shared/blob-board.ts`); an image is an https URL or a `/media` path,
+  which clients load like any transcript image.
+- **No lost writes.** `board_apply` names the revision it read; the write
+  is a compare-and-set in the catalog, and a board that moved on is refused
+  with its revision.
+
 ## Mac Keychain requests
 
 The interactive-only `opensession-keychain` server can request one macOS Keychain
