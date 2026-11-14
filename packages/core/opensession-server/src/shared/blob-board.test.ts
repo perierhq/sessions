@@ -65,12 +65,16 @@ describe("refs", () => {
       number: 12,
       name: "ci-success",
     });
-    expect(parseRef("incident:acme/inc-1")?.name).toBe("inc-1");
+    expect(parseRef("incident:acme/inc-1")).toMatchObject({ name: "inc-1" });
     expect(parseRef("thread:acme/sc_01")?.kind).toBe("thread");
-    expect(parseRef("release:acme@1.19.0")?.name).toBe("1.19.0");
+    expect(parseRef("release:acme@1.19.0")).toMatchObject({ name: "1.19.0" });
     expect(parseRef("project:acme")).toEqual({
       kind: "project",
       project: "acme",
+    });
+    expect(parseRef("item:si-0b6f1c2e-1d2a-4c1e-9f00-123456789abc")).toEqual({
+      kind: "item",
+      id: "si-0b6f1c2e-1d2a-4c1e-9f00-123456789abc",
     });
   });
 
@@ -83,6 +87,9 @@ describe("refs", () => {
       "incident:acme",
       "project:",
       `project:${"a".repeat(200)}`,
+      "item:",
+      "item:acme#12",
+      "item:si-../x",
     ])
       expect(parseRef(ref)).toBeNull();
   });

@@ -795,7 +795,10 @@ Blob answers on one board per owner (`adrs/blob-views.md`,
   lead answers to the owner (`server/blob-board-refs.ts`). Anything else,
   including an object that exists in another project, reads `not-found`,
   exactly like a missing one, and shows as plain text. Resolution is
-  bounded (100 refs a read) and cached per owner for 30 seconds.
+  bounded (100 refs a read) and cached per owner for 30 seconds. An
+  `item:<id>` ref is read from the owner's own supervisor inbox (one
+  document, keyed by the owner), so it can only ever name their own item;
+  it is read fresh, not cached, so an answer shows at once.
 - **Data, not instructions.** Live titles (pull requests, incidents,
   customer subjects) are written by other people; `board_read` and the
   board text `board_apply` returns quote them as data (JSON-quoted, clipped,

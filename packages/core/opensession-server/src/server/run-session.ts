@@ -3766,7 +3766,7 @@ async function runSessionPromptInner(
                   "opensession-goal-self": createGoalSelfMcpServer(
                     session.goalId,
                   ),
-                  ...supervisorMcpFor(session, user),
+                  ...supervisorMcpFor(session, user, durablePromptEntryId),
                 })
               : // A supervisor session's owner also gets its inbox tools
                 // (supervisor-mcp.ts), and no timers of its own; every
@@ -3780,7 +3780,7 @@ async function runSessionPromptInner(
                       sessionId,
                       durablePromptEntryId,
                     ),
-                    supervisorMcpFor(session, user),
+                    supervisorMcpFor(session, user, durablePromptEntryId),
                   ),
                 );
   const hostedRun =

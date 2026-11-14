@@ -16,7 +16,7 @@
  */
 import {
   BOARD_LIMITS,
-  DUO_CLOSED,
+  DEFAULT_BOARD_VIEWPORT,
   DUO_OPEN,
   visibleRect,
   type BoardViewport,
@@ -120,19 +120,18 @@ export function parseBoardViewport(raw: unknown): BoardViewport | undefined {
 const pt = (n: number) => String(Math.round(n * 2) / 2);
 
 /** The board lines of the turn's Blob context: the camera now, what it
- *  shows, the fold and the closed camera, and the placement rule. */
-export function boardViewportLines(
-  viewport: BoardViewport | undefined,
-): string[] {
+ *  shows, the fold and the closed camera, and the placement rule. A turn
+ *  whose app sent no camera gets the closed Duo (DEFAULT_BOARD_VIEWPORT),
+ *  so every Blob turn knows where its drawing lands. */
+export function boardViewportLines(sent: BoardViewport | undefined): string[] {
   const lines = [
     "Your board: the Blob app shows one board of yours, kept across replies. Read it with opensession-supervisor board_read and edit it with board_apply, by id.",
   ];
-  if (!viewport) {
+  const viewport = sent ?? DEFAULT_BOARD_VIEWPORT;
+  if (!sent)
     lines.push(
-      `No camera came with this message. Assume the closed Duo: put what the owner must see first in x 0–${DUO_CLOSED.w}, what can wait at x ≥ ${DUO_OPEN.hinge[1]}, and no text in the band x ${DUO_OPEN.hinge[0]}–${DUO_OPEN.hinge[1]}.`,
+      "No camera came with this message, so assume the closed Duo below.",
     );
-    return lines;
-  }
   const view = visibleRect(viewport);
   const kind = viewport.hinge
     ? "the open Duo"
@@ -149,6 +148,10 @@ export function boardViewportLines(
   if (viewport.closed)
     lines.push(
       `Closed, the camera shows x 0–${pt(viewport.closed.w)}: put what the owner must see first there, so it is on screen closed and open; use x ≥ ${pt(viewport.hinge?.[1] ?? DUO_OPEN.hinge[1])} for what can wait a pan.`,
+    );
+  if (viewport.closed && !viewport.hinge)
+    lines.push(
+      `Opened, the fold is board x ${pt(DUO_OPEN.hinge[0])}–${pt(DUO_OPEN.hinge[1])}: no text there.`,
     );
   return lines;
 }
@@ -168,6 +171,10 @@ export function maybePersistBlobSurface(
   session.blobSurface = next;
 }
 
+/** When a Blob reply goes on the board instead of into text. */
+export const BOARD_ANSWER_LINE =
+  "Draw, don't write: when the owner asks anything with structure (status, why something is stuck, what changed, a plan, a comparison, a timeline), answer on your board with board_apply and keep the say to a sentence or two that points at it, then put the canvas fence board_apply returns right after the say fence, so the reply in history shows the board as it was. Plain text replies are for simple chat only.";
+
 /**
  * Say and show: how a reply is split in Blob. A ```say fence opens the reply
  * with the script Blob speaks, written for the ear; everything after it is
@@ -180,7 +187,8 @@ export const SAY_SHOW_LINES = [
   "Write every reply in two parts: what Blob says, then what Blob shows.",
   "Say: open with a ```say fence holding the script Blob speaks aloud. Write it for the ear: one to three short sentences, natural spoken words and contractions, no markdown, lists, tables, URLs or ids read aloud, and no numbers read out like a table.",
   'It talks about what is shown and never repeats it ("Here\'s what happened overnight. The two things that matter are on screen."). It may start with a delivery hint in square brackets, like [warm, unhurried], only when the tone helps.',
-  "Show: everything after the say fence is shown and never spoken. View first, prose minimal: point at the real things (sessions, pull requests, incidents, people) as links the app can open, with their status, and use timelines, images and screenshots, and choices for a decision, from the block catalog in docs/blocks.md.",
+  "Show: everything after the say fence is shown and never spoken. View first, prose minimal: point at the real things (sessions, pull requests, incidents, people) as links the app can open, with their status. On Blob, timelines, images and screenshots, and choices for a decision go on your board, as the next line says; the block catalog in docs/blocks.md is for other clients.",
+  BOARD_ANSWER_LINE,
   "Cues: only when pointing helps, and at most one per sentence, put {#id} in the script where the speech turns to a shown element, at a sentence start or mid-sentence (\"Checkout flapped again right after 2.3.4, {#pr-12} and Pat's fix is waiting.\"), and give that element the same id: after a fence's language (```metrics {#stats}), right after a link ([PR #12](url){#pr-12}), or at the end of a line. Blob focuses the element when the words after the cue start; the cue itself is never read. Keep at least four words between cues; ids are short, made of letters, digits and dashes.",
   "Tables only when the owner asked for data. No paragraph recaps. Keep it to what fits; offer the rest as choices instead of writing it out.",
 ] as const;

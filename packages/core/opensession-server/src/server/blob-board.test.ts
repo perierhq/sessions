@@ -453,7 +453,10 @@ describe("tools", () => {
   test("board_read on an empty board, without a camera", async () => {
     const out = await run(tools.boardReadTool(ctx()), {});
     expect(out.text).toContain("Board revision 0");
-    expect(out.text).toContain("No camera came with this message.");
+    expect(out.text).toContain(
+      "No camera came with this message, so assume the closed Duo below.",
+    );
+    expect(out.text).toContain("Visible board: x 0–382, y 0–678.");
     expect(out.text).toContain("The board is empty.");
   });
 

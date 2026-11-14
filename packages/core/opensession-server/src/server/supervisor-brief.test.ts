@@ -308,6 +308,70 @@ describe("the record", () => {
     expect(sent).toHaveLength(0);
   });
 
+  test("write_brief records only a board revision applied in its own turn", async () => {
+    const a = await decision("Ship 1.19.0?", "a");
+    // Another turn drew the board today, minutes ago: not this brief's.
+    await brief.noteBriefBoard("Ada", 4, "turn-earlier");
+    const other = await brief.writeSupervisorBrief(
+      "Ada",
+      { say: "Morning.", decisions: [{ itemId: a.id }] },
+      "turn-brief",
+    );
+    expect(other.ok && other.brief.boardRevision).toBeUndefined();
+    // No turn id: nothing recorded either.
+    await brief.noteBriefBoard("Ada", 5, "turn-x");
+    const none = await brief.writeSupervisorBrief("Ada", {
+      say: "Morning.",
+      decisions: [{ itemId: a.id }],
+    });
+    expect(none.ok && none.brief.boardRevision).toBeUndefined();
+    // Applied in the same turn, before write_brief: recorded.
+    await brief.noteBriefBoard("Ada", 6, "turn-brief-2");
+    await brief.noteBriefBoard("Ada", 7, "turn-brief-2");
+    const drawn = await brief.writeSupervisorBrief(
+      "Ada",
+      { say: "Morning.", decisions: [{ itemId: a.id }] },
+      "turn-brief-2",
+    );
+    expect(drawn.ok && drawn.brief.boardRevision).toBe(7);
+    expect((await record()).brief?.boardRevision).toBe(7);
+    expect((await brief.getSupervisorBrief("Ada")).brief?.boardRevision).toBe(
+      7,
+    );
+    // A board edit later records nothing over a brief that has one.
+    expect(await brief.noteBriefBoard("Ada", 8, "turn-brief-2")).toBe(false);
+    expect((await record()).brief?.boardRevision).toBe(7);
+  });
+
+  test("a board_apply after write_brief fills in the brief only in the turn that wrote it", async () => {
+    const a = await decision("Ship 1.19.0?", "a");
+    await brief.writeSupervisorBrief(
+      "Ada",
+      { say: "Morning.", decisions: [{ itemId: a.id }] },
+      "turn-brief",
+    );
+    // An unrelated turn's apply a minute later leaves it alone.
+    clock += 60_000;
+    expect(await brief.noteBriefBoard("Ada", 3, "turn-chat")).toBe(false);
+    expect((await record()).brief?.boardRevision).toBeUndefined();
+    await brief.writeSupervisorBrief(
+      "Ada",
+      { say: "Morning again.", decisions: [{ itemId: a.id }] },
+      "turn-brief-2",
+    );
+    expect(await brief.noteBriefBoard("Ada", 5, "turn-brief-2")).toBe(true);
+    expect((await record()).brief?.boardRevision).toBe(5);
+  });
+
+  test("the notice asks for the board and carries the count line", () => {
+    expect(
+      brief.briefNotice("2026-07-01", { handledAlone: 11, askedYou: 3 }),
+    ).toBe(
+      '<!--os:session-notice-->\nMorning brief for 2026-07-01. Prepare it as "The morning brief" in your charter says: draw it on your board with board_apply, then finish with write_brief. Count line: 11 handled alone, 3 asked you.',
+    );
+    expect(brief.briefNotice("2026-07-01")).not.toContain("Count line");
+  });
+
   test("an invalid brief writes nothing", async () => {
     const result = await brief.writeSupervisorBrief("Ada", {
       say: "Morning.",
@@ -715,6 +779,7 @@ describe("reading", () => {
         "Brief for 2026-07-01, not seen by the owner yet.",
         "",
         "What Blob said: Morning. Two things need you.",
+        "Not drawn on your board: Blob showed the decision cards.",
         "",
         "Handled:",
         "- Closed the stale budget card",

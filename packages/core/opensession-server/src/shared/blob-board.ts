@@ -91,7 +91,9 @@ export const BOARD_SIDES = [
 export type BoardSide = (typeof BOARD_SIDES)[number];
 const NOTE_SIDES = ["top", "right", "bottom", "left"] as const;
 
-/** Ref kinds in v1. */
+/** Ref kinds in v1. `item` is one of the owner's supervisor inbox items
+ *  (a decision waiting for them, or an update): tapping it opens the
+ *  decision view. */
 export const REF_KINDS = [
   "pr",
   "check",
@@ -99,8 +101,11 @@ export const REF_KINDS = [
   "thread",
   "release",
   "project",
+  "item",
 ] as const;
 export type RefKind = (typeof REF_KINDS)[number];
+/** Kinds whose locator starts with one of the owner's projects. */
+type ProjectRefKind = Exclude<RefKind, "item">;
 
 /** Live fields a text element may write as `{ref.<field>}`. */
 export const REF_FIELDS = [
@@ -144,10 +149,22 @@ export interface BoardViewport {
   closed?: { w: number; h: number };
 }
 
+/** The camera a supervisor turn assumes when the Blob app sent none: the
+ *  closed Duo's board-visible area at the home position. */
+export const DEFAULT_BOARD_VIEWPORT: BoardViewport = {
+  w: DUO_CLOSED.w,
+  h: DUO_CLOSED.h,
+  origin: [0, 0],
+  zoom: 1,
+  closed: { w: DUO_CLOSED.w, h: DUO_CLOSED.h },
+};
+
 // ── Refs ────────────────────────────────────────────────────────────────────
 
 const PROJECT = "[A-Za-z0-9][A-Za-z0-9._-]{0,79}";
-const REF_PATTERNS: Record<RefKind, RegExp> = {
+/** A supervisor inbox item id (supervisor-inbox.ts: `si-<uuid>`). */
+const ITEM_REF = /^(si-[A-Za-z0-9-]{1,76})$/;
+const REF_PATTERNS: Record<ProjectRefKind, RegExp> = {
   pr: new RegExp(`^(${PROJECT})#(\\d{1,7})$`),
   check: new RegExp(`^(${PROJECT})#(\\d{1,7})/([A-Za-z0-9 ._():/-]{1,80})$`),
   incident: new RegExp(`^(${PROJECT})/([A-Za-z0-9_-]{1,80})$`),
@@ -156,20 +173,26 @@ const REF_PATTERNS: Record<RefKind, RegExp> = {
   project: new RegExp(`^(${PROJECT})$`),
 };
 
-export interface ParsedRef {
-  kind: RefKind;
-  project: string;
-  /** PR number for pr and check. */
-  number?: number;
-  /** Check name, incident id, conversation id or release version. */
-  name?: string;
-}
+export type ParsedRef =
+  | {
+      kind: ProjectRefKind;
+      project: string;
+      /** PR number for pr and check. */
+      number?: number;
+      /** Check name, incident id, conversation id or release version. */
+      name?: string;
+    }
+  | {
+      kind: "item";
+      /** The supervisor inbox item's id, in the owner's own inbox. */
+      id: string;
+    };
 
 /**
  * `kind:locator`, or null. Locators: `pr:<project>#<n>`,
  * `check:<project>#<n>/<check name>`, `incident:<project>/<id>`,
  * `thread:<project>/<conversation id>`, `release:<project>@<version>`,
- * `project:<project>`.
+ * `project:<project>`, `item:<inbox item id>`.
  */
 export function parseRef(ref: string): ParsedRef | null {
   if (ref.length > BOARD_LIMITS.refChars) return null;
@@ -177,6 +200,10 @@ export function parseRef(ref: string): ParsedRef | null {
   if (colon < 1) return null;
   const kind = ref.slice(0, colon) as RefKind;
   if (!REF_KINDS.includes(kind)) return null;
+  if (kind === "item") {
+    const item = ITEM_REF.exec(ref.slice(colon + 1));
+    return item ? { kind, id: item[1]! } : null;
+  }
   const match = REF_PATTERNS[kind].exec(ref.slice(colon + 1));
   if (!match) return null;
   const project = match[1]!;
@@ -281,7 +308,7 @@ const ref = z
   .max(BOARD_LIMITS.refChars)
   .refine(
     (r) => parseRef(r) !== null,
-    "a ref is kind:locator, e.g. pr:acme#12, check:acme#12/ci, incident:acme/inc-1, thread:acme/sc_1, release:acme@1.2.0, project:acme",
+    "a ref is kind:locator, e.g. pr:acme#12, check:acme#12/ci, incident:acme/inc-1, thread:acme/sc_1, release:acme@1.2.0, project:acme, item:si-<inbox item id>",
   );
 const zIndex = z.number().int().min(-1000).max(1000);
 const fraction = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]);

@@ -233,4 +233,112 @@ describe("board refs", () => {
     ).toHaveLength(5);
     expect(reads.filter((r) => r === "roster")).toHaveLength(1);
   });
+
+  test("an item ref is one of the owner's inbox items, read fresh, once per resolve", async () => {
+    const id = "si-0b6f1c2e-1d2a-4c1e-9f00-123456789abc";
+    const done = "si-11111111-2222-3333-4444-555555555555";
+    let state: "open" | "answered" = "open";
+    const inboxReads: string[] = [];
+    __setBoardRefDepsForTest({
+      now: () => NOW,
+      roster: async () => roster,
+      items: async (owner) => {
+        inboxReads.push(owner);
+        return [
+          {
+            id,
+            user: owner,
+            project: "acme",
+            source: "lead:acme",
+            kind: "needs-you",
+            title: "Merge #533 once green?",
+            body: "",
+            options: ["Merge", "Hold"],
+            createdAt: NOW,
+            updatedAt: NOW,
+            state,
+            ...(state === "answered" ? { answer: "Merge" } : {}),
+          },
+          {
+            id: done,
+            user: owner,
+            source: "supervisor",
+            kind: "fyi",
+            title: "CI repaired",
+            body: "",
+            createdAt: NOW,
+            updatedAt: NOW,
+            state: "dismissed",
+          },
+        ];
+      },
+    });
+    const refs = await resolveBoardRefs("Ada", [
+      `item:${id}`,
+      `item:${done}`,
+      "item:si-99999999-9999-9999-9999-999999999999",
+    ]);
+    expect(refs[`item:${id}`]).toEqual({
+      ok: true,
+      kind: "item",
+      title: "Merge #533 once green?",
+      status: "waiting for you",
+      statusTone: "amber",
+      updatedAt: new Date(NOW).toISOString(),
+      fields: {
+        itemId: id,
+        kind: "needs-you",
+        project: "acme",
+        options: "Merge · Hold",
+      },
+    });
+    expect(refs[`item:${done}`]).toMatchObject({
+      ok: true,
+      status: "dismissed",
+      statusTone: "ink2",
+    });
+    expect(refs["item:si-99999999-9999-9999-9999-999999999999"]).toEqual({
+      ok: false,
+      reason: "not-found",
+    });
+    expect(inboxReads).toEqual(["Ada"]);
+    // Answered in Blob: the next read shows it, no cache in between.
+    state = "answered";
+    const again = await resolveBoardRefs("Ada", [`item:${id}`]);
+    expect(again[`item:${id}`]).toMatchObject({
+      status: "answered: Merge",
+      statusTone: "green",
+    });
+  });
+
+  test("item refs resolve when the roster can't be read; project refs are unavailable", async () => {
+    const id = "si-0b6f1c2e-1d2a-4c1e-9f00-123456789abc";
+    __setBoardRefDepsForTest({
+      now: () => NOW,
+      roster: async () => {
+        throw new Error("roster down");
+      },
+      items: async (owner) => [
+        {
+          id,
+          user: owner,
+          project: "acme",
+          source: "lead:acme",
+          kind: "needs-you",
+          title: "Merge #533 once green?",
+          body: "",
+          createdAt: NOW,
+          updatedAt: NOW,
+          state: "open",
+        },
+      ],
+    });
+    const refs = await resolveBoardRefs("Ada", [`item:${id}`, "project:acme"]);
+    expect(refs[`item:${id}`]).toMatchObject({
+      ok: true,
+      kind: "item",
+      status: "waiting for you",
+    });
+    expect(refs["project:acme"]).toEqual({ ok: false, reason: "unavailable" });
+  });
 });

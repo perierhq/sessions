@@ -48,6 +48,7 @@ import {
 } from "./supervisor-autonomy";
 import { blobGithubTools } from "./blob-github-tools";
 import { boardApplyTool, boardReadTool } from "./blob-board-tools";
+import { DEFAULT_BOARD_VIEWPORT } from "../shared/blob-board";
 import { blobSupervisorPoster } from "./github-blob";
 import { createSdkMcpServer, tool } from "./inprocess-mcp";
 import {
@@ -81,6 +82,7 @@ import {
   BRIEF_MAX_HANDLED,
   BRIEF_SAY_LEN,
   describeSupervisorBrief,
+  noteBriefBoard,
   writeSupervisorBrief,
 } from "./supervisor-brief";
 import {
@@ -384,20 +386,32 @@ export function createSupervisorMcpServer(ctx: {
   /** The supervisor session, linked from Blob's posts on private
    *  repositories. */
   sessionId?: string;
+  /** The turn's prompt entry id: write_brief records only a board revision
+   *  board_apply committed in this same turn. */
+  turnId?: string;
 }) {
   const user = ctx.user;
+  const turnId = ctx.turnId;
   const board = {
     user,
-    // The camera the owner has now, from the session's Blob surface.
+    // The camera the owner has now, from the session's Blob surface; the
+    // closed Duo when the app sent none (a brief turn has no prompt).
     viewport: async () => {
-      if (!ctx.sessionId) return undefined;
+      if (!ctx.sessionId) return DEFAULT_BOARD_VIEWPORT;
       const [{ findSessionAsync }, { freshBlobSurface }] = await Promise.all([
         import("./session-cache"),
         import("./blob-surface"),
       ]);
       const session = await findSessionAsync(ctx.sessionId);
-      return session ? freshBlobSurface(session)?.viewport : undefined;
+      return (
+        (session ? freshBlobSurface(session)?.viewport : undefined) ??
+        DEFAULT_BOARD_VIEWPORT
+      );
     },
+    // The turn remembers its revision for write_brief, and a brief it
+    // already wrote without a board points at the board now.
+    applied: async (revision: number) =>
+      turnId ? noteBriefBoard(user, revision, turnId) : false,
   };
   return createSdkMcpServer({
     name: SUPERVISOR_MCP_SERVER,
@@ -463,7 +477,7 @@ export function createSupervisorMcpServer(ctx: {
       ),
       tool(
         "write_brief",
-        `Store the owner's morning brief, the last step of a brief turn (your charter, "The morning brief"), or when they ask for a fresh one. say is what Blob says aloud, for the ear, about 60 words, under ${BRIEF_SAY_LEN} characters, with no internal ids. handled: one line per thing you closed or did, with its item id when there is one, at most ${BRIEF_MAX_HANDLED}. decisions: at most ${BRIEF_MAX_DECISIONS} open needs-you items only the owner can decide, most important first, each with the option you recommend (its text or number). Every other open needs-you item stays open as later. The server checks each id against the inbox; an error says what to fix.`,
+        `Store the owner's morning brief, the last step of a brief turn (your charter, "The morning brief"), or when they ask for a fresh one. Draw it on your board with board_apply first: the server records that revision. say is what Blob says aloud, for the ear, about 60 words, under ${BRIEF_SAY_LEN} characters, with no internal ids. handled: one line per thing you closed or did, with its item id when there is one, at most ${BRIEF_MAX_HANDLED}. decisions: at most ${BRIEF_MAX_DECISIONS} open needs-you items only the owner can decide, most important first, each with the option you recommend (its text or number). Every other open needs-you item stays open as later. The server checks each id against the inbox; an error says what to fix.`,
         {
           say: z.string().min(1).max(BRIEF_SAY_LEN),
           handled: z
@@ -486,21 +500,27 @@ export function createSupervisorMcpServer(ctx: {
             .optional(),
         },
         async (args) => {
-          const result = await writeSupervisorBrief(user, {
-            say: args.say,
-            handled: args.handled?.map((h) => ({
-              line: h.line,
-              ...(h.item_id ? { itemId: h.item_id } : {}),
-            })),
-            decisions: args.decisions?.map((d) => ({
-              itemId: d.item_id,
-              ...(d.recommended ? { recommended: d.recommended } : {}),
-            })),
-          });
+          const result = await writeSupervisorBrief(
+            user,
+            {
+              say: args.say,
+              handled: args.handled?.map((h) => ({
+                line: h.line,
+                ...(h.item_id ? { itemId: h.item_id } : {}),
+              })),
+              decisions: args.decisions?.map((d) => ({
+                itemId: d.item_id,
+                ...(d.recommended ? { recommended: d.recommended } : {}),
+              })),
+            },
+            turnId,
+          );
           if (!result.ok) return { ...text(result.error), isError: true };
           const { brief } = result;
           return text(
-            `Brief for ${brief.day} stored: ${brief.decisions.length} decisions, ${brief.handled.length} handled, ${brief.later.count} later. Blob shows it; end the turn with one short line.`,
+            brief.boardRevision !== undefined
+              ? `Brief for ${brief.day} stored with board revision ${brief.boardRevision}: ${brief.decisions.length} decisions, ${brief.handled.length} handled, ${brief.later.count} later. Blob shows it; end the turn with one short line.`
+              : `Brief for ${brief.day} stored: ${brief.decisions.length} decisions, ${brief.handled.length} handled, ${brief.later.count} later. It is not on your board yet, so Blob shows plain cards: draw it now with board_read and board_apply (the count line, the decisions as item refs, what changed), then end the turn with one short line.`,
           );
         },
       ),
@@ -768,6 +788,8 @@ export function supervisorInboxOwner(
 export function supervisorMcpFor(
   session: SupervisorSessionShape | null | undefined,
   turnUser: string | null | undefined,
+  /** The turn's prompt entry id (see createSupervisorMcpServer). */
+  turnId?: string,
 ): Record<string, ReturnType<typeof createSupervisorMcpServer>> {
   const user = supervisorInboxOwner(session, turnUser);
   if (!user) return {};
@@ -775,6 +797,7 @@ export function supervisorMcpFor(
     [SUPERVISOR_MCP_SERVER]: createSupervisorMcpServer({
       user,
       ...(session?.id ? { sessionId: session.id } : {}),
+      ...(turnId ? { turnId } : {}),
     }),
   };
 }

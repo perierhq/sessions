@@ -79,3 +79,12 @@ catalog. There is no `blob_show` tool and no second channel.
   block: a reply that changed it carries a ` ```canvas ` fence naming the
   board revision, with the board as plain text inside, so history and
   every other client keep working (docs/blocks.md, "Blob's board").
+- Update 2026-11-14: Blob draws instead of writing. The brief turn
+  composes the brief on the board (the count line, each decision as a
+  text element with an `item:<inbox item id>` ref, what changed as
+  sketchy marks) before `write_brief`, which records that board revision;
+  a brief with none is logged and Blob shows the decision cards. In
+  conversation, structured answers (status, why it's stuck, what changed,
+  plans, comparisons, timelines) edit the board with a short spoken line;
+  plain text is for simple chat. Every Blob turn has a camera: the closed
+  Duo (382 × 678) when the app sent none.

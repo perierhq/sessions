@@ -741,7 +741,7 @@ registerInteractiveMcpBuilder(
         createGoalSelfMcpServer(goalId);
     // Only a supervisor session carries its inbox tools (supervisor-mcp.ts),
     // and it keeps no timers of its own.
-    Object.assign(servers, supervisorMcpFor(session, user));
+    Object.assign(servers, supervisorMcpFor(session, user, promptEntryId));
     return withoutSupervisorWithheld(session, servers);
   },
 );

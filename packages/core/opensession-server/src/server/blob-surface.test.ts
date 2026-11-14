@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_BOARD_VIEWPORT } from "../shared/blob-board";
 import {
+  BOARD_ANSWER_LINE,
   blobSurfaceContext,
   boardViewportLines,
   freshBlobSurface,
@@ -80,9 +82,15 @@ describe("board camera", () => {
       zoom: 2,
     }).join("\n");
     expect(panned).toContain("Visible board: x 500–933.5, y 100–434.5");
-    expect(boardViewportLines(undefined).join("\n")).toContain(
-      "No camera came with this message. Assume the closed Duo",
+    const assumed = boardViewportLines(undefined).join("\n");
+    expect(assumed).toContain(
+      "No camera came with this message, so assume the closed Duo below.",
     );
+    // The default is the closed Duo's board-visible area, 382×678.
+    expect(assumed).toContain(
+      "Camera now: the closed Duo, 382×678 pt at board (0, 0), zoom 1. Visible board: x 0–382, y 0–678.",
+    );
+    expect(assumed).toContain("Opened, the fold is board x 455.5–495.5");
     const context = blobSurfaceContext(
       {
         supervisor: true,
@@ -97,6 +105,45 @@ describe("board camera", () => {
     );
     expect(context).toContain("board_read");
     expect(context).toContain("Camera now: the open Duo");
+  });
+
+  test("every Blob turn carries a camera: the closed Duo when the app sent none", () => {
+    const context = blobSurfaceContext(
+      {
+        supervisor: true,
+        blobSurface: { panes: 1, width: "compact", at: now.toISOString() },
+      },
+      now,
+    );
+    expect(context).toContain(
+      "No camera came with this message, so assume the closed Duo below.",
+    );
+    expect(context).toContain("Visible board: x 0–382, y 0–678.");
+    expect(DEFAULT_BOARD_VIEWPORT).toEqual({
+      w: 382,
+      h: 678,
+      origin: [0, 0],
+      zoom: 1,
+      closed: { w: 382, h: 678 },
+    });
+  });
+
+  test("structured questions are answered on the board, chat in text", () => {
+    const context = blobSurfaceContext(
+      {
+        supervisor: true,
+        blobSurface: { panes: 1, width: "compact", at: now.toISOString() },
+      },
+      now,
+    );
+    expect(context).toContain(BOARD_ANSWER_LINE);
+    expect(BOARD_ANSWER_LINE).toContain(
+      "status, why something is stuck, what changed, a plan, a comparison, a timeline",
+    );
+    expect(BOARD_ANSWER_LINE).toContain("canvas fence board_apply returns");
+    expect(BOARD_ANSWER_LINE).toContain(
+      "Plain text replies are for simple chat only.",
+    );
   });
 
   test("a stale surface carries no camera", () => {
