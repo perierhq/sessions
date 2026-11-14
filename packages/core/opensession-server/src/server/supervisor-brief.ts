@@ -10,8 +10,18 @@
  * keeps it instead of handing it to the watch. The charter's "The morning
  * brief" section (supervisor.ts) says what to do; the notice only names
  * the day. The turn checks each open item with its tools, closes stale and
- * duplicate ones (close_items), acts where the rules allow, and ends with
- * write_brief (supervisor-mcp.ts), which lands here.
+ * duplicate ones (close_items), acts where the rules allow, composes the
+ * brief on the owner's board with board_apply (blob-board-tools.ts), and
+ * ends with write_brief (supervisor-mcp.ts), which lands here. The notice
+ * carries today's handled alone vs asked you counts for the board's count
+ * line.
+ *
+ * write_brief records the board revision that shows the brief: one the
+ * turn applied since it started (or, for a brief written in conversation,
+ * one from the same local day). A brief written without one is still
+ * stored, logged, and Blob falls back to the decision cards; a board_apply
+ * right after it (within BRIEF_RUN_TIMEOUT_MS) fills it in
+ * (`noteBriefBoard`).
  *
  * A turn starts:
  * - at the owner's digest time, from the inbox sweep (`scheduled`), once
@@ -89,6 +99,9 @@ export interface SupervisorBrief {
   /** The other open needs-you items when it was written. */
   later: { count: number; itemIds: string[] };
   seenAt?: number;
+  /** The board revision that shows it; absent when the turn drew nothing,
+   *  and Blob shows the decision cards instead. */
+  boardRevision?: number;
   /** The server-started turn that wrote it; absent when written in a
    *  conversation turn. */
   trigger?: BriefTrigger;
@@ -150,6 +163,10 @@ export interface BriefDeps {
   /** Before a brief turn: raise at most one "let the lead do it alone"
    *  decision (supervisor-autonomy.ts prepareAutonomyProposal). */
   prepareDecisions(user: string): Promise<unknown>;
+  /** The owner's board: its revision and when it last changed. */
+  board(user: string): Promise<{ revision: number; updatedAt: number }>;
+  /** The inbox view, read for the notice's counts. */
+  view(user: string): Promise<SupervisorBriefView>;
 }
 
 const liveDeps: BriefDeps = {
@@ -183,6 +200,8 @@ const liveDeps: BriefDeps = {
     (await import("./supervisor-autonomy")).autonomyLedger(user, view),
   prepareDecisions: async (user) =>
     (await import("./supervisor-autonomy")).prepareAutonomyProposal(user),
+  board: async (user) => (await import("./blob-board")).readBoard(user),
+  view: (user) => readSupervisorBriefView(user),
 };
 
 /** The socket frame a written brief sends: { type, user, day }. Blob
@@ -275,6 +294,13 @@ function cleanBrief(value: unknown): SupervisorBrief | undefined {
   };
   const seenAt = num(value.seenAt);
   if (seenAt !== undefined) brief.seenAt = seenAt;
+  const boardRevision = num(value.boardRevision);
+  if (
+    boardRevision !== undefined &&
+    Number.isSafeInteger(boardRevision) &&
+    boardRevision >= 1
+  )
+    brief.boardRevision = boardRevision;
   const pushedAt = num(value.pushedAt);
   if (pushedAt !== undefined) brief.pushedAt = pushedAt;
   const trigger = TRIGGERS.find((t) => t === value.trigger);
@@ -352,10 +378,33 @@ function today(view: SupervisorBriefView, now: number): string {
   return localClock(now, view.timeZone).day;
 }
 
-/** The notice that starts a brief turn: fixed words and the day; what to
- *  do is in the charter. */
-export function briefNotice(day: string): string {
-  return `${SESSION_NOTICE}\nMorning brief for ${day}. Prepare it as "The morning brief" in your charter says, and finish with write_brief.`;
+/** The notice that starts a brief turn: fixed words, the day and, when
+ *  they could be read, today's handled alone vs asked you counts for the
+ *  board's count line; what to do is in the charter. */
+export function briefNotice(
+  day: string,
+  counts?: { handledAlone: number; askedYou: number },
+): string {
+  const line = counts
+    ? ` Count line: ${counts.handledAlone} handled alone, ${counts.askedYou} asked you.`
+    : "";
+  return `${SESSION_NOTICE}\nMorning brief for ${day}. Prepare it as "The morning brief" in your charter says: draw it on your board with board_apply, then finish with write_brief.${line}`;
+}
+
+/** Today's counts for the notice, or nothing when they can't be read. */
+async function noticeCounts(
+  user: string,
+): Promise<{ handledAlone: number; askedYou: number } | undefined> {
+  try {
+    const ledger = await deps.ledger(user, await deps.view(user));
+    return { handledAlone: ledger.handledAlone, askedYou: ledger.askedYou };
+  } catch (error) {
+    console.warn(
+      `[supervisor-brief] ${user}: no counts for the notice:`,
+      error instanceof Error ? error.message : error,
+    );
+    return undefined;
+  }
 }
 
 export type StartBriefResult =
@@ -483,7 +532,7 @@ async function deliverRun(user: string, run: BriefRun): Promise<boolean> {
     });
     await deps.deliver(
       sessionId,
-      briefNotice(run.day),
+      briefNotice(run.day, await noticeCounts(user)),
       `${BRIEF_DELIVERY_PREFIX}${run.id}`,
     );
     return true;
@@ -634,6 +683,15 @@ export async function writeSupervisorBrief(
   input: WriteBriefInput,
 ): Promise<WriteBriefResult> {
   const now = deps.now();
+  // Another namespace: read before the compare-and-set. A board that can't
+  // be read counts as not drawn; the brief is stored either way.
+  const board = await deps.board(user).catch((error: unknown) => {
+    console.warn(
+      `[supervisor-brief] ${user}: board unreadable:`,
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  });
   let result: WriteBriefResult = { ok: false, error: "not written" };
   await updateSupervisorBrief(user, (view) => {
     const valid = validateBrief(input, view.items);
@@ -643,10 +701,18 @@ export async function writeSupervisorBrief(
     }
     const record = cleanBriefRecord(view.brief);
     const run = runInFlight(record, now) ? record.run : undefined;
+    const day = run?.day ?? today(view, now);
+    const drawn =
+      !!board &&
+      board.revision >= 1 &&
+      (run
+        ? board.updatedAt >= run.startedAt
+        : localClock(board.updatedAt, view.timeZone).day === day);
     const brief: SupervisorBrief = {
-      day: run?.day ?? today(view, now),
+      day,
       asOf: now,
       ...valid.value,
+      ...(drawn ? { boardRevision: board.revision } : {}),
       ...(run ? { trigger: run.trigger } : {}),
     };
     result = { ok: true, brief };
@@ -665,11 +731,47 @@ export async function writeSupervisorBrief(
     };
   });
   const written = result as WriteBriefResult;
+  if (written.ok && written.brief.boardRevision === undefined)
+    console.warn(
+      `[supervisor-brief] ${user}: the brief for ${written.brief.day} was written without a board revision; Blob shows the decision cards`,
+    );
   if (written.ok) {
     await deps.announce(user, written.brief.day).catch(() => {});
     await pushBriefIfDue(user).catch(() => 0);
   }
   return written;
+}
+
+/**
+ * board_apply committed `revision`: today's brief, written without a board
+ * in the last BRIEF_RUN_TIMEOUT_MS, shows this one. Anything else (a brief
+ * already drawn, an older one, a board edit later in the day) is left
+ * alone. Returns whether the brief changed.
+ */
+export async function noteBriefBoard(
+  user: string,
+  revision: number,
+): Promise<boolean> {
+  const now = deps.now();
+  let changed: SupervisorBrief | undefined;
+  await updateSupervisorBrief(user, (view) => {
+    changed = undefined;
+    const record = cleanBriefRecord(view.brief);
+    const brief = record.brief;
+    if (
+      !brief ||
+      brief.boardRevision !== undefined ||
+      brief.day !== today(view, now) ||
+      now - brief.asOf > BRIEF_RUN_TIMEOUT_MS
+    )
+      return null;
+    changed = { ...brief, boardRevision: revision };
+    return { brief: stored({ ...record, brief: changed }) };
+  });
+  const brief = changed as SupervisorBrief | undefined;
+  if (!brief) return false;
+  await deps.announce(user, brief.day).catch(() => {});
+  return true;
 }
 
 /** The owner saw the brief: no push for it after this. */
@@ -853,6 +955,9 @@ export interface BriefResponse {
     asOf: number;
     say: string;
     seenAt: number | null;
+    /** The board revision that shows the brief; null when it wasn't drawn,
+     *  and the client shows the decision cards. */
+    boardRevision: number | null;
     handled: BriefHandled[];
     /** Still open ones only, each with the item as the items route
      *  returns it (revision, act). */
@@ -957,6 +1062,7 @@ export async function getSupervisorBrief(
       asOf: brief.asOf,
       say: brief.say,
       seenAt: brief.seenAt ?? null,
+      boardRevision: brief.boardRevision ?? null,
       handled: brief.handled,
       decisions: decided.map((d, i) => ({
         itemId: d.itemId,
@@ -1018,6 +1124,9 @@ export async function describeSupervisorBrief(user: string): Promise<string> {
     `Brief for ${brief.day}, ${brief.seenAt ? "seen by the owner" : "not seen by the owner yet"}.`,
     "",
     `What Blob said: ${brief.say}`,
+    brief.boardRevision !== null
+      ? `Drawn on your board at revision ${brief.boardRevision}.`
+      : "Not drawn on your board: Blob showed the decision cards.",
   );
   if (brief.handled.length) {
     lines.push("", "Handled:");

@@ -58,6 +58,7 @@ let restoreInbox: () => void = () => {};
 let restoreBrief: () => void = () => {};
 let prepared: string[] = [];
 let ledgerFails = false;
+let board = { revision: 0, updatedAt: 0 };
 
 beforeEach(() => {
   rmSync(join(root, ".opensession-supervisor-items"), {
@@ -74,6 +75,7 @@ beforeEach(() => {
   failDeliver = false;
   prepared = [];
   ledgerFails = false;
+  board = { revision: 0, updatedAt: 0 };
   restoreInbox = inbox.__setSupervisorInboxDepsForTest({
     now: () => clock,
     notify: async (user, event) => {
@@ -116,6 +118,7 @@ beforeEach(() => {
       prepared.push(`${user}@${delivered.length}`);
       return null;
     },
+    board: async () => board,
   });
 });
 
@@ -306,6 +309,38 @@ describe("the record", () => {
     expect(items.find((i) => i.id === note.id)?.digestedAt).toBe(clock);
     // Written in conversation, not by a scheduled turn: no push.
     expect(sent).toHaveLength(0);
+  });
+
+  test("write_brief records today's board revision; a board from another day is not the brief's", async () => {
+    const a = await decision("Ship 1.19.0?", "a");
+    board = { revision: 4, updatedAt: at("2026-06-30T18:00:00Z") };
+    const stale = await brief.writeSupervisorBrief("Ada", {
+      say: "Morning.",
+      decisions: [{ itemId: a.id }],
+    });
+    expect(stale.ok && stale.brief.boardRevision).toBeUndefined();
+    board = { revision: 5, updatedAt: at("2026-07-01T11:59:00Z") };
+    const drawn = await brief.writeSupervisorBrief("Ada", {
+      say: "Morning.",
+      decisions: [{ itemId: a.id }],
+    });
+    expect(drawn.ok && drawn.brief.boardRevision).toBe(5);
+    expect((await record()).brief?.boardRevision).toBe(5);
+    expect((await brief.getSupervisorBrief("Ada")).brief?.boardRevision).toBe(
+      5,
+    );
+    // A board edit later records nothing over a brief that has one.
+    expect(await brief.noteBriefBoard("Ada", 6)).toBe(false);
+    expect((await record()).brief?.boardRevision).toBe(5);
+  });
+
+  test("the notice asks for the board and carries the count line", () => {
+    expect(
+      brief.briefNotice("2026-07-01", { handledAlone: 11, askedYou: 3 }),
+    ).toBe(
+      '<!--os:session-notice-->\nMorning brief for 2026-07-01. Prepare it as "The morning brief" in your charter says: draw it on your board with board_apply, then finish with write_brief. Count line: 11 handled alone, 3 asked you.',
+    );
+    expect(brief.briefNotice("2026-07-01")).not.toContain("Count line");
   });
 
   test("an invalid brief writes nothing", async () => {
@@ -715,6 +750,7 @@ describe("reading", () => {
         "Brief for 2026-07-01, not seen by the owner yet.",
         "",
         "What Blob said: Morning. Two things need you.",
+        "Not drawn on your board: Blob showed the decision cards.",
         "",
         "Handled:",
         "- Closed the stale budget card",

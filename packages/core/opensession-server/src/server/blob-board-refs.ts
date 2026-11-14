@@ -22,6 +22,9 @@
  *   cached PR of the project whose title names the version stands in, and
  *   the ref is `not-found` when none does.
  * - `project:<project>`: the roster entry: its label and its lead.
+ * - `item:<item id>`: an item in the owner's own supervisor inbox (one
+ *   document read), so it is the owner's by construction. `fields.itemId`
+ *   is what the client opens the decision view with.
  *
  * Text other people wrote (titles, subjects) is returned as is; the tools
  * quote it as data for the model.
@@ -37,6 +40,7 @@ import {
   type ResolvedRef,
 } from "../shared/blob-board";
 import type { PrInfo } from "./pr-cache";
+import type { SupervisorItem } from "./supervisor-inbox";
 import { age } from "./supervisor-status";
 import { supervisorInboxKey } from "./supervisor-inbox";
 
@@ -52,6 +56,8 @@ export interface BoardRefDeps {
   prs(): Promise<Map<string, Map<string, PrInfo>>>;
   incident(id: string): Promise<Incident | null>;
   conversation(id: string): Promise<SupportConversation | null>;
+  /** The owner's supervisor inbox items (one document). */
+  items(owner: string): Promise<SupervisorItem[]>;
 }
 
 const liveDeps: BoardRefDeps = {
@@ -62,6 +68,9 @@ const liveDeps: BoardRefDeps = {
     (await import("./incidents/incident-store")).getIncident(id),
   conversation: async (id) =>
     (await import("./support/store")).getConversation(id),
+  items: async (owner) =>
+    (await (await import("./supervisor-inbox")).readSupervisorBriefView(owner))
+      .items,
 };
 
 let overrides: Partial<BoardRefDeps> | undefined;
@@ -127,11 +136,44 @@ function prRef(pr: PrInfo): ResolvedRef {
   };
 }
 
+/** How an inbox item reads on the board. Open needs-you items wait for the
+ *  owner (amber: the one tangerine element is the board's choice). */
+export function itemRef(item: SupervisorItem): ResolvedRef {
+  const [status, tone]: [string, BoardToken] =
+    item.state === "open"
+      ? item.kind === "needs-you"
+        ? ["waiting for you", "amber"]
+        : ["update", "ink"]
+      : item.state === "answered"
+        ? [`answered${item.answer ? `: ${item.answer}` : ""}`, "green"]
+        : [item.state, "ink2"];
+  const fields: Record<string, string> = {
+    itemId: item.id,
+    kind: item.kind,
+  };
+  if (item.project) fields.project = item.project;
+  if (item.options?.length) fields.options = item.options.join(" · ");
+  return {
+    ok: true,
+    kind: "item",
+    title: item.title,
+    status,
+    statusTone: tone,
+    updatedAt: new Date(item.updatedAt).toISOString(),
+    fields,
+  };
+}
+
 async function resolveOne(
   d: BoardRefDeps,
   parsed: ParsedRef,
   owned: ReadonlyMap<string, LeadRosterEntry>,
+  items: () => Promise<SupervisorItem[]>,
 ): Promise<ResolvedRef> {
+  if (parsed.kind === "item") {
+    const item = (await items()).find((i) => i.id === parsed.id);
+    return item ? itemRef(item) : NOT_FOUND;
+  }
   const entry = owned.get(parsed.project);
   if (!entry) return NOT_FOUND;
   const now = d.now();
@@ -294,20 +336,26 @@ export async function resolveBoardRefs(
     return out;
   }
 
+  // The inbox is read once per resolve, and only when an item ref asks.
+  let inbox: Promise<SupervisorItem[]> | undefined;
+  const items = () => (inbox ??= d.items(owner));
   for (let i = 0; i < pending.length; i += RESOLVE_CONCURRENCY) {
     const batch = pending.slice(i, i + RESOLVE_CONCURRENCY);
     const values = await Promise.all(
       batch.map(({ parsed }) =>
-        resolveOne(d, parsed, owned).catch((): ResolvedRef => ({
+        resolveOne(d, parsed, owned, items).catch((): ResolvedRef => ({
           ok: false,
           reason: "unavailable",
         })),
       ),
     );
-    for (const [j, { ref }] of batch.entries()) {
+    for (const [j, { ref, parsed }] of batch.entries()) {
       const value = values[j]!;
       out[ref] = value;
       if (!value.ok && value.reason === "unavailable") continue;
+      // An item is answered in Blob itself: read it fresh every time, from
+      // the one inbox document this resolve already read.
+      if (parsed.kind === "item") continue;
       cache.set(`${key}\u0000${ref}`, { at: now, value });
       if (cache.size > CACHE_MAX)
         cache.delete(cache.keys().next().value as string);

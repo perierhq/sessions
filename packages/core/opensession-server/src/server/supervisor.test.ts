@@ -768,6 +768,40 @@ describe("standing sessions", () => {
     expect(note).toContain("put the canvas fence it returns in your reply");
   });
 
+  test("the brief turn draws the brief on the board before write_brief", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain(
+      "5. Draw the brief on your board (board_read, then board_apply)",
+    );
+    expect(note).toContain("editing yesterday's brief elements by id");
+    expect(note).toContain(
+      "the count line: one stat text with the notice's numbers",
+    );
+    expect(note).toContain(
+      "each decision as a text element with ref item:<item id>",
+    );
+    expect(note).toContain("inside the frame of its project's region");
+    expect(note).toContain(
+      "circle the thing that blocks (an ellipse around it), an arrow from cause to effect, and a short note",
+    );
+    expect(note).toContain("6. Call write_brief.");
+    expect(note).toContain("The server records the board revision you drew.");
+    expect(note.indexOf("5. Draw the brief")).toBeLessThan(
+      note.indexOf("6. Call write_brief."),
+    );
+  });
+
+  test("structured answers go on the board, simple chat stays text", () => {
+    const note = supervisor.supervisorNote("Pat");
+    expect(note).toContain(
+      "Draw, don't write. When the owner asks anything with structure (status, why something is stuck, what changed, a plan, a comparison, a timeline), answer by editing the board",
+    );
+    expect(note).toContain("Plain text replies are for simple chat only.");
+    expect(note).toContain(
+      "customer thread, release, project, inbox item) its ref",
+    );
+  });
+
   test("the charter says how Blob speaks", () => {
     const note = supervisor.supervisorNote("Pat");
     expect(note).toContain("## How Blob speaks");
