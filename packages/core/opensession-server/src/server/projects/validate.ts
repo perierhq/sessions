@@ -25,8 +25,10 @@ import {
   LEGACY_DEFAULT_LEAD_BUDGET_USD,
   MAX_LEAD_BUDGET_USD,
   MAX_LEAD_DAILY_WAKES,
+  MAX_LEAD_FOCUS_CHARS,
   MAX_LEAD_WAKE_TOKENS,
   MIN_LEAD_WAKE_TOKENS,
+  NEVER_ALONE,
   PINNED_ONLY_YOU,
   type LeadCategory,
   type LeadLevel,
@@ -35,6 +37,7 @@ import {
   isLeadCategory,
   isLeadLevel,
   isLeadStage,
+  isNeverAlone,
   isPinnedOnlyYou,
   leadLevel,
   leadLevelWithin,
@@ -651,6 +654,11 @@ export function pinnedLeadError(category: LeadCategory): string {
   return `Only you decide ${LEAD_CATEGORY_LABELS[category].toLowerCase()}: a lead may prepare, never act (lead.rules.${category})`;
 }
 
+/** Why a NEVER_ALONE category can't be set to alone. */
+export function neverAloneLeadError(category: LeadCategory): string {
+  return `${LEAD_CATEGORY_LABELS[category]} always ask first: a lead may propose, never act alone (lead.rules.${category})`;
+}
+
 const LEAD_BUDGET_ERROR = `Lead dollar cap (lead.budgetUsdPerMonth) must be off or from $0.01 to $${MAX_LEAD_BUDGET_USD}`;
 const DAILY_WAKES_ERROR = `Lead extra wakes a day (lead.dailyWakeLimit) must be a whole number from 1 to ${MAX_LEAD_DAILY_WAKES}`;
 const WAKE_TOKENS_ERROR = `Lead tokens a wake (lead.wakeTokenLimit) must be a whole number from ${MIN_LEAD_WAKE_TOKENS} to ${MAX_LEAD_WAKE_TOKENS}`;
@@ -720,7 +728,23 @@ export function leadWithDefaults(raw: unknown): ProjectLeadSettings {
       ? { goalId: raw.goalId }
       : {}),
     ...(typeof raw.owner === "string" && raw.owner ? { owner: raw.owner } : {}),
+    ...(typeof raw.focus === "string" && leadFocusOf(raw.focus)
+      ? { focus: leadFocusOf(raw.focus)! }
+      : {}),
   };
+}
+
+const LEAD_FOCUS_ERROR = `What the lead is for (lead.focus) must be text of at most ${MAX_LEAD_FOCUS_CHARS} characters`;
+/** Control characters other than tab and newline. */
+const FOCUS_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/;
+
+/** The owner's focus text as stored: line endings made \n, trimmed; null
+ *  when empty, too long or holding control characters. */
+export function leadFocusOf(value: string): string | null {
+  const text = value.replace(/\r\n?/g, "\n").trim();
+  if (!text || text.length > MAX_LEAD_FOCUS_CHARS || FOCUS_CONTROL.test(text))
+    return null;
+  return text;
 }
 
 /** `current` with the lead fields in `input` checked and applied. The goal
@@ -756,6 +780,8 @@ export function applyLeadPatch(
         };
       if (isPinnedOnlyYou(category) && level !== "only-you")
         return { error: pinnedLeadError(category) };
+      if (isNeverAlone(category) && level === "alone")
+        return { error: neverAloneLeadError(category) };
       next.rules[category] = level;
     }
   }
@@ -784,6 +810,17 @@ export function applyLeadPatch(
       if (typeof owner !== "string")
         return { error: `Lead owner (lead.owner): ${owner.error}` };
       next.owner = owner;
+    }
+  }
+  if ("focus" in input) {
+    if (input.focus === null) delete next.focus;
+    else if (typeof input.focus !== "string")
+      return { error: LEAD_FOCUS_ERROR };
+    else if (!input.focus.trim()) delete next.focus;
+    else {
+      const focus = leadFocusOf(input.focus);
+      if (focus === null) return { error: LEAD_FOCUS_ERROR };
+      next.focus = focus;
     }
   }
   return next;
@@ -815,6 +852,8 @@ export function loosenedLeadFields(
   if (after.wakeTokenLimit > before.wakeTokenLimit)
     out.push("lead.wakeTokenLimit");
   if ((before.owner ?? "") !== (after.owner ?? "")) out.push("lead.owner");
+  // What the lead is for steers everything it proposes: the owner's to say.
+  if ((before.focus ?? "") !== (after.focus ?? "")) out.push("lead.focus");
   return out.sort();
 }
 
@@ -823,6 +862,8 @@ export function loosenedLeadFields(
 export function leadInvariantProblem(lead: ProjectLeadSettings): string | null {
   for (const c of PINNED_ONLY_YOU)
     if (lead.rules[c] !== "only-you") return pinnedLeadError(c);
+  for (const c of NEVER_ALONE)
+    if (lead.rules[c] === "alone") return neverAloneLeadError(c);
   for (const c of LEAD_CATEGORIES)
     if (!isLeadLevel(lead.rules[c]))
       return `Lead rule (lead.rules.${c}) must be one of ${LEAD_LEVELS.join(", ")}`;
@@ -831,5 +872,7 @@ export function leadInvariantProblem(lead: ProjectLeadSettings): string | null {
   if (!validLeadBudget(lead.budgetUsdPerMonth)) return LEAD_BUDGET_ERROR;
   if (!validDailyWakes(lead.dailyWakeLimit)) return DAILY_WAKES_ERROR;
   if (!validWakeTokens(lead.wakeTokenLimit)) return WAKE_TOKENS_ERROR;
+  if (lead.focus !== undefined && leadFocusOf(lead.focus) !== lead.focus)
+    return LEAD_FOCUS_ERROR;
   return null;
 }

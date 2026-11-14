@@ -20,6 +20,7 @@ import {
 } from "../supervisor-inbox";
 import { __setLeadApprovalsDepsForTest, listForProject } from "./approvals";
 import { createLeadMcpServer } from "./mcp";
+import { __setGithubIssuesDepsForTest } from "./github-issues";
 import { __setLeadOverviewDepsForTest } from "./overview";
 import { __setLeadAuditForTest } from "./report";
 import { NOW, PROJECT, SIGNALS, fixtureIncidents } from "./testing/fixture";
@@ -54,6 +55,14 @@ beforeEach(() => {
     projectDocument: async () => doc,
     listSignals: async () => SIGNALS,
     getConversation: async () => null,
+    readIssue: async (_repo, number) =>
+      number === 9
+        ? {
+            updatedAt: "2026-11-10T08:00:00Z",
+            state: "open",
+            pullRequest: false,
+          }
+        : null,
     listIncidents: async () => fixtureIncidents(),
     listInboxes: async () => [],
     openSupportRows: async () => [],
@@ -149,10 +158,126 @@ describe("opensession-lead", () => {
       "blob_open_issue",
       "blob_review",
       "flap_report",
+      "github_issue",
+      "github_issues",
       "lead_apply",
       "post_digest_note",
       "project_overview",
       "propose",
+    ]);
+  });
+
+  test("github_issues and github_issue read this project only", async () => {
+    const paths: string[] = [];
+    __setGithubIssuesDepsForTest({
+      now: () => NOW,
+      get: async (path) => {
+        paths.push(path);
+        return {
+          ok: true,
+          status: 200,
+          data: path.includes("/issues?")
+            ? [
+                {
+                  number: 4,
+                  title: "Crash on start",
+                  user: { login: "newcomer" },
+                  comments: 1,
+                  state: "open",
+                },
+              ]
+            : {
+                number: 4,
+                title: "Crash on start",
+                user: { login: "newcomer" },
+                comments: 0,
+                state: "open",
+              },
+        };
+      },
+      rateLimitedUntil: async () => 0,
+      isTeamLogin: () => false,
+    });
+    try {
+      const { call } = await client();
+      const list = await call("github_issues", { project: PROJECT });
+      expect(list.text).toContain(
+        '- #4 "Crash on start" by newcomer (outside the team)',
+      );
+      const one = await call("github_issue", { project: PROJECT, number: 4 });
+      expect(one.text).toContain("# Issue #4 in acme/app");
+      const other = await call("github_issues", { project: "other" });
+      expect(other).toEqual({
+        isError: true,
+        text: `You read ${PROJECT}'s repository only, not other.`,
+      });
+      expect(paths.every((p) => p.startsWith("/repos/acme/app/"))).toBe(true);
+    } finally {
+      __setGithubIssuesDepsForTest(undefined);
+    }
+  });
+
+  test("propose records a triage comment for the owner to read in full", async () => {
+    const { call } = await client();
+    const result = await call("propose", {
+      category: "issue-triage",
+      title: "Ask #4 for steps",
+      body: "```say\nIssue four needs steps.\n```\nIt has none.",
+      subject: "issue 4",
+      steps: [
+        {
+          kind: "blob-comment",
+          ghRepo: "acme/app",
+          number: 4,
+          body: "Thanks! Which version are you on?",
+        },
+        {
+          kind: "blob-label",
+          ghRepo: "acme/app",
+          number: 4,
+          add: ["needs info"],
+        },
+      ],
+    });
+    expect(result.isError).toBe(false);
+    expect(result.text).toContain("Rule: Asks first: Issue triage");
+    expect(result.text).toContain("Steps recorded");
+  });
+
+  test("propose pins a close-issue to the issue as GitHub has it now", async () => {
+    const { call } = await client();
+    const close = {
+      kind: "close-issue",
+      ghRepo: "acme/app",
+      reason: "not_planned",
+      note: "No reply in 30 days.",
+    };
+    const unread = await call("propose", {
+      category: "issue-triage",
+      title: "Close #8",
+      body: "Stale.",
+      subject: "issue 8",
+      steps: [{ ...close, number: 8 }],
+    });
+    expect(unread).toEqual({
+      isError: true,
+      text: "Step 1: couldn't read issue #8 in acme/app from GitHub",
+    });
+    const result = await call("propose", {
+      category: "issue-triage",
+      title: "Close #9",
+      body: "Stale.",
+      subject: "issue 9",
+      steps: [{ ...close, number: 9 }],
+    });
+    expect(result.isError).toBe(false);
+    const [record] = await listForProject(PROJECT);
+    expect(record!.proposal.steps as unknown).toEqual([
+      {
+        ...close,
+        number: 9,
+        pin: { updatedAt: "2026-11-10T08:00:00Z", state: "open" },
+      },
     ]);
   });
 
@@ -655,7 +780,7 @@ describe("opensession-lead", () => {
       });
       expect(refused).toEqual({
         isError: true,
-        text: "Step 1: merge-pr doesn't fit signal rule changes; it serves only fixes verified by a second agent, public releases or ci repair",
+        text: "Step 1: merge-pr doesn't fit signal rule changes; it serves only fixes verified by a second agent, public releases, ci repair or merging contributors' pull requests",
       });
       const send = await call("propose", {
         ...fix,

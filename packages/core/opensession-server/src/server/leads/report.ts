@@ -37,6 +37,7 @@ import {
   type PostDelivery,
 } from "../supervisor-inbox";
 import {
+  type IssuePin,
   type LeadStep,
   type SignalPatchAfter,
   type Valid,
@@ -202,6 +203,48 @@ export interface LeadActContext {
    *  each one's project and live draft. A support-send step is pinned to
    *  its draft's target from here; one missing here is refused. */
   drafts?: Readonly<Record<string, LeadDraftSource>>;
+  /** The issues the close-issue steps name, read now (issueSources),
+   *  keyed by issueKey. A close-issue step is pinned to its issue from
+   *  here; one missing here is refused. */
+  issues?: Readonly<Record<string, LeadIssueSource>>;
+}
+
+/** An issue as a close-issue step is checked against. */
+export interface LeadIssueSource extends IssuePin {
+  /** GitHub lists pull requests as issues too. */
+  pullRequest: boolean;
+}
+
+/** An issue's key in LeadActContext.issues. */
+export function issueKey(ghRepo: string, number: number): string {
+  return `${ghRepo.toLowerCase()}#${number}`;
+}
+
+/** The issues a proposal's close-issue steps name, for checkLeadAct. Raw
+ *  steps: they are validated after. An issue that can't be read is left
+ *  out, so its step is refused. */
+export async function issueSources(
+  steps: unknown,
+  read: (ghRepo: string, number: number) => Promise<LeadIssueSource | null>,
+): Promise<Record<string, LeadIssueSource>> {
+  const out: Record<string, LeadIssueSource> = {};
+  if (!Array.isArray(steps)) return out;
+  for (const step of steps.slice(0, MAX_STEPS)) {
+    const s = step as { kind?: unknown; ghRepo?: unknown; number?: unknown };
+    if (
+      !s ||
+      typeof s !== "object" ||
+      s.kind !== "close-issue" ||
+      typeof s.ghRepo !== "string" ||
+      !Number.isInteger(s.number)
+    )
+      continue;
+    const key = issueKey(s.ghRepo, s.number as number);
+    if (key in out) continue;
+    const found = await read(s.ghRepo, s.number as number).catch(() => null);
+    if (found) out[key] = found;
+  }
+  return out;
 }
 
 /** A support conversation as a support-send step is checked against. */
@@ -301,10 +344,36 @@ export function checkLeadAct(
         error: `Step ${n}: ${step.kind} doesn't fit ${label}; it serves only ${listOf(fits)}`,
       };
     }
-    if (step.kind === "merge-pr" || step.kind === "autofix-pr") {
+    if ("ghRepo" in step) {
       const repo = repoRefusal(step.ghRepo, ctx.repos);
       if ("error" in repo)
         return { ok: false, error: `Step ${n}: ${repo.error}` };
+      if (step.kind === "close-issue") {
+        // The pin is the server's, read now; any the lead gave is dropped.
+        const issue = ctx.issues?.[issueKey(repo.repo, step.number)];
+        const name = `#${step.number} in ${repo.repo}`;
+        if (!issue)
+          return {
+            ok: false,
+            error: `Step ${n}: couldn't read issue ${name} from GitHub`,
+          };
+        if (issue.pullRequest)
+          return {
+            ok: false,
+            error: `Step ${n}: ${name} is a pull request; close it with a close-pr step`,
+          };
+        if (issue.state !== "open")
+          return { ok: false, error: `Step ${n}: issue ${name} is closed` };
+        checked.push({
+          kind: "close-issue",
+          ghRepo: repo.repo,
+          number: step.number,
+          reason: step.reason,
+          note: step.note,
+          pin: { updatedAt: issue.updatedAt, state: issue.state },
+        });
+        continue;
+      }
       checked.push({ ...step, ghRepo: repo.repo });
       continue;
     }
@@ -610,6 +679,22 @@ function sha(headSha: string): string {
   return headSha.slice(0, 7);
 }
 
+/** Text the owner reads in full, indented and fenced, so nothing in it
+ *  reads as the server's lines. */
+function fenced(text: string): string {
+  const longest = Math.max(
+    2,
+    ...(text.match(/`+/g) ?? []).map((run) => run.length),
+  );
+  const fence = "`".repeat(longest + 1);
+  return [`${fence}text`, ...text.split("\n"), fence]
+    .map((row) => (row ? `   ${row}` : ""))
+    .join("\n");
+}
+
+/** How a close step's note starts, as the owner reads it (closeNote). */
+const CLOSE_NOTE_LEAD = '"Closed by Blob for @<owner>:" and then';
+
 const METHOD_COPY = {
   merge: "with a merge commit",
   squash: "squashed",
@@ -631,17 +716,23 @@ export function stepCopy(
       return `Change the ${names[step.signalId] ?? step.signalId} check: ${patchCopy(step.after, names)}`;
     case "support-send":
       return `Send reply draft ${step.draftId} in support conversation ${step.conversationId}`;
-    case "spawn-worker": {
-      const longest = Math.max(
-        2,
-        ...(step.prompt.match(/`+/g) ?? []).map((run) => run.length),
-      );
-      const fence = "`".repeat(longest + 1);
-      const body = [`${fence}text`, ...step.prompt.split("\n"), fence]
-        .map((row) => (row ? `   ${row}` : ""))
-        .join("\n");
-      return `Start a worker with this prompt:\n${body}`;
-    }
+    case "blob-comment":
+      return `Comment as Blob on #${step.number} in ${step.ghRepo}:\n${fenced(step.body)}`;
+    case "blob-label":
+      return `Label #${step.number} in ${step.ghRepo} as Blob: ${[
+        step.add.length ? `add ${step.add.join(", ")}` : "",
+        step.remove.length ? `remove ${step.remove.join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("; ")}`;
+    case "close-issue":
+      return `Close issue #${step.number} in ${step.ghRepo} as Blob, ${step.reason === "completed" ? "as done" : "as not planned"}, if nothing on it changed since it was proposed. Blob's note: ${CLOSE_NOTE_LEAD}\n${fenced(step.note)}`;
+    case "close-pr":
+      return `Close PR #${step.number} in ${step.ghRepo} as Blob, while it is at ${sha(step.headSha)}. Blob's note: ${CLOSE_NOTE_LEAD}\n${fenced(step.note)}`;
+    case "approve-run":
+      return `Approve workflow run ${step.runId} for PR #${step.number} in ${step.ghRepo} at ${sha(step.headSha)}: it runs the contributor's code in CI. A workflow that runs on workflow_run or pull_request_target would then run with the repository's secrets, so Blob refuses when the repository has one and leaves the approval to you on GitHub`;
+    case "spawn-worker":
+      return `Start a worker with this prompt:\n${fenced(step.prompt)}`;
   }
 }
 

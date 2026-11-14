@@ -6,6 +6,7 @@
 
 import { describe, test, expect } from "bun:test";
 import {
+  GITHUB_APP_ACTIONS_PERMISSIONS,
   GITHUB_APP_CHECKS_PERMISSIONS,
   GITHUB_APP_CODE_PERMISSIONS,
   GITHUB_APP_GRANT_PERMISSIONS,
@@ -81,6 +82,23 @@ describe("github app permission sets", () => {
     expect(GITHUB_APP_READ_PERMISSIONS.actions).toBe("read");
     expect(GITHUB_APP_CODE_PERMISSIONS.actions).toBe("read");
     expect(GITHUB_APP_WRITE_PERMISSIONS.actions).toBeUndefined();
+  });
+
+  test("only the workflow-run approval mint asks for actions:write", () => {
+    // A lead's approve-run step mints this alone, so an installation that
+    // never accepted actions:write loses only that step.
+    expect(uncoveredScopes(GITHUB_APP_ACTIONS_PERMISSIONS)).toEqual([]);
+    expect(GITHUB_APP_ACTIONS_PERMISSIONS).toEqual({
+      actions: "write",
+      metadata: "read",
+    });
+    for (const set of [
+      GITHUB_APP_READ_PERMISSIONS,
+      GITHUB_APP_WRITE_PERMISSIONS,
+      GITHUB_APP_CODE_PERMISSIONS,
+      GITHUB_APP_CHECKS_PERMISSIONS,
+    ])
+      expect(set.actions).not.toBe("write");
   });
 
   test("only the approval gate's own mint asks for checks:write", () => {

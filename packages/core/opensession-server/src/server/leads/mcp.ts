@@ -1,6 +1,7 @@
 // opensession-lead: a project lead's own tools, bound to one project and
-// mounted on its goal (goal-runner.ts). Two read-only views (the project
-// overview and the flap triage), `propose`, which checks the project's lead
+// mounted on its goal (goal-runner.ts). Read-only views (the project
+// overview, the flap triage, and the repository's issues through the
+// GitHub App, github-issues.ts), `propose`, which checks the project's lead
 // rules before raising a proposal in the owner's supervisor inbox (with
 // optional typed steps the server records for the owner's approval),
 // `post_digest_note`, the day's note for the owner's digest, and
@@ -19,6 +20,12 @@ import {
 import { blobGithubTools } from "../blob-github-tools";
 import { createSdkMcpServer, tool } from "../inprocess-mcp";
 import { leadApply } from "./apply";
+import {
+  MAX_CLOSE_NOTE_LEN,
+  MAX_COMMENT_LEN,
+  MAX_STEP_LABELS,
+} from "./approvals";
+import { githubIssue, githubIssues } from "./github-issues";
 import { flapReportMarkdown } from "./flaps";
 import { buildFlapReport, buildLeadOverview, leadSources } from "./overview";
 import {
@@ -28,6 +35,7 @@ import {
   type LeadAct,
   type LeadDelivery,
   checkLeadAct,
+  issueSources,
   supportDrafts,
   deliverLeadProposal,
   leadOwner,
@@ -49,6 +57,13 @@ const PR_NUMBER = z.number().int().positive();
 const HEAD_SHA = z
   .string()
   .describe("The PR's full 40-character head commit, as you saw it");
+const CLOSE_NOTE = z
+  .string()
+  .min(1)
+  .max(MAX_CLOSE_NOTE_LEN)
+  .describe(
+    'One line on why it closes. Closing posts it as "Closed by Blob for @<owner>: <note>"',
+  );
 const PATCH = z.object({
   rule: z.record(z.string(), z.unknown()).optional(),
   provider: z.boolean().nullable().optional(),
@@ -83,6 +98,48 @@ const STEP = z.discriminatedUnion("kind", [
     kind: z.literal("support-send"),
     conversationId: z.string(),
     draftId: z.string(),
+  }),
+  z.object({
+    kind: z.literal("blob-comment"),
+    ghRepo: GH_REPO,
+    number: PR_NUMBER.describe("The issue or pull request"),
+    body: z
+      .string()
+      .min(1)
+      .max(MAX_COMMENT_LEN)
+      .describe("The comment, in Markdown, exactly as it should go out"),
+  }),
+  z.object({
+    kind: z.literal("blob-label"),
+    ghRepo: GH_REPO,
+    number: PR_NUMBER.describe("The issue or pull request"),
+    add: z.array(z.string().min(1).max(100)).max(MAX_STEP_LABELS).optional(),
+    remove: z.array(z.string().min(1).max(100)).max(MAX_STEP_LABELS).optional(),
+  }),
+  z.object({
+    kind: z.literal("close-issue"),
+    ghRepo: GH_REPO,
+    number: PR_NUMBER.describe("The issue"),
+    reason: z.enum(["completed", "not_planned"]),
+    note: CLOSE_NOTE,
+  }),
+  z.object({
+    kind: z.literal("close-pr"),
+    ghRepo: GH_REPO,
+    number: PR_NUMBER,
+    headSha: HEAD_SHA,
+    note: CLOSE_NOTE,
+  }),
+  z.object({
+    kind: z.literal("approve-run"),
+    ghRepo: GH_REPO,
+    number: PR_NUMBER.describe("The pull request the run is for"),
+    runId: z
+      .number()
+      .int()
+      .positive()
+      .describe("The waiting workflow run's id, from github_issue"),
+    headSha: HEAD_SHA,
   }),
 ]);
 
@@ -158,8 +215,46 @@ export function createLeadMcpServer(
       },
     ),
     tool(
+      "github_issues",
+      `List ${project}'s GitHub issues (pull requests are in project_overview), least recently active first, so the ones waiting longest lead: number, title, author and whether they are outside the team, labels, comment count and last activity. At most 30; read-only, through the GitHub App, cached for a few minutes.`,
+      {
+        project: z.string().describe(`The project: ${project}`),
+        state: z
+          .enum(["open", "closed", "all"])
+          .optional()
+          .describe("open (default), closed or all"),
+        since: z
+          .string()
+          .max(40)
+          .optional()
+          .describe(
+            "Only issues active since this ISO date or time, like 2026-11-01",
+          ),
+      },
+      async (args: {
+        project: string;
+        state?: "open" | "closed" | "all";
+        since?: string;
+      }) => {
+        const result = await githubIssues(project, args);
+        return text(result.text, !result.ok);
+      },
+    ),
+    tool(
+      "github_issue",
+      `Read one of ${project}'s issues or pull requests on GitHub: title, author, labels, last activity, comment count, its body and latest comments quoted as data, and for an open pull request its head and the workflow runs waiting for approval. Read-only, through the GitHub App, cached for a few minutes.`,
+      {
+        project: z.string().describe(`The project: ${project}`),
+        number: PR_NUMBER,
+      },
+      async (args: { project: string; number: number }) => {
+        const result = await githubIssue(project, args);
+        return text(result.text, !result.ok);
+      },
+    ),
+    tool(
       "propose",
-      `Propose an action for ${project} to its owner. Write the body as Blob presents it: a leading \`\`\`say fence is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner. To have the approval run something, give steps (and optionally a condition and expiresInDays): the server checks them, records them for the owner's answer and adds the lines saying when they run, each step and when they expire; leave those lines out of the title and body, close every code fence and comment, and keep raw HTML out (Markdown only, or HTML in backticks). Steps fit their category: merge-pr for fix-verified, public-release or ci-repair; autofix-pr for ci-repair; signal-patch for signal-rule-change; support-send for support-routine-reply. Pull requests must be in this project's repositories.`,
+      `Propose an action for ${project} to its owner. Write the body as Blob presents it: a leading \`\`\`say fence is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner. To have the approval run something, give steps (and optionally a condition and expiresInDays): the server checks them, records them for the owner's answer and adds the lines saying when they run, each step and when they expire; leave those lines out of the title and body, close every code fence and comment, and keep raw HTML out (Markdown only, or HTML in backticks). Steps fit their category: merge-pr for fix-verified, public-release, ci-repair or pr-merge; autofix-pr for ci-repair; signal-patch for signal-rule-change; support-send for support-routine-reply; blob-label and close-issue for issue-triage; blob-comment for issue-triage, contributor-ci or pr-merge; close-pr for pr-close (closing posts its own note, so add no blob-comment); approve-run for contributor-ci. Issues and pull requests must be in this project's repositories.`,
       {
         category: z
           .enum(LEAD_CATEGORIES)
@@ -266,6 +361,9 @@ export function createLeadMcpServer(
               signals: await sources.listSignals(),
               drafts: await supportDrafts(args.steps, (id) =>
                 sources.getConversation(id),
+              ),
+              issues: await issueSources(args.steps, (ghRepo, number) =>
+                sources.readIssue(ghRepo, number),
               ),
             },
           );

@@ -33,6 +33,10 @@ export const LEAD_CATEGORIES = [
   "tax-legal",
   "contract",
   "production-data-write",
+  "issue-triage",
+  "contributor-ci",
+  "pr-merge",
+  "pr-close",
 ] as const;
 export type LeadCategory = (typeof LEAD_CATEGORIES)[number];
 
@@ -51,6 +55,10 @@ export const LEAD_CATEGORY_LABELS: Record<LeadCategory, string> = {
   "tax-legal": "Tax and legal",
   contract: "Contracts",
   "production-data-write": "Writes to production data",
+  "issue-triage": "Issue triage",
+  "contributor-ci": "CI runs for outside contributors",
+  "pr-merge": "Merging contributors' pull requests",
+  "pr-close": "Closing pull requests",
 };
 
 /** Categories that stay with the owner whatever the settings say: a patch
@@ -62,6 +70,14 @@ export const PINNED_ONLY_YOU = [
   "tax-legal",
   "contract",
   "production-data-write",
+] as const satisfies readonly LeadCategory[];
+
+/** Categories that ask first at most: a patch can't set them to alone,
+ *  and a stored alone reads as asks first. Approving an outside
+ *  contributor's workflow run runs their code in the project's CI, so the
+ *  owner says yes each time. */
+export const NEVER_ALONE = [
+  "contributor-ci",
 ] as const satisfies readonly LeadCategory[];
 
 /** The defaults, from how the owner works today. */
@@ -80,6 +96,15 @@ export const DEFAULT_LEAD_RULES: Readonly<Record<LeadCategory, LeadLevel>> = {
   "tax-legal": "only-you",
   contract: "only-you",
   "production-data-write": "only-you",
+  // Maintaining a public repository. Each one speaks or acts in public for
+  // the project, so each asks first until the owner says otherwise.
+  // contributor-ci approves a workflow run on an outside contributor's
+  // pull request: that runs their code in the project's CI, with whatever
+  // the workflows can reach.
+  "issue-triage": "asks-first",
+  "contributor-ci": "asks-first",
+  "pr-merge": "asks-first",
+  "pr-close": "asks-first",
 };
 
 /** Alone categories whose action at the coordinate stage is spawning a
@@ -103,6 +128,8 @@ export const MAX_LEAD_DAILY_WAKES = 1_000;
 export const DEFAULT_LEAD_WAKE_TOKENS = 1_000_000;
 export const MIN_LEAD_WAKE_TOKENS = 10_000;
 export const MAX_LEAD_WAKE_TOKENS = 50_000_000;
+/** Characters in the owner's note on what the lead is for. */
+export const MAX_LEAD_FOCUS_CHARS = 1_500;
 
 export interface ProjectLeadSettings {
   enabled: boolean;
@@ -119,9 +146,13 @@ export interface ProjectLeadSettings {
   goalId?: string;
   /** The person the lead answers to. */
   owner?: string;
+  /** The owner's own words on what the lead is for, quoted at the top of
+   *  its charter (leads/charter.ts). At most MAX_LEAD_FOCUS_CHARS. */
+  focus?: string;
 }
 
-/** What the project page may send; `owner: null` clears the owner. */
+/** What the project page may send; `owner: null` clears the owner and
+ *  `focus: null` (or empty) clears the focus. */
 export interface ProjectLeadPatch {
   enabled?: boolean;
   stage?: LeadStage;
@@ -131,6 +162,7 @@ export interface ProjectLeadPatch {
   dailyWakeLimit?: number;
   wakeTokenLimit?: number;
   owner?: string | null;
+  focus?: string | null;
 }
 
 /** One project's lead as GET /api/supervisor/leads lists it: the summary
@@ -178,6 +210,10 @@ export function isPinnedOnlyYou(category: LeadCategory): boolean {
   return (PINNED_ONLY_YOU as readonly string[]).includes(category);
 }
 
+export function isNeverAlone(category: LeadCategory): boolean {
+  return (NEVER_ALONE as readonly string[]).includes(category);
+}
+
 /** Whether `level` leaves the lead no more room than `than`. */
 export function leadLevelWithin(level: LeadLevel, than: LeadLevel): boolean {
   return LEAD_LEVELS.indexOf(level) >= LEAD_LEVELS.indexOf(than);
@@ -189,14 +225,15 @@ export function leadStageWithin(stage: LeadStage, than: LeadStage): boolean {
 }
 
 /** The level a category is at: the stored one, except pinned categories,
- *  which are always only you. */
+ *  which are always only you, and NEVER_ALONE ones, at most asks first. */
 export function leadLevel(
   rules: Partial<Record<LeadCategory, LeadLevel>>,
   category: LeadCategory,
 ): LeadLevel {
   if (isPinnedOnlyYou(category)) return "only-you";
   const stored = rules[category];
-  return isLeadLevel(stored) ? stored : DEFAULT_LEAD_RULES[category];
+  const level = isLeadLevel(stored) ? stored : DEFAULT_LEAD_RULES[category];
+  return level === "alone" && isNeverAlone(category) ? "asks-first" : level;
 }
 
 /** What the lead does with an action:

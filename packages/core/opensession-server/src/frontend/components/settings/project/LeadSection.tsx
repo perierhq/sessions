@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   MAX_LEAD_BUDGET_USD,
   MAX_LEAD_DAILY_WAKES,
+  MAX_LEAD_FOCUS_CHARS,
   type LeadCategory,
   type LeadLevel,
   isLeadStage,
@@ -19,16 +20,19 @@ import {
 import { formatUsd } from "../../../lib/incidents/copy";
 import { parseUsd } from "../../../lib/incidents/policy-copy";
 import {
-  LEAD_LEVEL_OPTIONS,
+  LEAD_FOCUS_PLACEHOLDER,
+  LEAD_FOCUS_TITLE,
   LEAD_STAGE_OPTIONS,
   LEAD_STATUS_LABELS,
   leadRuleRows,
+  leadFocusPatch,
+  leadFocusPreview,
   leadSaveErrorText,
   leadStageHelp,
   leadStatus,
 } from "../../../lib/project-settings/lead-model";
 import type { ProjectPatchBody } from "../../../lib/project-settings/save";
-import { Field, Input } from "../../../ui/input";
+import { Field, Input, Textarea } from "../../../ui/input";
 import { Segmented, SegmentedOption } from "../../../ui/segmented";
 import { OptionSelect } from "../../../ui/select";
 import {
@@ -65,6 +69,7 @@ export function LeadSection({
   const [error, setError] = useState<string | null>(null);
   const [budgetOpen, setBudgetOpen] = useState(0);
   const [wakesOpen, setWakesOpen] = useState(0);
+  const [focusOpen, setFocusOpen] = useState(0);
 
   // Immediate saves report a refusal above the section; the budget dialog
   // calls `onSave` itself and shows its refusal inside, so it shows once.
@@ -106,6 +111,12 @@ export function LeadSection({
       {lead.enabled && (
         <>
           <SettingCard className="mt-3">
+            <SettingLinkRow
+              title={LEAD_FOCUS_TITLE}
+              description="Your words, at the top of its instructions"
+              value={leadFocusPreview(lead.focus)}
+              onClick={() => setFocusOpen(Date.now())}
+            />
             <SettingRow
               title="Stage"
               desc={leadStageHelp(lead.stage)}
@@ -173,7 +184,7 @@ export function LeadSection({
                     <OptionSelect<LeadLevel>
                       label={`Who decides: ${row.label}`}
                       value={row.level}
-                      options={LEAD_LEVEL_OPTIONS}
+                      options={row.options}
                       onChange={(level) =>
                         saveNow({ rules: ruleChange(row.category, level) })
                       }
@@ -190,6 +201,13 @@ export function LeadSection({
             onClose={() => setBudgetOpen(0)}
             budget={lead.budgetUsdPerMonth}
             onSave={(amount) => onSave({ lead: { budgetUsdPerMonth: amount } })}
+          />
+          <LeadFocusDialog
+            key={`focus-${focusOpen}`}
+            open={focusOpen > 0}
+            onClose={() => setFocusOpen(0)}
+            focus={lead.focus ?? ""}
+            onSave={(focus) => onSave({ lead: { focus } })}
           />
           <LeadWakesDialog
             key={`wakes-${wakesOpen}`}
@@ -272,6 +290,64 @@ export function LeadBudgetDialog({
       </Field>
       <p className={valid ? FIELD_HINT : FIELD_ERROR}>
         {`Leave empty for no cap, or up to ${formatUsd(MAX_LEAD_BUDGET_USD, { whole: true })}`}
+      </p>
+    </SettingsDialog>
+  );
+}
+
+export function LeadFocusDialog({
+  open,
+  onClose,
+  focus,
+  onSave,
+}: {
+  open: boolean;
+  onClose: () => void;
+  focus: string;
+  /** null clears it. */
+  onSave: (focus: string | null) => Promise<void>;
+}) {
+  const [text, setText] = useState(focus);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const length = text.trim().length;
+  const valid = length <= MAX_LEAD_FOCUS_CHARS;
+  return (
+    <SettingsDialog
+      open={open}
+      onClose={onClose}
+      title={LEAD_FOCUS_TITLE}
+      error={error}
+      busy={busy}
+      canSave={valid}
+      onSave={() => {
+        if (!valid) return;
+        setBusy(true);
+        setError(null);
+        onSave(leadFocusPatch(text)).then(
+          () => {
+            setBusy(false);
+            onClose();
+          },
+          (cause) => {
+            setBusy(false);
+            setError(leadSaveErrorText(cause));
+          },
+        );
+      }}
+    >
+      <Field label="In your words">
+        <Textarea
+          rows={6}
+          placeholder={LEAD_FOCUS_PLACEHOLDER}
+          value={text}
+          aria-invalid={!valid || undefined}
+          className={DIALOG_INPUT}
+          onChange={(event) => setText(event.currentTarget.value)}
+        />
+      </Field>
+      <p className={valid ? FIELD_HINT : FIELD_ERROR}>
+        {`The lead reads this first, word for word. ${length} of ${MAX_LEAD_FOCUS_CHARS} characters`}
       </p>
     </SettingsDialog>
   );

@@ -85,8 +85,9 @@ export async function githubRequest<T = any>(
   /** Which token to mint. Default `write`. `checks` is the approval gate's
    *  checks-only token, so a missing `checks: write` grant fails only that
    *  call; `read` carries `members: read` for team lookups. `owner` selects
-   *  the installation for a path outside `/repos/`. */
-  opts: { mint?: "write" | "read" | "checks"; owner?: string } = {},
+   *  the installation for a path outside `/repos/`. `actions` is the
+   *  workflow-run approval token (GITHUB_APP_ACTIONS_PERMISSIONS). */
+  opts: { mint?: "write" | "read" | "checks" | "actions"; owner?: string } = {},
 ): Promise<GithubResult<T>> {
   // A /repos/{owner}/{name} path mints against that owner's installation.
   const repo = githubRepoFromApiPath(path);
@@ -94,6 +95,7 @@ export async function githubRequest<T = any>(
   const credential = await githubInstallationCredential({
     ...(mint === "write" ? { write: true } : {}),
     ...(mint === "checks" ? { checks: true } : {}),
+    ...(mint === "actions" ? { actions: true } : {}),
     ...(repo ? { repo } : opts.owner ? { owner: opts.owner } : {}),
   });
   if (!credential)

@@ -34,6 +34,7 @@ import {
   FORCE_MERGE_LINE,
   type LeadApplyDeps,
   COORDINATE_STEPS,
+  SECRET_WORKFLOWS_REFUSAL,
   WORKER_UNAVAILABLE,
   __setLeadApplyDepsForTest,
   applyGate,
@@ -41,6 +42,7 @@ import {
   personStepped,
   samePin,
   signalHolds,
+  workflowRunsWithSecrets,
 } from "./apply";
 import type { ConditionResult } from "./conditions";
 import { __setLeadAuditForTest } from "./report";
@@ -1341,4 +1343,359 @@ test("signalHolds reads unset fields as false, empty and null", () => {
   ).toBe(true);
   expect(signalHolds(stored, { rule: RULE_BEFORE as never })).toBe(true);
   expect(signalHolds(stored, { rule: RULE_AFTER as never })).toBe(false);
+});
+
+// ── Maintaining a public repository ─────────────────────────────────────────
+
+describe("maintenance steps", () => {
+  let blobCalls: Array<{ kind: string; poster: unknown; input: unknown }>;
+  let blobResult:
+    | { ok: true; message: string }
+    | { ok: false; message: string };
+  let runs: Map<
+    number,
+    { repo: string; headSha: string; status: string; event: string }
+  >;
+  let workflows: string[] | Error;
+  let approvals: number[];
+  let approveAnswer: { ok: boolean; status: number; error?: string };
+
+  beforeEach(() => {
+    blobCalls = [];
+    blobResult = { ok: true, message: "Done." };
+    runs = new Map([
+      [
+        77,
+        {
+          repo: "acme/web",
+          headSha: SHA,
+          status: "action_required",
+          event: "pull_request",
+        },
+      ],
+    ]);
+    workflows = ["on:\n  pull_request:\njobs: {}\n"];
+    approvals = [];
+    approveAnswer = { ok: true, status: 201 };
+    const blob = (kind: string) => async (poster: unknown, input: unknown) => {
+      blobCalls.push({ kind, poster, input });
+      return blobResult;
+    };
+    __setLeadApplyDepsForTest({
+      ...fakes,
+      blobPoster: async () => ({}),
+      blobComment: blob("comment") as never,
+      blobLabel: blob("label") as never,
+      blobClose: blob("close") as never,
+      readRun: async (_repo, id) => {
+        const run = runs.get(id);
+        if (!run) throw new Error("not found");
+        return { ...run };
+      },
+      readWorkflows: async () => {
+        if (workflows instanceof Error) throw workflows;
+        return workflows;
+      },
+      approveRun: async (_repo, id) => {
+        approvals.push(id);
+        return approveAnswer;
+      },
+    });
+  });
+
+  const comment = {
+    kind: "blob-comment",
+    ghRepo: "acme/web",
+    number: 31,
+    body: "Thanks! Could you add the steps to reproduce?",
+  };
+
+  test("an approved triage comments and labels as Blob, for the owner, as a recorded step", async () => {
+    const proposal = await approved("issue-triage", [
+      comment,
+      {
+        kind: "blob-label",
+        ghRepo: "acme/web",
+        number: 31,
+        add: ["needs info"],
+      },
+    ]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result.ok).toBe(true);
+    expect(blobCalls.map((c) => c.kind)).toEqual(["comment", "label"]);
+    expect(blobCalls[0]).toEqual({
+      kind: "comment",
+      poster: {
+        owner: "Ada",
+        lead: { project: "acme", repos: ["acme/web"], recordedStep: true },
+      },
+      input: { repo: "acme/web", number: 31, body: comment.body },
+    });
+    expect(blobCalls[1]!.input).toEqual({
+      repo: "acme/web",
+      number: 31,
+      add: ["needs info"],
+      remove: [],
+    });
+    expect(posts.at(-1)).toMatchObject({ kind: "fyi" });
+    expect(String(posts.at(-1)!.body)).toContain(
+      "1. Comment as Blob on #31 in acme/web:",
+    );
+  });
+
+  test("an owner who may only post privately stays private", async () => {
+    __setLeadApplyDepsForTest({
+      ...fakes,
+      blobPoster: async () => ({ privateOnly: true }),
+      blobComment: (async (poster: unknown) => {
+        blobCalls.push({ kind: "comment", poster, input: null });
+        return blobResult;
+      }) as never,
+    });
+    const proposal = await approved("issue-triage", [comment]);
+    await leadApply("acme", proposal.id);
+    expect(blobCalls[0]!.poster).toMatchObject({ privateOnly: true });
+  });
+
+  test("asks first by default: nothing runs without the owner, even at act", async () => {
+    const proposal = await propose("issue-triage", [comment]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result).toMatchObject({ ok: false });
+    expect(result.text).toContain("The owner hasn't approved this proposal");
+    expect(blobCalls).toEqual([]);
+  });
+
+  test("Blob's refusal stops the run in its own fixed copy", async () => {
+    blobResult = {
+      ok: false,
+      message:
+        "acme/web is public and not on Blob's list of public repositories.",
+    };
+    const proposal = await approved("issue-triage", [comment]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result).toMatchObject({ ok: false, state: "failed" });
+    expect(result.text).toContain(
+      "Blob couldn't comment on #31 in acme/web: acme/web is public and not on Blob's list of public repositories",
+    );
+  });
+
+  const PIN = { updatedAt: "2026-11-10T08:00:00Z", state: "open" };
+  const closeIssue = {
+    kind: "close-issue",
+    ghRepo: "acme/web",
+    number: 31,
+    reason: "not_planned",
+    note: "No reply in 30 days; reopen with the steps to reproduce.",
+    pin: PIN,
+  };
+
+  test("close-issue closes with its reason and note, pinned to the issue as proposed; close-pr only at the approved head", async () => {
+    const issue = await approved("issue-triage", [closeIssue]);
+    expect((await leadApply("acme", issue.id)).ok).toBe(true);
+    expect(blobCalls.at(-1)).toEqual({
+      kind: "close",
+      poster: expect.anything(),
+      input: {
+        repo: "acme/web",
+        number: 31,
+        pullRequest: false,
+        reason: "not_planned",
+        note: closeIssue.note,
+        expect: { issue: PIN },
+      },
+    });
+    const close = {
+      kind: "close-pr",
+      ghRepo: "acme/web",
+      number: 12,
+      headSha: SHA,
+      note: "Superseded by #13.",
+    };
+    const pr12 = await approved("pr-close", [close]);
+    autofixPrs.set("acme/web#12", {
+      ...autofixPrs.get("acme/web#12")!,
+      headSha: MOVED,
+    });
+    const moved = await leadApply("acme", pr12.id);
+    expect(moved.text).toContain(
+      "PR #12 in acme/web has new commits since aaaaaaa was proposed",
+    );
+    expect(blobCalls).toHaveLength(1);
+    autofixPrs.set("acme/web#12", {
+      ...autofixPrs.get("acme/web#12")!,
+      headSha: SHA,
+    });
+    const again = await approved("pr-close", [close]);
+    expect((await leadApply("acme", again.id)).ok).toBe(true);
+    // Blob reads the head again right before closing (blobClose expect).
+    expect(blobCalls.at(-1)).toEqual({
+      kind: "close",
+      poster: expect.anything(),
+      input: {
+        repo: "acme/web",
+        number: 12,
+        pullRequest: true,
+        note: "Superseded by #13.",
+        expect: { headSha: SHA },
+      },
+    });
+  });
+
+  test("a close-issue recorded without the server's pin never closes", async () => {
+    const { pin: _pin, ...unpinned } = closeIssue;
+    const proposal = await approved("issue-triage", [unpinned]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result).toMatchObject({ ok: false, state: "failed" });
+    expect(result.text).toContain(
+      "Issue #31 in acme/web wasn't pinned when this was proposed, so Blob didn't close it",
+    );
+    expect(blobCalls).toEqual([]);
+  });
+
+  test("an issue that changed since the proposal refuses in Blob's fixed copy", async () => {
+    blobResult = {
+      ok: false,
+      message:
+        "#31 in acme/web changed since this was proposed, so Blob didn't close it.",
+    };
+    const proposal = await approved("issue-triage", [closeIssue]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result.text).toContain(
+      "Blob couldn't close #31 in acme/web: #31 in acme/web changed since this was proposed, so Blob didn't close it",
+    );
+  });
+
+  const approveRun = {
+    kind: "approve-run",
+    ghRepo: "acme/web",
+    number: 12,
+    runId: 77,
+    headSha: SHA,
+  };
+
+  test("approve-run approves the waiting run at the approved head", async () => {
+    const proposal = await approved("contributor-ci", [approveRun]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result.ok).toBe(true);
+    expect(approvals).toEqual([77]);
+    expect(audits).toContainEqual(
+      expect.objectContaining({
+        phase: "result",
+        stepKind: "approve-run",
+        runId: 77,
+        result: "approved",
+      }),
+    );
+  });
+
+  test("approve-run refuses new commits, another head's run and a closed PR", async () => {
+    runs.set(78, {
+      repo: "acme/web",
+      headSha: MOVED,
+      status: "action_required",
+      event: "pull_request",
+    });
+    const other = await approved("contributor-ci", [
+      { ...approveRun, runId: 78 },
+    ]);
+    expect((await leadApply("acme", other.id)).text).toContain(
+      "The workflow run 78 is not for PR #12 in acme/web at aaaaaaa",
+    );
+    autofixPrs.set("acme/web#12", {
+      ...autofixPrs.get("acme/web#12")!,
+      headSha: MOVED,
+    });
+    const moved = await approved("contributor-ci", [approveRun]);
+    expect((await leadApply("acme", moved.id)).text).toContain(
+      "has new commits",
+    );
+    autofixPrs.set("acme/web#12", {
+      ...autofixPrs.get("acme/web#12")!,
+      headSha: SHA,
+      state: "CLOSED",
+    });
+    const closed = await approved("contributor-ci", [approveRun]);
+    expect((await leadApply("acme", closed.id)).text).toContain("is closed");
+    expect(approvals).toEqual([]);
+  });
+
+  test("a run no longer waiting counts as done; a 403 names the missing permission", async () => {
+    runs.set(77, {
+      repo: "acme/web",
+      headSha: SHA,
+      status: "completed",
+      event: "pull_request",
+    });
+    const done = await approved("contributor-ci", [approveRun]);
+    expect((await leadApply("acme", done.id)).ok).toBe(true);
+    expect(approvals).toEqual([]);
+    runs.set(77, {
+      repo: "acme/web",
+      headSha: SHA,
+      status: "action_required",
+      event: "pull_request",
+    });
+    approveAnswer = {
+      ok: false,
+      status: 403,
+      error: "Resource not accessible",
+    };
+    const refused = await approved("contributor-ci", [approveRun]);
+    const result = await leadApply("acme", refused.id);
+    expect(result.text).toContain(
+      "The GitHub App may not approve the workflow run 77: it needs the Actions write permission on acme/web",
+    );
+    expect(result.text).not.toContain("Resource not accessible");
+  });
+
+  test("approve-run refuses a run not started by a pull request, and an unknown event", async () => {
+    for (const event of ["pull_request_target", "workflow_run", ""]) {
+      runs.set(77, { ...runs.get(77)!, event });
+      const proposal = await approved("contributor-ci", [approveRun]);
+      const result = await leadApply("acme", proposal.id);
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+      expect(result.text).toContain(
+        "The workflow run 77 was not started by a pull request, so Blob doesn't approve it",
+      );
+    }
+    expect(approvals).toEqual([]);
+  });
+
+  test("a repo with a workflow on workflow_run or pull_request_target is left to the owner on GitHub", async () => {
+    for (const risky of [
+      "on:\n  workflow_run:\n    workflows: [CI]\n",
+      "on: [pull_request_target]\n",
+    ]) {
+      workflows = ["on: push\n", risky];
+      const proposal = await approved("contributor-ci", [approveRun]);
+      const result = await leadApply("acme", proposal.id);
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+      expect(result.text).toContain(SECRET_WORKFLOWS_REFUSAL);
+    }
+    expect(approvals).toEqual([]);
+  });
+
+  test("workflows that can't be read refuse the approval", async () => {
+    workflows = new Error("HTTP 502 upstream");
+    const proposal = await approved("contributor-ci", [approveRun]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result.text).toContain(
+      "Couldn't read the workflows of acme/web from GitHub",
+    );
+    expect(result.text).not.toContain("upstream");
+    expect(approvals).toEqual([]);
+  });
+
+  test("workflowRunsWithSecrets fails closed on any mention", () => {
+    expect(workflowRunsWithSecrets("on: [push, pull_request]")).toBe(false);
+    expect(workflowRunsWithSecrets("on:\n  pull_request_target:\n")).toBe(true);
+    expect(workflowRunsWithSecrets("# not workflow_run here\n")).toBe(true);
+  });
+
+  test("pr-merge merges through the pinned merge", async () => {
+    const proposal = await approved("pr-merge", [mergeStep()]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result.ok).toBe(true);
+    expect(merges.length).toBeGreaterThan(0);
+  });
 });

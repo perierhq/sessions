@@ -49,8 +49,9 @@ const update: ProjectRouteDeps["update"] = async (project, patch, actor) => {
       error: "Only a signed-in person can change actions or production Runners",
       status: 403,
     };
-  // The owner is not modelled here: these tests never change it.
-  const { owner: _owner, ...leadPatch } = patch.lead ?? {};
+  // The owner and the focus are not modelled here: these tests never
+  // change them.
+  const { owner: _owner, focus: _focus, ...leadPatch } = patch.lead ?? {};
   const lead = {
     ...doc.lead,
     ...leadPatch,

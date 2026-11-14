@@ -58,6 +58,27 @@
 //     one pinned at proposal time, and a person who stopped the draft or
 //     acted on the conversation after the approval wins.
 //
+//   - blob-comment, blob-label, close-issue, close-pr: Blob's own GitHub
+//     account through github-blob.ts and every guard it holds (Blob's
+//     repositories, the text guards, the label allowlist, the write
+//     limits). As a recorded step it may also post on a public repository
+//     listed in publicRepos, when the lead's owner may post there
+//     (blobSupervisorPoster). close-pr runs only while the pull request is
+//     still at the head the owner saw, read again right before closing;
+//     close-issue only while the issue is as it was when proposed (its
+//     updated_at and state, pinned by the server). A close posts its
+//     fixed note (blobCloseNote) with the approved reason line in the same
+//     step, after those checks
+//   - approve-run: approves a waiting workflow run of an outside
+//     contributor's pull request as the GitHub App (its own actions:write
+//     mint), only while the pull request is open, still at the approved
+//     head, and the run is a pull_request run for that head in this
+//     repository. This runs the contributor's code in CI, so its category
+//     asks first, and can't be set to alone. A repository with a workflow
+//     on workflow_run or pull_request_target (read from its default branch
+//     right before approving) refuses: those run with the repository's
+//     secrets after the contributor's run, so the owner approves on GitHub
+//
 // No step uses the owner's token. The owner hears the outcome in their
 // supervisor inbox, in fixed copy. Nothing runs at import.
 import { randomUUIDv7 } from "bun";
@@ -90,6 +111,12 @@ import type {
 } from "../supervisor-inbox";
 import { RULES } from "../support/policy";
 import type { sendDraft } from "../support/reply";
+import type {
+  BlobPoster,
+  blobClose,
+  blobComment,
+  blobLabel,
+} from "../github-blob";
 import {
   type ClaimError,
   type LeadApproval,
@@ -204,6 +231,32 @@ export interface AutofixPr {
   fork: boolean;
 }
 
+/** A workflow run as an approve-run step checks it. */
+export interface ApplyRun {
+  /** `owner/name` the run belongs to. */
+  repo: string;
+  headSha: string;
+  /** GitHub's status: `action_required` while it waits for approval. */
+  status: string;
+  /** What started the run: an outside contributor's is `pull_request`. */
+  event: string;
+}
+
+/** Why an approve-run step refuses a repository with a workflow that runs
+ *  with secrets after a contributor's run. */
+export const SECRET_WORKFLOWS_REFUSAL =
+  "This repo has workflows that run with secrets after a contributor's run; approve it on GitHub yourself";
+
+/** Triggers that run a workflow from the default branch, with the
+ *  repository's secrets, after or around a contributor's pull request. */
+const SECRET_TRIGGERS = /\b(?:workflow_run|pull_request_target)\b/;
+
+/** Whether a workflow file names a trigger that runs with secrets after a
+ *  contributor's run. Any mention counts, comments too: it fails closed. */
+export function workflowRunsWithSecrets(text: string): boolean {
+  return SECRET_TRIGGERS.test(text);
+}
+
 export interface LeadApplyDeps {
   now(): number;
   newClaimId(): string;
@@ -230,6 +283,22 @@ export interface LeadApplyDeps {
   startAutofix(ref: PrRef): Promise<"started" | "running">;
   getConversation(id: string): Promise<SupportConversation | null>;
   sendDraft: typeof sendDraft;
+  /** Who Blob posts for: `privateOnly` unless the owner may post on
+   *  listed public repositories (blobSupervisorPoster). */
+  blobPoster(owner: string): Promise<Pick<BlobPoster, "privateOnly">>;
+  blobComment: typeof blobComment;
+  blobLabel: typeof blobLabel;
+  blobClose: typeof blobClose;
+  /** Throws when GitHub can't be read. */
+  readRun(ghRepo: string, runId: number): Promise<ApplyRun>;
+  /** The text of each workflow file on the default branch; [] without
+   *  any. Throws when GitHub can't be read. */
+  readWorkflows(ghRepo: string): Promise<string[]>;
+  /** POST .../actions/runs/{id}/approve as the App. */
+  approveRun(
+    ghRepo: string,
+    runId: number,
+  ): Promise<{ ok: boolean; status: number; error?: string }>;
   postSupervisorItem: typeof postSupervisorItem;
   closeSupervisorItems: typeof closeSupervisorItems;
 }
@@ -308,6 +377,76 @@ const liveDeps: LeadApplyDeps = {
     (await import("../support/store")).getConversation(id),
   sendDraft: async (...args) =>
     (await import("../support/reply")).sendDraft(...args),
+  async blobPoster(owner) {
+    const { blobSupervisorPoster } = await import("../github-blob");
+    const { privateOnly } = await blobSupervisorPoster(owner);
+    return privateOnly ? { privateOnly } : {};
+  },
+  blobComment: async (...args) =>
+    (await import("../github-blob")).blobComment(...args),
+  blobLabel: async (...args) =>
+    (await import("../github-blob")).blobLabel(...args),
+  blobClose: async (...args) =>
+    (await import("../github-blob")).blobClose(...args),
+  async readRun(ghRepo, runId) {
+    const { githubRequest } = await import("../../agents/github/github-rest");
+    const r = await githubRequest<Record<string, any>>(
+      "GET",
+      `/repos/${ghRepo}/actions/runs/${runId}`,
+      undefined,
+      { mint: "read" },
+    );
+    if (!r.ok || !r.data) throw new Error(r.error || `HTTP ${r.status}`);
+    return {
+      repo: String(r.data.repository?.full_name || ""),
+      headSha: String(r.data.head_sha || ""),
+      status: String(r.data.status || ""),
+      event: String(r.data.event || ""),
+    };
+  },
+  async readWorkflows(ghRepo) {
+    const { githubRequest } = await import("../../agents/github/github-rest");
+    const dir = await githubRequest<unknown>(
+      "GET",
+      `/repos/${ghRepo}/contents/.github/workflows`,
+      undefined,
+      { mint: "read" },
+    );
+    if (dir.status === 404) return [];
+    if (!dir.ok || !Array.isArray(dir.data))
+      throw new Error(dir.error || `HTTP ${dir.status}`);
+    const texts: string[] = [];
+    for (const entry of dir.data as Array<Record<string, unknown>>) {
+      const path = entry?.path;
+      if (entry?.type !== "file" || typeof path !== "string") continue;
+      if (!/\.ya?ml$/i.test(path)) continue;
+      const file = await githubRequest<Record<string, unknown>>(
+        "GET",
+        `/repos/${ghRepo}/contents/${path.split("/").map(encodeURIComponent).join("/")}`,
+        undefined,
+        { mint: "read" },
+      );
+      const content = file.data?.content;
+      if (!file.ok || typeof content !== "string")
+        throw new Error(file.error || `HTTP ${file.status}`);
+      texts.push(Buffer.from(content, "base64").toString("utf8"));
+    }
+    return texts;
+  },
+  async approveRun(ghRepo, runId) {
+    const { githubRequest } = await import("../../agents/github/github-rest");
+    const r = await githubRequest(
+      "POST",
+      `/repos/${ghRepo}/actions/runs/${runId}/approve`,
+      undefined,
+      { mint: "actions" },
+    );
+    return {
+      ok: r.ok,
+      status: r.status,
+      ...(r.error ? { error: r.error } : {}),
+    };
+  },
   postSupervisorItem: async (...args) =>
     (await import("../supervisor-inbox")).postSupervisorItem(...args),
   closeSupervisorItems: async (...args) =>
@@ -507,6 +646,10 @@ type StepResult =
   | "autofix-running"
   | "sent"
   | "already-sent"
+  | "posted"
+  | "already-closed"
+  | "approved"
+  | "already-approved"
   | "not-open"
   | "fork"
   | "refused"
@@ -893,6 +1036,185 @@ async function supportStep(
   };
 }
 
+/** Who Blob posts for in a recorded step: the lead's owner, on this
+ *  project's repositories, public ones too where the owner may post. */
+async function stepPoster(ctx: RunContext): Promise<BlobPoster | null> {
+  const owner = leadOwner(ctx.doc);
+  if (!owner) return null;
+  return {
+    owner,
+    ...(await ctx.d.blobPoster(owner)),
+    lead: {
+      project: ctx.project,
+      repos: [...ctx.d.projectGhRepos(ctx.project)],
+      recordedStep: true,
+    },
+  };
+}
+
+type BlobStep = Extract<
+  LeadStep,
+  { kind: "blob-comment" | "blob-label" | "close-issue" | "close-pr" }
+>;
+
+const BLOB_DOING: Record<BlobStep["kind"], string> = {
+  "blob-comment": "comment on",
+  "blob-label": "label",
+  "close-issue": "close",
+  "close-pr": "close",
+};
+
+async function blobStep(step: BlobStep, ctx: RunContext): Promise<StepOutcome> {
+  const foreign = projectRepo(step, ctx);
+  if (foreign) return foreign;
+  const name = `#${step.number} in ${step.ghRepo}`;
+  if (step.kind === "close-pr") {
+    let pr: AutofixPr;
+    try {
+      pr = await ctx.d.readAutofixPr(step.ghRepo, step.number);
+    } catch (error) {
+      return {
+        ok: false,
+        result: "error",
+        reason: `Couldn't read PR ${name} from GitHub`,
+        detail: errorText(error),
+      };
+    }
+    if (pr.state === "CLOSED")
+      return { ok: true, result: "already-closed", already: true };
+    if (pr.state === "MERGED")
+      return { ok: false, result: "not-open", reason: `PR ${name} is merged` };
+    if (pr.headSha !== step.headSha)
+      return {
+        ok: false,
+        result: "head-moved",
+        reason: `PR ${name} has new commits since ${short(step.headSha)} was proposed`,
+      };
+  }
+  // Recorded by the server when the lead proposed it; one recorded
+  // before pinning never closes.
+  if (step.kind === "close-issue" && !step.pin)
+    return {
+      ok: false,
+      result: "changed",
+      reason: `Issue ${name} wasn't pinned when this was proposed, so Blob didn't close it`,
+    };
+  const poster = await stepPoster(ctx);
+  if (!poster)
+    return {
+      ok: false,
+      result: "refused",
+      reason: "Nobody to post for: the lead has no owner",
+    };
+  const result =
+    step.kind === "blob-comment"
+      ? await ctx.d.blobComment(poster, {
+          repo: step.ghRepo,
+          number: step.number,
+          body: step.body,
+        })
+      : step.kind === "blob-label"
+        ? await ctx.d.blobLabel(poster, {
+            repo: step.ghRepo,
+            number: step.number,
+            add: step.add,
+            remove: step.remove,
+          })
+        : await ctx.d.blobClose(poster, {
+            repo: step.ghRepo,
+            number: step.number,
+            pullRequest: step.kind === "close-pr",
+            note: step.note,
+            ...(step.kind === "close-issue"
+              ? { reason: step.reason, expect: { issue: step.pin! } }
+              : { expect: { headSha: step.headSha } }),
+          });
+  if (result.ok) return { ok: true, result: "posted", already: false };
+  // github-blob.ts answers in its own fixed copy, never GitHub's text.
+  return {
+    ok: false,
+    result: "refused",
+    reason: `Blob couldn't ${BLOB_DOING[step.kind]} ${name}: ${result.message.replace(/\.$/, "")}`,
+  };
+}
+
+async function approveRunStep(
+  step: Extract<LeadStep, { kind: "approve-run" }>,
+  ctx: RunContext,
+): Promise<StepOutcome> {
+  const foreign = projectRepo(step, ctx);
+  if (foreign) return foreign;
+  const name = prName(step);
+  const run = `workflow run ${step.runId}`;
+  let pr: AutofixPr;
+  let found: ApplyRun;
+  try {
+    pr = await ctx.d.readAutofixPr(step.ghRepo, step.number);
+    found = await ctx.d.readRun(step.ghRepo, step.runId);
+  } catch (error) {
+    return {
+      ok: false,
+      result: "error",
+      reason: `Couldn't read ${name} or its ${run} from GitHub`,
+      detail: errorText(error),
+    };
+  }
+  if (pr.state !== "OPEN")
+    return {
+      ok: false,
+      result: "not-open",
+      reason: `${name} is ${pr.state === "MERGED" ? "merged" : "closed"}`,
+    };
+  if (pr.headSha !== step.headSha)
+    return {
+      ok: false,
+      result: "head-moved",
+      reason: `${name} has new commits since ${short(step.headSha)} was approved`,
+    };
+  if (
+    found.repo.toLowerCase() !== step.ghRepo.toLowerCase() ||
+    found.headSha !== step.headSha
+  )
+    return {
+      ok: false,
+      result: "changed",
+      reason: `The ${run} is not for ${name} at ${short(step.headSha)}`,
+    };
+  // Only a pull_request run runs the contributor's code without secrets.
+  if (found.event !== "pull_request")
+    return {
+      ok: false,
+      result: "refused",
+      reason: `The ${run} was not started by a pull request, so Blob doesn't approve it`,
+    };
+  if (found.status !== "action_required")
+    return { ok: true, result: "already-approved", already: true };
+  let workflows: string[];
+  try {
+    workflows = await ctx.d.readWorkflows(step.ghRepo);
+  } catch (error) {
+    return {
+      ok: false,
+      result: "error",
+      reason: `Couldn't read the workflows of ${step.ghRepo} from GitHub`,
+      detail: errorText(error),
+    };
+  }
+  if (workflows.some(workflowRunsWithSecrets))
+    return { ok: false, result: "refused", reason: SECRET_WORKFLOWS_REFUSAL };
+  const approved = await ctx.d.approveRun(step.ghRepo, step.runId);
+  if (approved.ok) return { ok: true, result: "approved", already: false };
+  return {
+    ok: false,
+    result: approved.status === 403 ? "refused" : "error",
+    reason:
+      approved.status === 403
+        ? `The GitHub App may not approve the ${run}: it needs the Actions write permission on ${step.ghRepo}`
+        : `GitHub refused to approve the ${run}`,
+    ...(approved.error ? { detail: approved.error } : {}),
+  };
+}
+
 function runStep(step: LeadStep, ctx: RunContext): Promise<StepOutcome> {
   switch (step.kind) {
     case "merge-pr":
@@ -905,6 +1227,13 @@ function runStep(step: LeadStep, ctx: RunContext): Promise<StepOutcome> {
       return Promise.resolve(workerStep());
     case "support-send":
       return supportStep(step, ctx);
+    case "blob-comment":
+    case "blob-label":
+    case "close-issue":
+    case "close-pr":
+      return blobStep(step, ctx);
+    case "approve-run":
+      return approveRunStep(step, ctx);
   }
 }
 
@@ -923,6 +1252,41 @@ function stepRef(step: LeadStep): Record<string, unknown> {
       return { conversationId: step.conversationId, draftId: step.draftId };
     case "spawn-worker":
       return { promptDigest: digest(step.prompt) };
+    case "blob-comment":
+      return {
+        ghRepo: step.ghRepo,
+        number: step.number,
+        bodyDigest: digest(step.body),
+      };
+    case "blob-label":
+      return {
+        ghRepo: step.ghRepo,
+        number: step.number,
+        add: step.add,
+        remove: step.remove,
+      };
+    case "close-issue":
+      return {
+        ghRepo: step.ghRepo,
+        number: step.number,
+        reason: step.reason,
+        noteDigest: digest(step.note),
+        ...(step.pin ? { updatedAt: step.pin.updatedAt } : {}),
+      };
+    case "close-pr":
+      return {
+        ghRepo: step.ghRepo,
+        number: step.number,
+        headSha: step.headSha,
+        noteDigest: digest(step.note),
+      };
+    case "approve-run":
+      return {
+        ghRepo: step.ghRepo,
+        number: step.number,
+        runId: step.runId,
+        headSha: step.headSha,
+      };
   }
 }
 

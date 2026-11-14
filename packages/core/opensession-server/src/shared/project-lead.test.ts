@@ -3,6 +3,7 @@ import {
   DEFAULT_LEAD_RULES,
   LEAD_CATEGORIES,
   LEAD_STAGES,
+  NEVER_ALONE,
   PINNED_ONLY_YOU,
   type LeadCategory,
   type LeadDecisionSettings,
@@ -31,6 +32,12 @@ const ASKS_FIRST: LeadCategory[] = [
   "ban-user",
   "rotate-key",
   "public-release",
+  // Maintaining a public repository: each speaks or acts in public, and
+  // contributor-ci runs an outside contributor's code in CI.
+  "issue-triage",
+  "contributor-ci",
+  "pr-merge",
+  "pr-close",
 ];
 
 describe("the defaults", () => {
@@ -179,6 +186,55 @@ describe("leadDecision", () => {
           settings({ stage, enabled: false }),
         ])
           expect(leadDecision(s, c).rule.length).toBeGreaterThan(10);
+  });
+});
+
+describe("maintenance categories", () => {
+  const MAINTENANCE: LeadCategory[] = [
+    "issue-triage",
+    "contributor-ci",
+    "pr-merge",
+    "pr-close",
+  ];
+
+  test("ask first at every stage by default, and are never pinned", () => {
+    for (const category of MAINTENANCE) {
+      expect(PINNED_ONLY_YOU as readonly string[]).not.toContain(category);
+      for (const stage of LEAD_STAGES)
+        expect(leadDecision(settings({ stage }), category).effective).toBe(
+          "ask",
+        );
+    }
+  });
+
+  test("the owner may let them run alone at the act stage, never at coordinate", () => {
+    const rules = Object.fromEntries(
+      MAINTENANCE.map((c) => [c, "alone"]),
+    ) as Partial<Record<LeadCategory, LeadLevel>>;
+    for (const category of MAINTENANCE) {
+      if (category === "contributor-ci") continue;
+      expect(
+        leadDecision(settings({ stage: "act", rules }), category).effective,
+      ).toBe("act");
+      expect(
+        leadDecision(settings({ stage: "coordinate", rules }), category)
+          .effective,
+      ).toBe("ask");
+    }
+  });
+});
+
+describe("never alone", () => {
+  test("contributor-ci asks first at most: a stored alone reads as asks first", () => {
+    expect(NEVER_ALONE).toEqual(["contributor-ci"]);
+    const rules = { "contributor-ci": "alone" } as const;
+    expect(leadLevel(rules, "contributor-ci")).toBe("asks-first");
+    expect(leadLevel({ "contributor-ci": "only-you" }, "contributor-ci")).toBe(
+      "only-you",
+    );
+    expect(
+      leadDecision(settings({ stage: "act", rules }), "contributor-ci"),
+    ).toMatchObject({ level: "asks-first", effective: "ask" });
   });
 });
 

@@ -773,8 +773,16 @@ export interface BlobPoster {
    *  repositories only. */
   sessionId?: string;
   /** A project lead: only this project's repositories, and only private
-   *  ones. */
-  lead?: { project: string; repos: string[] };
+   *  ones, unless `recordedStep`. */
+  lead?: {
+    project: string;
+    repos: string[];
+    /** A step of a recorded proposal that lead_apply runs (the owner
+     *  approved it, or set the lead's rules to let it run). It may also
+     *  post on a public repository listed in `publicRepos`, for an
+     *  owner who may post there (`privateOnly` unset). */
+    recordedStep?: boolean;
+  };
   /** Private repositories only: a teammate's supervisor, since nothing on
    *  the instance says which public repositories they may speak on
    *  (blobSupervisorPoster). */
@@ -901,16 +909,35 @@ export function blobFooter(
 /** The only GitHub calls Blob makes: a comment, a review with event
  *  COMMENT, reading a label, adding or removing labels, and opening an
  *  issue. Why a call is refused, or null. Every write path is checked
- *  here before the token leaves, so nothing closes, approves, requests
- *  changes, edits, pushes or merges, whatever account it posts as. */
+ *  here before the token leaves, so nothing approves, requests changes,
+ *  edits, pushes or merges, whatever account it posts as. A close is
+ *  allowed only with `close`, which only blobClose passes: the owner
+ *  approved that close as a lead step (leads/apply.ts), and the body may
+ *  carry nothing but the close itself. */
 export function blobRequestRefusal(
   method: string,
   path: string,
   body?: unknown,
+  opts: { close?: boolean } = {},
 ): string | null {
   const route = path.match(/^\/repos\/[^/]+\/[^/]+(\/.*)$/)?.[1] ?? "";
   const fields = obj(body) ?? {};
+  const keys = Object.keys(fields).sort().join(",");
+  const closing =
+    opts.close === true &&
+    ((method === "GET" && /^\/(issues|pulls)\/\d+$/.test(route)) ||
+      (method === "PATCH" &&
+        /^\/pulls\/\d+$/.test(route) &&
+        keys === "state" &&
+        fields.state === "closed") ||
+      (method === "PATCH" &&
+        /^\/issues\/\d+$/.test(route) &&
+        keys === "state,state_reason" &&
+        fields.state === "closed" &&
+        (fields.state_reason === "completed" ||
+          fields.state_reason === "not_planned")));
   const allowed =
+    closing ||
     (method === "POST" && /^\/issues\/\d+\/comments$/.test(route)) ||
     (method === "POST" &&
       /^\/pulls\/\d+\/reviews$/.test(route) &&
@@ -924,7 +951,7 @@ export function blobRequestRefusal(
       !("assignees" in fields));
   return allowed
     ? null
-    : "Blob only comments, leaves comment reviews, sets labels and opens issues. It never closes, approves, edits, pushes or merges.";
+    : "Blob only comments, leaves comment reviews, sets labels and opens issues, and closes only what the owner approved. It never approves, edits, pushes or merges.";
 }
 
 /** Never written about the private network: the instance's own hostnames
@@ -974,6 +1001,8 @@ export function blobPublicTextRefusal(
 interface Prepared {
   token: string;
   ghRepo: string;
+  /** The owner's GitHub login, as the footer names them. */
+  ownerLogin: string;
   footer: string;
   isPrivate: boolean;
   record: BlobGithubRecord;
@@ -1061,7 +1090,7 @@ async function prepare(
     repo.public === true ? false : await deps.repoIsPrivate(repo.ghRepo);
   const isPrivate = looked === true;
   if (!isPrivate) {
-    if (poster.lead)
+    if (poster.lead && !poster.lead.recordedStep)
       return refuse(
         `${repo.ghRepo} is public or its visibility is unknown. A lead posts on private repositories only.`,
       );
@@ -1102,7 +1131,14 @@ async function prepare(
   );
   return {
     ok: true,
-    value: { token, ghRepo: repo.ghRepo, footer, isPrivate, record },
+    value: {
+      token,
+      ghRepo: repo.ghRepo,
+      ownerLogin,
+      footer,
+      isPrivate,
+      record,
+    },
   };
 }
 
@@ -1186,8 +1222,9 @@ async function githubCall(
   method: string,
   path: string,
   body?: unknown,
+  opts: { close?: boolean } = {},
 ): Promise<GithubAnswer> {
-  const refused = blobRequestRefusal(method, path, body);
+  const refused = blobRequestRefusal(method, path, body, opts);
   if (refused) return { status: 0, json: null, refused };
   try {
     const res = await deps.fetch(`${API}${path}`, {
@@ -1244,7 +1281,7 @@ async function onUnauthorized(record: BlobGithubRecord): Promise<void> {
 }
 
 interface WriteSpec {
-  action: "comment" | "review" | "label" | "issue";
+  action: "comment" | "review" | "label" | "issue" | "close";
   repo: string;
   /** The issue or pull request; absent for a new issue. */
   number?: number;
@@ -1478,6 +1515,123 @@ export function blobLabel(
       ]
         .filter(Boolean)
         .join("; ") + ".",
+  });
+}
+
+/** The fixed note a close posts, before Blob's footer: `note` is the
+ *  reason line the owner approved. */
+export function blobCloseNote(ownerLogin: string, note: string): string {
+  return `Closed by Blob for @${ownerLogin}: ${note}`;
+}
+
+/** What a close checks right before it closes, refusing when it moved. */
+export interface BlobCloseExpect {
+  /** The issue's `updated_at` and state when the close was proposed. */
+  issue?: { updatedAt: string; state: "open" | "closed" };
+  /** The pull request's head when the close was proposed. */
+  headSha?: string;
+}
+
+/** Close an issue (`completed` or `not_planned`) or a pull request as
+ *  Blob. An issue that turns out to be a pull request, or the other way
+ *  round, is refused; one already closed counts as done, unless `expect`
+ *  pins it open. With `expect`, the issue or the pull request's head is
+ *  read right before closing and a change refuses. With `note`, the fixed
+ *  note (blobCloseNote) is posted first, after every check, so a refused
+ *  close posts nothing. */
+export function blobClose(
+  poster: BlobPoster,
+  input: {
+    repo: string;
+    number: number;
+    pullRequest: boolean;
+    reason?: "completed" | "not_planned";
+    note?: string;
+    expect?: BlobCloseExpect;
+  },
+): Promise<BlobWriteResult> {
+  const what = input.pullRequest ? "pull request" : "issue";
+  const note = input.note?.trim();
+  return write(poster, {
+    action: "close",
+    repo: input.repo,
+    number: input.number,
+    texts: note ? [note] : [],
+    weight: note ? 2 : 1,
+    run: async (p) => {
+      const base = `/repos/${repoPath(p.ghRepo)}`;
+      const name = `#${input.number} in ${p.ghRepo}`;
+      const found = await githubCall(
+        p.token,
+        "GET",
+        `${base}/issues/${input.number}`,
+        undefined,
+        { close: true },
+      );
+      if (found.status !== 200) return found;
+      const issue = obj(found.json);
+      if (!!issue?.pull_request !== input.pullRequest)
+        return {
+          status: 0,
+          json: null,
+          refused: `${name} is ${input.pullRequest ? "an issue" : "a pull request"}, not ${input.pullRequest ? "a pull request" : "an issue"}.`,
+        };
+      const pinned = input.expect?.issue;
+      if (
+        pinned &&
+        (issue?.updated_at !== pinned.updatedAt ||
+          issue?.state !== pinned.state)
+      )
+        return {
+          status: 0,
+          json: null,
+          refused: `${name} changed since this was proposed, so Blob didn't close it.`,
+        };
+      if (issue?.state === "closed") return { status: 200, json: issue };
+      if (input.expect?.headSha) {
+        const pr = await githubCall(
+          p.token,
+          "GET",
+          `${base}/pulls/${input.number}`,
+          undefined,
+          { close: true },
+        );
+        if (pr.status !== 200) return pr;
+        if (obj(obj(pr.json)?.head)?.sha !== input.expect.headSha)
+          return {
+            status: 0,
+            json: null,
+            refused: `${name} has new commits since ${input.expect.headSha.slice(0, 7)} was proposed, so Blob didn't close it.`,
+          };
+      }
+      if (note) {
+        const posted = await githubCall(
+          p.token,
+          "POST",
+          `${base}/issues/${input.number}/comments`,
+          { body: blobCloseNote(p.ownerLogin, note) + p.footer },
+        );
+        if (posted.status < 200 || posted.status >= 300) return posted;
+      }
+      const closed = input.pullRequest
+        ? await githubCall(
+            p.token,
+            "PATCH",
+            `${base}/pulls/${input.number}`,
+            { state: "closed" },
+            { close: true },
+          )
+        : await githubCall(
+            p.token,
+            "PATCH",
+            `${base}/issues/${input.number}`,
+            { state: "closed", state_reason: input.reason ?? "completed" },
+            { close: true },
+          );
+      // The note went out: a failed close still wrote.
+      return note ? { ...closed, applied: true } : closed;
+    },
+    ok: (json) => `Closed the ${what}${where(json)}`,
   });
 }
 

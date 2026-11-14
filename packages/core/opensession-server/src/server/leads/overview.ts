@@ -15,7 +15,8 @@ import type {
   SupportConversation,
   SupportIndexRow,
 } from "../../shared/support";
-import { configuredRepos } from "../config";
+import { configuredRepos, isGithubBotLogin } from "../config";
+import { githubLoginToPersonKey } from "../shared/user-mappings";
 import { spendInMonth } from "../incidents/response/ledger";
 import {
   type FlapClass,
@@ -41,6 +42,9 @@ export interface OverviewPr {
   url: string;
   isDraft: boolean;
   updatedAt: string;
+  /** Who opened it, a GitHub login; absent on older cache rows. */
+  author?: string;
+  createdAt?: string;
   checks: { total: number; passed: number; failed: number; pending: number };
 }
 
@@ -54,6 +58,16 @@ export interface LeadOverviewDeps {
   openSupportRows(inboxIds: readonly string[]): Promise<SupportIndexRow[]>;
   /** One support conversation, for a support-send step's pin. */
   getConversation(id: string): Promise<SupportConversation | null>;
+  /** One issue as GitHub has it now, for a close-issue step's pin; null
+   *  when GitHub can't be read. */
+  readIssue(
+    ghRepo: string,
+    number: number,
+  ): Promise<{
+    updatedAt: string;
+    state: "open" | "closed";
+    pullRequest: boolean;
+  } | null>;
   /** Open pull requests across projects, or null with no indexed source. */
   openPrs(): Promise<OverviewPr[] | null>;
   getGoal(id: string): Promise<Goal | null>;
@@ -61,6 +75,8 @@ export interface LeadOverviewDeps {
   projectLabel(project: string): string;
   /** The project's GitHub repositories, `owner/name`. */
   projectGhRepos(project: string): string[];
+  /** Whether a GitHub login is a teammate on the roster or a bot. */
+  isTeamLogin(login: string): boolean;
 }
 
 export interface FlapSummary {
@@ -136,6 +152,13 @@ export interface LeadOverview {
           failed: number;
           pending: number;
           stale: boolean;
+          /** Who opened it; empty when the cache doesn't say. */
+          author: string;
+          /** Opened by someone outside the team (not on the roster, not a
+           *  bot). */
+          outside: boolean;
+          /** Last activity. */
+          updatedAt: string;
         }>;
       }
     | { unavailable: string };
@@ -183,6 +206,24 @@ const liveDeps: LeadOverviewDeps = {
     }),
   getConversation: async (id) =>
     (await import("../support/store")).getConversation(id),
+  async readIssue(ghRepo, number) {
+    const { githubRequest } = await import("../../agents/github/github-rest");
+    const r = await githubRequest<Record<string, unknown>>(
+      "GET",
+      `/repos/${ghRepo}/issues/${number}`,
+      undefined,
+      { mint: "read" },
+    );
+    const updatedAt = r.data?.updated_at;
+    const state = r.data?.state;
+    if (
+      !r.ok ||
+      typeof updatedAt !== "string" ||
+      (state !== "open" && state !== "closed")
+    )
+      return null;
+    return { updatedAt, state, pullRequest: !!r.data?.pull_request };
+  },
   openPrs: async () => (await import("../pr-cache")).getOpenPrSummaries(),
   getGoal: async (id) => (await import("../goals")).getGoal(id),
   projectLabel: (project) => configuredRepos()[project]?.label || project,
@@ -191,6 +232,11 @@ const liveDeps: LeadOverviewDeps = {
     const gh = repo?.ghRepo?.trim();
     return gh && (!repo.host || repo.host === "github") ? [gh] : [];
   },
+  isTeamLogin: (login) =>
+    !login ||
+    /\[bot\]$/i.test(login) ||
+    isGithubBotLogin(login) ||
+    !!githubLoginToPersonKey(login),
 };
 
 /** The live sources, with any test replacements. */
@@ -336,10 +382,11 @@ export async function buildLeadOverview(
   function prSection(): LeadOverview["pullRequests"] {
     const mine = (prs ?? [])
       .filter((p) => p.repo === project)
+      // Failing checks first, then the ones waiting longest.
       .sort(
         (a, b) =>
-          b.checks.failed - a.checks.failed ||
-          b.updatedAt.localeCompare(a.updatedAt) ||
+          Number(b.checks.failed > 0) - Number(a.checks.failed > 0) ||
+          a.updatedAt.localeCompare(b.updatedAt) ||
           a.number - b.number,
       );
     const stale = (p: OverviewPr) =>
@@ -356,6 +403,9 @@ export async function buildLeadOverview(
         failed: p.checks.failed,
         pending: p.checks.pending,
         stale: stale(p),
+        author: p.author ?? "",
+        outside: !!p.author && !d.isTeamLogin(p.author),
+        updatedAt: p.updatedAt,
       })),
     };
   }
@@ -436,10 +486,13 @@ export function overviewMarkdown(o: LeadOverview): string {
   else
     lines.push(
       `## Pull requests: ${prs.open} open, ${prs.failingChecks} with failing checks, ${prs.stale} stale, ${prs.drafts} drafts`,
+      ...(prs.items.length
+        ? ["Failing checks first, then the ones waiting longest."]
+        : []),
       ...(prs.items.length ? [untrustedLabel("pull request titles")] : []),
       ...prs.items.map(
         (p) =>
-          `- #${p.number} ${quoted(p.title)}: ${p.failed ? `${p.failed} checks failing` : p.pending ? `${p.pending} checks pending` : "checks passing"}${p.stale ? ", stale" : ""} (${p.url})`,
+          `- #${p.number} ${quoted(p.title)}${p.author ? ` by ${p.author}${p.outside ? " (outside the team)" : ""}` : ""}: ${p.failed ? `${p.failed} checks failing` : p.pending ? `${p.pending} checks pending` : "checks passing"}${p.stale ? ", stale" : ""}, last activity ${p.updatedAt} (${p.url})`,
       ),
       ...more(prs.open, prs.items.length),
     );

@@ -20,6 +20,7 @@ import {
   BLOB_WRITES_PER_INSTANCE_HOUR,
   BLOB_WRITES_PER_THREAD_HOUR,
   __setBlobGithubDepsForTest,
+  blobClose,
   blobComment,
   blobLabel,
   blobOpenIssue,
@@ -492,6 +493,229 @@ describe("guards refuse before anything reaches GitHub", () => {
   });
 });
 
+describe("a lead's recorded steps", () => {
+  async function refused(
+    run: () => Promise<{ ok: boolean; message?: string }>,
+    pattern: RegExp,
+  ) {
+    const result = await run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(pattern);
+  }
+  const step = (project: string, repos: string[], extra = {}): BlobPoster => ({
+    owner: "Ada",
+    lead: { project, repos, recordedStep: true },
+    ...extra,
+  });
+
+  test("may post on a listed public repository of its project, with every text guard", async () => {
+    const ok = await comment(
+      "Thanks for this!",
+      step("docs", ["acme/docs"]),
+      "acme/docs",
+    );
+    expect(ok.ok).toBe(true);
+    expect(calls[0]!.body.body).toBe(
+      "Thanks for this!\n\n<sub>Blob, for @ada</sub><!-- os:blob -->",
+    );
+    await refused(
+      () => comment("/deploy now", step("docs", ["acme/docs"]), "acme/docs"),
+      /slash command/,
+    );
+  });
+
+  test("never on an unlisted public repository, another project's, or for a private-only owner", async () => {
+    await refused(
+      () => comment("Hi", step("site", ["acme/site"]), "acme/site"),
+      /not on Blob's list of public repositories/,
+    );
+    await refused(
+      () => comment("Hi", step("widget", ["acme/widget"]), "acme/docs"),
+      /not one of widget's repositories/,
+    );
+    await refused(
+      () =>
+        comment(
+          "Hi",
+          step("docs", ["acme/docs"], { privateOnly: true }),
+          "acme/docs",
+        ),
+      /only for the instance owner/,
+    );
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("closing", () => {
+  test("closes an issue with its reason, after checking it is one", async () => {
+    answer = (call) =>
+      call.method === "GET"
+        ? Response.json({ number: 12, state: "open" })
+        : Response.json({
+            html_url: "https://github.com/acme/widget/issues/12",
+          });
+    const result = await blobClose(ADA_POSTS, {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: false,
+      reason: "not_planned",
+    });
+    expect(result.ok).toBe(true);
+    expect(
+      calls.map((c) => [c.method, c.url.replace("https://api.github.com", "")]),
+    ).toEqual([
+      ["GET", "/repos/acme/widget/issues/12"],
+      ["PATCH", "/repos/acme/widget/issues/12"],
+    ]);
+    expect(calls[1]!.body).toEqual({
+      state: "closed",
+      state_reason: "not_planned",
+    });
+    expect(audits.at(-1)).toMatchObject({ action: "close", number: 12 });
+  });
+
+  test("closes a pull request through the pulls endpoint", async () => {
+    answer = (call) =>
+      call.method === "GET"
+        ? Response.json({ number: 12, state: "open", pull_request: {} })
+        : Response.json({ html_url: "https://github.com/acme/widget/pull/12" });
+    const result = await blobClose(ADA_POSTS, {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(calls[1]!.url).toBe(
+      "https://api.github.com/repos/acme/widget/pulls/12",
+    );
+    expect(calls[1]!.body).toEqual({ state: "closed" });
+  });
+
+  test("an issue that is a pull request is refused; one already closed is done", async () => {
+    answer = () =>
+      Response.json({ number: 12, state: "open", pull_request: {} });
+    const wrong = await blobClose(ADA_POSTS, {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: false,
+    });
+    expect(wrong).toEqual({
+      ok: false,
+      message: "#12 in acme/widget is a pull request, not an issue.",
+    });
+    calls = [];
+    answer = () => Response.json({ number: 12, state: "closed" });
+    const done = await blobClose(ADA_POSTS, {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: false,
+    });
+    expect(done.ok).toBe(true);
+    expect(calls.map((c) => c.method)).toEqual(["GET"]);
+  });
+});
+
+describe("closing with a note and a pin", () => {
+  const PIN = { updatedAt: "2026-11-10T08:00:00Z", state: "open" as const };
+  const path = (c: Call) => c.url.replace("https://api.github.com", "");
+
+  test("posts the fixed note after the checks, then closes the issue", async () => {
+    answer = (call) =>
+      call.method === "GET"
+        ? Response.json({
+            number: 12,
+            state: "open",
+            updated_at: PIN.updatedAt,
+          })
+        : Response.json({
+            html_url: "https://github.com/acme/widget/issues/12",
+          });
+    const result = await blobClose(ADA_POSTS, {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: false,
+      reason: "not_planned",
+      note: "No reply in 30 days.",
+      expect: { issue: PIN },
+    });
+    expect(result.ok).toBe(true);
+    expect(calls.map((c) => [c.method, path(c)])).toEqual([
+      ["GET", "/repos/acme/widget/issues/12"],
+      ["POST", "/repos/acme/widget/issues/12/comments"],
+      ["PATCH", "/repos/acme/widget/issues/12"],
+    ]);
+    expect(calls[1]!.body.body).toStartWith(
+      "Closed by Blob for @ada: No reply in 30 days.\n\n<sub>Blob, for @ada",
+    );
+  });
+
+  test("an issue that changed since the proposal is refused, nothing posted", async () => {
+    for (const found of [
+      { updated_at: "2026-11-12T08:00:00Z", state: "open" },
+      { updated_at: PIN.updatedAt, state: "closed" },
+    ]) {
+      calls = [];
+      answer = () => Response.json({ number: 12, ...found });
+      const result = await blobClose(ADA_POSTS, {
+        repo: "acme/widget",
+        number: 12,
+        pullRequest: false,
+        note: "Stale.",
+        expect: { issue: PIN },
+      });
+      expect(result).toEqual({
+        ok: false,
+        message:
+          "#12 in acme/widget changed since this was proposed, so Blob didn't close it.",
+      });
+      expect(calls.map((c) => c.method)).toEqual(["GET"]);
+    }
+  });
+
+  test("a pull request's head is read again right before closing", async () => {
+    let head = "a".repeat(40);
+    answer = (call) =>
+      call.method === "GET"
+        ? path(call).includes("/pulls/")
+          ? Response.json({ head: { sha: head } })
+          : Response.json({ number: 12, state: "open", pull_request: {} })
+        : Response.json({ html_url: "https://github.com/acme/widget/pull/12" });
+    const input = {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: true,
+      note: "Superseded by #13.",
+      expect: { headSha: "a".repeat(40) },
+    };
+    expect((await blobClose(ADA_POSTS, input)).ok).toBe(true);
+    expect(calls.map((c) => [c.method, path(c)])).toEqual([
+      ["GET", "/repos/acme/widget/issues/12"],
+      ["GET", "/repos/acme/widget/pulls/12"],
+      ["POST", "/repos/acme/widget/issues/12/comments"],
+      ["PATCH", "/repos/acme/widget/pulls/12"],
+    ]);
+    calls = [];
+    head = "b".repeat(40);
+    expect(await blobClose(ADA_POSTS, input)).toEqual({
+      ok: false,
+      message:
+        "#12 in acme/widget has new commits since aaaaaaa was proposed, so Blob didn't close it.",
+    });
+    expect(calls.map((c) => c.method)).toEqual(["GET", "GET"]);
+  });
+
+  test("the note goes through the text guards", async () => {
+    const result = await blobClose(ADA_POSTS, {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: false,
+      note: "Ping @stranger about it.",
+    });
+    expect(result.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("limits", () => {
   test(`${BLOB_WRITES_PER_THREAD_HOUR} writes an hour on one thread`, async () => {
     for (let i = 0; i < BLOB_WRITES_PER_THREAD_HOUR; i++)
@@ -940,11 +1164,11 @@ describe("posting as the owner's account", () => {
     expect(calls).toEqual([]);
   });
 
-  test("nothing closes, approves, edits or merges", () => {
+  test("nothing closes without an approved close; nothing approves, edits or merges", () => {
     const repo = "/repos/acme/docs";
     expect(
       blobRequestRefusal("PATCH", `${repo}/issues/4`, { state: "closed" }),
-    ).toMatch(/never closes, approves/);
+    ).toMatch(/closes only what the owner approved/);
     expect(
       blobRequestRefusal("PATCH", `${repo}/pulls/4`, { state: "closed" }),
     ).not.toBeNull();
@@ -987,6 +1211,46 @@ describe("posting as the owner's account", () => {
       blobRequestRefusal("POST", `${repo}/issues`, { title: "x", body: "y" }),
     ).toBeNull();
     expect(blobRequestRefusal("GET", `${repo}/labels/bug`)).toBeNull();
+    // An approved close (blobClose) may read the issue or pull request and
+    // close it, with nothing else in the body.
+    const close = { close: true };
+    expect(blobRequestRefusal("GET", `${repo}/issues/4`)).not.toBeNull();
+    expect(
+      blobRequestRefusal("GET", `${repo}/issues/4`, undefined, close),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal("GET", `${repo}/pulls/4`, undefined, close),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal(
+        "PATCH",
+        `${repo}/pulls/4`,
+        { state: "closed" },
+        close,
+      ),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal(
+        "PATCH",
+        `${repo}/issues/4`,
+        { state: "closed", state_reason: "not_planned" },
+        close,
+      ),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal(
+        "PATCH",
+        `${repo}/issues/4`,
+        { state: "closed", state_reason: "completed", title: "x" },
+        close,
+      ),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("PATCH", `${repo}/pulls/4`, { state: "open" }, close),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("PUT", `${repo}/pulls/4/merge`, {}, close),
+    ).not.toBeNull();
     expect(
       blobRequestRefusal("POST", `${repo}/issues/4/labels`, {
         labels: ["bug"],

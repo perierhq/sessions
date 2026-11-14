@@ -12,6 +12,7 @@ import {
   proposalLead,
   proposalUrgency,
   ruleCopy,
+  issueSources,
   stepCopy,
   supportDrafts,
 } from "./report";
@@ -35,6 +36,23 @@ const ctx: LeadActContext = {
         to: [{ name: "Customer", address: "customer@example.test" }],
         answersMessageId: "m-1@example.test",
       },
+    },
+  },
+  issues: {
+    "acme/app#31": {
+      updatedAt: "2026-11-10T08:00:00Z",
+      state: "open",
+      pullRequest: false,
+    },
+    "acme/app#32": {
+      updatedAt: "2026-11-10T08:00:00Z",
+      state: "closed",
+      pullRequest: false,
+    },
+    "acme/app#533": {
+      updatedAt: "2026-11-10T08:00:00Z",
+      state: "open",
+      pullRequest: true,
     },
   },
 };
@@ -445,5 +463,171 @@ describe("proposalUrgency", () => {
     expect(
       proposalUrgency({ expiresAt: NOW + 7 * DAY }, NOW, "public-release"),
     ).toBeUndefined();
+  });
+});
+
+describe("maintenance steps", () => {
+  const comment = {
+    kind: "blob-comment",
+    ghRepo: "acme/app",
+    number: 31,
+    body: "Thanks! Could you share the steps?",
+  };
+  const label = {
+    kind: "blob-label",
+    ghRepo: "acme/app",
+    number: 31,
+    add: ["needs info"],
+  };
+  const closeIssue = {
+    kind: "close-issue",
+    ghRepo: "acme/app",
+    number: 31,
+    reason: "not_planned",
+    note: "No reply in 30 days.",
+  };
+  const closePr = {
+    kind: "close-pr",
+    ghRepo: "acme/app",
+    number: 533,
+    headSha: SHA,
+    note: "Superseded by #534.",
+  };
+  const approveRun = {
+    kind: "approve-run",
+    ghRepo: "acme/app",
+    number: 533,
+    runId: 99,
+    headSha: SHA,
+  };
+
+  test.each([
+    [comment, "issue-triage", true],
+    // A close posts its own fixed note: no free-text comment beside it.
+    [comment, "pr-close", false],
+    [comment, "contributor-ci", true],
+    [comment, "pr-merge", true],
+    [comment, "ci-repair", false],
+    [label, "issue-triage", true],
+    [label, "pr-close", false],
+    [closeIssue, "issue-triage", true],
+    [closeIssue, "pr-close", false],
+    [closePr, "pr-close", true],
+    [closePr, "issue-triage", false],
+    [approveRun, "contributor-ci", true],
+    [approveRun, "pr-merge", false],
+    [merge, "pr-merge", true],
+  ] as const)("%o for %s: %p", (step, category, fits) => {
+    expect(checkLeadAct({ category, steps: [step] }, ctx).ok).toBe(fits);
+  });
+
+  test("every step stays in the project's repositories", () => {
+    for (const step of [comment, label, closeIssue, closePr, approveRun])
+      expect(
+        checkLeadAct(
+          {
+            category:
+              step.kind === "approve-run"
+                ? "contributor-ci"
+                : step.kind === "close-pr"
+                  ? "pr-close"
+                  : "issue-triage",
+            steps: [{ ...step, ghRepo: "someone/else" }],
+          },
+          ctx,
+        ),
+      ).toEqual({
+        ok: false,
+        error:
+          "Step 1: someone/else is not this project's repository (acme/app)",
+      });
+  });
+
+  test("bad fields are refused", () => {
+    for (const [category, step] of [
+      ["issue-triage", { ...comment, body: "x".repeat(4001) }],
+      ["issue-triage", { ...comment, body: "hidden\u200b" }],
+      ["issue-triage", { ...label, add: [] }],
+      ["issue-triage", { ...closeIssue, reason: "spam" }],
+      ["contributor-ci", { ...approveRun, runId: 0 }],
+      ["pr-close", { ...closePr, headSha: "abc" }],
+      ["issue-triage", { ...closeIssue, note: undefined }],
+      ["issue-triage", { ...closeIssue, note: "two\nlines" }],
+      ["pr-close", { ...closePr, note: "x".repeat(201) }],
+    ] as const)
+      expect(checkLeadAct({ category, steps: [step] }, ctx).ok).toBe(false);
+  });
+
+  test("the owner reads each one in fixed copy, a comment in full", () => {
+    expect(stepCopy(comment as LeadStep, {})).toBe(
+      "Comment as Blob on #31 in acme/app:\n   ```text\n   Thanks! Could you share the steps?\n   ```",
+    );
+    expect(stepCopy({ ...label, remove: ["bug"] } as LeadStep, {})).toBe(
+      "Label #31 in acme/app as Blob: add needs info; remove bug",
+    );
+    expect(stepCopy(closeIssue as LeadStep, {})).toBe(
+      'Close issue #31 in acme/app as Blob, as not planned, if nothing on it changed since it was proposed. Blob\'s note: "Closed by Blob for @<owner>:" and then\n   ```text\n   No reply in 30 days.\n   ```',
+    );
+    expect(stepCopy(closePr as LeadStep, {})).toBe(
+      'Close PR #533 in acme/app as Blob, while it is at abc1234. Blob\'s note: "Closed by Blob for @<owner>:" and then\n   ```text\n   Superseded by #534.\n   ```',
+    );
+    expect(stepCopy(approveRun as LeadStep, {})).toBe(
+      "Approve workflow run 99 for PR #533 in acme/app at abc1234: it runs the contributor's code in CI. A workflow that runs on workflow_run or pull_request_target would then run with the repository's secrets, so Blob refuses when the repository has one and leaves the approval to you on GitHub",
+    );
+  });
+
+  test("close-issue is pinned to the issue as the server read it, never the lead's pin", () => {
+    const result = checkLeadAct(
+      {
+        category: "issue-triage",
+        steps: [
+          {
+            ...closeIssue,
+            ghRepo: "ACME/app",
+            pin: { updatedAt: "2020-01-01T00:00:00Z", state: "open" },
+          },
+        ],
+      },
+      ctx,
+    );
+    expect(result.ok ? (result.value.steps as unknown) : null).toEqual([
+      {
+        ...closeIssue,
+        pin: { updatedAt: "2026-11-10T08:00:00Z", state: "open" },
+      },
+    ]);
+  });
+
+  test("close-issue refuses an issue it couldn't read, a pull request and a closed issue", () => {
+    for (const [number, error] of [
+      [40, "Step 1: couldn't read issue #40 in acme/app from GitHub"],
+      [
+        533,
+        "Step 1: #533 in acme/app is a pull request; close it with a close-pr step",
+      ],
+      [32, "Step 1: issue #32 in acme/app is closed"],
+    ] as const)
+      expect(
+        checkLeadAct(
+          { category: "issue-triage", steps: [{ ...closeIssue, number }] },
+          ctx,
+        ),
+      ).toEqual({ ok: false, error });
+  });
+
+  test("issueSources reads each close-issue's issue once, leaving out what fails", async () => {
+    const reads: string[] = [];
+    const out = await issueSources(
+      [closeIssue, { ...closeIssue }, { ...closeIssue, number: 40 }, comment],
+      async (ghRepo, number) => {
+        reads.push(`${ghRepo}#${number}`);
+        if (number === 40) throw new Error("down");
+        return { updatedAt: "t", state: "open", pullRequest: false };
+      },
+    );
+    expect(reads).toEqual(["acme/app#31", "acme/app#40"]);
+    expect(out).toEqual({
+      "acme/app#31": { updatedAt: "t", state: "open", pullRequest: false },
+    });
   });
 });
