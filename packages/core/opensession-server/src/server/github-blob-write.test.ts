@@ -1164,11 +1164,11 @@ describe("posting as the owner's account", () => {
     expect(calls).toEqual([]);
   });
 
-  test("nothing closes, approves, edits or merges", () => {
+  test("nothing closes without an approved close; nothing approves, edits or merges", () => {
     const repo = "/repos/acme/docs";
     expect(
       blobRequestRefusal("PATCH", `${repo}/issues/4`, { state: "closed" }),
-    ).toMatch(/never closes, approves/);
+    ).toMatch(/closes only what the owner approved/);
     expect(
       blobRequestRefusal("PATCH", `${repo}/pulls/4`, { state: "closed" }),
     ).not.toBeNull();
@@ -1211,6 +1211,46 @@ describe("posting as the owner's account", () => {
       blobRequestRefusal("POST", `${repo}/issues`, { title: "x", body: "y" }),
     ).toBeNull();
     expect(blobRequestRefusal("GET", `${repo}/labels/bug`)).toBeNull();
+    // An approved close (blobClose) may read the issue or pull request and
+    // close it, with nothing else in the body.
+    const close = { close: true };
+    expect(blobRequestRefusal("GET", `${repo}/issues/4`)).not.toBeNull();
+    expect(
+      blobRequestRefusal("GET", `${repo}/issues/4`, undefined, close),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal("GET", `${repo}/pulls/4`, undefined, close),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal(
+        "PATCH",
+        `${repo}/pulls/4`,
+        { state: "closed" },
+        close,
+      ),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal(
+        "PATCH",
+        `${repo}/issues/4`,
+        { state: "closed", state_reason: "not_planned" },
+        close,
+      ),
+    ).toBeNull();
+    expect(
+      blobRequestRefusal(
+        "PATCH",
+        `${repo}/issues/4`,
+        { state: "closed", state_reason: "completed", title: "x" },
+        close,
+      ),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("PATCH", `${repo}/pulls/4`, { state: "open" }, close),
+    ).not.toBeNull();
+    expect(
+      blobRequestRefusal("PUT", `${repo}/pulls/4/merge`, {}, close),
+    ).not.toBeNull();
     expect(
       blobRequestRefusal("POST", `${repo}/issues/4/labels`, {
         labels: ["bug"],
