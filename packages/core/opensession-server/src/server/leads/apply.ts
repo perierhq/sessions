@@ -68,7 +68,11 @@
 //     close-issue only while the issue is as it was when proposed (its
 //     updated_at and state, pinned by the server). A close posts its
 //     fixed note (blobCloseNote) with the approved reason line in the same
-//     step, after those checks
+//     step, after those checks. While Blob has no token stored, a step a
+//     person approved posts through the GitHub App instead (github-blob.ts
+//     `app` mode, the same guards; any repository of this project, public
+//     ones too, since the approval is the gate), and a run by the rules is
+//     refused
 //   - approve-run: approves a waiting workflow run of an outside
 //     contributor's pull request as the GitHub App (its own actions:write
 //     mint), only while the pull request is open, still at the approved
@@ -1048,6 +1052,7 @@ async function stepPoster(ctx: RunContext): Promise<BlobPoster | null> {
       project: ctx.project,
       repos: [...ctx.d.projectGhRepos(ctx.project)],
       recordedStep: true,
+      ...(ctx.approval.login ? { approvedBy: ctx.approval.login } : {}),
     },
   };
 }

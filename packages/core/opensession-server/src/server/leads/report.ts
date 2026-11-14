@@ -23,6 +23,7 @@ import type { ProjectSettingsDocument } from "../../shared/project-settings";
 import type { MailAddress, SupportConversation } from "../../shared/support";
 import { auditDurable, digest } from "../audit";
 import type { TeamMember } from "../config";
+import { blobStepsAppLogin } from "../github-blob";
 import {
   instanceOwner,
   instanceOwnerMember,
@@ -702,11 +703,19 @@ const METHOD_COPY = {
 } as const;
 
 /** Fixed owner-facing copy for one step. A worker's prompt follows its line
- *  in full, indented and fenced, so the owner reads what the worker gets. */
+ *  in full, indented and fenced, so the owner reads what the worker gets.
+ *  A GitHub step names the GitHub App's bot when it posts through the App
+ *  because Blob has no account (`appLogin`, github-blob.ts
+ *  blobStepsAppLogin by default). */
 export function stepCopy(
   step: LeadStep,
   names: Record<string, string>,
+  appLogin?: string,
 ): string {
+  const via = () => {
+    const login = appLogin ?? blobStepsAppLogin();
+    return login ? `, posts as ${login} for you` : "";
+  };
   switch (step.kind) {
     case "merge-pr":
       return `Merge PR #${step.number} in ${step.ghRepo} at ${sha(step.headSha)}${step.method ? `, ${METHOD_COPY[step.method]}` : ""}`;
@@ -717,18 +726,18 @@ export function stepCopy(
     case "support-send":
       return `Send reply draft ${step.draftId} in support conversation ${step.conversationId}`;
     case "blob-comment":
-      return `Comment as Blob on #${step.number} in ${step.ghRepo}:\n${fenced(step.body)}`;
+      return `Comment as Blob on #${step.number} in ${step.ghRepo}${via()}:\n${fenced(step.body)}`;
     case "blob-label":
-      return `Label #${step.number} in ${step.ghRepo} as Blob: ${[
+      return `Label #${step.number} in ${step.ghRepo} as Blob${via()}: ${[
         step.add.length ? `add ${step.add.join(", ")}` : "",
         step.remove.length ? `remove ${step.remove.join(", ")}` : "",
       ]
         .filter(Boolean)
         .join("; ")}`;
     case "close-issue":
-      return `Close issue #${step.number} in ${step.ghRepo} as Blob, ${step.reason === "completed" ? "as done" : "as not planned"}, if nothing on it changed since it was proposed. Blob's note: ${CLOSE_NOTE_LEAD}\n${fenced(step.note)}`;
+      return `Close issue #${step.number} in ${step.ghRepo} as Blob${via()}, ${step.reason === "completed" ? "as done" : "as not planned"}, if nothing on it changed since it was proposed. Blob's note: ${CLOSE_NOTE_LEAD}\n${fenced(step.note)}`;
     case "close-pr":
-      return `Close PR #${step.number} in ${step.ghRepo} as Blob, while it is at ${sha(step.headSha)}. Blob's note: ${CLOSE_NOTE_LEAD}\n${fenced(step.note)}`;
+      return `Close PR #${step.number} in ${step.ghRepo} as Blob${via()}, while it is at ${sha(step.headSha)}. Blob's note: ${CLOSE_NOTE_LEAD}\n${fenced(step.note)}`;
     case "approve-run":
       return `Approve workflow run ${step.runId} for PR #${step.number} in ${step.ghRepo} at ${sha(step.headSha)}: it runs the contributor's code in CI. A workflow that runs on workflow_run or pull_request_target would then run with the repository's secrets, so Blob refuses when the repository has one and leaves the approval to you on GitHub`;
     case "spawn-worker":

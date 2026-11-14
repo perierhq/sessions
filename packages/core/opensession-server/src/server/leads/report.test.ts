@@ -576,6 +576,27 @@ describe("maintenance steps", () => {
     );
   });
 
+  test("while Blob has no account, each GitHub step says the App's bot posts it for the owner", () => {
+    const app = "acme-app[bot]";
+    expect(stepCopy(comment as LeadStep, {}, app)).toStartWith(
+      "Comment as Blob on #31 in acme/app, posts as acme-app[bot] for you:\n",
+    );
+    expect(stepCopy({ ...label, remove: [] } as LeadStep, {}, app)).toBe(
+      "Label #31 in acme/app as Blob, posts as acme-app[bot] for you: add needs info",
+    );
+    expect(stepCopy(closeIssue as LeadStep, {}, app)).toStartWith(
+      "Close issue #31 in acme/app as Blob, posts as acme-app[bot] for you, as not planned,",
+    );
+    expect(stepCopy(closePr as LeadStep, {}, app)).toStartWith(
+      "Close PR #533 in acme/app as Blob, posts as acme-app[bot] for you, while it is at abc1234.",
+    );
+    // Other steps never post as Blob.
+    expect(stepCopy(approveRun as LeadStep, {}, app)).not.toContain(app);
+    expect(stepCopy(comment as LeadStep, {}, "")).toStartWith(
+      "Comment as Blob on #31 in acme/app:\n",
+    );
+  });
+
   test("close-issue is pinned to the issue as the server read it, never the lead's pin", () => {
     const result = checkLeadAct(
       {

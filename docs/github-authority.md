@@ -36,6 +36,15 @@ the owner's login stays a person's (never a bot login, never reserved), and
 every limit above applies. The GitHub App keeps doing pull request reviews
 ([setup](setup/github.md#posting-as-your-own-account)).
 
+Until Blob has a token (decided on 2026-11-14), a project lead's GitHub
+steps that the owner approved (`blob-comment`, `blob-label`, `close-issue`,
+`close-pr`) post through the installed GitHub App, the bot that reviews pull
+requests, with every guard of Blob's writes. Each post is signed
+`Blob, for @<owner>` and carries Blob's marker; the App's bot login is
+already one of ours. The supervisor's and the leads' own Blob tools stay
+unavailable without an account
+([security model](security-model.md#blobs-github-tools)).
+
 The App grant and every installation-token mint exclude repository
 Administration. New repository creation happens in the person's GitHub
 browser session at `https://github.com/new`; Open Session only connects the

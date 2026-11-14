@@ -26,6 +26,7 @@ import {
   blobOpenIssue,
   blobRequestRefusal,
   blobReview,
+  blobStepsAppLogin,
   blobSupervisorPoster,
   blobTextRefusal,
   checkBlobGithubExpiry,
@@ -1259,5 +1260,359 @@ describe("posting as the owner's account", () => {
     expect(
       blobRequestRefusal("DELETE", `${repo}/issues/4/labels/bug`),
     ).toBeNull();
+  });
+});
+
+describe("approved lead steps through the GitHub App, while Blob has no account", () => {
+  const APP_TOKEN = "ghs_apptokenvalue";
+  let minted: string[] = [];
+  let appToken: string | null = APP_TOKEN;
+
+  /** The same instance with no `integrations.github.blob` at all. */
+  async function setupApp(extra: Record<string, unknown> = {}) {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        persona: { name: "Pat" },
+        repos: {
+          widget: { repo: join(dir, "widget"), ghRepo: "acme/widget" },
+          docs: { repo: join(dir, "docs"), ghRepo: "acme/docs" },
+          site: { repo: join(dir, "site"), ghRepo: "acme/site" },
+          other: { repo: join(dir, "other"), ghRepo: "acme/other" },
+        },
+        integrations: { github: { appSlug: "acme-app" } },
+        identity: { team: [ADA, NOLOGIN, BOB, CAT] },
+        ...extra,
+      }),
+    );
+    writeFileSync(join(dir, "secrets.json"), JSON.stringify({ secrets: [] }));
+    await getConfigAsync();
+    minted = [];
+    appToken = APP_TOKEN;
+    restores.push(
+      __setBlobGithubDepsForTest({
+        now: () => now,
+        fetch: async (url, init) => {
+          const call: Call = {
+            url,
+            method: init.method ?? "GET",
+            redirect: init.redirect,
+            auth: new Headers(init.headers).get("authorization"),
+            body: init.body ? JSON.parse(String(init.body)) : undefined,
+          };
+          calls.push(call);
+          return answer(call);
+        },
+        repoIsPrivate: async (repo) => visibility[repo] ?? null,
+        audit: (event) => {
+          audits.push(event);
+        },
+        sessionLink: async (id) =>
+          `https://sessions.example.test/session/${id}`,
+        appToken: async (repo) => {
+          minted.push(repo);
+          return appToken;
+        },
+      }),
+    );
+  }
+
+  const approvedStep = (
+    project: string,
+    repos: string[],
+    extra: Partial<BlobPoster> = {},
+  ): BlobPoster => ({
+    owner: "Ada",
+    lead: { project, repos, recordedStep: true, approvedBy: "ada" },
+    ...extra,
+  });
+
+  async function refusedApp(
+    run: () => Promise<{ ok: boolean; message?: string }>,
+    pattern: RegExp,
+  ) {
+    const result = await run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(pattern);
+    expect(calls).toEqual([]);
+    expect(minted).toEqual([]);
+  }
+
+  beforeEach(async () => {
+    await setupApp();
+  });
+
+  test("a comment posts with the App's installation token, Blob's footer and marker, audited as the App", async () => {
+    const result = await comment(
+      "Thanks for the report.",
+      { ...approvedStep("widget", ["acme/widget"]), sessionId: "os-lead-1" },
+      "acme/widget",
+    );
+    expect(result.ok).toBe(true);
+    expect(minted).toEqual(["acme/widget"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.auth).toBe(`Bearer ${APP_TOKEN}`);
+    expect(calls[0]!.redirect).toBe("manual");
+    expect(calls[0]!.body.body).toBe(
+      "Thanks for the report.\n\n<sub>Blob, for @ada · [session](https://sessions.example.test/session/os-lead-1)</sub><!-- os:blob -->",
+    );
+    expect(audits).toEqual([
+      expect.objectContaining({
+        kind: "blob_github_write",
+        action: "comment",
+        repo: "acme/widget",
+        user: "Ada",
+        actor: "Blob",
+        via: "app",
+      }),
+    ]);
+    expect(JSON.stringify(audits)).not.toContain(APP_TOKEN);
+  });
+
+  test("the App's bot is ours, so its post with the marker counts as Blob's", async () => {
+    const { isBlobPost } = await import("../agents/github/constants");
+    const body = "Hi\n\n<sub>Blob, for @ada</sub><!-- os:blob -->";
+    expect(isBlobPost({ login: "acme-app[bot]", body })).toBe(true);
+    expect(isBlobPost({ login: "someone", body })).toBe(false);
+  });
+
+  test("a public repository of the project is allowed, with every public text guard", async () => {
+    await setupApp({ policy: { privateTerms: ["globex"] } });
+    const step = approvedStep("site", ["acme/site"]);
+    const ok = await comment("Thanks!", step, "acme/site");
+    expect(ok.ok).toBe(true);
+    expect(calls[0]!.body.body).toBe(
+      "Thanks!\n\n<sub>Blob, for @ada</sub><!-- os:blob -->",
+    );
+    calls = [];
+    minted = [];
+    await refusedApp(
+      () => comment("Globex asked for this", step, "acme/site"),
+      /private term "globex"/,
+    );
+    await refusedApp(
+      () => comment("cc @dependabot", step, "acme/site"),
+      /isn't a teammate/,
+    );
+    await refusedApp(
+      () => comment("/deploy now", step, "acme/site"),
+      /slash command/,
+    );
+    // Unknown visibility reads as public: the same guards.
+    visibility["acme/site"] = null;
+    await refusedApp(
+      () => comment("Logs on db1.internal", step, "acme/site"),
+      /internal host/,
+    );
+  });
+
+  test("only approved lead steps: never the supervisor, a lead's own tools or a run by the rules", async () => {
+    await refusedApp(() => comment(), /account is off/);
+    await refusedApp(
+      () =>
+        comment(
+          "Hi",
+          { owner: "Ada", lead: { project: "widget", repos: ["acme/widget"] } },
+          "acme/widget",
+        ),
+      /account is off/,
+    );
+    await refusedApp(
+      () =>
+        comment(
+          "Hi",
+          {
+            owner: "Ada",
+            lead: {
+              project: "widget",
+              repos: ["acme/widget"],
+              recordedStep: true,
+            },
+          },
+          "acme/widget",
+        ),
+      /only steps the owner approved/,
+    );
+  });
+
+  test("only the project's registered repositories, and a private-only owner stays private", async () => {
+    await refusedApp(
+      () => comment("Hi", approvedStep("widget", ["acme/widget"]), "acme/docs"),
+      /not one of widget's repositories/,
+    );
+    await refusedApp(
+      () => comment("Hi", approvedStep("x", ["someone/else"]), "someone/else"),
+      /not a registered GitHub repository/,
+    );
+    await refusedApp(
+      () =>
+        comment(
+          "Hi",
+          approvedStep("site", ["acme/site"], { privateOnly: true }),
+          "acme/site",
+        ),
+      /only for the instance owner/,
+    );
+  });
+
+  test("a stored token with posting off never falls back to the App", async () => {
+    await setup({ enabled: false });
+    restores.push(
+      __setBlobGithubDepsForTest({
+        repoIsPrivate: async (repo) => visibility[repo] ?? null,
+        appToken: async (repo) => {
+          minted.push(repo);
+          return APP_TOKEN;
+        },
+        fetch: async () => {
+          throw new Error("no call expected");
+        },
+      }),
+    );
+    minted = [];
+    const result = await comment(
+      "Hi",
+      approvedStep("widget", ["acme/widget"]),
+      "acme/widget",
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/account is off/),
+    });
+    expect(minted).toEqual([]);
+  });
+
+  test("labels: any label the repository already has, never a trigger label", async () => {
+    answer = (call) =>
+      call.method === "GET"
+        ? Response.json(
+            call.url.endsWith("/labels/needs%20info")
+              ? { name: "needs info" }
+              : { message: "Not Found" },
+            { status: call.url.endsWith("/labels/needs%20info") ? 200 : 404 },
+          )
+        : Response.json([], { status: 200 });
+    const step = approvedStep("widget", ["acme/widget"]);
+    const added = await blobLabel(step, {
+      repo: "acme/widget",
+      number: 12,
+      add: ["needs info"],
+      remove: [],
+    });
+    expect(added).toEqual({ ok: true, message: "Added needs info." });
+    expect(calls.map((c) => [c.method, c.auth])).toEqual([
+      ["GET", `Bearer ${APP_TOKEN}`],
+      ["POST", `Bearer ${APP_TOKEN}`],
+    ]);
+    calls = [];
+    expect(
+      await blobLabel(step, {
+        repo: "acme/widget",
+        number: 12,
+        add: ["made-up"],
+        remove: [],
+      }),
+    ).toEqual({
+      ok: false,
+      message:
+        "acme/widget has no label named made-up. Blob only uses existing labels.",
+    });
+    calls = [];
+    minted = [];
+    await refusedApp(
+      () =>
+        blobLabel(step, {
+          repo: "acme/widget",
+          number: 12,
+          add: ["os-review"],
+          remove: [],
+        }),
+      /starts an agent loop/,
+    );
+  });
+
+  test("a close posts the fixed note and closes through the App", async () => {
+    answer = (call) =>
+      call.method === "GET"
+        ? Response.json({ number: 12, state: "open", pull_request: {} })
+        : Response.json({ html_url: "https://github.com/acme/site/pull/12" });
+    const result = await blobClose(approvedStep("site", ["acme/site"]), {
+      repo: "acme/site",
+      number: 12,
+      pullRequest: true,
+      note: "superseded by #13",
+    });
+    expect(result.ok).toBe(true);
+    expect(calls.map((c) => [c.method, c.url, c.auth])).toEqual([
+      [
+        "GET",
+        "https://api.github.com/repos/acme/site/issues/12",
+        `Bearer ${APP_TOKEN}`,
+      ],
+      [
+        "POST",
+        "https://api.github.com/repos/acme/site/issues/12/comments",
+        `Bearer ${APP_TOKEN}`,
+      ],
+      [
+        "PATCH",
+        "https://api.github.com/repos/acme/site/pulls/12",
+        `Bearer ${APP_TOKEN}`,
+      ],
+    ]);
+    expect(calls[1]!.body.body).toBe(
+      "Closed by Blob for @ada: superseded by #13\n\n<sub>Blob, for @ada</sub><!-- os:blob -->",
+    );
+  });
+
+  test("no App token: refused, nothing posted", async () => {
+    appToken = null;
+    const result = await comment(
+      "Hi",
+      approvedStep("widget", ["acme/widget"]),
+      "acme/widget",
+    );
+    expect(result).toEqual({
+      ok: false,
+      message:
+        "The GitHub App couldn't get a token for acme/widget. Check the App is installed there.",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("a 401 changes no settings and raises nothing", async () => {
+    answer = () =>
+      Response.json({ message: "Bad credentials" }, { status: 401 });
+    const result = await comment(
+      "Hi",
+      approvedStep("widget", ["acme/widget"]),
+      "acme/widget",
+    );
+    expect(result).toEqual({
+      ok: false,
+      message: "GitHub refused the GitHub App's token.",
+    });
+    expect(
+      JSON.parse(readFileSync(configPath, "utf8")).integrations.github.blob,
+    ).toBeUndefined();
+    expect(await listSupervisorItems("Ada", { state: "open" })).toEqual([]);
+  });
+
+  test("the same write limits apply", async () => {
+    const step = approvedStep("widget", ["acme/widget"]);
+    for (let i = 0; i < BLOB_WRITES_PER_THREAD_HOUR; i++)
+      expect((await comment(`Note ${i}`, step, "acme/widget")).ok).toBe(true);
+    expect(await comment("One more", step, "acme/widget")).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/this hour/),
+    });
+  });
+
+  test("blobStepsAppLogin names the App's bot only while Blob has no account", async () => {
+    expect(blobStepsAppLogin()).toBe("acme-app[bot]");
+    await setup();
+    expect(blobStepsAppLogin()).toBe("");
+    await setup({ enabled: false });
+    expect(blobStepsAppLogin()).toBe("");
   });
 });
