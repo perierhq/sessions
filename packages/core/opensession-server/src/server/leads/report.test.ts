@@ -12,6 +12,7 @@ import {
   proposalLead,
   proposalUrgency,
   ruleCopy,
+  issueSources,
   stepCopy,
   supportDrafts,
 } from "./report";
@@ -35,6 +36,23 @@ const ctx: LeadActContext = {
         to: [{ name: "Customer", address: "customer@example.test" }],
         answersMessageId: "m-1@example.test",
       },
+    },
+  },
+  issues: {
+    "acme/app#31": {
+      updatedAt: "2026-11-10T08:00:00Z",
+      state: "open",
+      pullRequest: false,
+    },
+    "acme/app#32": {
+      updatedAt: "2026-11-10T08:00:00Z",
+      state: "closed",
+      pullRequest: false,
+    },
+    "acme/app#533": {
+      updatedAt: "2026-11-10T08:00:00Z",
+      state: "open",
+      pullRequest: true,
     },
   },
 };
@@ -466,12 +484,14 @@ describe("maintenance steps", () => {
     ghRepo: "acme/app",
     number: 31,
     reason: "not_planned",
+    note: "No reply in 30 days.",
   };
   const closePr = {
     kind: "close-pr",
     ghRepo: "acme/app",
     number: 533,
     headSha: SHA,
+    note: "Superseded by #534.",
   };
   const approveRun = {
     kind: "approve-run",
@@ -483,7 +503,8 @@ describe("maintenance steps", () => {
 
   test.each([
     [comment, "issue-triage", true],
-    [comment, "pr-close", true],
+    // A close posts its own fixed note: no free-text comment beside it.
+    [comment, "pr-close", false],
     [comment, "contributor-ci", true],
     [comment, "pr-merge", true],
     [comment, "ci-repair", false],
@@ -530,6 +551,9 @@ describe("maintenance steps", () => {
       ["issue-triage", { ...closeIssue, reason: "spam" }],
       ["contributor-ci", { ...approveRun, runId: 0 }],
       ["pr-close", { ...closePr, headSha: "abc" }],
+      ["issue-triage", { ...closeIssue, note: undefined }],
+      ["issue-triage", { ...closeIssue, note: "two\nlines" }],
+      ["pr-close", { ...closePr, note: "x".repeat(201) }],
     ] as const)
       expect(checkLeadAct({ category, steps: [step] }, ctx).ok).toBe(false);
   });
@@ -542,13 +566,68 @@ describe("maintenance steps", () => {
       "Label #31 in acme/app as Blob: add needs info; remove bug",
     );
     expect(stepCopy(closeIssue as LeadStep, {})).toBe(
-      "Close issue #31 in acme/app as Blob, as not planned",
+      'Close issue #31 in acme/app as Blob, as not planned, if nothing on it changed since it was proposed. Blob\'s note: "Closed by Blob for @<owner>:" and then\n   ```text\n   No reply in 30 days.\n   ```',
     );
     expect(stepCopy(closePr as LeadStep, {})).toBe(
-      "Close PR #533 in acme/app as Blob, while it is at abc1234",
+      'Close PR #533 in acme/app as Blob, while it is at abc1234. Blob\'s note: "Closed by Blob for @<owner>:" and then\n   ```text\n   Superseded by #534.\n   ```',
     );
     expect(stepCopy(approveRun as LeadStep, {})).toBe(
-      "Approve workflow run 99 for PR #533 in acme/app at abc1234: it runs the contributor's code in CI",
+      "Approve workflow run 99 for PR #533 in acme/app at abc1234: it runs the contributor's code in CI. A workflow that runs on workflow_run or pull_request_target would then run with the repository's secrets, so Blob refuses when the repository has one and leaves the approval to you on GitHub",
     );
+  });
+
+  test("close-issue is pinned to the issue as the server read it, never the lead's pin", () => {
+    const result = checkLeadAct(
+      {
+        category: "issue-triage",
+        steps: [
+          {
+            ...closeIssue,
+            ghRepo: "ACME/app",
+            pin: { updatedAt: "2020-01-01T00:00:00Z", state: "open" },
+          },
+        ],
+      },
+      ctx,
+    );
+    expect(result.ok ? (result.value.steps as unknown) : null).toEqual([
+      {
+        ...closeIssue,
+        pin: { updatedAt: "2026-11-10T08:00:00Z", state: "open" },
+      },
+    ]);
+  });
+
+  test("close-issue refuses an issue it couldn't read, a pull request and a closed issue", () => {
+    for (const [number, error] of [
+      [40, "Step 1: couldn't read issue #40 in acme/app from GitHub"],
+      [
+        533,
+        "Step 1: #533 in acme/app is a pull request; close it with a close-pr step",
+      ],
+      [32, "Step 1: issue #32 in acme/app is closed"],
+    ] as const)
+      expect(
+        checkLeadAct(
+          { category: "issue-triage", steps: [{ ...closeIssue, number }] },
+          ctx,
+        ),
+      ).toEqual({ ok: false, error });
+  });
+
+  test("issueSources reads each close-issue's issue once, leaving out what fails", async () => {
+    const reads: string[] = [];
+    const out = await issueSources(
+      [closeIssue, { ...closeIssue }, { ...closeIssue, number: 40 }, comment],
+      async (ghRepo, number) => {
+        reads.push(`${ghRepo}#${number}`);
+        if (number === 40) throw new Error("down");
+        return { updatedAt: "t", state: "open", pullRequest: false };
+      },
+    );
+    expect(reads).toEqual(["acme/app#31", "acme/app#40"]);
+    expect(out).toEqual({
+      "acme/app#31": { updatedAt: "t", state: "open", pullRequest: false },
+    });
   });
 });

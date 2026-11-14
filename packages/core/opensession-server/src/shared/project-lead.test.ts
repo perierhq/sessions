@@ -3,6 +3,7 @@ import {
   DEFAULT_LEAD_RULES,
   LEAD_CATEGORIES,
   LEAD_STAGES,
+  NEVER_ALONE,
   PINNED_ONLY_YOU,
   type LeadCategory,
   type LeadDecisionSettings,
@@ -211,6 +212,7 @@ describe("maintenance categories", () => {
       MAINTENANCE.map((c) => [c, "alone"]),
     ) as Partial<Record<LeadCategory, LeadLevel>>;
     for (const category of MAINTENANCE) {
+      if (category === "contributor-ci") continue;
       expect(
         leadDecision(settings({ stage: "act", rules }), category).effective,
       ).toBe("act");
@@ -219,6 +221,20 @@ describe("maintenance categories", () => {
           .effective,
       ).toBe("ask");
     }
+  });
+});
+
+describe("never alone", () => {
+  test("contributor-ci asks first at most: a stored alone reads as asks first", () => {
+    expect(NEVER_ALONE).toEqual(["contributor-ci"]);
+    const rules = { "contributor-ci": "alone" } as const;
+    expect(leadLevel(rules, "contributor-ci")).toBe("asks-first");
+    expect(leadLevel({ "contributor-ci": "only-you" }, "contributor-ci")).toBe(
+      "only-you",
+    );
+    expect(
+      leadDecision(settings({ stage: "act", rules }), "contributor-ci"),
+    ).toMatchObject({ level: "asks-first", effective: "ask" });
   });
 });
 

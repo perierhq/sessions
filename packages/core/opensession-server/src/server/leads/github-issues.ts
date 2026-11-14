@@ -193,8 +193,16 @@ function age(ms: number): string {
   return ms > 0 ? ` (cached ${Math.round(ms / 60_000)} min ago)` : "";
 }
 
+/** Label names as JSON strings: anyone with triage rights names them, so
+ *  a comma, a semicolon or a line in one can't pass for the row's own text. */
+function labelList(labels: readonly string[]): string {
+  return labels.length
+    ? labels.map((l) => JSON.stringify(l)).join(", ")
+    : "none";
+}
+
 function rowLine(r: IssueRow): string {
-  return `- #${r.number} ${quoted(r.title)} by ${r.author || "unknown"}${r.outside ? " (outside the team)" : ""}; ${r.comments} comments; labels ${r.labels.length ? r.labels.join(", ") : "none"}; opened ${r.createdAt}, last activity ${r.updatedAt}${r.state === "closed" ? "; closed" : ""}`;
+  return `- #${r.number} ${quoted(r.title)} by ${r.author || "unknown"}${r.outside ? " (outside the team)" : ""}; ${r.comments} comments; labels ${labelList(r.labels)}; opened ${r.createdAt}, last activity ${r.updatedAt}${r.state === "closed" ? "; closed" : ""}`;
 }
 
 /** The repository's issues (pull requests left out), least recently
@@ -287,7 +295,7 @@ export async function githubIssue(
   const latest = comments.slice(-ISSUE_COMMENTS);
   const lines = [
     `# ${row.pullRequest ? "Pull request" : "Issue"} #${row.number} in ${repo.ghRepo}${age(read.ageMs)}`,
-    `By ${row.author || "unknown"}${row.outside ? " (outside the team)" : ""}, ${row.association}; ${row.state}; ${row.comments} comments; labels ${row.labels.length ? row.labels.join(", ") : "none"}; opened ${row.createdAt}, last activity ${row.updatedAt}. ${row.url}`,
+    `By ${row.author || "unknown"}${row.outside ? " (outside the team)" : ""}, ${row.association}; ${row.state}; ${row.comments} comments; labels ${labelList(row.labels)}; opened ${row.createdAt}, last activity ${row.updatedAt}. ${row.url}`,
     "",
     untrustedLabel("the title, body and comments"),
     `Title: ${quoted(row.title)}`,

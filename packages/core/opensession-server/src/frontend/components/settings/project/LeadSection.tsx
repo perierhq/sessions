@@ -22,7 +22,6 @@ import { parseUsd } from "../../../lib/incidents/policy-copy";
 import {
   LEAD_FOCUS_PLACEHOLDER,
   LEAD_FOCUS_TITLE,
-  LEAD_LEVEL_OPTIONS,
   LEAD_STAGE_OPTIONS,
   LEAD_STATUS_LABELS,
   leadRuleRows,
@@ -185,7 +184,7 @@ export function LeadSection({
                     <OptionSelect<LeadLevel>
                       label={`Who decides: ${row.label}`}
                       value={row.level}
-                      options={LEAD_LEVEL_OPTIONS}
+                      options={row.options}
                       onChange={(level) =>
                         saveNow({ rules: ruleChange(row.category, level) })
                       }

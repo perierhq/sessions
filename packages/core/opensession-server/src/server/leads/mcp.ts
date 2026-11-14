@@ -20,7 +20,11 @@ import {
 import { blobGithubTools } from "../blob-github-tools";
 import { createSdkMcpServer, tool } from "../inprocess-mcp";
 import { leadApply } from "./apply";
-import { MAX_COMMENT_LEN, MAX_STEP_LABELS } from "./approvals";
+import {
+  MAX_CLOSE_NOTE_LEN,
+  MAX_COMMENT_LEN,
+  MAX_STEP_LABELS,
+} from "./approvals";
 import { githubIssue, githubIssues } from "./github-issues";
 import { flapReportMarkdown } from "./flaps";
 import { buildFlapReport, buildLeadOverview, leadSources } from "./overview";
@@ -31,6 +35,7 @@ import {
   type LeadAct,
   type LeadDelivery,
   checkLeadAct,
+  issueSources,
   supportDrafts,
   deliverLeadProposal,
   leadOwner,
@@ -52,6 +57,13 @@ const PR_NUMBER = z.number().int().positive();
 const HEAD_SHA = z
   .string()
   .describe("The PR's full 40-character head commit, as you saw it");
+const CLOSE_NOTE = z
+  .string()
+  .min(1)
+  .max(MAX_CLOSE_NOTE_LEN)
+  .describe(
+    'One line on why it closes. Closing posts it as "Closed by Blob for @<owner>: <note>"',
+  );
 const PATCH = z.object({
   rule: z.record(z.string(), z.unknown()).optional(),
   provider: z.boolean().nullable().optional(),
@@ -109,12 +121,14 @@ const STEP = z.discriminatedUnion("kind", [
     ghRepo: GH_REPO,
     number: PR_NUMBER.describe("The issue"),
     reason: z.enum(["completed", "not_planned"]),
+    note: CLOSE_NOTE,
   }),
   z.object({
     kind: z.literal("close-pr"),
     ghRepo: GH_REPO,
     number: PR_NUMBER,
     headSha: HEAD_SHA,
+    note: CLOSE_NOTE,
   }),
   z.object({
     kind: z.literal("approve-run"),
@@ -240,7 +254,7 @@ export function createLeadMcpServer(
     ),
     tool(
       "propose",
-      `Propose an action for ${project} to its owner. Write the body as Blob presents it: a leading \`\`\`say fence is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner. To have the approval run something, give steps (and optionally a condition and expiresInDays): the server checks them, records them for the owner's answer and adds the lines saying when they run, each step and when they expire; leave those lines out of the title and body, close every code fence and comment, and keep raw HTML out (Markdown only, or HTML in backticks). Steps fit their category: merge-pr for fix-verified, public-release, ci-repair or pr-merge; autofix-pr for ci-repair; signal-patch for signal-rule-change; support-send for support-routine-reply; blob-label and close-issue for issue-triage; blob-comment for issue-triage, contributor-ci, pr-merge or pr-close; close-pr for pr-close; approve-run for contributor-ci. Issues and pull requests must be in this project's repositories.`,
+      `Propose an action for ${project} to its owner. Write the body as Blob presents it: a leading \`\`\`say fence is spoken, the rest is shown, in the owner's report style. The project's lead rules decide what the action needs; anything only the owner may do (refunds, pricing, disputes, tax and legal, contracts, writes to production data, and whatever the project keeps for the owner) is refused unless kind is needs-you: prepare it and ask the owner. To have the approval run something, give steps (and optionally a condition and expiresInDays): the server checks them, records them for the owner's answer and adds the lines saying when they run, each step and when they expire; leave those lines out of the title and body, close every code fence and comment, and keep raw HTML out (Markdown only, or HTML in backticks). Steps fit their category: merge-pr for fix-verified, public-release, ci-repair or pr-merge; autofix-pr for ci-repair; signal-patch for signal-rule-change; support-send for support-routine-reply; blob-label and close-issue for issue-triage; blob-comment for issue-triage, contributor-ci or pr-merge; close-pr for pr-close (closing posts its own note, so add no blob-comment); approve-run for contributor-ci. Issues and pull requests must be in this project's repositories.`,
       {
         category: z
           .enum(LEAD_CATEGORIES)
@@ -347,6 +361,9 @@ export function createLeadMcpServer(
               signals: await sources.listSignals(),
               drafts: await supportDrafts(args.steps, (id) =>
                 sources.getConversation(id),
+              ),
+              issues: await issueSources(args.steps, (ghRepo, number) =>
+                sources.readIssue(ghRepo, number),
               ),
             },
           );

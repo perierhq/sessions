@@ -46,6 +46,8 @@ export const MAX_PROMPT_LEN = 4000;
 export const MAX_COMMENT_LEN = 4000;
 /** Labels one blob-label step adds or removes. */
 export const MAX_STEP_LABELS = 10;
+/** The reason line of a close step's note (github-blob.ts blobCloseNote). */
+export const MAX_CLOSE_NOTE_LEN = 200;
 const SUBJECT_LEN = 200;
 const REASON_LEN = 200;
 const NAME_LEN = 120;
@@ -112,8 +114,21 @@ export type LeadStep =
       ghRepo: string;
       number: number;
       reason: CloseReason;
+      /** The reason line of the note the close posts (github-blob.ts blobCloseNote). */
+      note: string;
+      /** The issue when the lead proposed it, written by the server
+       *  (report.ts checkLeadAct), never taken from the lead: the close
+       *  refuses when the issue changed since. */
+      pin?: IssuePin;
     }
-  | { kind: "close-pr"; ghRepo: string; number: number; headSha: string }
+  | {
+      kind: "close-pr";
+      ghRepo: string;
+      number: number;
+      headSha: string;
+      /** The reason line of the note the close posts (github-blob.ts blobCloseNote). */
+      note: string;
+    }
   | {
       kind: "approve-run";
       ghRepo: string;
@@ -126,6 +141,13 @@ export type LeadStep =
 
 /** GitHub's state_reason for a closed issue. */
 export type CloseReason = "completed" | "not_planned";
+
+/** An issue as it stood when a close-issue step was proposed. */
+export interface IssuePin {
+  /** GitHub's `updated_at`. */
+  updatedAt: string;
+  state: "open" | "closed";
+}
 
 /** Where a support draft goes: its one address and the message it
  *  answers (shared/support.ts SupportDraft). */
@@ -146,7 +168,7 @@ export const STEP_CATEGORIES: Readonly<
   "spawn-worker": ["fix-verified", "ci-repair"],
   "signal-patch": ["signal-rule-change"],
   "support-send": ["support-routine-reply"],
-  "blob-comment": ["issue-triage", "contributor-ci", "pr-merge", "pr-close"],
+  "blob-comment": ["issue-triage", "contributor-ci", "pr-merge"],
   "blob-label": ["issue-triage"],
   "close-issue": ["issue-triage"],
   "close-pr": ["pr-close"],
@@ -430,6 +452,16 @@ function patchBefore(
 const ADDRESS_LEN = 320;
 const MAX_PIN_ADDRESSES = 10;
 
+function issuePinOf(value: unknown): IssuePin {
+  const raw = object(value, "pin", ["updatedAt", "state"]);
+  if (raw.state !== "open" && raw.state !== "closed")
+    fail("pin.state must be open or closed");
+  return {
+    updatedAt: line(raw.updatedAt, "pin.updatedAt", NAME_LEN),
+    state: raw.state,
+  };
+}
+
 function pinOf(value: unknown): SupportSendPin {
   const raw = object(value, "pin", ["to", "answersMessageId"]);
   if (
@@ -570,6 +602,8 @@ function stepOf(value: unknown): LeadStep {
         "ghRepo",
         "number",
         "reason",
+        "note",
+        "pin",
       ]);
       if (raw.reason !== "completed" && raw.reason !== "not_planned")
         fail("reason must be completed or not_planned");
@@ -578,6 +612,8 @@ function stepOf(value: unknown): LeadStep {
         ghRepo: ghRepo(raw.ghRepo),
         number: prNumber(raw.number),
         reason: raw.reason,
+        note: line(raw.note, "note", MAX_CLOSE_NOTE_LEN),
+        ...(raw.pin !== undefined ? { pin: issuePinOf(raw.pin) } : {}),
       };
     }
     case "close-pr": {
@@ -586,12 +622,14 @@ function stepOf(value: unknown): LeadStep {
         "ghRepo",
         "number",
         "headSha",
+        "note",
       ]);
       return {
         kind: "close-pr",
         ghRepo: ghRepo(raw.ghRepo),
         number: prNumber(raw.number),
         headSha: headSha(raw.headSha),
+        note: line(raw.note, "note", MAX_CLOSE_NOTE_LEN),
       };
     }
     case "approve-run": {

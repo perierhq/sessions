@@ -55,6 +55,14 @@ beforeEach(() => {
     projectDocument: async () => doc,
     listSignals: async () => SIGNALS,
     getConversation: async () => null,
+    readIssue: async (_repo, number) =>
+      number === 9
+        ? {
+            updatedAt: "2026-11-10T08:00:00Z",
+            state: "open",
+            pullRequest: false,
+          }
+        : null,
     listIncidents: async () => fixtureIncidents(),
     listInboxes: async () => [],
     openSupportRows: async () => [],
@@ -234,6 +242,43 @@ describe("opensession-lead", () => {
     expect(result.isError).toBe(false);
     expect(result.text).toContain("Rule: Asks first: Issue triage");
     expect(result.text).toContain("Steps recorded");
+  });
+
+  test("propose pins a close-issue to the issue as GitHub has it now", async () => {
+    const { call } = await client();
+    const close = {
+      kind: "close-issue",
+      ghRepo: "acme/app",
+      reason: "not_planned",
+      note: "No reply in 30 days.",
+    };
+    const unread = await call("propose", {
+      category: "issue-triage",
+      title: "Close #8",
+      body: "Stale.",
+      subject: "issue 8",
+      steps: [{ ...close, number: 8 }],
+    });
+    expect(unread).toEqual({
+      isError: true,
+      text: "Step 1: couldn't read issue #8 in acme/app from GitHub",
+    });
+    const result = await call("propose", {
+      category: "issue-triage",
+      title: "Close #9",
+      body: "Stale.",
+      subject: "issue 9",
+      steps: [{ ...close, number: 9 }],
+    });
+    expect(result.isError).toBe(false);
+    const [record] = await listForProject(PROJECT);
+    expect(record!.proposal.steps as unknown).toEqual([
+      {
+        ...close,
+        number: 9,
+        pin: { updatedAt: "2026-11-10T08:00:00Z", state: "open" },
+      },
+    ]);
   });
 
   test("project_overview and flap_report read", async () => {

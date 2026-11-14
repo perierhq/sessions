@@ -34,6 +34,7 @@ import {
   FORCE_MERGE_LINE,
   type LeadApplyDeps,
   COORDINATE_STEPS,
+  SECRET_WORKFLOWS_REFUSAL,
   WORKER_UNAVAILABLE,
   __setLeadApplyDepsForTest,
   applyGate,
@@ -41,6 +42,7 @@ import {
   personStepped,
   samePin,
   signalHolds,
+  workflowRunsWithSecrets,
 } from "./apply";
 import type { ConditionResult } from "./conditions";
 import { __setLeadAuditForTest } from "./report";
@@ -1350,7 +1352,11 @@ describe("maintenance steps", () => {
   let blobResult:
     | { ok: true; message: string }
     | { ok: false; message: string };
-  let runs: Map<number, { repo: string; headSha: string; status: string }>;
+  let runs: Map<
+    number,
+    { repo: string; headSha: string; status: string; event: string }
+  >;
+  let workflows: string[] | Error;
   let approvals: number[];
   let approveAnswer: { ok: boolean; status: number; error?: string };
 
@@ -1358,8 +1364,17 @@ describe("maintenance steps", () => {
     blobCalls = [];
     blobResult = { ok: true, message: "Done." };
     runs = new Map([
-      [77, { repo: "acme/web", headSha: SHA, status: "action_required" }],
+      [
+        77,
+        {
+          repo: "acme/web",
+          headSha: SHA,
+          status: "action_required",
+          event: "pull_request",
+        },
+      ],
     ]);
+    workflows = ["on:\n  pull_request:\njobs: {}\n"];
     approvals = [];
     approveAnswer = { ok: true, status: 201 };
     const blob = (kind: string) => async (poster: unknown, input: unknown) => {
@@ -1376,6 +1391,10 @@ describe("maintenance steps", () => {
         const run = runs.get(id);
         if (!run) throw new Error("not found");
         return { ...run };
+      },
+      readWorkflows: async () => {
+        if (workflows instanceof Error) throw workflows;
+        return workflows;
       },
       approveRun: async (_repo, id) => {
         approvals.push(id);
@@ -1460,23 +1479,29 @@ describe("maintenance steps", () => {
     );
   });
 
-  test("close-issue closes with its reason; close-pr only at the approved head", async () => {
-    const issue = await approved("issue-triage", [
-      {
-        kind: "close-issue",
-        ghRepo: "acme/web",
-        number: 31,
-        reason: "not_planned",
-      },
-    ]);
+  const PIN = { updatedAt: "2026-11-10T08:00:00Z", state: "open" };
+  const closeIssue = {
+    kind: "close-issue",
+    ghRepo: "acme/web",
+    number: 31,
+    reason: "not_planned",
+    note: "No reply in 30 days; reopen with the steps to reproduce.",
+    pin: PIN,
+  };
+
+  test("close-issue closes with its reason and note, pinned to the issue as proposed; close-pr only at the approved head", async () => {
+    const issue = await approved("issue-triage", [closeIssue]);
     expect((await leadApply("acme", issue.id)).ok).toBe(true);
-    expect(blobCalls.at(-1)).toMatchObject({
+    expect(blobCalls.at(-1)).toEqual({
       kind: "close",
+      poster: expect.anything(),
       input: {
         repo: "acme/web",
         number: 31,
         pullRequest: false,
         reason: "not_planned",
+        note: closeIssue.note,
+        expect: { issue: PIN },
       },
     });
     const close = {
@@ -1484,6 +1509,7 @@ describe("maintenance steps", () => {
       ghRepo: "acme/web",
       number: 12,
       headSha: SHA,
+      note: "Superseded by #13.",
     };
     const pr12 = await approved("pr-close", [close]);
     autofixPrs.set("acme/web#12", {
@@ -1501,10 +1527,42 @@ describe("maintenance steps", () => {
     });
     const again = await approved("pr-close", [close]);
     expect((await leadApply("acme", again.id)).ok).toBe(true);
-    expect(blobCalls.at(-1)).toMatchObject({
+    // Blob reads the head again right before closing (blobClose expect).
+    expect(blobCalls.at(-1)).toEqual({
       kind: "close",
-      input: { repo: "acme/web", number: 12, pullRequest: true },
+      poster: expect.anything(),
+      input: {
+        repo: "acme/web",
+        number: 12,
+        pullRequest: true,
+        note: "Superseded by #13.",
+        expect: { headSha: SHA },
+      },
     });
+  });
+
+  test("a close-issue recorded without the server's pin never closes", async () => {
+    const { pin: _pin, ...unpinned } = closeIssue;
+    const proposal = await approved("issue-triage", [unpinned]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result).toMatchObject({ ok: false, state: "failed" });
+    expect(result.text).toContain(
+      "Issue #31 in acme/web wasn't pinned when this was proposed, so Blob didn't close it",
+    );
+    expect(blobCalls).toEqual([]);
+  });
+
+  test("an issue that changed since the proposal refuses in Blob's fixed copy", async () => {
+    blobResult = {
+      ok: false,
+      message:
+        "#31 in acme/web changed since this was proposed, so Blob didn't close it.",
+    };
+    const proposal = await approved("issue-triage", [closeIssue]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result.text).toContain(
+      "Blob couldn't close #31 in acme/web: #31 in acme/web changed since this was proposed, so Blob didn't close it",
+    );
   });
 
   const approveRun = {
@@ -1535,6 +1593,7 @@ describe("maintenance steps", () => {
       repo: "acme/web",
       headSha: MOVED,
       status: "action_required",
+      event: "pull_request",
     });
     const other = await approved("contributor-ci", [
       { ...approveRun, runId: 78 },
@@ -1561,11 +1620,21 @@ describe("maintenance steps", () => {
   });
 
   test("a run no longer waiting counts as done; a 403 names the missing permission", async () => {
-    runs.set(77, { repo: "acme/web", headSha: SHA, status: "completed" });
+    runs.set(77, {
+      repo: "acme/web",
+      headSha: SHA,
+      status: "completed",
+      event: "pull_request",
+    });
     const done = await approved("contributor-ci", [approveRun]);
     expect((await leadApply("acme", done.id)).ok).toBe(true);
     expect(approvals).toEqual([]);
-    runs.set(77, { repo: "acme/web", headSha: SHA, status: "action_required" });
+    runs.set(77, {
+      repo: "acme/web",
+      headSha: SHA,
+      status: "action_required",
+      event: "pull_request",
+    });
     approveAnswer = {
       ok: false,
       status: 403,
@@ -1577,6 +1646,50 @@ describe("maintenance steps", () => {
       "The GitHub App may not approve the workflow run 77: it needs the Actions write permission on acme/web",
     );
     expect(result.text).not.toContain("Resource not accessible");
+  });
+
+  test("approve-run refuses a run not started by a pull request, and an unknown event", async () => {
+    for (const event of ["pull_request_target", "workflow_run", ""]) {
+      runs.set(77, { ...runs.get(77)!, event });
+      const proposal = await approved("contributor-ci", [approveRun]);
+      const result = await leadApply("acme", proposal.id);
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+      expect(result.text).toContain(
+        "The workflow run 77 was not started by a pull request, so Blob doesn't approve it",
+      );
+    }
+    expect(approvals).toEqual([]);
+  });
+
+  test("a repo with a workflow on workflow_run or pull_request_target is left to the owner on GitHub", async () => {
+    for (const risky of [
+      "on:\n  workflow_run:\n    workflows: [CI]\n",
+      "on: [pull_request_target]\n",
+    ]) {
+      workflows = ["on: push\n", risky];
+      const proposal = await approved("contributor-ci", [approveRun]);
+      const result = await leadApply("acme", proposal.id);
+      expect(result).toMatchObject({ ok: false, state: "failed" });
+      expect(result.text).toContain(SECRET_WORKFLOWS_REFUSAL);
+    }
+    expect(approvals).toEqual([]);
+  });
+
+  test("workflows that can't be read refuse the approval", async () => {
+    workflows = new Error("HTTP 502 upstream");
+    const proposal = await approved("contributor-ci", [approveRun]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result.text).toContain(
+      "Couldn't read the workflows of acme/web from GitHub",
+    );
+    expect(result.text).not.toContain("upstream");
+    expect(approvals).toEqual([]);
+  });
+
+  test("workflowRunsWithSecrets fails closed on any mention", () => {
+    expect(workflowRunsWithSecrets("on: [push, pull_request]")).toBe(false);
+    expect(workflowRunsWithSecrets("on:\n  pull_request_target:\n")).toBe(true);
+    expect(workflowRunsWithSecrets("# not workflow_run here\n")).toBe(true);
   });
 
   test("pr-merge merges through the pinned merge", async () => {

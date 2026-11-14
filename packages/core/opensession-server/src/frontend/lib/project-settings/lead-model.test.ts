@@ -34,6 +34,15 @@ describe("lead section model", () => {
     ]);
   });
 
+  test("contributor CI offers asks first and only you, never alone", () => {
+    const rows = leadRuleRows(lead);
+    const ci = rows.find((r) => r.category === "contributor-ci")!;
+    expect(ci.options.map((o) => o.value)).toEqual(["asks-first", "only-you"]);
+    expect(
+      rows.find((r) => r.category === "pr-merge")!.options.map((o) => o.value),
+    ).toEqual(["alone", "asks-first", "only-you"]);
+  });
+
   test("status: off, starting until the goal exists, then running", () => {
     expect(leadStatus({ ...lead, enabled: false, goalId: "g1" })).toBe("off");
     expect(leadStatus({ ...lead, enabled: true })).toBe("starting");

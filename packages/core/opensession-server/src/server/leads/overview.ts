@@ -58,6 +58,16 @@ export interface LeadOverviewDeps {
   openSupportRows(inboxIds: readonly string[]): Promise<SupportIndexRow[]>;
   /** One support conversation, for a support-send step's pin. */
   getConversation(id: string): Promise<SupportConversation | null>;
+  /** One issue as GitHub has it now, for a close-issue step's pin; null
+   *  when GitHub can't be read. */
+  readIssue(
+    ghRepo: string,
+    number: number,
+  ): Promise<{
+    updatedAt: string;
+    state: "open" | "closed";
+    pullRequest: boolean;
+  } | null>;
   /** Open pull requests across projects, or null with no indexed source. */
   openPrs(): Promise<OverviewPr[] | null>;
   getGoal(id: string): Promise<Goal | null>;
@@ -196,6 +206,24 @@ const liveDeps: LeadOverviewDeps = {
     }),
   getConversation: async (id) =>
     (await import("../support/store")).getConversation(id),
+  async readIssue(ghRepo, number) {
+    const { githubRequest } = await import("../../agents/github/github-rest");
+    const r = await githubRequest<Record<string, unknown>>(
+      "GET",
+      `/repos/${ghRepo}/issues/${number}`,
+      undefined,
+      { mint: "read" },
+    );
+    const updatedAt = r.data?.updated_at;
+    const state = r.data?.state;
+    if (
+      !r.ok ||
+      typeof updatedAt !== "string" ||
+      (state !== "open" && state !== "closed")
+    )
+      return null;
+    return { updatedAt, state, pullRequest: !!r.data?.pull_request };
+  },
   openPrs: async () => (await import("../pr-cache")).getOpenPrSummaries(),
   getGoal: async (id) => (await import("../goals")).getGoal(id),
   projectLabel: (project) => configuredRepos()[project]?.label || project,

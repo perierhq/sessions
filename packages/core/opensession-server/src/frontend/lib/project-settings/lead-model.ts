@@ -10,6 +10,7 @@ import {
   type LeadStage,
   type ProjectLeadPatch,
   type ProjectLeadSettings,
+  isNeverAlone,
   isPinnedOnlyYou,
   leadLevel,
 } from "../../../shared/project-lead";
@@ -51,6 +52,8 @@ export interface LeadRuleRow {
   level: LeadLevel;
   /** Always only you, whatever the settings say. */
   pinned: boolean;
+  /** The levels it may be set to: never alone for NEVER_ALONE ones. */
+  options: { value: LeadLevel; label: string }[];
 }
 
 /** One row per category, in the shared order, pinned ones read as only you. */
@@ -60,6 +63,9 @@ export function leadRuleRows(lead: ProjectLeadSettings): LeadRuleRow[] {
     label: LEAD_CATEGORY_LABELS[category],
     level: leadLevel(lead.rules, category),
     pinned: isPinnedOnlyYou(category),
+    options: isNeverAlone(category)
+      ? LEAD_LEVEL_OPTIONS.filter((o) => o.value !== "alone")
+      : LEAD_LEVEL_OPTIONS,
   }));
 }
 

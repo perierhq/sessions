@@ -615,6 +615,107 @@ describe("closing", () => {
   });
 });
 
+describe("closing with a note and a pin", () => {
+  const PIN = { updatedAt: "2026-11-10T08:00:00Z", state: "open" as const };
+  const path = (c: Call) => c.url.replace("https://api.github.com", "");
+
+  test("posts the fixed note after the checks, then closes the issue", async () => {
+    answer = (call) =>
+      call.method === "GET"
+        ? Response.json({
+            number: 12,
+            state: "open",
+            updated_at: PIN.updatedAt,
+          })
+        : Response.json({
+            html_url: "https://github.com/acme/widget/issues/12",
+          });
+    const result = await blobClose(ADA_POSTS, {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: false,
+      reason: "not_planned",
+      note: "No reply in 30 days.",
+      expect: { issue: PIN },
+    });
+    expect(result.ok).toBe(true);
+    expect(calls.map((c) => [c.method, path(c)])).toEqual([
+      ["GET", "/repos/acme/widget/issues/12"],
+      ["POST", "/repos/acme/widget/issues/12/comments"],
+      ["PATCH", "/repos/acme/widget/issues/12"],
+    ]);
+    expect(calls[1]!.body.body).toStartWith(
+      "Closed by Blob for @ada: No reply in 30 days.\n\n<sub>Blob, for @ada",
+    );
+  });
+
+  test("an issue that changed since the proposal is refused, nothing posted", async () => {
+    for (const found of [
+      { updated_at: "2026-11-12T08:00:00Z", state: "open" },
+      { updated_at: PIN.updatedAt, state: "closed" },
+    ]) {
+      calls = [];
+      answer = () => Response.json({ number: 12, ...found });
+      const result = await blobClose(ADA_POSTS, {
+        repo: "acme/widget",
+        number: 12,
+        pullRequest: false,
+        note: "Stale.",
+        expect: { issue: PIN },
+      });
+      expect(result).toEqual({
+        ok: false,
+        message:
+          "#12 in acme/widget changed since this was proposed, so Blob didn't close it.",
+      });
+      expect(calls.map((c) => c.method)).toEqual(["GET"]);
+    }
+  });
+
+  test("a pull request's head is read again right before closing", async () => {
+    let head = "a".repeat(40);
+    answer = (call) =>
+      call.method === "GET"
+        ? path(call).includes("/pulls/")
+          ? Response.json({ head: { sha: head } })
+          : Response.json({ number: 12, state: "open", pull_request: {} })
+        : Response.json({ html_url: "https://github.com/acme/widget/pull/12" });
+    const input = {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: true,
+      note: "Superseded by #13.",
+      expect: { headSha: "a".repeat(40) },
+    };
+    expect((await blobClose(ADA_POSTS, input)).ok).toBe(true);
+    expect(calls.map((c) => [c.method, path(c)])).toEqual([
+      ["GET", "/repos/acme/widget/issues/12"],
+      ["GET", "/repos/acme/widget/pulls/12"],
+      ["POST", "/repos/acme/widget/issues/12/comments"],
+      ["PATCH", "/repos/acme/widget/pulls/12"],
+    ]);
+    calls = [];
+    head = "b".repeat(40);
+    expect(await blobClose(ADA_POSTS, input)).toEqual({
+      ok: false,
+      message:
+        "#12 in acme/widget has new commits since aaaaaaa was proposed, so Blob didn't close it.",
+    });
+    expect(calls.map((c) => c.method)).toEqual(["GET", "GET"]);
+  });
+
+  test("the note goes through the text guards", async () => {
+    const result = await blobClose(ADA_POSTS, {
+      repo: "acme/widget",
+      number: 12,
+      pullRequest: false,
+      note: "Ping @stranger about it.",
+    });
+    expect(result.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("limits", () => {
   test(`${BLOB_WRITES_PER_THREAD_HOUR} writes an hour on one thread`, async () => {
     for (let i = 0; i < BLOB_WRITES_PER_THREAD_HOUR; i++)

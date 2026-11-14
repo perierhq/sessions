@@ -183,6 +183,36 @@ test("pinned categories can't be lowered, even by a person", async () => {
   expect("error" in same ? same.error : same.revision).toBe(0);
 });
 
+test("contributor CI can't be set to alone, and a stored alone reads as asks first", async () => {
+  expect(await write({ rules: { "contributor-ci": "alone" } })).toEqual({
+    error:
+      "CI runs for outside contributors always ask first: a lead may propose, never act alone (lead.rules.contributor-ci)",
+    status: 400,
+  });
+  await expect(
+    patchProjectDocumentAsServer("acme-web", (d) => ({
+      ...d,
+      lead: {
+        ...d.lead,
+        rules: { ...d.lead.rules, "contributor-ci": "alone" },
+      },
+    })),
+  ).rejects.toThrow("CI runs for outside contributors always ask first");
+  const only = await write({ rules: { "contributor-ci": "only-you" } });
+  expect("error" in only).toBe(false);
+  const doc = await getProjectDocument("acme-web");
+  await projectDocuments().set("acme-web", {
+    ...doc,
+    lead: {
+      ...doc.lead,
+      rules: { ...doc.lead.rules, "contributor-ci": "alone" },
+    },
+  });
+  expect(
+    (await getProjectDocument("acme-web")).lead.rules["contributor-ci"],
+  ).toBe("asks-first");
+});
+
 test("pinned categories stay only you through server writes and stored values", async () => {
   await expect(
     patchProjectDocumentAsServer("acme-web", (d) => ({

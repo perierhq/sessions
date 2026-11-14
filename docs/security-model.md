@@ -587,15 +587,25 @@ steps. Paths below are under `packages/core/opensession-server/src/`.
     public repository, and only one listed in `publicRepos`, for a lead
     owner who may post there (`blobSupervisorPoster`); the lead's own
     `blob_*` tools stay private-only. `close-pr` runs only while the pull
-    request is still at the head the owner saw.
+    request is still at the head the owner saw, read again right before
+    closing; `close-issue` only while the issue's `updated_at` and state
+    are those the server pinned when the lead proposed it. A close posts
+    one fixed note in the same step, `Closed by Blob for @owner:` and the
+    reason line the owner approved, after those checks; a separate
+    free-text comment doesn't fit `pr-close`.
   - **Approving a workflow run** (`approve-run`, category
     `contributor-ci`) runs an outside contributor's code in the project's
     CI, with whatever its workflows can reach (caches, self-hosted
-    runners, the run's token). Its
-    category asks first by default. The App approves with its own
-    `actions: write` mint (`GITHUB_APP_ACTIONS_PERMISSIONS`), only while
-    the pull request is open and still at the approved head, and only a run
-    of this repository for that head.
+    runners, the run's token). Its category asks first and can't be set to
+    alone (`NEVER_ALONE`; a stored alone reads as asks first). The App
+    approves with its own `actions: write` mint
+    (`GITHUB_APP_ACTIONS_PERMISSIONS`), only while the pull request is
+    open and still at the approved head, and only a `pull_request` run of
+    this repository for that head. Right before approving it reads the
+    repository's workflow files on the default branch: any mention of
+    `workflow_run` or `pull_request_target` refuses, since those run with
+    the repository's secrets after the contributor's run, and the owner
+    approves on GitHub instead.
   - **Starting a worker** (`spawn-worker`) is refused. `spawn_task` would
     start a fully trusted session for the owner (interactive trust, their
     user, AWS credentials, interactive-only MCP servers), and the restricted

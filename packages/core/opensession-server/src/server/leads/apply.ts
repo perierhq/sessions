@@ -64,12 +64,20 @@
 //     limits). As a recorded step it may also post on a public repository
 //     listed in publicRepos, when the lead's owner may post there
 //     (blobSupervisorPoster). close-pr runs only while the pull request is
-//     still at the head the owner saw
+//     still at the head the owner saw, read again right before closing;
+//     close-issue only while the issue is as it was when proposed (its
+//     updated_at and state, pinned by the server). A close posts its
+//     fixed note (blobCloseNote) with the approved reason line in the same
+//     step, after those checks
 //   - approve-run: approves a waiting workflow run of an outside
 //     contributor's pull request as the GitHub App (its own actions:write
 //     mint), only while the pull request is open, still at the approved
-//     head, and the run is for that head in this repository. This runs the
-//     contributor's code in CI, so its category asks first by default
+//     head, and the run is a pull_request run for that head in this
+//     repository. This runs the contributor's code in CI, so its category
+//     asks first, and can't be set to alone. A repository with a workflow
+//     on workflow_run or pull_request_target (read from its default branch
+//     right before approving) refuses: those run with the repository's
+//     secrets after the contributor's run, so the owner approves on GitHub
 //
 // No step uses the owner's token. The owner hears the outcome in their
 // supervisor inbox, in fixed copy. Nothing runs at import.
@@ -230,6 +238,23 @@ export interface ApplyRun {
   headSha: string;
   /** GitHub's status: `action_required` while it waits for approval. */
   status: string;
+  /** What started the run: an outside contributor's is `pull_request`. */
+  event: string;
+}
+
+/** Why an approve-run step refuses a repository with a workflow that runs
+ *  with secrets after a contributor's run. */
+export const SECRET_WORKFLOWS_REFUSAL =
+  "This repo has workflows that run with secrets after a contributor's run; approve it on GitHub yourself";
+
+/** Triggers that run a workflow from the default branch, with the
+ *  repository's secrets, after or around a contributor's pull request. */
+const SECRET_TRIGGERS = /\b(?:workflow_run|pull_request_target)\b/;
+
+/** Whether a workflow file names a trigger that runs with secrets after a
+ *  contributor's run. Any mention counts, comments too: it fails closed. */
+export function workflowRunsWithSecrets(text: string): boolean {
+  return SECRET_TRIGGERS.test(text);
 }
 
 export interface LeadApplyDeps {
@@ -266,6 +291,9 @@ export interface LeadApplyDeps {
   blobClose: typeof blobClose;
   /** Throws when GitHub can't be read. */
   readRun(ghRepo: string, runId: number): Promise<ApplyRun>;
+  /** The text of each workflow file on the default branch; [] without
+   *  any. Throws when GitHub can't be read. */
+  readWorkflows(ghRepo: string): Promise<string[]>;
   /** POST .../actions/runs/{id}/approve as the App. */
   approveRun(
     ghRepo: string,
@@ -373,7 +401,37 @@ const liveDeps: LeadApplyDeps = {
       repo: String(r.data.repository?.full_name || ""),
       headSha: String(r.data.head_sha || ""),
       status: String(r.data.status || ""),
+      event: String(r.data.event || ""),
     };
+  },
+  async readWorkflows(ghRepo) {
+    const { githubRequest } = await import("../../agents/github/github-rest");
+    const dir = await githubRequest<unknown>(
+      "GET",
+      `/repos/${ghRepo}/contents/.github/workflows`,
+      undefined,
+      { mint: "read" },
+    );
+    if (dir.status === 404) return [];
+    if (!dir.ok || !Array.isArray(dir.data))
+      throw new Error(dir.error || `HTTP ${dir.status}`);
+    const texts: string[] = [];
+    for (const entry of dir.data as Array<Record<string, unknown>>) {
+      const path = entry?.path;
+      if (entry?.type !== "file" || typeof path !== "string") continue;
+      if (!/\.ya?ml$/i.test(path)) continue;
+      const file = await githubRequest<Record<string, unknown>>(
+        "GET",
+        `/repos/${ghRepo}/contents/${path.split("/").map(encodeURIComponent).join("/")}`,
+        undefined,
+        { mint: "read" },
+      );
+      const content = file.data?.content;
+      if (!file.ok || typeof content !== "string")
+        throw new Error(file.error || `HTTP ${file.status}`);
+      texts.push(Buffer.from(content, "base64").toString("utf8"));
+    }
+    return texts;
   },
   async approveRun(ghRepo, runId) {
     const { githubRequest } = await import("../../agents/github/github-rest");
@@ -1033,6 +1091,14 @@ async function blobStep(step: BlobStep, ctx: RunContext): Promise<StepOutcome> {
         reason: `PR ${name} has new commits since ${short(step.headSha)} was proposed`,
       };
   }
+  // Recorded by the server when the lead proposed it; one recorded
+  // before pinning never closes.
+  if (step.kind === "close-issue" && !step.pin)
+    return {
+      ok: false,
+      result: "changed",
+      reason: `Issue ${name} wasn't pinned when this was proposed, so Blob didn't close it`,
+    };
   const poster = await stepPoster(ctx);
   if (!poster)
     return {
@@ -1058,7 +1124,10 @@ async function blobStep(step: BlobStep, ctx: RunContext): Promise<StepOutcome> {
             repo: step.ghRepo,
             number: step.number,
             pullRequest: step.kind === "close-pr",
-            ...(step.kind === "close-issue" ? { reason: step.reason } : {}),
+            note: step.note,
+            ...(step.kind === "close-issue"
+              ? { reason: step.reason, expect: { issue: step.pin! } }
+              : { expect: { headSha: step.headSha } }),
           });
   if (result.ok) return { ok: true, result: "posted", already: false };
   // github-blob.ts answers in its own fixed copy, never GitHub's text.
@@ -1111,8 +1180,28 @@ async function approveRunStep(
       result: "changed",
       reason: `The ${run} is not for ${name} at ${short(step.headSha)}`,
     };
+  // Only a pull_request run runs the contributor's code without secrets.
+  if (found.event !== "pull_request")
+    return {
+      ok: false,
+      result: "refused",
+      reason: `The ${run} was not started by a pull request, so Blob doesn't approve it`,
+    };
   if (found.status !== "action_required")
     return { ok: true, result: "already-approved", already: true };
+  let workflows: string[];
+  try {
+    workflows = await ctx.d.readWorkflows(step.ghRepo);
+  } catch (error) {
+    return {
+      ok: false,
+      result: "error",
+      reason: `Couldn't read the workflows of ${step.ghRepo} from GitHub`,
+      detail: errorText(error),
+    };
+  }
+  if (workflows.some(workflowRunsWithSecrets))
+    return { ok: false, result: "refused", reason: SECRET_WORKFLOWS_REFUSAL };
   const approved = await ctx.d.approveRun(step.ghRepo, step.runId);
   if (approved.ok) return { ok: true, result: "approved", already: false };
   return {
@@ -1177,12 +1266,19 @@ function stepRef(step: LeadStep): Record<string, unknown> {
         remove: step.remove,
       };
     case "close-issue":
-      return { ghRepo: step.ghRepo, number: step.number, reason: step.reason };
+      return {
+        ghRepo: step.ghRepo,
+        number: step.number,
+        reason: step.reason,
+        noteDigest: digest(step.note),
+        ...(step.pin ? { updatedAt: step.pin.updatedAt } : {}),
+      };
     case "close-pr":
       return {
         ghRepo: step.ghRepo,
         number: step.number,
         headSha: step.headSha,
+        noteDigest: digest(step.note),
       };
     case "approve-run":
       return {
