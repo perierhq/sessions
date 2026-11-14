@@ -12,6 +12,9 @@ struct BlobApp: App {
 
     init() {
         CrashReporter.shared.install()
+        // Blob's hand, before any board is laid out, so notes are never
+        // measured in a fallback face.
+        BlobHand.register()
         Task.detached(priority: .utility) { BlobParakeet.excludeFromBackup() }
     }
 

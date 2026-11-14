@@ -22,6 +22,13 @@ struct BlobHomeView: View {
     @State private var physics = BlobPhysics()
     /// The morning brief, and what came in since, shown while Blob is idle.
     @State private var brief = BlobBrief()
+    /// Blob's board: the surface behind Blob's spoken line on the quiet
+    /// home, and the revision a reply's ```canvas fence showed.
+    @State private var board = BlobBoard()
+    /// A ref with no page of its own to open, shown in a sheet.
+    @State private var refDetail: BlobRefDetail?
+    @ScaledMetric(relativeTo: .body) private var scaledBody: Double = 17
+    @Environment(\.openURL) private var openURL
     @State private var showSettings = false
     /// Two panes on screen, which puts sheets on the trailing edge.
     @State private var wideSurface = false
@@ -80,8 +87,10 @@ struct BlobHomeView: View {
             // What you say and Blob's notices go in a band at the bottom
             // (`captions`), so they take no pane: Blob stays where it is
             // while you talk.
+            // On the board, Blob keeps its place in the camera (the strip
+            // closed, on the fold open) so it never covers the board.
             let room = panes.flatMap { panes in
-                historyRevealed ? nil : panes.room(
+                historyRevealed || boardShown ? nil : panes.room(
                     in: Self.blobArea(in: geo.size, insets: insets),
                     leadingTaken: hasContent || (latched && turnRoom.leading),
                     trailingTaken: side || streamingVisuals || (latched && turnRoom.trailing)
@@ -90,12 +99,34 @@ struct BlobHomeView: View {
             let talkCenter = CGPoint(x: columns.centered.midX, y: geo.size.height * 0.4)
             // Only where Blob is going, never its voice level, so the body
             // does not redraw with every level change.
-            let spot = place(in: geo.size, insets: insets, center: talkCenter, room: room, at: .now)
+            let fold = panes?.physical == true ? panes?.fold : nil
+            let spot = place(in: geo.size, insets: insets, center: talkCenter, room: room, fold: fold, at: .now)
+            let viewport = Self.boardViewport(size: geo.size, insets: insets, fold: fold)
             ZStack(alignment: .bottom) {
+                // The board, under everything else: on the quiet home, and
+                // for a reply that showed a revision of it.
+                if boardShown, let shown = board.shown {
+                    BlobCanvasView(
+                        board: board,
+                        snapshot: shown,
+                        viewport: viewport,
+                        open: openRef,
+                        pulledPastTop: revealHistory
+                    )
+                    .transition(.opacity)
+                }
+
                 // One page across the surface. With two panes the
                 // conversation is in the leading one, and a reply's visuals
                 // come in on the trailing one; no text on the fold.
                 page(insets: insets, columns: columns, split: split, wide: panes != nil)
+                    .opacity(boardShown ? 0 : 1)
+                    .allowsHitTesting(!boardShown)
+
+                if boardShown, let caption = boardCaption {
+                    canvasCaption(caption, insets: insets, column: columns.leading ?? columns.centered, height: geo.size.height)
+                        .transition(.opacity)
+                }
 
                 ZStack {
                     if side, let panes {
@@ -110,7 +141,7 @@ struct BlobHomeView: View {
                 // Drawn over the page, so Blob stays visible in its slot, but
                 // never in the way of a scroll: taps are handled below.
                 TimelineView(.animation(paused: scenePhase != .active)) { timeline in
-                    let targets = targets(in: geo.size, insets: insets, center: talkCenter, room: room, at: timeline.date)
+                    let targets = targets(in: geo.size, insets: insets, center: talkCenter, room: room, fold: fold, at: timeline.date)
                     Canvas { context, _ in
                         physics.advance(to: timeline.date, targets: targets, jump: reduceMotion)
                         physics.draw(in: &context, dark: colorScheme == .dark, reduceMotion: reduceMotion)
@@ -177,6 +208,8 @@ struct BlobHomeView: View {
             .onTapGesture(coordinateSpace: .local) { location in
                 if hit(location) {
                     blobTapped()
+                } else if boardShown, let ref = board.hit(at: location, viewport: viewport, scaledBody: scaledBody) {
+                    openRef(ref)
                 } else if typing && draft.isEmpty {
                     typing = false
                     fieldFocused = false
@@ -189,6 +222,14 @@ struct BlobHomeView: View {
                 writeBarTrailing = end
             }
             .onChange(of: panes) { _, panes in BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
+            // The camera goes with each message, so Blob knows what is on
+            // screen closed and open (server: blob-surface.ts). The home
+            // reports the surface; the canvas reports the camera when a
+            // gesture or a move ends. The home never reads the camera, so a
+            // pan never redraws it.
+            .onChange(of: viewport, initial: true) { _, viewport in
+                board.camera.report(in: viewport)
+            }
             // History lays this exchange out the way it is shown now.
             .onChange(of: split && !currentVisuals.isEmpty ? text.currentExchangeId : nil, initial: true) { _, id in
                 if let id { text.markShownBeside(id) }
@@ -216,6 +257,13 @@ struct BlobHomeView: View {
                 #endif
                 .blobSheetPlacement()
         }
+        .sheet(item: $refDetail) { detail in
+            BlobRefSheet(detail: detail)
+                #if os(macOS)
+                .frame(minWidth: 360, idealWidth: 400, minHeight: 300, idealHeight: 380)
+                #endif
+                .blobSheetPlacement()
+        }
         .environment(\.blobWideSurface, wideSurface)
         .onChange(of: text.listener.text) { _, _ in text.syncHeard() }
         .onChange(of: text.acceptedEntry?.id) { _, _ in text.accepted() }
@@ -235,7 +283,16 @@ struct BlobHomeView: View {
         // the poll's place and the next poll counts from it.
         .task(id: scenePhase) {
             if scenePhase == .active { brief.startPolling() } else { brief.stopPolling() }
+            if scenePhase == .active { board.refresh() }
         }
+        // A new revision of the board: read it again, unless the board on
+        // screen already has it. A reply that showed one pins it while the
+        // reply is on screen.
+        .onReceive(NotificationCenter.default.publisher(for: .supervisorBoardChanged)) { note in
+            board.refresh(announced: note.object as? Int)
+        }
+        .onChange(of: canvasRevision, initial: true) { _, revision in board.show(revision: revision) }
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: boardShown)
         .onDisappear { brief.stopPolling() }
         .onReceive(NotificationCenter.default.publisher(for: .supervisorBriefReady)) { _ in
             brief.kick()
@@ -444,8 +501,8 @@ struct BlobHomeView: View {
     /// of the page's column). With two panes Blob goes wherever the page
     /// leaves room (`room`), whatever it is doing, and rests in its slot
     /// only when there is none.
-    private func targets(in size: CGSize, insets: EdgeInsets, center: CGPoint, room: BlobRoom?, at date: Date) -> BlobTargets {
-        let spot = place(in: size, insets: insets, center: center, room: room, at: date)
+    private func targets(in size: CGSize, insets: EdgeInsets, center: CGPoint, room: BlobRoom?, fold: CGRect?, at date: Date) -> BlobTargets {
+        let spot = place(in: size, insets: insets, center: center, room: room, fold: fold, at: date)
         var talking = talking, mode = mode, level = textConversation ? text.level(at: date) : Double(engine.audioLevel)
         #if DEBUG
         if let demo = BlobDemo.at(date) { talking = demo.talking; mode = demo.mode; level = demo.level }
@@ -469,8 +526,11 @@ struct BlobHomeView: View {
 
     /// Where Blob is going and how big it is there, without its voice
     /// level, so the body can read it without following every level change.
-    private func place(in size: CGSize, insets: EdgeInsets, center: CGPoint, room: BlobRoom?, at date: Date) -> (position: CGPoint, size: Double) {
-        let slot = room?.center ?? Self.slot(in: size, insets: insets)
+    private func place(in size: CGSize, insets: EdgeInsets, center: CGPoint, room: BlobRoom?, fold: CGRect?, at date: Date) -> (position: CGPoint, size: Double) {
+        // On the board with the Duo open, Blob sits low on the fold, where
+        // nothing on the board may carry text.
+        let boardSlot = boardShown ? fold.map { CGPoint(x: $0.midX, y: size.height - max(insets.bottom, 30) - 48) } : nil
+        let slot = room?.center ?? boardSlot ?? Self.slot(in: size, insets: insets)
         let rest = Double(room?.size ?? 48)
         var talking = talking
         #if DEBUG
@@ -478,7 +538,7 @@ struct BlobHomeView: View {
         #endif
         // Content on the page gets the screen: Blob stays small in its slot
         // and keeps talking from there. So does history.
-        let docked = hasContent || historyRevealed || room != nil
+        let docked = hasContent || historyRevealed || room != nil || boardShown
         if historyRevealed { talking = false }
         return talking && !docked ? (center, 132) : (slot, rest)
     }
@@ -661,6 +721,76 @@ struct BlobHomeView: View {
     /// actions follow it inline.
     private var hasContent: Bool { replyOnScreen || ask != nil || showingBrief }
 
+    // MARK: The board
+
+    /// The board revision the settled reply showed (its ```canvas fence).
+    private var canvasRevision: Int? { settledReply.flatMap(CanvasFence.revision(in:)) }
+
+    /// The board is the surface: for a reply that showed a revision of it,
+    /// and on the quiet home while it holds anything. The brief, a reply
+    /// without a board, a question and history keep the page; an empty
+    /// board leaves the home as it was.
+    private var boardShown: Bool {
+        guard !historyRevealed, let shown = board.shown, !shown.isEmpty else { return false }
+        return canvasRevision != nil || !hasContent
+    }
+
+    /// What sits under the board: the reply's Say line and anything else it
+    /// shows (its quick replies), its ```canvas fence left out.
+    private var boardCaption: BlobReply? {
+        if canvasRevision != nil, let content = settledReply {
+            let reply = BlobReply(content)
+            return reply.isEmpty ? nil : reply
+        }
+        #if DEBUG
+        if let say = board.demoSay, !hasContent, !talking { return BlobReply(say: say, show: "") }
+        #endif
+        return nil
+    }
+
+    /// The Say line bottom-leading over the board, as on the designs, with
+    /// what else the reply shows after it. Taller than 40% of the screen,
+    /// it scrolls.
+    private func canvasCaption(_ reply: BlobReply, insets: EdgeInsets, column: BlobColumns.Span, height: CGFloat) -> some View {
+        let content = BlobReplyView(
+            reply: reply,
+            entryId: text.replyEntry?.id,
+            relay: text.relay,
+            sayStyle: .line
+        )
+        return ViewThatFits(in: .vertical) {
+            content
+            ScrollView { content }.scrollIndicators(.hidden)
+        }
+        .frame(maxHeight: height * 0.4, alignment: .bottom)
+        .blobColumn(column)
+        .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : 60))
+    }
+
+    /// Opens a real object on the board: its page when it has one (a PR, a
+    /// check), else its live fields in a sheet.
+    private func openRef(_ hit: BoardHitTest.Hit) {
+        let info = board.shown?.ref(hit.ref) ?? .missing
+        if info.ok, let link = info.url, let url = URL(string: link), url.scheme == "https" || url.scheme == "http" {
+            openURL(url)
+        } else {
+            refDetail = BlobRefDetail(ref: hit.ref, info: info)
+        }
+    }
+
+    /// The board's view of the surface: board (0, 0) inside the leading
+    /// and top insets, the trailing inset (the Duo's strip) as chrome, and
+    /// the Duo's fold when it is open.
+    private static func boardViewport(size: CGSize, insets: EdgeInsets, fold: CGRect?) -> BoardViewport {
+        BoardViewport(
+            size: BoardSize(size.width, size.height),
+            top: insets.top,
+            leading: insets.leading,
+            trailing: insets.trailing,
+            fold: fold.map { $0.minX...$0.maxX }
+        )
+    }
+
     /// Changes when a new item takes the page: a message sent, a question
     /// asked, the next decision. History folds away and the page goes to
     /// the new item's top.
@@ -727,7 +857,7 @@ struct BlobHomeView: View {
 
     /// The page has something for a second pane on a wide surface: the
     /// settled reply's visuals, or the brief's decisions.
-    private var sideBeside: Bool { !currentVisuals.isEmpty || briefBeside != nil }
+    private var sideBeside: Bool { canvasRevision == nil && (!currentVisuals.isEmpty || briefBeside != nil) }
 
     /// The reply being written has visual blocks, so they will take the
     /// trailing pane when it settles.
