@@ -34,6 +34,10 @@ struct BlobHomeView: View {
     @State private var decisionTap = 0
     /// A decision tapped on the board couldn't be read.
     @State private var decisionFailed = false
+    /// How tall what sits under the board is (a reply's caption, or the
+    /// brief's line and its quiet line), for the controls band the board
+    /// never draws under.
+    @State private var captionHeight: CGFloat = 0
     @ScaledMetric(relativeTo: .body) private var scaledBody: Double = 17
     @Environment(\.openURL) private var openURL
     @State private var showSettings = false
@@ -108,7 +112,11 @@ struct BlobHomeView: View {
             // does not redraw with every level change.
             let fold = panes?.physical == true ? panes?.fold : nil
             let spot = place(in: geo.size, insets: insets, center: talkCenter, room: room, fold: fold, at: .now)
+            // What sits at the bottom over the board (the caption, the
+            // brief's quiet line, the write bar, Blob when it rests there)
+            // is a band the board never draws or fits under.
             let viewport = Self.boardViewport(size: geo.size, insets: insets, fold: fold)
+                .reserving(bottom: boardShown ? controlsBand(size: geo.size, insets: insets, fold: fold) : 0)
             ZStack(alignment: .bottom) {
                 // The board, under everything else: on the quiet home, for
                 // the brief Blob drew on it, and for a reply that showed a
@@ -141,8 +149,9 @@ struct BlobHomeView: View {
                     }
                     .transition(.opacity)
                 } else if briefOnBoard, let page = briefPage {
-                    // The brief Blob drew: what it said and the quiet line
-                    // over the board, which holds its decisions.
+                    // The brief Blob drew: one line of what it said (it was
+                    // spoken) and the quiet line, under the board, which
+                    // holds its decisions.
                     canvasCaption(insets: insets, column: columns.leading ?? columns.centered, height: geo.size.height) {
                         BlobBriefView(brief: brief, page: page, part: .board)
                     }
@@ -238,12 +247,15 @@ struct BlobHomeView: View {
                 }
             }
             .onLongPressGesture { showSettings = true }
-            .onAppear { BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
+            // The surface goes with every message and the brief's start:
+            // its size and panes as they are now, the Duo open or closed.
+            .onChange(of: BlobSurfaceKey(size: geo.size, panes: panes == nil ? 1 : 2), initial: true) { _, key in
+                BlobSurfaceReport.update(size: key.size, panes: key.panes)
+            }
             .onChange(of: panes != nil, initial: true) { _, wide in wideSurface = wide }
             .onChange(of: Self.writeBarEnd(size: geo.size, insets: insets, panes: panes), initial: true) { _, end in
                 writeBarTrailing = end
             }
-            .onChange(of: panes) { _, panes in BlobSurfaceReport.update(size: geo.size, panes: panes == nil ? 1 : 2) }
             // The camera goes with each message, so Blob knows what is on
             // screen closed and open (server: blob-surface.ts). The home
             // reports the surface; the canvas reports the camera when a
@@ -804,9 +816,31 @@ struct BlobHomeView: View {
             content
             ScrollView { content }.scrollIndicators(.hidden)
         }
+        // What it takes, not the room it may take: the band under the
+        // board is as tall as this.
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { captionHeight = $0 }
         .frame(maxHeight: height * 0.4, alignment: .bottom)
         .blobColumn(column)
-        .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : 60))
+        .padding(.bottom, max(insets.bottom, 20) + BoardChrome.bar(typing: typing))
+    }
+
+    /// Something sits under the board: a reply's caption, or the brief
+    /// Blob drew.
+    private var boardHasCaption: Bool {
+        boardShown && (boardCaption != nil || briefOnBoard && briefPage != nil)
+    }
+
+    /// The controls band at the bottom of the board (BlobCore
+    /// `BoardChrome.band`): the write bar, the caption over it, and Blob's
+    /// corner where Blob rests over the board. In the Duo's strip or on
+    /// its fold Blob is over no board.
+    private func controlsBand(size: CGSize, insets: EdgeInsets, fold: CGRect?) -> Double {
+        let overBoard = fold == nil && insets.trailing < 60 && insets.leading < 60
+        let blobTop = overBoard ? Double(Self.slot(in: size, insets: insets).y) - 24 : nil
+        return BoardChrome.band(
+            height: size.height, bottomInset: insets.bottom, typing: typing,
+            caption: boardHasCaption ? captionHeight : 0, blobTop: blobTop
+        )
     }
 
     /// Opens a real object on the board: an inbox item's decision view, its
@@ -1677,3 +1711,10 @@ enum BlobDemo {
     }
 }
 #endif
+
+/// What the Blob surface report depends on: the surface's size and how
+/// many panes the home draws.
+private struct BlobSurfaceKey: Equatable {
+    var size: CGSize
+    var panes: Int
+}

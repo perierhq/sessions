@@ -76,6 +76,11 @@ describe("board camera", () => {
       "The fold: board x 455.5–495.5 at the home camera. No text there",
     );
     expect(lines).toContain("Closed, the camera shows x 0–382");
+    // Open, the right screen is for new content, never by moving the old.
+    expect(lines).toContain(
+      "Open now, the right screen shows board x 495.5–867 too: put new content that doesn't fit the closed view there",
+    );
+    expect(lines).toContain("never by moving what is already on the board");
     const panned = boardViewportLines({
       ...OPEN_VIEWPORT,
       origin: [500, 100],

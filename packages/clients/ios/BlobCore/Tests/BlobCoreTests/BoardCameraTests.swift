@@ -147,7 +147,10 @@ struct BoardCameraTests {
         #expect((json["closed"] as? [String: Double])?["w"] == 382)
         #expect(json["origin"] as? [Double] == [0, 0])
         let closed = BoardViewportReport(viewport: .duoClosed, camera: .home).json
-        #expect(closed["hinge"] == nil && closed["closed"] == nil)
+        // The closed Duo says it is one (its hardware strip), so Blob
+        // knows the open camera is a fold away.
+        #expect(closed["hinge"] == nil)
+        #expect((closed["closed"] as? [String: Double])?["w"] == 382)
         #expect(closed["strip"] as? [Double] == [382, 466])
     }
 }
@@ -160,7 +163,7 @@ struct BoardLayoutTests {
     @Test(arguments: ["release", "morning"])
     func `no text on the designed boards touches the hinge band`(name: String) throws {
         let board = try DemoBoards.load(name)
-        let layout = BoardLayout(elements: board.elements)
+        let layout = BoardLayout(elements: board.elements, refs: board.refs)
         for item in layout.items where BoardLayout.carriesText(item.element) {
             let frame = try #require(item.frame)
             #expect(!(frame.x < 495.5 && frame.maxX > 455.5), "\(item.element.id) is clear of the fold")

@@ -7,7 +7,7 @@ struct BoardSceneTests {
     func `a scene holds every sketch the renderer would draw`(name: String) throws {
         let board = try DemoBoards.load(name)
         let scene = BoardScene(board, key: BoardSceneKey(board, noteSize: 16))
-        let layout = BoardLayout(elements: board.elements)
+        let layout = BoardLayout(elements: board.elements, refs: board.refs)
         #expect(scene.marks.map(\.id) == layout.painted.map(\.element.id))
         for (mark, item) in zip(scene.marks, layout.painted) {
             #expect(mark.sketch == Sketch.path(for: item, in: layout))

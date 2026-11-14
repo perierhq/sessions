@@ -1,21 +1,26 @@
 import Foundation
 
 /// The space a device gives the board: the surface's size, its safe-area
-/// insets, and the fold's band when there is one. Board (0, 0) is the
-/// top-left of the content area, inside the leading and top insets, on
-/// every device; the trailing inset (the Duo's 84 pt strip, the open
-/// Duo's rail) is chrome, never board.
+/// insets, the controls band at the bottom, and the fold's band when there
+/// is one. Board (0, 0) is the top-left of the content area, inside the
+/// leading and top insets, on every device; the trailing inset (the Duo's
+/// 84 pt strip, the open Duo's rail) and the bottom band (what Blob said,
+/// the brief's quiet line, the write bar, Blob's corner) are chrome, never
+/// board: the board is drawn and panned only in what they leave.
 public struct BoardViewport: Sendable, Equatable {
     public var size: BoardSize
     public var top: Double
     public var leading: Double
     public var trailing: Double
+    /// The controls band at the bottom, in surface points (`BoardChrome`).
+    public var bottom: Double
     /// The fold's band in surface points, on an open foldable.
     public var fold: ClosedRange<Double>?
 
     public init(size: BoardSize, top: Double = 0, leading: Double = 0, trailing: Double = 0,
-                fold: ClosedRange<Double>? = nil) {
-        self.size = size; self.top = top; self.leading = leading; self.trailing = trailing; self.fold = fold
+                bottom: Double = 0, fold: ClosedRange<Double>? = nil) {
+        self.size = size; self.top = top; self.leading = leading; self.trailing = trailing
+        self.bottom = bottom; self.fold = fold
     }
 
     /// The closed Duo's outer display: 466 × 678, the 84 pt strip on the
@@ -32,7 +37,19 @@ public struct BoardViewport: Sendable, Equatable {
 
     /// The part of the surface the board shows through.
     public var content: BoardRect {
-        BoardRect(x: leading, y: top, w: max(0, size.w - leading - trailing), h: max(0, size.h - top))
+        BoardRect(x: leading, y: top, w: max(0, size.w - leading - trailing), h: max(0, size.h - top - bottom))
+    }
+
+    /// The controls band, in surface points, when there is one.
+    public var controls: BoardRect? {
+        bottom > 0 ? BoardRect(x: 0, y: size.h - bottom, w: size.w, h: bottom) : nil
+    }
+
+    /// The same surface with `band` points of controls at the bottom.
+    public func reserving(bottom band: Double) -> BoardViewport {
+        var next = self
+        next.bottom = max(0, min(band, size.h - top))
+        return next
     }
 
     /// The trailing chrome, in surface points, when there is any.
@@ -214,14 +231,19 @@ public struct BoardViewportReport: Sendable, Equatable {
     public init(viewport: BoardViewport, camera: BoardCamera) {
         // Camera points start at board (0, 0)'s place: the leading inset
         // is not camera.
+        // The controls band is not camera either: `h` is what the board
+        // shows.
         let width = viewport.size.w - viewport.leading
         w = width
-        h = viewport.size.h - viewport.top
+        h = viewport.content.h
         origin = camera.origin
         zoom = camera.zoom
         hinge = viewport.fold.map { ($0.lowerBound - viewport.leading)...($0.upperBound - viewport.leading) }
         strip = viewport.trailing > 0 ? (width - viewport.trailing)...width : nil
-        closed = viewport.fold != nil ? BoardSize(382, 678) : nil
+        // A foldable, open (a fold) or closed (the hardware strip): the
+        // closed camera, so Blob knows what shows either way.
+        closed = viewport.fold != nil || viewport.trailing >= 60
+            ? BoardSize(BoardLayout.closedWidth, 678) : nil
     }
 
     /// The JSON the server reads.
@@ -236,5 +258,33 @@ public struct BoardViewportReport: Sendable, Equatable {
         if let strip { out["strip"] = [round(strip.lowerBound), round(strip.upperBound)] }
         if let closed { out["closed"] = ["w": closed.w, "h": closed.h] }
         return out
+    }
+}
+
+/// The chrome over the bottom of the board: what Blob said (one line on a
+/// brief, a reply's caption), the brief's quiet line, the write bar and
+/// Blob's own corner. The board never draws under it (`BoardViewport.bottom`).
+public enum BoardChrome {
+    /// The write bar's row and its margin, above the bottom inset.
+    public static func bar(typing: Bool) -> Double { typing ? 76 : 60 }
+
+    /// The band's height: the bar over the bottom inset (at least 20), the
+    /// caption over the bar with a gap, and at least down from Blob's top
+    /// when Blob rests over the board's bottom (`blobTop`, surface points;
+    /// nil when Blob sits in the strip or on the fold, which are not board).
+    public static func band(height: Double, bottomInset: Double, typing: Bool,
+                            caption: Double, blobTop: Double? = nil) -> Double {
+        var band = max(bottomInset, 20) + bar(typing: typing)
+        if caption > 0 { band += caption + 8 }
+        if let blobTop { band = max(band, height - blobTop + 8) }
+        return band
+    }
+
+    /// Where the caption goes: the top of the band, above the bar, inside
+    /// the content's width.
+    public static func captionRect(in viewport: BoardViewport, bottomInset: Double, typing: Bool, caption: Double) -> BoardRect {
+        let bottom = viewport.size.h - max(bottomInset, 20) - bar(typing: typing)
+        let c = viewport.content
+        return BoardRect(x: c.x, y: bottom - caption, w: c.w, h: caption)
     }
 }

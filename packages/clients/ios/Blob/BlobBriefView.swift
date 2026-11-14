@@ -12,9 +12,11 @@ import SwiftUI
 /// start open, since the pane has the room; on one pane they start closed.
 ///
 /// A brief the supervisor drew on the board, with every open decision on it
-/// (`Page.drawn(on:open:)`), shows the board instead of the decisions: what
-/// Blob said and the quiet line sit over it (`.board`), and each decision
-/// opens from its element there.
+/// (`Page.drawn(on:open:)`), shows the board instead of the decisions, and
+/// each decision opens from its element there. Under it (`.board`), in the
+/// band the board never draws under, sit one line of what Blob said (it was
+/// spoken; VoiceOver reads all of it) and the quiet line. Never the
+/// paragraph: it would cover the board.
 struct BlobBriefView: View {
     enum Part { case all, conversation, decisions, board }
 
@@ -32,7 +34,16 @@ struct BlobBriefView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if part != .decisions, !page.say.isEmpty {
+            if part == .board, !page.say.isEmpty {
+                Text(page.say)
+                    .font(.subheadline)
+                    .foregroundStyle(OS1VisualStyle.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Blob says: \(page.say)")
+                    .padding(.bottom, 2)
+            } else if part != .decisions, !page.say.isEmpty {
                 BlobSayLine(text: page.say)
                     .accessibilityLabel("Blob says: \(page.say)")
                     .padding(.bottom, 28)

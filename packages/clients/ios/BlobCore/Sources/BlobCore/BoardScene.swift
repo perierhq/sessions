@@ -38,8 +38,13 @@ public struct BoardScene: Sendable {
     /// Where each element starts on the board, for More.
     public let starts: [Double]
 
-    public init(_ snapshot: BoardSnapshot, key: BoardSceneKey, measureNote: @escaping BoardLayout.NoteMeasure = BoardLayout.estimateNote) {
-        let layout = BoardLayout(elements: snapshot.elements, measureNote: measureNote)
+    public init(
+        _ snapshot: BoardSnapshot, key: BoardSceneKey,
+        measureNote: @escaping BoardLayout.NoteMeasure = BoardLayout.estimateNote,
+        measureText: @escaping BoardLayout.TextMeasure = BoardTextMetrics.estimate()
+    ) {
+        let layout = BoardLayout(elements: snapshot.elements, refs: snapshot.refs,
+                                 measureNote: measureNote, measureText: measureText)
         self.key = key
         self.layout = layout
         refs = snapshot.refs
@@ -101,7 +106,8 @@ public struct BoardWords: Sendable {
         public var item: BoardLayout.Item
         /// Its box at this zoom, or nil for an arrow label.
         public var frame: BoardRect?
-        /// An arrow label's centre at this zoom.
+        /// An arrow label's centre, or a frame title's top-left, at this
+        /// zoom.
         public var label: BoardPoint?
         public var id: String { item.element.id }
     }
@@ -121,7 +127,8 @@ public struct BoardWords: Sendable {
                 return Placed(item: item, frame: nil, label: mid * zoom)
             }
             guard let r = item.frame else { return nil }
-            return Placed(item: item, frame: BoardRect(x: r.x * zoom, y: r.y * zoom, w: r.w * zoom, h: r.h * zoom), label: nil)
+            let title = scene.layout.titles[item.element.id].map { $0 * zoom }
+            return Placed(item: item, frame: BoardRect(x: r.x * zoom, y: r.y * zoom, w: r.w * zoom, h: r.h * zoom), label: title)
         }
     }
 }

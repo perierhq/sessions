@@ -176,6 +176,10 @@ export interface BriefDeps {
   prepareDecisions(user: string): Promise<unknown>;
   /** The inbox view, read for the notice's counts. */
   view(user: string): Promise<SupervisorBriefView>;
+  /** Record the Blob surface the app sent with start=1 on the supervisor
+   *  session (blob-surface.ts), so the brief turn draws for the camera
+   *  the device has now: closed or open, the fold. */
+  recordSurface(sessionId: string, surface: unknown): Promise<void>;
 }
 
 const liveDeps: BriefDeps = {
@@ -210,6 +214,15 @@ const liveDeps: BriefDeps = {
   prepareDecisions: async (user) =>
     (await import("./supervisor-autonomy")).prepareAutonomyProposal(user),
   view: (user) => readSupervisorBriefView(user),
+  recordSurface: async (sessionId, surface) => {
+    const [{ findSessionAsync }, blob] = await Promise.all([
+      import("./session-cache"),
+      import("./blob-surface"),
+    ]);
+    // Only a surface that reads: a malformed one never clears the last.
+    if (!blob.parseBlobSurface(surface)) return;
+    blob.maybePersistBlobSurface(await findSessionAsync(sessionId), surface);
+  },
 };
 
 /** The socket frame a written brief sends: { type, user, day }. Blob
@@ -454,6 +467,7 @@ export async function startBriefTurn(
   user: string,
   trigger: BriefTrigger,
   dueDay?: string,
+  surface?: unknown,
 ): Promise<StartBriefResult> {
   const now = deps.now();
   let result: StartBriefResult = { started: false, reason: "running" };
@@ -531,11 +545,15 @@ export async function startBriefTurn(
   return {
     started: true,
     run,
-    delivered: deliverRun(user, run).catch(() => false),
+    delivered: deliverRun(user, run, surface).catch(() => false),
   };
 }
 
-async function deliverRun(user: string, run: BriefRun): Promise<boolean> {
+async function deliverRun(
+  user: string,
+  run: BriefRun,
+  surface?: unknown,
+): Promise<boolean> {
   try {
     // A scheduled brief never creates a supervisor for someone who has
     // none; Blob opening does, as it would anyway.
@@ -544,6 +562,14 @@ async function deliverRun(user: string, run: BriefRun): Promise<boolean> {
         ? await deps.currentSessionId(user)
         : await deps.ensureSessionId(user);
     if (!sessionId) throw new Error("no supervisor session");
+    // Blob opening sent where it will show the brief: the turn sees it.
+    if (surface !== undefined)
+      await deps.recordSurface(sessionId, surface).catch((error: unknown) => {
+        console.warn(
+          `[supervisor-brief] ${user}: surface not recorded:`,
+          error instanceof Error ? error.message : error,
+        );
+      });
     // A decision the server prepares is in the inbox before the turn
     // reads it; one that couldn't be prepared never holds the brief up.
     await deps.prepareDecisions(user).catch((error: unknown) => {
@@ -1037,12 +1063,25 @@ export function briefReopenLine(input: {
  */
 export async function getSupervisorBrief(
   user: string,
-  options: { start?: boolean } = {},
+  options: { start?: boolean; surface?: unknown } = {},
 ): Promise<BriefResponse> {
   if (options.start) {
-    const result = await startBriefTurn(user, "open");
+    const result = await startBriefTurn(
+      user,
+      "open",
+      undefined,
+      options.surface,
+    );
     // Not awaited: the turn finishes while Blob polls.
     if (result.started) void result.delivered;
+    // No turn now (one is running, or today's is written): the surface
+    // still goes on the session, for the next turn and a running one's
+    // board tools.
+    else if (options.surface !== undefined) {
+      const sessionId = await deps.currentSessionId(user).catch(() => null);
+      if (sessionId)
+        await deps.recordSurface(sessionId, options.surface).catch(() => {});
+    }
   }
   const now = deps.now();
   const view = await readSupervisorBriefView(user);
