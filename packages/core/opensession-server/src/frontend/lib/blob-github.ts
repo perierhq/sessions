@@ -1,5 +1,5 @@
 // Blob's GitHub account in Settings, Members: the owner-only settings behind
-// GET/PUT /api/blob/github and DELETE /api/blob/github/token
+// GET/PUT/DELETE /api/blob/github and DELETE /api/blob/github/token
 // (server/routes/blob-github.ts). The token is write-only: it goes up in a
 // PUT and never comes back, only whether one is set. Pure apart from the
 // fetches, so the section and its tests share one reading.
@@ -156,6 +156,15 @@ export function removeBlobGithubToken(): Promise<BlobGithub> {
   });
 }
 
+/** Forget Blob's own account: the server clears its login, repositories
+ *  and labels, so the "Post as" choice comes back. */
+export function forgetBlobGithubAccount(): Promise<BlobGithub> {
+  return requestView("/blob/github", {
+    method: "DELETE",
+    label: "Couldn't forget Blob's account",
+  });
+}
+
 /** A server or network error as a sentence for the person. The route's
  *  checks name the field (`token: ...`); the person only sees the reason. */
 export function plainError(error: Error): string {
@@ -196,6 +205,18 @@ export function canChooseBlobGithubAs(
 ): boolean {
   if (settings.tokenSet) return false;
   return !(blobGithubAs(settings) === "own-account" && settings.login);
+}
+
+/** Whether the owner may forget Blob's own recorded account: its login is
+ *  kept after the token goes, so only with no token stored. */
+export function canForgetBlobGithubAccount(
+  settings: Pick<BlobGithub, "as" | "login" | "tokenSet">,
+): boolean {
+  return (
+    !settings.tokenSet &&
+    !!settings.login &&
+    blobGithubAs(settings) === "own-account"
+  );
 }
 
 /** The token's expiry, relative: "Expires in 42 days", "Expires tomorrow". */

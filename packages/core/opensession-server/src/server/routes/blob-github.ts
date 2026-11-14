@@ -4,6 +4,9 @@
  *   GET    /api/blob/github         { as, login, expiresAt, repos, publicRepos, labels, enabled, tokenSet }
  *   PUT    /api/blob/github         { as?, token?, repos?, publicRepos?, labels?, enabled? } (token write-only)
  *   DELETE /api/blob/github/token   removes the token and turns posting off
+ *   DELETE /api/blob/github         forgets Blob's account (clears
+ *                                   integrations.github.blob); refused while
+ *                                   a token is stored
  *
  * The owner is the verified instance owner (support/actor.ts: the signed-in
  * GitHub login matches the owner's roster entry), the same rule that lets
@@ -15,8 +18,10 @@
  */
 import type { RouteContext } from "./context";
 import { verifiedPerson } from "./context";
+import { refreshIndexHtml } from "../frontend-build";
 import {
   deleteBlobGithubToken,
+  forgetBlobGithubAccount,
   getBlobGithubSettings,
   setBlobGithubSettings,
   validateBlobGithubPatch,
@@ -79,14 +84,23 @@ export async function handleBlobGithubRoutes(
     });
     if (!result.ok)
       return Response.json({ error: result.error }, { status: result.status });
+    refreshIndexHtml("Blob's GitHub account");
     return Response.json({ blob: result.settings }, { headers: NO_STORE });
   }
 
-  if (path === "/api/blob/github/token" && req.method === "DELETE")
-    return Response.json(
-      { blob: await deleteBlobGithubToken(person) },
-      { headers: NO_STORE },
-    );
+  if (path === "/api/blob/github" && req.method === "DELETE") {
+    const result = await forgetBlobGithubAccount(person);
+    if (!result.ok)
+      return Response.json({ error: result.error }, { status: result.status });
+    refreshIndexHtml("Blob's GitHub account forgotten");
+    return Response.json({ blob: result.settings }, { headers: NO_STORE });
+  }
+
+  if (path === "/api/blob/github/token" && req.method === "DELETE") {
+    const blob = await deleteBlobGithubToken(person);
+    refreshIndexHtml("Blob's GitHub token removed");
+    return Response.json({ blob }, { headers: NO_STORE });
+  }
 
   return Response.json({ error: "Method not allowed" }, { status: 405 });
 }

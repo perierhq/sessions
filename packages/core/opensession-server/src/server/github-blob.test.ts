@@ -204,11 +204,13 @@ describe("Blob's GitHub account settings", () => {
       request("GET", undefined, "grace"),
       request("PUT", { token: TOKEN }, "grace"),
       request("DELETE", undefined, "grace", "/api/blob/github/token"),
+      request("DELETE", undefined, "grace"),
     ])
       expect((await call(ctx)).status).toBe(403);
     for (const ctx of [
       request("GET", undefined, null),
       request("PUT", { token: TOKEN }, null),
+      request("DELETE", undefined, null),
     ])
       expect((await call(ctx)).status).toBe(401);
     // An automation is never a person.
@@ -514,10 +516,45 @@ describe("posting as the owner's account", () => {
     const res = await call(request("PUT", { as: "owner", token: TOKEN }));
     expect(res.status).toBe(400);
     expect(res.body.error).toBe(
-      "Blob's own account @acme-blob is still recorded, so its earlier posts count as Blob's. Remove Blob's account (integrations.github.blob) first.",
+      "Blob's own account @acme-blob is still recorded, so its earlier posts count as Blob's. Forget Blob's account first.",
     );
     expect(storedBlob().as).toBeUndefined();
     expect(storedBlob().login).toBe("acme-blob");
+  });
+
+  test("forgetting Blob's account clears it, so the owner's account can follow", async () => {
+    await setup();
+    github(200, { login: "acme-blob" });
+    await call(
+      request("PUT", { token: TOKEN, enabled: true, repos: ["acme/widget"] }),
+    );
+    // Not while a token is stored.
+    const early = await call(request("DELETE"));
+    expect(early.status).toBe(409);
+    expect(early.body.error).toBe(
+      "Remove the token before forgetting Blob's account",
+    );
+    expect(storedBlob().login).toBe("acme-blob");
+
+    await call(request("DELETE", undefined, "ada", "/api/blob/github/token"));
+    expect(githubBotLogins()).toContain("acme-blob");
+    const forgot = await call(request("DELETE"));
+    expect(forgot.status).toBe(200);
+    expect(forgot.body.blob).toMatchObject({
+      as: "own-account",
+      login: null,
+      repos: [],
+      enabled: false,
+      tokenSet: false,
+    });
+    expect(storedBlob()).toBeUndefined();
+    // Its earlier posts no longer count as Blob's.
+    expect(githubBotLogins()).not.toContain("acme-blob");
+
+    github(200, { login: "ada" });
+    const owner = await call(request("PUT", { as: "owner", token: TOKEN }));
+    expect(owner.status).toBe(200);
+    expect(owner.body.blob).toMatchObject({ as: "owner", login: "ada" });
   });
 
   test("removing the owner's token drops the login, so Blob's own account can follow", async () => {

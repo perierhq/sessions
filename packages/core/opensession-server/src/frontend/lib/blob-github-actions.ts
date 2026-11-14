@@ -5,6 +5,7 @@
 import type { ConfirmRequest } from "../ui/confirm";
 import {
   blobGithubAs,
+  forgetBlobGithubAccount,
   plainError,
   removeBlobGithubToken,
   saveBlobGithub,
@@ -56,6 +57,7 @@ export function blobGithubActions(input: BlobGithubActionsInput) {
     run(() => saveBlobGithub(patch), setError);
 
   const removeToken = () => run(removeBlobGithubToken, setError);
+  const forgetAccount = () => run(forgetBlobGithubAccount, setError);
 
   return {
     saveToken: async () => {
@@ -85,6 +87,16 @@ export function blobGithubActions(input: BlobGithubActionsInput) {
         confirmLabel: "Remove",
         destructive: true,
         onConfirm: () => void removeToken(),
+      }),
+    forgetAccount: () =>
+      input.confirm({
+        title: "Forget Blob\u2019s account?",
+        description: settings.login
+          ? `Earlier posts by @${settings.login} stop counting as Blob\u2019s, so its comments can start replies again. Its repositories and labels are cleared too, and you can choose whose account Blob posts as.`
+          : "Its repositories and labels are cleared, and you can choose whose account Blob posts as.",
+        confirmLabel: "Forget",
+        destructive: true,
+        onConfirm: () => void forgetAccount(),
       }),
   };
 }

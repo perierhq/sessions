@@ -221,8 +221,12 @@ empty by default, which turns labelling off. Set it with
 The login counts as one of Open Session's own bots, so comments by it never
 start a reply, and no teammate can be added under it. It stays after the
 token is removed, so Blob's earlier posts keep counting as its own. A token
-for a different account is refused; to switch accounts, remove
-`integrations.github.blob` from `config.json` first. The login is never the
+for a different account is refused. To switch accounts, remove the token,
+then choose **Forget Blob's account** in Settings → Members → Blob (or
+`DELETE /api/blob/github`). That clears `integrations.github.blob`: the
+login, repositories and labels. Earlier posts by that account stop counting
+as Blob's, so its comments can start review-agent replies again. The
+**Post as** choice then comes back. The login is never the
 review agent's own: `@acme-blob` does not start a review-agent reply, and
 the review agent does not resolve threads Blob started.
 
@@ -273,8 +277,10 @@ How it differs from Blob's own account:
   a person's in review threads and stay yours on the roster.
 - **The marker says what Blob wrote.** Every post by Blob ends with the
   footer and `<!-- os:blob -->`. The GitHub agent, the review loop and the
-  Pull requests page treat a body with the marker as Blob's, and a comment
-  of yours without it as yours.
+  Pull requests page treat a comment as Blob's only when it has the marker
+  and its author is the recorded login (yours here, Blob's machine user
+  otherwise) or the App's bot. A comment of yours without the marker stays
+  yours, and the marker from anyone else counts for nothing.
 - **Only for you.** Blob posts through your account for your own
   supervisor and leads. A teammate's supervisor can't, and posting stops if
   the roster names a different login as the owner's.
@@ -284,8 +290,8 @@ How it differs from Blob's own account:
   apply. Blob only comments, leaves `COMMENT` reviews, sets allowed labels
   and opens issues; it never closes, approves, pushes or merges.
 - **Removing the token drops the login**, since nothing depends on it. To
-  move from Blob's own account to yours, remove `integrations.github.blob`
-  from `config.json` first, as for any switch of Blob's own account.
+  move from Blob's own account to yours, remove its token and choose
+  **Forget Blob's account** first, as for any switch of Blob's own account.
 
 ## Who holds which credential
 

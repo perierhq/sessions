@@ -9,6 +9,7 @@ import {
   BLOB_GITHUB_OWNER_TOKEN_HINT,
   blobGithubAs,
   canChooseBlobGithubAs,
+  canForgetBlobGithubAccount,
   githubRepoNames,
   loadBlobGithub,
   parseLabels,
@@ -224,6 +225,23 @@ describe("whose account Blob posts as", () => {
     expect(canChooseBlobGithubAs({ ...base, as: "owner", login: "ada" })).toBe(
       true,
     );
+  });
+
+  test("Blob's own recorded account can be forgotten only with no token", () => {
+    expect(canForgetBlobGithubAccount({ ...base, login: "acme-blob" })).toBe(
+      true,
+    );
+    expect(canForgetBlobGithubAccount(base)).toBe(false);
+    expect(
+      canForgetBlobGithubAccount({
+        ...base,
+        login: "acme-blob",
+        tokenSet: true,
+      }),
+    ).toBe(false);
+    expect(
+      canForgetBlobGithubAccount({ ...base, as: "owner", login: "ada" }),
+    ).toBe(false);
   });
 
   test("the copy says what each choice means and what the owner's token needs", () => {

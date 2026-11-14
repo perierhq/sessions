@@ -126,9 +126,21 @@ describe("BlobGithubSection", () => {
     );
   });
 
-  test("Blob's own recorded account can't switch from here", () => {
+  test("Blob's own recorded account offers Forget instead of Post as", () => {
     const shown = text(view({ ...notSetUp, login: "acme-blob" }));
     expect(shown).not.toContain("Post as");
+    expect(shown).toContain(
+      "To post as your own account instead, forget Blob's account first.",
+    );
+    expect(shown).toContain("Forget Blob's account");
+  });
+
+  test("Forget shows only for Blob's own recorded account with no token", () => {
+    expect(text(view(notSetUp))).not.toContain("Forget Blob's account");
+    expect(text(view(setUp))).not.toContain("Forget Blob's account");
+    expect(text(view({ ...setUp, as: "owner", login: "ada" }))).not.toContain(
+      "Forget Blob's account",
+    );
   });
 
   test("set up with my account: says so, and the choice is gone", () => {

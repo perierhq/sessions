@@ -25,6 +25,7 @@ import { stateDir } from "./paths";
 import { gitIdentityFor } from "./shared/user-mappings";
 import { broadcastToAll } from "./ws-hub";
 import {
+  blobGithubPostingLogin,
   configuredInstanceOrigins,
   configuredServer,
   defaultRepo,
@@ -536,6 +537,9 @@ function frontendInstance() {
     publicBaseUrl: configuredServer().publicBaseUrl,
     webhookBaseUrl: configuredServer().webhookBaseUrl,
     githubBotLogins: githubBotLogins(),
+    // Tells Blob's posts from the owner's account apart from a forged marker
+    // (frontend/lib/pr-comments.ts).
+    blobGithubLogin: blobGithubPostingLogin() || undefined,
     defaultRepoId: defaultRepo().id,
     plainWorkspaceId: plainWorkspaceId() || undefined,
     agentationEnabled: process.env.OPENSESSION_AGENTATION === "1" || undefined,
@@ -801,7 +805,7 @@ export async function buildFrontend(): Promise<string> {
 
 /**
  * Re-stitch index.html from the current bundle after an identity change
- * (product name, mark, persona). Nothing compiled depends on those values,
+ * (product name, mark, persona, Blob's GitHub login). Nothing compiled depends on those values,
  * so no rebuild: the served shell is swapped in place. No-op in dev (Bun's
  * HMR server serves the source shell) and before the first build.
  */

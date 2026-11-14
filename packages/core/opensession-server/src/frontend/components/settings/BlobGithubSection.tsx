@@ -10,6 +10,7 @@ import {
   BLOB_GITHUB_STEPS,
   blobGithubAs,
   canChooseBlobGithubAs,
+  canForgetBlobGithubAccount,
   parseLabels,
   tokenExpiry,
   type BlobGithub,
@@ -102,6 +103,7 @@ export function BlobGithubSection({
         onPublicRepoChange={(name, on) => void act.setPublicRepo(name, on)}
         onLabelsChange={(labels) => void act.setLabels(labels)}
         onRemoveToken={act.removeToken}
+        onForgetAccount={act.forgetAccount}
       />
       {confirmDialog}
     </>
@@ -136,6 +138,7 @@ export function BlobGithubView({
   onPublicRepoChange = () => {},
   onLabelsChange = () => {},
   onRemoveToken = () => {},
+  onForgetAccount = () => {},
 }: {
   settings: BlobGithub;
   repos: string[];
@@ -154,6 +157,7 @@ export function BlobGithubView({
   onPublicRepoChange?: (name: string, on: boolean) => void;
   onLabelsChange?: (labels: string[]) => void;
   onRemoveToken?: () => void;
+  onForgetAccount?: () => void;
 }) {
   const errorId = useId();
   const owner = as === "owner";
@@ -206,6 +210,23 @@ export function BlobGithubView({
           )}
           {tokenField}
           {errorLine}
+          {canForgetBlobGithubAccount(settings) && (
+            <div className="flex flex-col gap-1.5">
+              <p className="m-0 text-supporting text-dim">
+                To post as your own account instead, forget Blob&rsquo;s account
+                first.
+              </p>
+              <Button
+                variant="danger"
+                size="sm"
+                className="self-start phone:min-h-11"
+                disabled={busy}
+                onClick={onForgetAccount}
+              >
+                Forget Blob&rsquo;s account
+              </Button>
+            </div>
+          )}
         </div>
       </BlobGithubFrame>
     );

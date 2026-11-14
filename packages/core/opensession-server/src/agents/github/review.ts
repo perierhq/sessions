@@ -108,6 +108,7 @@ import {
   prDiscussionSection,
   classifyPriorFindings,
   openHumanThreadLines,
+  openOwnThreadAnchors,
   priorReviewSection,
 } from "./review-context";
 import { learnedRulesSection } from "./learned-rules";
@@ -1332,20 +1333,9 @@ async function postReview(
   // Anchors (path:line) where we already have an open, still-current bot comment.
   // Skip re-posting these — the existing comment already covers the same spot.
   // `force` (manual "review again") bypasses dedup so an explicit re-review is fresh.
-  const openBotAnchors = new Set<string>();
-  if (!force) {
-    for (const t of existingThreads) {
-      if (
-        (isGithubBotLogin(t.rootAuthor) || isBlobPost(t.comments[0]?.body)) &&
-        !t.isResolved &&
-        !t.isOutdated &&
-        t.path &&
-        t.line != null
-      ) {
-        openBotAnchors.add(`${t.path}:${t.line}`);
-      }
-    }
-  }
+  const openBotAnchors = force
+    ? new Set<string>()
+    : openOwnThreadAnchors(existingThreads, isGithubBotLogin, isBlobPost);
 
   // Formal review with inline comments, anchored to the diff.
   if (findings.length && pr.headSha) {

@@ -26,6 +26,9 @@ type InstanceBrand = {
   publicBaseUrl?: string;
   webhookBaseUrl?: string;
   githubBotLogins?: string[];
+  /** The login Blob posts as on GitHub, its own or the owner's
+   *  (server: blobGithubPostingLogin). */
+  blobGithubLogin?: string;
   defaultRepoId?: string;
   plainWorkspaceId?: string;
   agentationEnabled?: boolean;
@@ -110,6 +113,9 @@ export const GITHUB_BOT_LOGINS = new Set(
 );
 /** Primary GitHub bot login (first policy.githubBotLogins entry) for display
  *  fallbacks; empty string when the instance has no bot. */
+/** The login Blob posts as on GitHub (its machine user, or the owner's
+ *  account while Blob posts as the owner), lowercased; "" when none. */
+export const BLOB_GITHUB_LOGIN = (INSTANCE.blobGithubLogin || "").toLowerCase();
 export const GITHUB_BOT_NAME = INSTANCE.githubBotLogins?.[0] || "";
 export const DEFAULT_REPO_ID = INSTANCE.defaultRepoId || "opensession";
 

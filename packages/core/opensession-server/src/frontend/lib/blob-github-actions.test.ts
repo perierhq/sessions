@@ -149,6 +149,57 @@ describe("blobGithubActions", () => {
     expect(state.saved).toEqual(removed);
   });
 
+  test("Forget asks first, says what stops counting, then sends the DELETE", async () => {
+    const recorded = { ...settings, tokenSet: false, enabled: false };
+    const forgotten = {
+      as: "own-account" as const,
+      login: null,
+      expiresAt: null,
+      repos: [],
+      publicRepos: [],
+      labels: [],
+      enabled: false,
+      tokenSet: false,
+    };
+    const calls = fakeServer({ status: 200, body: { blob: forgotten } });
+    const { act, state } = harness("", undefined, recorded);
+    act.forgetAccount();
+    expect(calls).toEqual([]);
+    expect(state.confirms).toHaveLength(1);
+    const [request] = state.confirms;
+    expect(request!.destructive).toBe(true);
+    expect(request!.confirmLabel).toBe("Forget");
+    expect(String(request!.description)).toContain(
+      "Earlier posts by @acme-blob stop counting as Blob\u2019s",
+    );
+    request!.onConfirm();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+    expect(calls).toEqual([
+      { method: "DELETE", url: "/api/blob/github", body: undefined },
+    ]);
+    expect(state.saved).toEqual(forgotten);
+  });
+
+  test("a refused Forget says why", async () => {
+    fakeServer({
+      status: 409,
+      body: { error: "Remove the token before forgetting Blob's account" },
+    });
+    const { act, state } = harness("", undefined, {
+      ...settings,
+      tokenSet: false,
+    });
+    act.forgetAccount();
+    state.confirms[0]!.onConfirm();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+    expect(state.error).toBe(
+      "Remove the token before forgetting Blob's account.",
+    );
+    expect(state.saved).toBeNull();
+  });
+
   test("each toggle sends its PUT body", async () => {
     const calls = fakeServer({ status: 200, body: { blob: settings } });
     const { act } = harness();

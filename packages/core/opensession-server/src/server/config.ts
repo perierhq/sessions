@@ -1309,6 +1309,17 @@ export function blobGithubLogin(): string {
     : "";
 }
 
+/** The login Blob posts as on GitHub (`integrations.github.blob.login`),
+ *  whichever account it is: Blob's machine user, or the owner's own account
+ *  while its token is saved. "" when none is recorded. Only a post by this
+ *  login, or by one of our bot logins, counts as Blob's by its marker. */
+export function blobGithubPostingLogin(): string {
+  const login = blobGithubRecord()?.login;
+  return typeof login === "string" && GITHUB_LOGIN.test(login.trim())
+    ? login.trim()
+    : "";
+}
+
 /** Is `login` Blob's GitHub machine user? Case-insensitive. */
 export function isBlobGithubLogin(login: string | null | undefined): boolean {
   const blob = blobGithubLogin();

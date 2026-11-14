@@ -729,10 +729,16 @@ token (`github-blob-boundary.test.ts`). Paths are under
   person's, so it is never added to `githubBotLogins` nor reserved
   (`config.ts` `blobGithubLogin` is empty): the owner's own comments still
   count as a person's. Blob's posts are recognised by `<!-- os:blob -->`
-  alone (`agents/github/constants.ts` `isBlobPost`): mention routing, the
-  review loop's human threads and reply signals, and the Pull requests
-  page's machine comments check the marker, so Blob's post never reads as
-  the owner's event and the owner's post without it stays one. Every post
+  together with their author (`agents/github/constants.ts` `isBlobPost`,
+  `frontend/lib/pr-comments.ts`): the review loop's human threads, open
+  anchors and reply signals, and the Pull requests page's machine comments
+  count a post as Blob's only when it carries the marker and its author is
+  the recorded login (`integrations.github.blob.login`) or one of our bot
+  logins. Anyone can type the marker, so an outside contributor's comment
+  with it stays a person's and never suppresses a review finding. Mention
+  routing skips any body with the marker, which only keeps that comment
+  from starting a reply. Blob's post never reads as the owner's event and
+  the owner's post without the marker stays one. Every post
   ends `Written by Blob, <owner>'s assistant` and the marker. Each write
   is refused when the roster's owner login no longer matches the token's,
   and for anyone but the instance owner (a teammate's supervisor, a lead

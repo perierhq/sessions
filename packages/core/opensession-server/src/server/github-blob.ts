@@ -39,9 +39,9 @@
  * can take the name (session-actors.ts `isReservedTeamName`). For the same
  * reason a token for a different account than the recorded login is
  * refused, and so is a switch to the owner's account: switching means
- * removing Blob's account (`integrations.github.blob`) first. With the
- * owner's account nothing hangs on the login, so removing the token drops
- * it too.
+ * forgetting Blob's account first (`forgetBlobGithubAccount`, which clears
+ * `integrations.github.blob` once no token is stored). With the owner's
+ * account nothing hangs on the login, so removing the token drops it too.
  *
  * Never resolve the token anywhere else. Any other module that reads
  * `integrations.github.blob` and calls `resolveWorkspaceSecret*` fails
@@ -520,7 +520,7 @@ export async function setBlobGithubSettings(
           return {
             ok: false,
             status: 400,
-            error: `Blob's own account @${record.login} is still recorded, so its earlier posts count as Blob's. Remove Blob's account (integrations.github.blob) first.`,
+            error: `Blob's own account @${record.login} is still recorded, so its earlier posts count as Blob's. Forget Blob's account first.`,
           } as const;
         if (!verified)
           return {
@@ -664,6 +664,48 @@ export async function deleteBlobGithubToken(
   if (retired) await deleteWorkspaceSecretAsync(retired).catch(() => {});
   auditAsync({ kind: "blob_github_update", actor, tokenRemoved: true });
   return settings;
+}
+
+/** Forget Blob's account: clear `integrations.github.blob` (login, repos,
+ *  labels, all of it), so its earlier posts stop counting as Blob's and the
+ *  owner can choose whose account Blob posts as again. Refused while a token
+ *  is stored: remove the token first. */
+export async function forgetBlobGithubAccount(
+  actor: string,
+): Promise<
+  | { ok: true; settings: BlobGithubView }
+  | { ok: false; status: number; error: string }
+> {
+  const outcome = await withConfigMutationLock(async () => {
+    const config = await rawConfigAsync();
+    const github = githubSection(config);
+    const record = parseRecord(github.blob);
+    if ((await view(record)).tokenSet)
+      return {
+        ok: false,
+        status: 409,
+        error: "Remove the token before forgetting Blob's account",
+      } as const;
+    delete github.blob;
+    await persistRawConfigAsync(config);
+    return {
+      ok: true,
+      settings: await view(parseRecord(undefined)),
+      forgotten: record.login,
+      retired: record.tokenRef,
+    } as const;
+  });
+  if (!outcome.ok) return outcome;
+  // A ref whose secret is already gone; drop the record of it too.
+  if (outcome.retired)
+    await deleteWorkspaceSecretAsync(outcome.retired).catch(() => {});
+  auditAsync({
+    kind: "blob_github_update",
+    actor,
+    accountForgotten: true,
+    ...(outcome.forgotten ? { login: outcome.forgotten } : {}),
+  });
+  return { ok: true, settings: outcome.settings };
 }
 
 /** The record as stored: no undefined fields, and `as` only when it is

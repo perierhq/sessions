@@ -186,7 +186,7 @@ export async function harvestReplySignals(
           !isGithubBotLogin(c.login) &&
           // Blob posting from the owner's account: a person's login, but
           // our words.
-          !isBlobPost(c.body) &&
+          !isBlobPost(c) &&
           !c.body.includes(FIXED_REPLY_MARKER) &&
           c.body.trim(),
       )
