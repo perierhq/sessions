@@ -47,6 +47,15 @@
  * `integrations.github.blob` and calls `resolveWorkspaceSecret*` fails
  * github-blob-boundary.test.ts; add what it needs here instead.
  *
+ * Without a token stored (no account set up, or its token removed), a
+ * project lead's step the owner approved (leads/apply.ts) posts through the
+ * installed GitHub App instead, the bot the review agent posts as: the
+ * third poster mode, `app` (see "Posting as Blob" below). Its installation
+ * token is minted here too, in `defaultDeps.appToken`, and nowhere else for
+ * Blob's writes (github-blob-boundary.test.ts). Nothing else posts through
+ * it: the supervisor's and the lead's own blob_ tools stay unavailable
+ * until Blob has an account.
+ *
  * Every config write runs under the shared config mutation lock with async
  * I/O. Nothing runs at import.
  */
@@ -54,9 +63,11 @@ import { auditAsync } from "./audit";
 import { privateTermIn } from "./command-policy";
 import {
   configuredIdentity,
+  configuredIntegration,
   configuredRepos,
   configuredServer,
   getConfigAsync,
+  githubAppBotLogin,
   type BlobGithubAs,
 } from "./config";
 import {
@@ -158,6 +169,9 @@ interface Deps {
   /** The instance owner on the roster: their name and GitHub login
    *  (incidents/owner.ts), or null without one. */
   instanceOwner(): Promise<{ name: string; github?: string } | null>;
+  /** The GitHub App's installation token for `ghRepo`'s owner, with the
+   *  App's write set, or null when the App can't mint one. Never logged. */
+  appToken(ghRepo: string): Promise<string | null>;
 }
 
 const defaultDeps: Deps = {
@@ -185,6 +199,14 @@ const defaultDeps: Deps = {
     (await import("./run-instructions")).sessionLink(sessionId),
   instanceOwner: async () =>
     (await import("./incidents/owner")).instanceOwnerMember(),
+  appToken: async (ghRepo) => {
+    const { githubInstallationCredential } = await import("./github-app");
+    const credential = await githubInstallationCredential({
+      write: true,
+      repo: ghRepo,
+    });
+    return credential?.token ?? null;
+  },
 };
 
 let deps: Deps = defaultDeps;
@@ -745,6 +767,21 @@ function withoutUndefined(record: BlobGithubRecord): Record<string, unknown> {
 // A 401 turns posting off and raises one needs-you item to the instance
 // owner. `checkBlobGithubExpiry` (run by the supervisor inbox sweep) raises
 // one when the token expires within BLOB_EXPIRY_WARN_DAYS.
+//
+// The `app` mode: while no token is stored and posting is off, a lead's
+// recorded step that a person approved (`lead.approvedBy`, never a run by
+// the lead's rules) posts through the GitHub App's installation token for
+// the repository instead. Every guard above holds except the account's
+// own: the repository must be registered and the lead's project's (the
+// owner's approval of a project with a lead they turned on is the gate,
+// so no `repos` or `publicRepos` list applies), a private-only owner stays
+// on private repositories, a repository not known to be private gets the
+// public text guard, and labels are those the repository already has (the
+// owner's allowlist when one is saved, since without an account nobody
+// configures one). The footer is the same, `Blob, for @owner` and the
+// marker; the App's bot login is one of githubBotLogins, so isBlobPost
+// counts the post as ours. Writes count against the same limits and are
+// audited with `via: "app"`. A 401 there changes no settings.
 
 const API = "https://api.github.com";
 const HOUR_MS = 60 * 60_000;
@@ -782,6 +819,10 @@ export interface BlobPoster {
      *  post on a public repository listed in `publicRepos`, for an
      *  owner who may post there (`privateOnly` unset). */
     recordedStep?: boolean;
+    /** The GitHub login of the person who approved the recorded step;
+     *  absent for a run by the lead's rules. Only an approved step posts
+     *  through the GitHub App when Blob has no account (the `app` mode). */
+    approvedBy?: string;
   };
   /** Private repositories only: a teammate's supervisor, since nothing on
    *  the instance says which public repositories they may speak on
@@ -998,6 +1039,10 @@ export function blobPublicTextRefusal(
   return null;
 }
 
+/** How a write posts: Blob's account (its own or the owner's), or the
+ *  GitHub App for an approved lead step while Blob has no token. */
+export type BlobPosterMode = "account" | "app";
+
 interface Prepared {
   token: string;
   ghRepo: string;
@@ -1006,6 +1051,7 @@ interface Prepared {
   footer: string;
   isPrivate: boolean;
   record: BlobGithubRecord;
+  via: BlobPosterMode;
 }
 
 type Guard = { ok: true; value: Prepared } | { ok: false; message: string };
@@ -1026,14 +1072,30 @@ function registeredRepo(
   return undefined;
 }
 
-/** Every check before a write, in the order of the section's header. */
-async function prepare(
+/** Whether `record` leaves Blob without an account to post as: no token
+ *  stored and posting off. Then only approved lead steps post, through the
+ *  GitHub App. */
+const withoutAccount = (record: BlobGithubRecord) =>
+  !record.tokenRef && !record.enabled;
+
+/** The login an approved lead step posts as on GitHub while Blob has no
+ *  account (the App's bot, `<slug>[bot]`), or "" when Blob's account
+ *  posts them or there is no App. For the owner's copy of a step
+ *  (leads/report.ts stepCopy); reads the cached config only. */
+export function blobStepsAppLogin(): string {
+  const record = parseRecord(configuredIntegration("github").blob);
+  return withoutAccount(record) ? githubAppBotLogin() : "";
+}
+
+/** The account mode's own checks: posting on, a live token, and with the
+ *  owner's account, the owner alone. The token and the footer's name. */
+async function accountChecks(
   poster: BlobPoster,
-  repoName: string,
-  texts: string[],
-): Promise<Guard> {
-  const config = await getConfigAsync();
-  const record = parseRecord(obj(config.integrations?.github)?.blob);
+  record: BlobGithubRecord,
+): Promise<
+  | { ok: true; token: string; ownerName: string }
+  | { ok: false; message: string }
+> {
   if (!record.enabled)
     return refuse(
       "Blob's GitHub account is off. The owner turns it on in Settings, Members, Blob.",
@@ -1069,13 +1131,44 @@ async function prepare(
       );
     ownerName = owner!.name.trim().split(/\s+/)[0] ?? "";
   }
+  return { ok: true, token, ownerName };
+}
+
+/** Every check before a write, in the order of the section's header. */
+async function prepare(
+  poster: BlobPoster,
+  repoName: string,
+  texts: string[],
+): Promise<Guard> {
+  const config = await getConfigAsync();
+  const record = parseRecord(obj(config.integrations?.github)?.blob);
+  const via: BlobPosterMode = withoutAccount(record) ? "app" : "account";
+  let token: string | undefined;
+  let ownerName = "";
+  if (via === "account") {
+    const account = await accountChecks(poster, record);
+    if (!account.ok) return account;
+    token = account.token;
+    ownerName = account.ownerName;
+  } else if (!poster.lead?.recordedStep) {
+    // Anything but a recorded step needs Blob's account: refused as before.
+    const account = await accountChecks(poster, record);
+    return account.ok ? refuse("Blob has no GitHub account.") : account;
+  } else if (!poster.lead.approvedBy) {
+    return refuse(
+      "Blob has no GitHub account, so only steps the owner approved post on GitHub, through the GitHub App. This one ran by the lead's rules.",
+    );
+  }
   const repo = registeredRepo(repoName);
   if (
     !repo ||
-    !record.repos.some((r) => r.toLowerCase() === repo.ghRepo.toLowerCase())
+    (via === "account" &&
+      !record.repos.some((r) => r.toLowerCase() === repo.ghRepo.toLowerCase()))
   )
     return refuse(
-      `${repoName} is not one of Blob's repositories. The owner picks them in Settings, Members, Blob.`,
+      via === "app"
+        ? `${repoName} is not a registered GitHub repository.`
+        : `${repoName} is not one of Blob's repositories. The owner picks them in Settings, Members, Blob.`,
     );
   if (
     poster.lead &&
@@ -1098,9 +1191,13 @@ async function prepare(
       return refuse(
         `${repo.ghRepo} is public or its visibility is unknown. Blob posts on public repositories only for the instance owner.`,
       );
-    const listed = record.publicRepos.some(
-      (r) => r.toLowerCase() === repo.ghRepo.toLowerCase(),
-    );
+    // Through the App the owner's approval of this project's step is the
+    // gate; Blob's own account keeps to the repositories listed for it.
+    const listed =
+      via === "app" ||
+      record.publicRepos.some(
+        (r) => r.toLowerCase() === repo.ghRepo.toLowerCase(),
+      );
     if (!listed)
       return refuse(
         looked === null
@@ -1121,23 +1218,31 @@ async function prepare(
       (isPrivate ? null : blobPublicTextRefusal(text, terms));
     if (refusal) return refuse(refusal);
   }
+  if (via === "app") {
+    token = (await deps.appToken(repo.ghRepo).catch(() => null)) ?? undefined;
+    if (!token)
+      return refuse(
+        `The GitHub App couldn't get a token for ${repo.ghRepo}. Check the App is installed there.`,
+      );
+  }
   const footer = blobFooter(
     ownerLogin,
     isPrivate && poster.sessionId
       ? await deps.sessionLink(poster.sessionId)
       : undefined,
-    record.as,
+    via === "app" ? "own-account" : record.as,
     ownerName,
   );
   return {
     ok: true,
     value: {
-      token,
+      token: token!,
       ghRepo: repo.ghRepo,
       ownerLogin,
       footer,
       isPrivate,
       record,
+      via,
     },
   };
 }
@@ -1331,9 +1436,14 @@ async function write(
       status: result.status,
       user: poster.owner,
       actor: BLOB_ACTOR,
+      ...(p.via === "app" ? { via: "app" } : {}),
     });
   if (result.refused !== undefined) return refuse(result.refused);
   if (result.status === 401) {
+    // The App's token is the review agent's too: nothing of Blob's to turn
+    // off.
+    if (p.via === "app")
+      return refuse("GitHub refused the GitHub App's token.");
     await onUnauthorized(p.record);
     return refuse(
       "GitHub refused Blob's token, so posting is off now. The owner has been asked for a new one.",
@@ -1345,7 +1455,7 @@ async function write(
     );
   if (result.status === 403 || result.status === 404)
     return refuse(
-      `GitHub answered ${result.status}: Blob's account can't do that on ${thread}, or it doesn't exist.`,
+      `GitHub answered ${result.status}: ${p.via === "app" ? "the GitHub App" : "Blob's account"} can't do that on ${thread}, or it doesn't exist.`,
     );
   if (result.status === 422)
     return refuse(`GitHub answered 422: it refused the request as written.`);
@@ -1427,7 +1537,9 @@ export function blobReview(
 
 /** Add and remove labels as Blob. Only labels on the owner's allowlist
  *  (`labels`, empty turns labelling off) that the repository already has;
- *  never a trigger label, even if listed. */
+ *  never a trigger label, even if listed. Through the GitHub App (no
+ *  account, so no allowlist is configured) any label the repository
+ *  already has, unless an allowlist is still saved. */
 export function blobLabel(
   poster: BlobPoster,
   input: { repo: string; number: number; add: string[]; remove: string[] },
@@ -1453,6 +1565,7 @@ export function blobLabel(
     number: input.number,
     texts: [],
     check: (p) => {
+      if (p.via === "app" && !p.record.labels.length) return null;
       if (!p.record.labels.length)
         return "Labelling is off: the instance owner hasn't listed any labels for Blob (integrations.github.blob.labels).";
       const allowed = new Set(p.record.labels.map((l) => l.toLowerCase()));

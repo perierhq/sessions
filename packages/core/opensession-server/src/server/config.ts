@@ -1250,7 +1250,9 @@ export function privateTerms(): string[] {
   return getConfig().policy?.privateTerms || [];
 }
 
-export function githubBotLogins(): string[] {
+/** The login the GitHub App authors comments as, `<app-slug>[bot]`, or ""
+ *  without an App slug. */
+export function githubAppBotLogin(): string {
   // Resolve the App slug env-over-config, mirroring githubAppIdentity() — an App
   // set entirely through OPENSESSION_GITHUB_APP_SLUG (no appSlug in the file)
   // must still contribute its bot identity.
@@ -1258,6 +1260,11 @@ export function githubBotLogins(): string[] {
   const appSlug =
     process.env.OPENSESSION_GITHUB_APP_SLUG?.trim() ||
     (typeof configSlug === "string" ? configSlug.trim() : "");
+  return appSlug ? `${appSlug}[bot]` : "";
+}
+
+export function githubBotLogins(): string[] {
+  const appLogin = githubAppBotLogin();
   const blobLogin = blobGithubLogin();
   return [
     ...new Set(
@@ -1266,7 +1273,7 @@ export function githubBotLogins(): string[] {
         // The App authors comments as "<app-slug>[bot]". Recognise it as ours
         // so the agent never treats its own App-posted comments as human
         // replies to answer.
-        ...(appSlug ? [`${appSlug}[bot]`] : []),
+        ...(appLogin ? [appLogin] : []),
         // Blob's GitHub machine user (github-blob.ts) posts as itself. Always
         // last and never the primary: see reviewAgentBotLogin().
         ...(blobLogin ? [blobLogin] : []),

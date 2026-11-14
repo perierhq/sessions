@@ -592,7 +592,10 @@ steps. Paths below are under `packages/core/opensession-server/src/`.
     are those the server pinned when the lead proposed it. A close posts
     one fixed note in the same step, `Closed by Blob for @owner:` and the
     reason line the owner approved, after those checks; a separate
-    free-text comment doesn't fit `pr-close`.
+    free-text comment doesn't fit `pr-close`. While Blob has no token
+    stored, these steps post through the GitHub App instead, and only
+    when a person approved them (see "Approved lead steps through the
+    GitHub App" below).
   - **Approving a workflow run** (`approve-run`, category
     `contributor-ci`) runs an outside contributor's code in the project's
     CI, with whatever its workflows can reach (caches, self-hosted
@@ -775,6 +778,34 @@ token (`github-blob-boundary.test.ts`). Paths are under
   is refused when the roster's owner login no longer matches the token's,
   and for anyone but the instance owner (a teammate's supervisor, a lead
   of another owner). Every other guard above applies unchanged.
+- **Approved lead steps through the GitHub App.** While no token is
+  stored for Blob (no `integrations.github.blob`, or its token removed,
+  with posting off), a lead's `blob-comment`, `blob-label`, `close-issue`
+  or `close-pr` step that a person approved posts through the installed
+  GitHub App, the bot the review agent posts as (the `app` poster mode in
+  `server/github-blob.ts`). The installation token for the repository's
+  owner is minted in one place, `github-blob.ts` `defaultDeps.appToken`,
+  through `githubInstallationCredential` with the App's write set, and is
+  never returned, audited or logged (`github-blob-boundary.test.ts`). A
+  stored token with posting off never falls back to the App. A run by the
+  lead's rules, the supervisor's `blob_*` tools and a lead's own `blob_*`
+  tools are refused: they need Blob's account. Every guard above holds
+  except the account's own: `blobRequestRefusal` (the close only for an
+  approved close), the trigger, slash-command and mention guards, the
+  private-text guard on any repository not known to be private, the
+  write limits, comment-only reviews, the footer `Blob, for @<owner>` and
+  the marker. The repository must be registered and the lead's project's;
+  it may be public, since the owner approved this step for a project whose
+  lead they turned on (`leads/apply.ts` re-checks that before each step),
+  so no `repos` or `publicRepos` list applies. A lead owner who may post
+  only privately (`blobSupervisorPoster`) still does. Labels: with no
+  account nobody configures an allowlist, so any label the repository
+  already has may be added or removed (never a trigger label); a saved
+  allowlist still applies. The App's bot login is one of `githubBotLogins`,
+  so `isBlobPost` counts these posts as Blob's. Each write is audited as
+  `blob_github_write` with `via: "app"`. A 401 changes no settings. The
+  owner's copy of each step says `posts as <app-slug>[bot] for you`
+  (`leads/report.ts` `stepCopy`, `blobStepsAppLogin`).
 
 ## Blob's board
 

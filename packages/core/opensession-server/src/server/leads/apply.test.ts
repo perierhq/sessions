@@ -1427,7 +1427,14 @@ describe("maintenance steps", () => {
       kind: "comment",
       poster: {
         owner: "Ada",
-        lead: { project: "acme", repos: ["acme/web"], recordedStep: true },
+        lead: {
+          project: "acme",
+          repos: ["acme/web"],
+          recordedStep: true,
+          // The approver: only an approved step may post through the
+          // GitHub App while Blob has no account (github-blob.ts).
+          approvedBy: "ada-example",
+        },
       },
       input: { repo: "acme/web", number: 31, body: comment.body },
     });
@@ -1441,6 +1448,17 @@ describe("maintenance steps", () => {
     expect(String(posts.at(-1)!.body)).toContain(
       "1. Comment as Blob on #31 in acme/web:",
     );
+  });
+
+  test("a run by the lead's rules names no approver", async () => {
+    withLead({}, { "issue-triage": "alone" });
+    const proposal = await propose("issue-triage", [comment]);
+    const result = await leadApply("acme", proposal.id);
+    expect(result.ok).toBe(true);
+    expect(blobCalls[0]!.poster).toEqual({
+      owner: "Ada",
+      lead: { project: "acme", repos: ["acme/web"], recordedStep: true },
+    });
   });
 
   test("an owner who may only post privately stays private", async () => {

@@ -152,4 +152,58 @@ describe("Blob's GitHub token boundary", () => {
     const text = readFileSync(resolve(sourceRoot, OWNER), "utf8");
     expect(text).not.toMatch(/Bun\.spawn|child_process|process\.env/);
   });
+
+  // Approved lead steps post through the GitHub App while Blob has no
+  // account (github-blob.ts, the `app` mode). That installation token is
+  // resolved in one place, github-blob.ts `defaultDeps.appToken`, through
+  // the existing helper; no other module hands Blob's write path a token.
+  test("github-blob.ts mints the App's token in one place, through githubInstallationCredential", () => {
+    const text = readFileSync(resolve(sourceRoot, OWNER), "utf8");
+    const source = ts.createSourceFile(
+      OWNER,
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const appImports: string[] = [];
+    const mints: string[] = [];
+    visit(source, (node) => {
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        ts.isStringLiteralLike(node.arguments[0]!) &&
+        /github-app|github-rest/.test(node.arguments[0].text)
+      )
+        appImports.push(node.arguments[0].text);
+      if (ts.isImportDeclaration(node)) {
+        const from = (node.moduleSpecifier as ts.StringLiteral).text;
+        if (/github-app|github-rest/.test(from)) appImports.push(from);
+      }
+      if (
+        ts.isIdentifier(node) &&
+        /^github(Installation|AppInstallation|AppRepository|Token$)/.test(
+          node.text,
+        )
+      )
+        mints.push(node.text);
+    });
+    expect(appImports).toEqual(["./github-app"]);
+    // The destructured name and its one call.
+    expect(mints).toEqual([
+      "githubInstallationCredential",
+      "githubInstallationCredential",
+    ]);
+  });
+
+  test("only github-blob.ts supplies the App token to Blob's writes", () => {
+    const offenders = sourceFiles()
+      .filter((file) => file !== OWNER)
+      .filter((file) => {
+        const text = readFileSync(resolve(sourceRoot, file), "utf8");
+        // Another module's own `appToken` (gh-attachments.ts) is fine; one
+        // that reaches github-blob.ts may not set it.
+        return /github-blob["']/.test(text) && /\bappToken\b/.test(text);
+      });
+    expect(offenders).toEqual([]);
+  });
 });
