@@ -811,7 +811,8 @@ export async function blobSupervisorPoster(
 }
 
 export type BlobWriteResult =
-  { ok: true; message: string; url?: string } | { ok: false; message: string };
+  | { ok: true; message: string; url?: string }
+  | { ok: false; message: string };
 
 export interface BlobReviewComment {
   path: string;
