@@ -987,7 +987,18 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   leaders, outlined frames) are sketchy, in ink only, seeded by element
   id so a redraw never wobbles; elements with a `ref` are clean cards with
   a dot in their status colour and open on a tap (a PR or check opens its
-  link; an object without one shows its live fields in a sheet). Text is
+  link; an object without one shows its live fields in a sheet). An
+  `item:si-<id>` ref is one of the owner's inbox items (BlobCore
+  `BoardItemRef`, the resolved `fields.itemId` first, else the locator):
+  a tap opens the usual decision view for it, read fresh from
+  `GET /api/supervisor/items` and answered through the item's answer call
+  with its revision, as a `blob://item/<id>` link does; the page it covered
+  (the brief) comes back once it is done, and an item no longer open shows
+  its live fields. VoiceOver reads it as "Decision: <title>". A brief the
+  supervisor drew (the brief response's `boardRevision`, or a board that
+  changed today: `Page.drawn(on:)`) shows the board instead of its decision
+  cards, with what Blob said and the handled line over it; Blob still says
+  it, and the cards come back when the board is empty. Text is
   SF Pro in its type-scale role; notes are Kalam Regular (`Board/Kalam`,
   SIL OFL 1.1 with its `OFL.txt`), registered at run time, 16 pt scaling
   with Dynamic Type up to 22 pt; board text scales by the same factor at
@@ -1027,7 +1038,8 @@ grouping (`BlobExchange`), the server's history pages
 board: tolerant decoding, layout (notes beside their anchors, arrows
 routed between bound edges, text off the fold), the camera (the closed
 and open Duo, the Mac window, pan, pinch, Fit and More), seeded sketch
-paths, ref hit testing, the reading order and the ` ```canvas ` fence;
+paths, ref hit testing, the reading order, inbox item refs and when the
+brief shows on the board, and the ` ```canvas ` fence;
 the board tests read the bundled demo boards in `Blob/Board/`. The Blob and BlobMac targets
 depend on it; `BlobBrief` and `BlobGlossary` in `Blob/` are thin wrappers
 that read, answer, time and pass the system spell checker. Run the tests on

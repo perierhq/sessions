@@ -26,7 +26,9 @@ public enum BoardHitTest {
 /// (before the fold's far edge), then the right; top to bottom, then left
 /// to right; a frame's title, then what sits inside it; a note right after
 /// its anchor ("Note on ci-success: GitHub billing, only you"); an arrow
-/// after the element it starts from.
+/// after the element it starts from. One difference: an inbox item
+/// (`item:` ref) reads "Decision: <title>", since activating it opens the
+/// decision.
 public enum BoardReading {
     public struct Line: Sendable, Equatable {
         /// The element this line reads.
@@ -149,6 +151,8 @@ public enum BoardReading {
 
     /// An element's own line, or nil when it carries no words.
     static func ownLine(_ el: BoardElement, snapshot: BoardSnapshot, byId: [String: BoardElement], layout: BoardLayout) -> String? {
+        // An inbox item reads as the decision it opens (`BoardItemRef`).
+        if snapshot.itemId(for: el.ref) != nil { return "Decision: \(label(el, snapshot))" }
         let ref = snapshot.ref(el.ref)
         let isText: Bool = { if case .text = el.content { return true }; return false }()
         if isText || el.ref != nil {

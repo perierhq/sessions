@@ -233,6 +233,30 @@ final class BlobBrief {
         update { $0.focus(item) }
     }
 
+    /// Opens the decision view for an inbox item tapped on the board
+    /// (`item:` ref): read fresh from the items API, so the answer names the
+    /// revision on screen, and shown even when it is one of the brief's
+    /// decisions, whose cards the board stands in for. The brief comes back
+    /// once it is done. False when it isn't open any more (or can't be
+    /// read), for the caller to show what the board knows instead.
+    func open(itemId id: String) async -> Bool {
+        #if DEBUG
+        if Self.demo != nil {
+            guard let item = (Self.demoItems + Self.demoNew).first(where: { $0.id == id }) else { return false }
+            update { $0.focus(item) }
+            return true
+        }
+        #endif
+        guard ServerConfig.shared.isConfigured,
+              let fetched = try? await OS1API.supervisorItems(limit: OS1API.supervisorItemsMax),
+              let item = fetched.first(where: { $0.id == id && $0.isOpen })
+        else { return false }
+        // A brief decision keeps the option the brief recommended first.
+        let recommended = state.page?.decisions.first { $0.id == id }?.options.first
+        update { $0.focus(BlobBriefState.recommending(recommended, in: item)) }
+        return true
+    }
+
     func isRevised(_ item: Item) -> Bool { state.isRevised(item) }
 
     /// Sends the answer with the revision of the item as it is shown. An
