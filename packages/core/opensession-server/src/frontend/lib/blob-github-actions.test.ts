@@ -49,7 +49,11 @@ interface HarnessState {
   confirms: ConfirmRequest[];
 }
 
-function harness(token = "") {
+function harness(
+  token = "",
+  as?: "own-account" | "owner",
+  current: BlobGithub = settings,
+) {
   const state: HarnessState = {
     saved: null,
     token,
@@ -58,8 +62,9 @@ function harness(token = "") {
     confirms: [],
   };
   const act = blobGithubActions({
-    settings,
+    settings: current,
     token,
+    as,
     setSaved: (next) => (state.saved = next),
     setToken: (value) => (state.token = value),
     setTokenError: (message) => (state.tokenError = message),
@@ -71,6 +76,29 @@ function harness(token = "") {
 }
 
 describe("blobGithubActions", () => {
+  test("the Post as choice goes up with the token when it changes", async () => {
+    const notSetUp: BlobGithub = {
+      ...settings,
+      login: null,
+      expiresAt: null,
+      tokenSet: false,
+      enabled: false,
+    };
+    const calls = fakeServer({ status: 200, body: { blob: settings } });
+    await harness("github_pat_abc", "owner", notSetUp).act.saveToken();
+    await harness("github_pat_abc", "own-account", notSetUp).act.saveToken();
+    await harness("github_pat_abc", "owner", {
+      ...notSetUp,
+      as: "owner",
+    }).act.saveToken();
+    expect(calls.map((c) => c.body)).toEqual([
+      { token: "github_pat_abc", as: "owner" },
+      // Blob's own account is what an older server already means.
+      { token: "github_pat_abc" },
+      { token: "github_pat_abc" },
+    ]);
+  });
+
   test("a saved token empties the field; a refused one stays", async () => {
     const calls = fakeServer({ status: 200, body: { blob: settings } });
     const ok = harness("  github_pat_abc  ");
@@ -119,6 +147,57 @@ describe("blobGithubActions", () => {
       { method: "DELETE", url: "/api/blob/github/token", body: undefined },
     ]);
     expect(state.saved).toEqual(removed);
+  });
+
+  test("Forget asks first, says what stops counting, then sends the DELETE", async () => {
+    const recorded = { ...settings, tokenSet: false, enabled: false };
+    const forgotten = {
+      as: "own-account" as const,
+      login: null,
+      expiresAt: null,
+      repos: [],
+      publicRepos: [],
+      labels: [],
+      enabled: false,
+      tokenSet: false,
+    };
+    const calls = fakeServer({ status: 200, body: { blob: forgotten } });
+    const { act, state } = harness("", undefined, recorded);
+    act.forgetAccount();
+    expect(calls).toEqual([]);
+    expect(state.confirms).toHaveLength(1);
+    const [request] = state.confirms;
+    expect(request!.destructive).toBe(true);
+    expect(request!.confirmLabel).toBe("Forget");
+    expect(String(request!.description)).toContain(
+      "Earlier posts by @acme-blob stop counting as Blob\u2019s",
+    );
+    request!.onConfirm();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+    expect(calls).toEqual([
+      { method: "DELETE", url: "/api/blob/github", body: undefined },
+    ]);
+    expect(state.saved).toEqual(forgotten);
+  });
+
+  test("a refused Forget says why", async () => {
+    fakeServer({
+      status: 409,
+      body: { error: "Remove the token before forgetting Blob's account" },
+    });
+    const { act, state } = harness("", undefined, {
+      ...settings,
+      tokenSet: false,
+    });
+    act.forgetAccount();
+    state.confirms[0]!.onConfirm();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+    expect(state.error).toBe(
+      "Remove the token before forgetting Blob's account.",
+    );
+    expect(state.saved).toBeNull();
   });
 
   test("each toggle sends its PUT body", async () => {

@@ -1,11 +1,20 @@
 import { useId, useState } from "react";
 import {
+  BLOB_GITHUB_AS_CHOICES,
   BLOB_GITHUB_DOCS_URL,
+  BLOB_GITHUB_OWNER_DOCS_URL,
+  BLOB_GITHUB_OWNER_PURPOSE,
+  BLOB_GITHUB_OWNER_STEPS,
+  BLOB_GITHUB_OWNER_TOKEN_HINT,
   BLOB_GITHUB_PURPOSE,
   BLOB_GITHUB_STEPS,
+  blobGithubAs,
+  canChooseBlobGithubAs,
+  canForgetBlobGithubAccount,
   parseLabels,
   tokenExpiry,
   type BlobGithub,
+  type BlobGithubAs,
   type BlobGithubLoad,
 } from "../../lib/blob-github";
 import { blobGithubActions } from "../../lib/blob-github-actions";
@@ -15,11 +24,13 @@ import { Checkbox } from "../../ui/checkbox";
 import { cn } from "../../ui/cn";
 import { useConfirm } from "../../ui/confirm";
 import { Input } from "../../ui/input";
+import { Radio, RadioGroup } from "../../ui/radio";
 import { Switch } from "../../ui/switch";
 
-// Blob's card, GitHub account: the owner sets up the machine user Blob
-// writes on GitHub as. The server decides who sees it (401 and 403 hide the
-// section); the token goes up once and is never shown again.
+// Blob's card, GitHub account: the owner sets up the account Blob writes on
+// GitHub as, a machine user of its own or the owner's own account signed as
+// Blob. The server decides who sees it (401 and 403 hide the section); the
+// token goes up once and is never shown again.
 
 /** The section, with its own state and requests. `load` null is still
  *  loading, and shows nothing; `repos` are the registered GitHub
@@ -35,6 +46,8 @@ export function BlobGithubSection({
 }) {
   const [saved, setSaved] = useState<BlobGithub | null>(null);
   const [token, setToken] = useState("");
+  // The "Post as" choice before a token is saved; null follows the server.
+  const [chosenAs, setChosenAs] = useState<BlobGithubAs | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,9 +66,13 @@ export function BlobGithubSection({
     );
 
   const settings = saved ?? load.settings;
+  const as = canChooseBlobGithubAs(settings)
+    ? (chosenAs ?? blobGithubAs(settings))
+    : blobGithubAs(settings);
   const act = blobGithubActions({
     settings,
     token,
+    as,
     setSaved,
     setToken,
     setTokenError,
@@ -70,6 +87,8 @@ export function BlobGithubSection({
         settings={settings}
         repos={repos}
         now={now}
+        as={as}
+        onAsChange={setChosenAs}
         token={token}
         tokenError={tokenError}
         error={error}
@@ -84,6 +103,7 @@ export function BlobGithubSection({
         onPublicRepoChange={(name, on) => void act.setPublicRepo(name, on)}
         onLabelsChange={(labels) => void act.setLabels(labels)}
         onRemoveToken={act.removeToken}
+        onForgetAccount={act.forgetAccount}
       />
       {confirmDialog}
     </>
@@ -105,6 +125,8 @@ export function BlobGithubView({
   settings,
   repos,
   now = Date.now(),
+  as = blobGithubAs(settings),
+  onAsChange = () => {},
   token = "",
   tokenError = null,
   error = null,
@@ -116,10 +138,14 @@ export function BlobGithubView({
   onPublicRepoChange = () => {},
   onLabelsChange = () => {},
   onRemoveToken = () => {},
+  onForgetAccount = () => {},
 }: {
   settings: BlobGithub;
   repos: string[];
   now?: number;
+  /** Whose account the token field is for. */
+  as?: BlobGithubAs;
+  onAsChange?: (as: BlobGithubAs) => void;
   token?: string;
   tokenError?: string | null;
   error?: string | null;
@@ -131,12 +157,15 @@ export function BlobGithubView({
   onPublicRepoChange?: (name: string, on: boolean) => void;
   onLabelsChange?: (labels: string[]) => void;
   onRemoveToken?: () => void;
+  onForgetAccount?: () => void;
 }) {
   const errorId = useId();
+  const owner = as === "owner";
   const tokenField = (
     <TokenField
       token={token}
       error={tokenError}
+      hint={owner ? BLOB_GITHUB_OWNER_TOKEN_HINT : null}
       busy={busy}
       onChange={onTokenChange}
       onSave={onSaveToken}
@@ -152,14 +181,21 @@ export function BlobGithubView({
     return (
       <BlobGithubFrame>
         <div className={cn("flex flex-col gap-3 py-2", blobInset)}>
-          <p className="m-0 text-supporting text-dim">{BLOB_GITHUB_PURPOSE}</p>
+          {canChooseBlobGithubAs(settings) && (
+            <PostAsChoice value={as} busy={busy} onChange={onAsChange} />
+          )}
+          <p className="m-0 text-supporting text-dim">
+            {owner ? BLOB_GITHUB_OWNER_PURPOSE : BLOB_GITHUB_PURPOSE}
+          </p>
           <ol className="m-0 flex list-decimal flex-col gap-1 pl-5 text-supporting text-dim marker:text-faint">
-            {BLOB_GITHUB_STEPS.map((step) => (
-              <li key={step}>{step}</li>
-            ))}
+            {(owner ? BLOB_GITHUB_OWNER_STEPS : BLOB_GITHUB_STEPS).map(
+              (step) => (
+                <li key={step}>{step}</li>
+              ),
+            )}
           </ol>
           <a
-            href={BLOB_GITHUB_DOCS_URL}
+            href={owner ? BLOB_GITHUB_OWNER_DOCS_URL : BLOB_GITHUB_DOCS_URL}
             target="_blank"
             rel="noreferrer"
             className="self-start text-supporting text-dim underline decoration-line-strong underline-offset-2 hover:text-fg phone:py-2.5"
@@ -174,6 +210,23 @@ export function BlobGithubView({
           )}
           {tokenField}
           {errorLine}
+          {canForgetBlobGithubAccount(settings) && (
+            <div className="flex flex-col gap-1.5">
+              <p className="m-0 text-supporting text-dim">
+                To post as your own account instead, forget Blob&rsquo;s account
+                first.
+              </p>
+              <Button
+                variant="danger"
+                size="sm"
+                className="self-start phone:min-h-11"
+                disabled={busy}
+                onClick={onForgetAccount}
+              >
+                Forget Blob&rsquo;s account
+              </Button>
+            </div>
+          )}
         </div>
       </BlobGithubFrame>
     );
@@ -197,6 +250,11 @@ export function BlobGithubView({
                 "Token saved"
               )}
             </div>
+            {owner && (
+              <div className="mt-0.5 text-supporting text-dim">
+                Your account. Each post is signed as Blob.
+              </div>
+            )}
             {expiry && (
               <div
                 className={cn(
@@ -281,20 +339,78 @@ function GithubLogin({ login }: { login: string }) {
   );
 }
 
+/** Blob's account or the owner's: each option with the line that says
+ *  what it means. Shown only before a token is saved. */
+function PostAsChoice({
+  value,
+  busy,
+  onChange,
+}: {
+  value: BlobGithubAs;
+  busy: boolean;
+  onChange: (as: BlobGithubAs) => void;
+}) {
+  const titleId = useId();
+  return (
+    <div>
+      <div id={titleId} className="text-supporting font-medium text-fg">
+        Post as
+      </div>
+      <RadioGroup
+        aria-labelledby={titleId}
+        className="mt-1 flex flex-col"
+        value={value}
+        disabled={busy}
+        onValueChange={(next) => {
+          const choice = BLOB_GITHUB_AS_CHOICES.find((c) => c.value === next);
+          if (choice) onChange(choice.value);
+        }}
+      >
+        {BLOB_GITHUB_AS_CHOICES.map((choice) => (
+          <label
+            key={choice.value}
+            className="flex min-h-11 cursor-pointer items-start gap-3 py-1.5"
+          >
+            <Radio
+              value={choice.value}
+              aria-label={choice.label}
+              className="mt-0.5"
+            />
+            <span className="min-w-0">
+              <span className="block text-supporting font-medium text-fg">
+                {choice.label}
+              </span>
+              <span className="block text-supporting text-dim phone:text-meta">
+                {choice.description}
+              </span>
+            </span>
+          </label>
+        ))}
+      </RadioGroup>
+    </div>
+  );
+}
+
 function TokenField({
   token,
   error,
+  hint = null,
   busy,
   onChange,
   onSave,
 }: {
   token: string;
   error: string | null;
+  hint?: string | null;
   busy: boolean;
   onChange: (value: string) => void;
   onSave: () => void;
 }) {
   const errorId = useId();
+  const hintId = useId();
+  const describedBy =
+    [error ? errorId : "", hint ? hintId : ""].filter(Boolean).join(" ") ||
+    undefined;
   return (
     <form
       className="flex items-start gap-2"
@@ -315,13 +431,21 @@ function TokenField({
           autoCorrect="off"
           disabled={busy}
           aria-invalid={error ? true : undefined}
-          aria-describedby={error ? errorId : undefined}
+          aria-describedby={describedBy}
           className={cn(
             "font-mono placeholder:font-sans phone:min-h-11 phone:text-input-phone",
             error && "border-red",
           )}
           onChange={(e) => onChange(e.target.value)}
         />
+        {hint && (
+          <div
+            id={hintId}
+            className="mt-1.5 text-supporting text-dim phone:text-meta"
+          >
+            {hint}
+          </div>
+        )}
         {error && (
           <div
             id={errorId}

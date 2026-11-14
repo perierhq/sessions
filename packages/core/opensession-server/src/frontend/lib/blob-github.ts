@@ -1,5 +1,5 @@
 // Blob's GitHub account in Settings, Members: the owner-only settings behind
-// GET/PUT /api/blob/github and DELETE /api/blob/github/token
+// GET/PUT/DELETE /api/blob/github and DELETE /api/blob/github/token
 // (server/routes/blob-github.ts). The token is write-only: it goes up in a
 // PUT and never comes back, only whether one is set. Pure apart from the
 // fetches, so the section and its tests share one reading.
@@ -9,12 +9,44 @@ import { ApiError, request } from "./api/request";
 import { BASE_PATH } from "./base";
 import type { GetFetch } from "./blob-member";
 
+/** Whose GitHub account Blob posts as: a machine user of its own, or the
+ *  owner's own account with every post signed as Blob. */
+export type BlobGithubAs = "own-account" | "owner";
+
 export const BLOB_GITHUB_PURPOSE =
   "Blob can comment, review and label on GitHub under its own account. It never pushes or merges.";
+
+/** The same, when Blob posts as the owner's account. */
+export const BLOB_GITHUB_OWNER_PURPOSE =
+  "Blob can comment, review and label on GitHub under your account. Each post ends with a line saying Blob wrote it. It never closes, approves, pushes or merges.";
+
+/** The "Post as" choice: its two options and what each means. */
+export const BLOB_GITHUB_AS_CHOICES: ReadonlyArray<{
+  value: BlobGithubAs;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "own-account",
+    label: "Blob\u2019s account",
+    description:
+      "A GitHub account of its own, so its posts show under Blob\u2019s name.",
+  },
+  {
+    value: "owner",
+    label: "My account",
+    description:
+      "Posts show under your name, each signed \u201cWritten by Blob, your assistant\u201d. Your own comments stay yours.",
+  },
+];
 
 /** The setup doc's section, for the full steps. */
 export const BLOB_GITHUB_DOCS_URL =
   "https://github.com/perierhq/sessions/blob/main/docs/setup/github.md#blobs-github-account";
+
+/** The setup doc's section for a token on the owner's own account. */
+export const BLOB_GITHUB_OWNER_DOCS_URL =
+  "https://github.com/perierhq/sessions/blob/main/docs/setup/github.md#posting-as-your-own-account";
 
 /** The setup doc's steps, cut to what the owner does on GitHub. */
 export const BLOB_GITHUB_STEPS = [
@@ -23,12 +55,24 @@ export const BLOB_GITHUB_STEPS = [
   "As that account, create a fine-grained token for those repositories: Issues and Pull requests read and write, 90 days",
 ];
 
+/** The same, for a token on the owner's own account. */
+export const BLOB_GITHUB_OWNER_STEPS = [
+  "On your GitHub account, create a fine-grained token limited to the repositories Blob may use",
+  "Give it Issues and Pull requests read and write, with a 90 day expiry",
+];
+
+/** Under the token field, for a token on the owner's own account. */
+export const BLOB_GITHUB_OWNER_TOKEN_HINT =
+  "A fine-grained token on your account, limited to the chosen repositories, with Issues and Pull requests read and write.";
+
 /** Under this many days left, the expiry warns. */
 export const EXPIRY_WARN_DAYS = 14;
 
 const DAY_MS = 86_400_000;
 
 const viewSchema = z.object({
+  /** Absent on a server without the choice: Blob's own account. */
+  as: z.enum(["own-account", "owner"]).optional(),
   login: z.string().nullable(),
   expiresAt: z.string().nullable(),
   repos: z.array(z.string()),
@@ -70,6 +114,7 @@ export async function loadBlobGithub(
 }
 
 export interface BlobGithubPatch {
+  as?: BlobGithubAs;
   token?: string;
   repos?: string[];
   publicRepos?: string[];
@@ -111,6 +156,15 @@ export function removeBlobGithubToken(): Promise<BlobGithub> {
   });
 }
 
+/** Forget Blob's own account: the server clears its login, repositories
+ *  and labels, so the "Post as" choice comes back. */
+export function forgetBlobGithubAccount(): Promise<BlobGithub> {
+  return requestView("/blob/github", {
+    method: "DELETE",
+    label: "Couldn't forget Blob's account",
+  });
+}
+
 /** A server or network error as a sentence for the person. The route's
  *  checks name the field (`token: ...`); the person only sees the reason. */
 export function plainError(error: Error): string {
@@ -136,6 +190,33 @@ export interface TokenExpiry {
   /** Under EXPIRY_WARN_DAYS left, or already past. */
   warn: boolean;
   expired: boolean;
+}
+
+/** Whose account Blob posts as; Blob's own on an older server. */
+export function blobGithubAs(settings: Pick<BlobGithub, "as">): BlobGithubAs {
+  return settings.as ?? "own-account";
+}
+
+/** Whether the owner may still choose whose account Blob posts as: not
+ *  while a token is set, and not while Blob's own account is recorded,
+ *  since its earlier posts are recognised by that login. */
+export function canChooseBlobGithubAs(
+  settings: Pick<BlobGithub, "as" | "login" | "tokenSet">,
+): boolean {
+  if (settings.tokenSet) return false;
+  return !(blobGithubAs(settings) === "own-account" && settings.login);
+}
+
+/** Whether the owner may forget Blob's own recorded account: its login is
+ *  kept after the token goes, so only with no token stored. */
+export function canForgetBlobGithubAccount(
+  settings: Pick<BlobGithub, "as" | "login" | "tokenSet">,
+): boolean {
+  return (
+    !settings.tokenSet &&
+    !!settings.login &&
+    blobGithubAs(settings) === "own-account"
+  );
 }
 
 /** The token's expiry, relative: "Expires in 42 days", "Expires tomorrow". */

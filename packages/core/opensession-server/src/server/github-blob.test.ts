@@ -9,7 +9,12 @@ import {
   isGithubBotLogin,
   isReviewAgentLogin,
 } from "./config";
-import { __setBlobGithubDepsForTest, parseTokenExpiry } from "./github-blob";
+import {
+  __setBlobGithubDepsForTest,
+  parseTokenExpiry,
+  setBlobGithubSettings,
+  validateBlobGithubPatch,
+} from "./github-blob";
 import { handleBlobGithubRoutes } from "./routes/blob-github";
 import type { RouteContext } from "./routes/context";
 import { isReservedTeamName } from "./session-actors";
@@ -146,6 +151,7 @@ describe("Blob's GitHub account settings", () => {
       { url: "https://api.github.com/user", auth: `Bearer ${TOKEN}` },
     ]);
     expect(put.body.blob).toEqual({
+      as: "own-account",
       login: "acme-blob",
       expiresAt: "2027-02-09T12:00:00.000Z",
       repos: ["acme/widget", "acme/docs"],
@@ -198,11 +204,13 @@ describe("Blob's GitHub account settings", () => {
       request("GET", undefined, "grace"),
       request("PUT", { token: TOKEN }, "grace"),
       request("DELETE", undefined, "grace", "/api/blob/github/token"),
+      request("DELETE", undefined, "grace"),
     ])
       expect((await call(ctx)).status).toBe(403);
     for (const ctx of [
       request("GET", undefined, null),
       request("PUT", { token: TOKEN }, null),
+      request("DELETE", undefined, null),
     ])
       expect((await call(ctx)).status).toBe(401);
     // An automation is never a person.
@@ -406,5 +414,183 @@ describe("Blob's GitHub login", () => {
     expect(isReservedTeamName("acme")).toBe(false);
     await setup();
     expect(isReservedTeamName("acme-blob")).toBe(false);
+  });
+});
+
+describe("posting as the owner's account", () => {
+  test("a token for the signed-in owner's own account is saved as theirs", async () => {
+    await setup();
+    github(200, { login: "Ada" });
+    const put = await call(
+      request("PUT", { as: "owner", token: TOKEN, repos: ["acme/docs"] }),
+    );
+    expect(put.status).toBe(200);
+    expect(put.body.blob).toMatchObject({
+      as: "owner",
+      login: "Ada",
+      repos: ["acme/docs"],
+      tokenSet: true,
+    });
+    expect(storedBlob()).toMatchObject({ as: "owner", login: "Ada" });
+    expect(put.text).not.toContain(TOKEN);
+  });
+
+  test("the owner's login is never a bot login nor reserved", async () => {
+    await setup({ as: "owner", login: "ada", repos: [], enabled: true });
+    expect(githubBotLogins()).toEqual(["acme-app[bot]"]);
+    expect(isGithubBotLogin("ada")).toBe(false);
+    expect(isReviewAgentLogin("ada")).toBe(false);
+    expect(isReservedTeamName("ada")).toBe(false);
+    // Blob's own name stays reserved either way.
+    expect(isReservedTeamName("Blob")).toBe(true);
+  });
+
+  test("a token for anyone but the owner is refused, and nothing is stored", async () => {
+    await setup();
+    for (const login of ["grace", "acme-blob"]) {
+      github(200, { login });
+      const res = await call(request("PUT", { as: "owner", token: TOKEN }));
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(
+        `This token belongs to @${login}, but your GitHub account is @ada. To post as you, Blob needs a token from your own account.`,
+      );
+    }
+    expect(storedSecrets()).toEqual([]);
+    expect(storedBlob()).toBeUndefined();
+  });
+
+  test("the token must match the login the owner signed in with", async () => {
+    await setup();
+    github(200, { login: "ada" });
+    for (const signedInLogin of [undefined, "grace"]) {
+      const result = await setBlobGithubSettings(
+        { as: "owner", token: TOKEN },
+        "Ada",
+        { signedInLogin },
+      );
+      expect(result).toEqual({
+        ok: false,
+        status: 400,
+        error: "Sign in with GitHub as @ada to save a token for your account.",
+      });
+    }
+    expect(storedSecrets()).toEqual([]);
+  });
+
+  test("an owner without a GitHub login on the roster can't use it", async () => {
+    await setup();
+    github(200, { login: "ada" });
+    restores.push(
+      __setBlobGithubDepsForTest({
+        now: () => Date.parse("2026-11-11T00:00:00Z"),
+        fetch: async () =>
+          Response.json(
+            { login: "ada" },
+            {
+              headers: {
+                "github-authentication-token-expiration":
+                  "2027-02-09 12:00:00 UTC",
+              },
+            },
+          ),
+        instanceOwner: async () => ({ name: "Ada Lovelace" }),
+      }),
+    );
+    const res = await call(request("PUT", { as: "owner", token: TOKEN }));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("has no GitHub login on the roster");
+  });
+
+  test("switching needs a token, and Blob's own recorded account is removed first", async () => {
+    await setup();
+    const noToken = await call(request("PUT", { as: "owner" }));
+    expect(noToken.status).toBe(400);
+    expect(noToken.body.error).toBe(
+      "Paste a token for the account Blob will post as.",
+    );
+
+    github(200, { login: "acme-blob" });
+    await call(request("PUT", { token: TOKEN }));
+    await call(request("DELETE", undefined, "ada", "/api/blob/github/token"));
+    github(200, { login: "ada" });
+    const res = await call(request("PUT", { as: "owner", token: TOKEN }));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(
+      "Blob's own account @acme-blob is still recorded, so its earlier posts count as Blob's. Forget Blob's account first.",
+    );
+    expect(storedBlob().as).toBeUndefined();
+    expect(storedBlob().login).toBe("acme-blob");
+  });
+
+  test("forgetting Blob's account clears it, so the owner's account can follow", async () => {
+    await setup();
+    github(200, { login: "acme-blob" });
+    await call(
+      request("PUT", { token: TOKEN, enabled: true, repos: ["acme/widget"] }),
+    );
+    // Not while a token is stored.
+    const early = await call(request("DELETE"));
+    expect(early.status).toBe(409);
+    expect(early.body.error).toBe(
+      "Remove the token before forgetting Blob's account",
+    );
+    expect(storedBlob().login).toBe("acme-blob");
+
+    await call(request("DELETE", undefined, "ada", "/api/blob/github/token"));
+    expect(githubBotLogins()).toContain("acme-blob");
+    const forgot = await call(request("DELETE"));
+    expect(forgot.status).toBe(200);
+    expect(forgot.body.blob).toMatchObject({
+      as: "own-account",
+      login: null,
+      repos: [],
+      enabled: false,
+      tokenSet: false,
+    });
+    expect(storedBlob()).toBeUndefined();
+    // Its earlier posts no longer count as Blob's.
+    expect(githubBotLogins()).not.toContain("acme-blob");
+
+    github(200, { login: "ada" });
+    const owner = await call(request("PUT", { as: "owner", token: TOKEN }));
+    expect(owner.status).toBe(200);
+    expect(owner.body.blob).toMatchObject({ as: "owner", login: "ada" });
+  });
+
+  test("removing the owner's token drops the login, so Blob's own account can follow", async () => {
+    await setup();
+    github(200, { login: "ada" });
+    await call(request("PUT", { as: "owner", token: TOKEN, enabled: true }));
+    const removed = await call(
+      request("DELETE", undefined, "ada", "/api/blob/github/token"),
+    );
+    expect(removed.body.blob).toMatchObject({
+      as: "owner",
+      login: null,
+      enabled: false,
+      tokenSet: false,
+    });
+    // Blob's own account must still be nobody's on the roster.
+    const mine = await call(
+      request("PUT", { as: "own-account", token: TOKEN }),
+    );
+    expect(mine.status).toBe(400);
+    expect(mine.body.error).toContain("is a teammate on the roster");
+    github(200, { login: "acme-blob" });
+    const own = await call(request("PUT", { as: "own-account", token: TOKEN }));
+    expect(own.status).toBe(200);
+    expect(own.body.blob).toMatchObject({
+      as: "own-account",
+      login: "acme-blob",
+    });
+    expect(storedBlob().as).toBeUndefined();
+    expect(githubBotLogins()).toContain("acme-blob");
+  });
+
+  test("as is checked", () => {
+    expect(validateBlobGithubPatch({ as: "pat" })).toEqual({
+      error: 'as: must be "own-account" or "owner"',
+    });
+    expect(validateBlobGithubPatch({ as: "owner" })).toEqual({ as: "owner" });
   });
 });

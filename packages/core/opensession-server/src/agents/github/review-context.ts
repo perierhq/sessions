@@ -15,7 +15,7 @@
  */
 import type { PrDetails } from "../../server/pr-info";
 import type { FeedbackRecord } from "./feedback-gates";
-import type { ReviewThread } from "./github-rest";
+import type { ReviewThread, ReviewThreadComment } from "./github-rest";
 import type { LastReviewState } from "./state";
 
 const BODY_CAP = 3000;
@@ -143,16 +143,21 @@ export function classifyPriorFindings(
   return out.slice(-MAX_DIGEST_FINDINGS);
 }
 
-/** Open inline threads started by human reviewers — their concerns, verbatim-ish. */
+/** Open inline threads started by human reviewers — their concerns, verbatim-ish.
+ *  `isOwnPost` tells our own posts from a person's login: Blob posting from
+ *  the owner's account has the owner's login, and only its marker by that
+ *  login says it is ours (constants.ts isBlobPost). */
 export function openHumanThreadLines(
   threads: ReviewThread[],
   isBot: (login: string) => boolean,
+  isOwnPost: (comment: ReviewThreadComment) => boolean = () => false,
 ): string[] {
   return threads
     .filter(
       (t) =>
         t.rootAuthor &&
         !isBot(t.rootAuthor) &&
+        !(t.comments[0] && isOwnPost(t.comments[0])) &&
         !t.isResolved &&
         t.comments[0]?.body.trim(),
     )
@@ -161,6 +166,27 @@ export function openHumanThreadLines(
       (t) =>
         `- @${t.rootAuthor} on \`${t.path || "(file-level)"}${t.line != null ? `:${t.line}` : ""}\`: "${clip(t.comments[0].body, COMMENT_CAP)}"`,
     );
+}
+
+/** `path:line` of each open, still-current inline thread we started: rooted
+ *  by one of our bot logins, or by Blob's post from the owner's account
+ *  (`isOwnPost`, author and marker both). A re-review skips findings on
+ *  these so it does not post the same comment twice. A thread whose first
+ *  comment only carries the marker, from anyone else, is a person's and
+ *  never suppresses a finding. */
+export function openOwnThreadAnchors(
+  threads: ReviewThread[],
+  isBot: (login: string) => boolean,
+  isOwnPost: (comment: ReviewThreadComment) => boolean,
+): Set<string> {
+  const anchors = new Set<string>();
+  for (const t of threads) {
+    const root = t.comments[0];
+    const ours = isBot(t.rootAuthor) || (!!root && isOwnPost(root));
+    if (ours && !t.isResolved && !t.isOutdated && t.path && t.line != null)
+      anchors.add(`${t.path}:${t.line}`);
+  }
+  return anchors;
 }
 
 /**

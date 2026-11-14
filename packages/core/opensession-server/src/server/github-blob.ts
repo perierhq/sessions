@@ -1,13 +1,23 @@
 /**
- * Blob's GitHub machine user: the account Blob (the supervisor and the
- * project leads) posts as on issues and pull requests. See
+ * Blob's GitHub account: the account Blob (the supervisor and the project
+ * leads) posts as on issues and pull requests. See
  * docs/github-authority.md ("Current policy") and docs/setup/github.md
  * ("Blob's GitHub account").
  *
  * The settings are instance configuration, next to the GitHub App's, in
  * config.json under `integrations.github.blob`:
  *
- *   { login, tokenRef, repos[], publicRepos[], labels[], enabled, expiresAt }
+ *   { as, login, tokenRef, repos[], publicRepos[], labels[], enabled, expiresAt }
+ *
+ * `as` says whose account it is. `own-account` (the default) is a machine
+ * user of Blob's own. `owner` is the instance owner's own account, through a
+ * fine-grained token of theirs: the token's login must be the owner's
+ * GitHub login on the roster, the same one they are signed in with. That
+ * login is a person's, so it is never added to `githubBotLogins` nor
+ * reserved (config.ts `blobGithubLogin` is "" then); Blob's posts are told
+ * apart by the `<!-- os:blob -->` marker alone, and each is signed
+ * "Written by Blob, <owner>'s assistant". Only the owner's own supervisor
+ * and leads may post through it.
  *
  * The token is a workspace secret (workspace-secrets.ts, purpose
  * `github.blob`): the config holds only its ref. This module is the only
@@ -24,11 +34,14 @@
  * listed by name. `labels` is the owner's allowlist for blob_label: empty
  * (the default) turns labelling off.
  *
- * Removing the token keeps the login, so Blob's earlier posts still count as
- * ours (config.ts `githubBotLogins`) and nobody can take the name
- * (session-actors.ts `isReservedTeamName`). For the same reason a token for
- * a different account than the recorded login is refused: switching
- * accounts means removing Blob's account (`integrations.github.blob`) first.
+ * With Blob's own account, removing the token keeps the login, so Blob's
+ * earlier posts still count as ours (config.ts `githubBotLogins`) and nobody
+ * can take the name (session-actors.ts `isReservedTeamName`). For the same
+ * reason a token for a different account than the recorded login is
+ * refused, and so is a switch to the owner's account: switching means
+ * forgetting Blob's account first (`forgetBlobGithubAccount`, which clears
+ * `integrations.github.blob` once no token is stored). With the owner's
+ * account nothing hangs on the login, so removing the token drops it too.
  *
  * Never resolve the token anywhere else. Any other module that reads
  * `integrations.github.blob` and calls `resolveWorkspaceSecret*` fails
@@ -44,6 +57,7 @@ import {
   configuredRepos,
   configuredServer,
   getConfigAsync,
+  type BlobGithubAs,
 } from "./config";
 import {
   persistRawConfigAsync,
@@ -84,6 +98,7 @@ const LABEL_TRIGGERS: readonly string[] = TRIGGER_LABELS;
 export const BLOB_VISIBILITY_MAX_AGE_MS = 10 * 60_000;
 
 interface BlobGithubRecord {
+  as: BlobGithubAs;
   login?: string;
   tokenRef?: string;
   repos: string[];
@@ -96,6 +111,7 @@ interface BlobGithubRecord {
 /** What the settings route returns: never the token, only whether one is
  *  set. */
 export interface BlobGithubView {
+  as: BlobGithubAs;
   login: string | null;
   expiresAt: string | null;
   repos: string[];
@@ -107,6 +123,9 @@ export interface BlobGithubView {
 
 /** A checked change. Absent fields stay as they are. */
 export interface BlobGithubPatch {
+  /** Whose account Blob posts as. Changing it needs a token for that
+   *  account in the same patch. */
+  as?: BlobGithubAs;
   token?: string;
   repos?: string[];
   publicRepos?: string[];
@@ -136,6 +155,9 @@ interface Deps {
   }): Promise<unknown>;
   /** This instance's web link for a session (run-instructions.ts). */
   sessionLink(sessionId: string): Promise<string>;
+  /** The instance owner on the roster: their name and GitHub login
+   *  (incidents/owner.ts), or null without one. */
+  instanceOwner(): Promise<{ name: string; github?: string } | null>;
 }
 
 const defaultDeps: Deps = {
@@ -161,6 +183,8 @@ const defaultDeps: Deps = {
   },
   sessionLink: async (sessionId) =>
     (await import("./run-instructions")).sessionLink(sessionId),
+  instanceOwner: async () =>
+    (await import("./incidents/owner")).instanceOwnerMember(),
 };
 
 let deps: Deps = defaultDeps;
@@ -194,6 +218,7 @@ function parseRecord(raw: unknown): BlobGithubRecord {
       : undefined;
   const login = str("login");
   return {
+    as: o.as === "owner" ? "owner" : "own-account",
     login: login && GITHUB_LOGIN.test(login) ? login : undefined,
     tokenRef: str("tokenRef"),
     repos: strings(o.repos),
@@ -218,6 +243,7 @@ async function view(record: BlobGithubRecord): Promise<BlobGithubView> {
     ? (await resolveWorkspaceSecretAsync(record.tokenRef)) !== undefined
     : false;
   return {
+    as: record.as,
     login: record.login ?? null,
     expiresAt: record.expiresAt ?? null,
     repos: record.repos,
@@ -244,8 +270,17 @@ export function validateBlobGithubPatch(
   if (!o) return { error: "Invalid JSON body" };
   const patch: BlobGithubPatch = {};
   for (const key of Object.keys(o)) {
-    if (!["token", "repos", "publicRepos", "labels", "enabled"].includes(key))
+    if (
+      !["as", "token", "repos", "publicRepos", "labels", "enabled"].includes(
+        key,
+      )
+    )
       return { error: `unknown field: ${key}` };
+  }
+  if ("as" in o) {
+    if (o.as !== "own-account" && o.as !== "owner")
+      return { error: 'as: must be "own-account" or "owner"' };
+    patch.as = o.as;
   }
   if ("token" in o) {
     const token = typeof o.token === "string" ? o.token.trim() : "";
@@ -424,28 +459,48 @@ function isRosterLogin(login: string): boolean {
 
 // ── Writes ──────────────────────────────────────────────────────────────
 
+/** Why a verified token's account can't be Blob's under `as`, or null.
+ *  Blob's own account must be nobody's on the roster; the owner's must be
+ *  the instance owner's roster login and the one they signed in with. */
+function accountRefusal(
+  as: BlobGithubAs,
+  login: string,
+  owner: { github?: string } | null,
+  signedInLogin: string | undefined,
+): string | null {
+  if (as === "own-account")
+    return isRosterLogin(login)
+      ? `@${login} is a teammate on the roster. Blob needs an account of its own.`
+      : null;
+  const ownerLogin = owner?.github?.trim();
+  if (!ownerLogin)
+    return "The instance owner has no GitHub login on the roster, so Blob can't post as their account.";
+  if (login.toLowerCase() !== ownerLogin.toLowerCase())
+    return `This token belongs to @${login}, but your GitHub account is @${ownerLogin}. To post as you, Blob needs a token from your own account.`;
+  if (signedInLogin?.trim().toLowerCase() !== ownerLogin.toLowerCase())
+    return `Sign in with GitHub as @${ownerLogin} to save a token for your account.`;
+  return null;
+}
+
 /**
  * Apply a checked patch. A new token is verified with GitHub, then stored
  * under a new secret ref before the config points at it; the ref it
  * replaced is deleted after the commit, and a failed commit deletes the new
- * one.
+ * one. `signedInLogin` is the GitHub login the request was signed in with
+ * (routes/blob-github.ts), which a token for the owner's account must match.
  */
 export async function setBlobGithubSettings(
   patch: BlobGithubPatch,
   actor: string,
+  opts: { signedInLogin?: string } = {},
 ): Promise<BlobGithubResult> {
   let verified: Extract<Verified, { ok: true }> | undefined;
   if (patch.token) {
     const result = await verifyBlobGithubToken(patch.token);
     if (!result.ok) return result;
-    if (isRosterLogin(result.login))
-      return {
-        ok: false,
-        status: 400,
-        error: `@${result.login} is a teammate on the roster. Blob needs an account of its own.`,
-      };
     verified = result;
   }
+  const owner = verified ? await deps.instanceOwner() : null;
 
   const newRef = patch.token
     ? await putWorkspaceSecretAsync(BLOB_GITHUB_SECRET_PURPOSE, patch.token)
@@ -457,10 +512,38 @@ export async function setBlobGithubSettings(
       const config = await rawConfigAsync();
       const github = githubSection(config);
       const record = parseRecord(github.blob);
+      const as = patch.as ?? record.as;
+      if (as !== record.as) {
+        // Blob's own account's earlier posts are recognised by its recorded
+        // login, which the owner's account would drop.
+        if (record.as === "own-account" && record.login)
+          return {
+            ok: false,
+            status: 400,
+            error: `Blob's own account @${record.login} is still recorded, so its earlier posts count as Blob's. Forget Blob's account first.`,
+          } as const;
+        if (!verified)
+          return {
+            ok: false,
+            status: 400,
+            error: "Paste a token for the account Blob will post as.",
+          } as const;
+      }
+      if (verified) {
+        const refusal = accountRefusal(
+          as,
+          verified.login,
+          owner,
+          opts.signedInLogin,
+        );
+        if (refusal) return { ok: false, status: 400, error: refusal } as const;
+      }
       // Blob's earlier posts are recognised by the recorded login, so the
       // account can only change by removing it first.
       if (
         verified &&
+        as === "own-account" &&
+        record.as === "own-account" &&
         record.login &&
         record.login.toLowerCase() !== verified.login.toLowerCase()
       )
@@ -514,6 +597,7 @@ export async function setBlobGithubSettings(
 
       const next: BlobGithubRecord = {
         ...record,
+        as,
         ...(verified
           ? { login: verified.login, expiresAt: verified.expiresAt }
           : {}),
@@ -523,8 +607,10 @@ export async function setBlobGithubSettings(
         labels: patch.labels ?? record.labels,
         enabled,
       };
+      const kept = { ...obj(github.blob) };
+      delete kept.as;
       github.blob = {
-        ...obj(github.blob),
+        ...kept,
         ...withoutUndefined(next),
       };
       await persistRawConfigAsync(config);
@@ -549,11 +635,13 @@ export async function setBlobGithubSettings(
       ? { login: verified.login, expiresAt: verified.expiresAt }
       : {}),
     fields: Object.keys(patch).filter((key) => key !== "token"),
+    ...(patch.as ? { as: patch.as } : {}),
   });
   return outcome;
 }
 
-/** Remove the token and turn posting off. The login stays (see the header). */
+/** Remove the token and turn posting off. The login of Blob's own account
+ *  stays; the owner's account's goes with the token (see the header). */
 export async function deleteBlobGithubToken(
   actor: string,
 ): Promise<BlobGithubView> {
@@ -564,6 +652,7 @@ export async function deleteBlobGithubToken(
     const blob = { ...obj(github.blob) };
     delete blob.tokenRef;
     delete blob.expiresAt;
+    if (record.as === "owner") delete blob.login;
     blob.enabled = false;
     github.blob = blob;
     await persistRawConfigAsync(config);
@@ -577,9 +666,56 @@ export async function deleteBlobGithubToken(
   return settings;
 }
 
+/** Forget Blob's account: clear `integrations.github.blob` (login, repos,
+ *  labels, all of it), so its earlier posts stop counting as Blob's and the
+ *  owner can choose whose account Blob posts as again. Refused while a token
+ *  is stored: remove the token first. */
+export async function forgetBlobGithubAccount(
+  actor: string,
+): Promise<
+  | { ok: true; settings: BlobGithubView }
+  | { ok: false; status: number; error: string }
+> {
+  const outcome = await withConfigMutationLock(async () => {
+    const config = await rawConfigAsync();
+    const github = githubSection(config);
+    const record = parseRecord(github.blob);
+    if ((await view(record)).tokenSet)
+      return {
+        ok: false,
+        status: 409,
+        error: "Remove the token before forgetting Blob's account",
+      } as const;
+    delete github.blob;
+    await persistRawConfigAsync(config);
+    return {
+      ok: true,
+      settings: await view(parseRecord(undefined)),
+      forgotten: record.login,
+      retired: record.tokenRef,
+    } as const;
+  });
+  if (!outcome.ok) return outcome;
+  // A ref whose secret is already gone; drop the record of it too.
+  if (outcome.retired)
+    await deleteWorkspaceSecretAsync(outcome.retired).catch(() => {});
+  auditAsync({
+    kind: "blob_github_update",
+    actor,
+    accountForgotten: true,
+    ...(outcome.forgotten ? { login: outcome.forgotten } : {}),
+  });
+  return { ok: true, settings: outcome.settings };
+}
+
+/** The record as stored: no undefined fields, and `as` only when it is
+ *  the owner's account, so a config without it stays as it was. */
 function withoutUndefined(record: BlobGithubRecord): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(record).filter(([, value]) => value !== undefined),
+    Object.entries(record).filter(
+      ([key, value]) =>
+        value !== undefined && !(key === "as" && value === "own-account"),
+    ),
   );
 }
 
@@ -588,19 +724,23 @@ function withoutUndefined(record: BlobGithubRecord): Record<string, unknown> {
 // blob_comment, blob_review, blob_label and blob_open_issue
 // (blob-github-tools.ts) post through the functions below; they are the
 // only callers of the token. Every call fails closed, in this order:
-// posting is on, a token is set and not expired, the repository is
-// registered and on Blob's list, a lead's call is for its own project, the
-// repository is private per the App's metadata (repo-visibility.ts, at most
-// BLOB_VISIBILITY_MAX_AGE_MS old) or named in `publicRepos` (a lead's, and
-// a supervisor's for anyone but the instance owner, must be private;
-// unknown visibility refuses), the owner has a GitHub login for the footer,
-// the text carries no trigger command, trigger label, hidden marker, slash
-// command or @mention of anyone but a teammate, on a public repository no
-// private term or internal hostname, a label is on the owner's allowlist,
-// and the write fits BLOB_WRITES_PER_HOUR for the owner,
-// BLOB_WRITES_PER_THREAD_HOUR on that issue or pull request and
+// posting is on, a token is set and not expired, with the owner's account
+// its login is still the instance owner's and Blob posts for the instance
+// owner, the repository is registered and on Blob's list, a lead's call is
+// for its own project, the repository is private per the App's metadata
+// (repo-visibility.ts, at most BLOB_VISIBILITY_MAX_AGE_MS old) or named in
+// `publicRepos` (a lead's, and a supervisor's for anyone but the instance
+// owner, must be private; unknown visibility refuses), the owner has a
+// GitHub login for the footer, the text carries no trigger command, trigger
+// label, hidden marker, slash command or @mention of anyone but a teammate,
+// on a public repository no private term or internal hostname, a label is on
+// the owner's allowlist, and the write fits BLOB_WRITES_PER_HOUR for the
+// owner, BLOB_WRITES_PER_THREAD_HOUR on that issue or pull request and
 // BLOB_WRITES_PER_INSTANCE_HOUR across owners. Every attempt that reaches
 // GitHub is audited as Blob, for the owner, with the text as a digest.
+// Only the calls `blobRequestRefusal` allows ever leave: a comment, a
+// review with event COMMENT, a label read, add or removal, and a new
+// issue. Nothing closes, approves, edits, pushes or merges.
 //
 // A 401 turns posting off and raises one needs-you item to the instance
 // owner. `checkBlobGithubExpiry` (run by the supervisor inbox sweep) raises
@@ -742,13 +882,49 @@ export function blobTextRefusal(
 }
 
 /** The line every post by Blob ends with: who it is for, the session on a
- *  private repository, and the marker. */
+ *  private repository, and the marker. From the owner's account it says
+ *  Blob wrote it, so nobody reads it as the owner's own words. */
 export function blobFooter(
   ownerLogin: string,
   sessionUrl: string | undefined,
+  as: BlobGithubAs = "own-account",
+  ownerName = "",
 ): string {
   const link = sessionUrl ? ` · [session](${sessionUrl})` : "";
-  return `\n\n<sub>Blob, for @${ownerLogin}${link}</sub>${BLOB_MARKER}`;
+  const signature =
+    as === "owner"
+      ? `Written by Blob, ${ownerName.trim() ? `${ownerName.trim()}'s` : "the owner's"} assistant`
+      : `Blob, for @${ownerLogin}`;
+  return `\n\n<sub>${signature}${link}</sub>${BLOB_MARKER}`;
+}
+
+/** The only GitHub calls Blob makes: a comment, a review with event
+ *  COMMENT, reading a label, adding or removing labels, and opening an
+ *  issue. Why a call is refused, or null. Every write path is checked
+ *  here before the token leaves, so nothing closes, approves, requests
+ *  changes, edits, pushes or merges, whatever account it posts as. */
+export function blobRequestRefusal(
+  method: string,
+  path: string,
+  body?: unknown,
+): string | null {
+  const route = path.match(/^\/repos\/[^/]+\/[^/]+(\/.*)$/)?.[1] ?? "";
+  const fields = obj(body) ?? {};
+  const allowed =
+    (method === "POST" && /^\/issues\/\d+\/comments$/.test(route)) ||
+    (method === "POST" &&
+      /^\/pulls\/\d+\/reviews$/.test(route) &&
+      fields.event === "COMMENT") ||
+    (method === "GET" && /^\/labels\/[^/]+$/.test(route)) ||
+    (method === "POST" && /^\/issues\/\d+\/labels$/.test(route)) ||
+    (method === "DELETE" && /^\/issues\/\d+\/labels\/[^/]+$/.test(route)) ||
+    (method === "POST" &&
+      route === "/issues" &&
+      !("state" in fields) &&
+      !("assignees" in fields));
+  return allowed
+    ? null
+    : "Blob only comments, leaves comment reviews, sets labels and opens issues. It never closes, approves, edits, pushes or merges.";
 }
 
 /** Never written about the private network: the instance's own hostnames
@@ -845,6 +1021,25 @@ async function prepare(
     return refuse(
       "Blob's GitHub token has expired. Ask the owner to save a new one.",
     );
+  // The owner's account speaks for the owner alone: never for a teammate,
+  // and never once the roster names someone else's login as the owner's.
+  let ownerName = "";
+  if (record.as === "owner") {
+    const owner = await deps.instanceOwner();
+    const ownerLogin = owner?.github?.trim().toLowerCase();
+    if (!ownerLogin || ownerLogin !== record.login.toLowerCase())
+      return refuse(
+        `Blob posts as the owner's GitHub account, but @${record.login} is no longer the owner's login on the roster. The owner saves a new token in Settings, Members, Blob.`,
+      );
+    if (
+      poster.privateOnly ||
+      githubLoginFor(poster.owner)?.toLowerCase() !== ownerLogin
+    )
+      return refuse(
+        "Blob posts on GitHub as the instance owner's own account, so it posts only for the owner.",
+      );
+    ownerName = owner!.name.trim().split(/\s+/)[0] ?? "";
+  }
   const repo = registeredRepo(repoName);
   if (
     !repo ||
@@ -902,6 +1097,8 @@ async function prepare(
     isPrivate && poster.sessionId
       ? await deps.sessionLink(poster.sessionId)
       : undefined,
+    record.as,
+    ownerName,
   );
   return {
     ok: true,
@@ -978,6 +1175,8 @@ interface GithubAnswer {
   status: number;
   json: unknown;
   applied?: boolean;
+  /** Refused before reaching GitHub, and why. */
+  refused?: string;
 }
 
 /** One call to GitHub's REST API with Blob's token. Never redirects, so
@@ -988,6 +1187,8 @@ async function githubCall(
   path: string,
   body?: unknown,
 ): Promise<GithubAnswer> {
+  const refused = blobRequestRefusal(method, path, body);
+  if (refused) return { status: 0, json: null, refused };
   try {
     const res = await deps.fetch(`${API}${path}`, {
       method,
@@ -1052,7 +1253,7 @@ interface WriteSpec {
   weight?: number;
   /** A refusal that needs the settings, before the write is counted. */
   check?(p: Prepared): string | null;
-  run(p: Prepared): Promise<GithubAnswer | { refused: string }>;
+  run(p: Prepared): Promise<GithubAnswer>;
   ok(json: unknown, p: Prepared): string;
 }
 
@@ -1078,9 +1279,12 @@ async function write(
   const result = await spec.run(p);
   // A definite failure doesn't count against the limits; an unanswered
   // call may have posted, and a partly applied one did, so they do.
-  if ("refused" in result || (result.status >= 300 && !result.applied))
+  if (
+    (result.refused !== undefined && !result.applied) ||
+    (result.status >= 300 && !result.applied)
+  )
     await releaseWrite(entry.id);
-  if (!("refused" in result))
+  if (result.refused === undefined || result.applied)
     deps.audit({
       kind: "blob_github_write",
       action: spec.action,
@@ -1091,7 +1295,7 @@ async function write(
       user: poster.owner,
       actor: BLOB_ACTOR,
     });
-  if ("refused" in result) return refuse(result.refused);
+  if (result.refused !== undefined) return refuse(result.refused);
   if (result.status === 401) {
     await onUnauthorized(p.record);
     return refuse(
@@ -1232,6 +1436,8 @@ export function blobLabel(
         );
         if (found.status === 404)
           return {
+            status: 0,
+            json: null,
             refused: `${p.ghRepo} has no label named ${label}. Blob only uses existing labels.`,
           };
         if (found.status !== 200) return found;

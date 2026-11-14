@@ -4,18 +4,23 @@
 
 import type { ConfirmRequest } from "../ui/confirm";
 import {
+  blobGithubAs,
+  forgetBlobGithubAccount,
   plainError,
   removeBlobGithubToken,
   saveBlobGithub,
   togglePublicRepo,
   toggleRepo,
   type BlobGithub,
+  type BlobGithubAs,
   type BlobGithubPatch,
 } from "./blob-github";
 
 export interface BlobGithubActionsInput {
   settings: BlobGithub;
   token: string;
+  /** Whose account the token is for, as chosen in the section. */
+  as?: BlobGithubAs;
   setSaved: (next: BlobGithub) => void;
   setToken: (value: string) => void;
   setTokenError: (message: string | null) => void;
@@ -52,6 +57,7 @@ export function blobGithubActions(input: BlobGithubActionsInput) {
     run(() => saveBlobGithub(patch), setError);
 
   const removeToken = () => run(removeBlobGithubToken, setError);
+  const forgetAccount = () => run(forgetBlobGithubAccount, setError);
 
   return {
     saveToken: async () => {
@@ -60,7 +66,11 @@ export function blobGithubActions(input: BlobGithubActionsInput) {
         setTokenError("Paste a token.");
         return;
       }
-      if (await run(() => saveBlobGithub({ token: value }), setTokenError))
+      // The choice goes up with the token it is for; a token alone keeps
+      // the account Blob already posts as.
+      const patch: BlobGithubPatch = { token: value };
+      if (input.as && input.as !== blobGithubAs(settings)) patch.as = input.as;
+      if (await run(() => saveBlobGithub(patch), setTokenError))
         input.setToken("");
     },
     setEnabled: (enabled: boolean) => save({ enabled }),
@@ -77,6 +87,16 @@ export function blobGithubActions(input: BlobGithubActionsInput) {
         confirmLabel: "Remove",
         destructive: true,
         onConfirm: () => void removeToken(),
+      }),
+    forgetAccount: () =>
+      input.confirm({
+        title: "Forget Blob\u2019s account?",
+        description: settings.login
+          ? `Earlier posts by @${settings.login} stop counting as Blob\u2019s, so its comments can start replies again. Its repositories and labels are cleared too, and you can choose whose account Blob posts as.`
+          : "Its repositories and labels are cleared, and you can choose whose account Blob posts as.",
+        confirmLabel: "Forget",
+        destructive: true,
+        onConfirm: () => void forgetAccount(),
       }),
   };
 }

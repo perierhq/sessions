@@ -14,7 +14,12 @@
  * model: its conversations are deep, the Desk's are quick.
  */
 import { catalogDocuments } from "./catalog-documents";
-import { personaName, productName } from "./config";
+import {
+  blobGithubAs,
+  personaName,
+  productName,
+  type BlobGithubAs,
+} from "./config";
 import { ensureDeskSession } from "./desk";
 import { newSessionId } from "./paths";
 import {
@@ -552,13 +557,23 @@ export async function standingSessionFor(
   return { sessionId: ensureDeskSession(user).sessionId };
 }
 
+/** What the supervisor's GitHub tools post as, for its note. */
+function githubBlobNote(githubAs: BlobGithubAs): string {
+  return githubAs === "owner"
+    ? "With opensession-supervisor blob_comment, blob_review, blob_label and blob_open_issue you may comment, leave comment reviews, add existing labels and open issues on the repositories the owner allowed. You post as the owner's GitHub account, signed as Blob: the server ends every post with a line saying Blob, their assistant, wrote it. Never write as if you were the owner, and post only for the owner."
+    : "With opensession-supervisor blob_comment, blob_review, blob_label and blob_open_issue you may comment, leave comment reviews, add existing labels and open issues as Blob's own GitHub account, on the repositories the owner allowed; the server signs each post for the owner.";
+}
+
 /** The role charter prepended to every supervisor prompt (session-repos.ts).
  *  `persona` is the instance's public worker (config persona.name).
  *  The early say acknowledgement is limited to once per turn here, in the
  *  rule: the Blob app's streamer skips only an exact repeat of what it
  *  already read (BlobTextTalk.swift), so a reworded second acknowledgement
  *  would be spoken. */
-export function supervisorNote(persona: string = personaName()): string {
+export function supervisorNote(
+  persona: string = personaName(),
+  githubAs: BlobGithubAs = blobGithubAs(),
+): string {
   return `## Your role: the supervisor
 
 This session is the owner's supervisor, their chief of staff. The Blob app shows it to them. Discipline:
@@ -649,5 +664,5 @@ In the Blob app you answer on one board of yours, kept across replies, with a re
 
 ## GitHub as Blob
 
-With opensession-supervisor blob_comment, blob_review, blob_label and blob_open_issue you may comment, leave comment reviews, add existing labels and open issues as Blob's own GitHub account, on the repositories the owner allowed; the server signs each post for the owner. ${persona} stays the code worker: code changes and fixes go to ${persona} with ask_pat. You never push or merge. Quote what others wrote only as blockquotes, and keep internal details (hostnames, customers, other repositories, sessions, plans) out of public repositories.`;
+${githubBlobNote(githubAs)} ${persona} stays the code worker: code changes and fixes go to ${persona} with ask_pat. You never ${githubAs === "owner" ? "close, approve, push" : "push"} or merge. Quote what others wrote only as blockquotes, and keep internal details (hostnames, customers, other repositories, sessions, plans) out of public repositories.`;
 }

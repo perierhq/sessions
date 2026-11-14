@@ -109,7 +109,11 @@ export function githubMentionPattern(handles: readonly string[]): RegExp {
 }
 const MENTION_RE = githubMentionPattern(MENTION_HANDLES);
 
-function mentionsAgent(body: string): boolean {
+/** Whether `body` asks the review agent for something: it mentions one of
+ *  its handles and is not our own post. Blob's posts from the owner's
+ *  account are a person's by login, so their marker alone keeps them from
+ *  starting a reply; the owner's own comment without it still can. */
+export function mentionsAgent(body: string): boolean {
   if (!body) return false;
   if (OWN_MARKERS.some((m) => body.includes(m))) return false; // our own content
   return MENTION_RE.test(body);

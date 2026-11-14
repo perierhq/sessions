@@ -137,7 +137,10 @@ describe("Blob's GitHub token boundary", () => {
       if (ts.isImportDeclaration(node))
         imports.push((node.moduleSpecifier as ts.StringLiteral).text);
     });
+    // frontend-build re-stitches index.html with Blob's login after a change
+    // (pr-comments.ts reads it); it never sees the token.
     expect(imports.sort()).toEqual([
+      "../frontend-build",
       "../github-blob",
       "../support/actor",
       "./context",

@@ -1,9 +1,11 @@
 /** Shared identifiers for the github PR agent. */
 
 import {
+  blobGithubPostingLogin,
   configuredIntegration,
   configuredRepos,
   defaultRepo,
+  isGithubBotLogin,
   type Repo,
 } from "../../server/config";
 
@@ -95,8 +97,29 @@ export const TRIGGER_LABELS = [
   LABEL_ISSUE,
 ] as const;
 
-/** Ends every post by Blob's GitHub machine user (server/github-blob.ts). */
+/** Ends every post by Blob on GitHub (server/github-blob.ts), from its
+ *  machine user or from the owner's account. */
 export const BLOB_MARKER = "<!-- os:blob -->";
+
+/** Whether a GitHub comment is Blob's post: it carries the marker and its
+ *  author is Blob's recorded login (`integrations.github.blob.login`, the
+ *  owner's login when Blob posts as the owner's account) or one of our bot
+ *  logins (the App's, Blob's machine user). Anyone can type the marker, so
+ *  it alone proves nothing; a post by the owner without it stays a
+ *  person's. */
+export function isBlobPost(comment: {
+  login?: string | null;
+  body?: string | null;
+}): boolean {
+  if (!comment.body?.includes(BLOB_MARKER)) return false;
+  const login = comment.login?.trim();
+  if (!login) return false;
+  const recorded = blobGithubPostingLogin();
+  return (
+    (!!recorded && login.toLowerCase() === recorded.toLowerCase()) ||
+    isGithubBotLogin(login)
+  );
+}
 
 export function labelMatches(name: string, expected: string): boolean {
   return name === expected;

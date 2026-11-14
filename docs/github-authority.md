@@ -28,6 +28,14 @@ repository is registered and allowed for Blob, and a public repository is
 listed by name. Writes are capped per owner and per thread, and each one is
 audited with the owner it acted for.
 
+The owner may instead have Blob post as their own account
+(`integrations.github.blob.as: "owner"`, decided on 2026-11-13), with a
+fine-grained token of theirs limited to the chosen repositories. Each post
+is signed `Written by Blob, <owner>'s assistant` and carries Blob's marker,
+the owner's login stays a person's (never a bot login, never reserved), and
+every limit above applies. The GitHub App keeps doing pull request reviews
+([setup](setup/github.md#posting-as-your-own-account)).
+
 The App grant and every installation-token mint exclude repository
 Administration. New repository creation happens in the person's GitHub
 browser session at `https://github.com/new`; Open Session only connects the

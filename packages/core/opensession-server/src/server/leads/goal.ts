@@ -19,7 +19,7 @@ import type {
   SupervisorAnswerer,
   SupervisorItem,
 } from "../supervisor-inbox";
-import { configuredRepos, personaName } from "../config";
+import { blobGithubAs, configuredRepos, personaName } from "../config";
 import type { LeadGoalFields, LeadWakePlan } from "../goal-runner";
 import {
   LEAD_GUARD_REASON_PREFIX,
@@ -217,6 +217,7 @@ export function leadGoalFields(
       owner: leadOwner(doc),
       reportStyle,
       persona: personaName(),
+      githubAs: blobGithubAs(),
     }),
     mode: "ask",
     repo: d.isRepo(project) ? project : undefined,

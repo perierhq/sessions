@@ -812,6 +812,22 @@ describe("standing sessions", () => {
     expect(note).toContain("You never push or merge.");
     expect(note).not.toContain("Pat ");
   });
+
+  test("posting as the owner's account: signed as Blob, public-text rules kept", () => {
+    const note = supervisor.supervisorNote("Robin", "owner");
+    expect(note).toContain("## GitHub as Blob");
+    expect(note).toContain(
+      "You post as the owner's GitHub account, signed as Blob: the server ends every post with a line saying Blob, their assistant, wrote it. Never write as if you were the owner, and post only for the owner.",
+    );
+    expect(note).toContain("You never close, approve, push or merge.");
+    expect(note).toContain(
+      "keep internal details (hostnames, customers, other repositories, sessions, plans) out of public repositories",
+    );
+    expect(note).not.toContain("Blob's own GitHub account");
+    expect(supervisor.supervisorNote("Robin", "own-account")).toContain(
+      "as Blob's own GitHub account",
+    );
+  });
 });
 
 describe("POST /api/supervisor/ensure", () => {

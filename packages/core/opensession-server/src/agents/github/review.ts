@@ -108,10 +108,11 @@ import {
   prDiscussionSection,
   classifyPriorFindings,
   openHumanThreadLines,
+  openOwnThreadAnchors,
   priorReviewSection,
 } from "./review-context";
 import { learnedRulesSection } from "./learned-rules";
-import { repoForFullName } from "./constants";
+import { isBlobPost, repoForFullName } from "./constants";
 import { refreshApprovalGate } from "./approval-gate";
 import {
   admitPublicReview,
@@ -505,7 +506,11 @@ export async function runReview(
             preThreads,
             isGithubBotLogin,
           ),
-          humanThreadLines: openHumanThreadLines(preThreads, isGithubBotLogin),
+          humanThreadLines: openHumanThreadLines(
+            preThreads,
+            isGithubBotLogin,
+            isBlobPost,
+          ),
         })
       : "";
 
@@ -1328,20 +1333,9 @@ async function postReview(
   // Anchors (path:line) where we already have an open, still-current bot comment.
   // Skip re-posting these — the existing comment already covers the same spot.
   // `force` (manual "review again") bypasses dedup so an explicit re-review is fresh.
-  const openBotAnchors = new Set<string>();
-  if (!force) {
-    for (const t of existingThreads) {
-      if (
-        isGithubBotLogin(t.rootAuthor) &&
-        !t.isResolved &&
-        !t.isOutdated &&
-        t.path &&
-        t.line != null
-      ) {
-        openBotAnchors.add(`${t.path}:${t.line}`);
-      }
-    }
-  }
+  const openBotAnchors = force
+    ? new Set<string>()
+    : openOwnThreadAnchors(existingThreads, isGithubBotLogin, isBlobPost);
 
   // Formal review with inline comments, anchored to the diff.
   if (findings.length && pr.headSha) {

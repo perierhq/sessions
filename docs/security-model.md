@@ -644,8 +644,10 @@ steps. Paths below are under `packages/core/opensession-server/src/`.
 
 ## Blob's GitHub tools
 
-Blob posts on GitHub as its own machine user (`docs/github-authority.md`)
-through four gateway tools: `blob_comment`, `blob_review`, `blob_label` and
+Blob posts on GitHub as its own machine user (`docs/github-authority.md`),
+or, with `integrations.github.blob.as` set to `owner`, as the instance
+owner's own account (see "Posting as the owner's account" below), through
+four gateway tools: `blob_comment`, `blob_review`, `blob_label` and
 `blob_open_issue` (`server/blob-github-tools.ts`). The REST calls and every
 guard live in `server/github-blob.ts`, the only module that resolves the
 token (`github-blob-boundary.test.ts`). Paths are under
@@ -714,6 +716,33 @@ token (`github-blob-boundary.test.ts`). Paths are under
   `integrations.github.blob.enabled` to false and raises one needs-you item
   to the instance owner. The supervisor inbox sweep raises one needs-you
   item when the token expires within 14 days.
+- **Only allowed calls leave.** Before the token is sent,
+  `blobRequestRefusal` checks each call against a fixed list: a comment, a
+  review with event `COMMENT`, reading a label, adding or removing labels,
+  and opening an issue without a state or assignees. Closing, approving,
+  requesting changes, editing and merging are refused, whatever account
+  Blob posts as.
+- **Posting as the owner's account.** With `as: "owner"` the token is a
+  fine-grained token of the instance owner's. Saving it is refused unless
+  its login is the owner's GitHub login on the roster and the login the
+  request was signed in with (`routes/blob-github.ts`). That login is a
+  person's, so it is never added to `githubBotLogins` nor reserved
+  (`config.ts` `blobGithubLogin` is empty): the owner's own comments still
+  count as a person's. Blob's posts are recognised by `<!-- os:blob -->`
+  together with their author (`agents/github/constants.ts` `isBlobPost`,
+  `frontend/lib/pr-comments.ts`): the review loop's human threads, open
+  anchors and reply signals, and the Pull requests page's machine comments
+  count a post as Blob's only when it carries the marker and its author is
+  the recorded login (`integrations.github.blob.login`) or one of our bot
+  logins. Anyone can type the marker, so an outside contributor's comment
+  with it stays a person's and never suppresses a review finding. Mention
+  routing skips any body with the marker, which only keeps that comment
+  from starting a reply. Blob's post never reads as the owner's event and
+  the owner's post without the marker stays one. Every post
+  ends `Written by Blob, <owner>'s assistant` and the marker. Each write
+  is refused when the roster's owner login no longer matches the token's,
+  and for anyone but the instance owner (a teammate's supervisor, a lead
+  of another owner). Every other guard above applies unchanged.
 
 ## Blob's board
 

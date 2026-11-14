@@ -1,4 +1,7 @@
-import { GITHUB_BOT_LOGINS } from "./brand";
+import { BLOB_GITHUB_LOGIN, GITHUB_BOT_LOGINS } from "./brand";
+
+/** Ends every post by Blob on GitHub (agents/github/constants.ts). */
+const BLOB_MARKER = "<!-- os:blob -->";
 
 /** Superseded automated reviews remain on GitHub for history, not as actionable discussion. */
 export function isOutdatedReviewComment(body: string): boolean {
@@ -36,13 +39,30 @@ const RELAYED_BY_PERSON = /^\s*(?:Review by\s+)?\*\*[^*\n]+\*\*\s+via\s+\S/;
  * people wrote. So the body decides too — a bot opens with the hidden marker
  * or link reference it uses to find its own comment again
  * (`<!-- os-review -->`, `[vc]: #…`), and a person never does.
+ *
+ * `blobLogin` is the login Blob posts as (brand.ts BLOB_GITHUB_LOGIN).
  */
-export function isMachinePrComment(comment: {
-  author?: string | null;
-  body?: string | null;
-}): boolean {
+export function isMachinePrComment(
+  comment: {
+    author?: string | null;
+    body?: string | null;
+  },
+  blobLogin: string = BLOB_GITHUB_LOGIN,
+): boolean {
   const body = comment.body || "";
   if (RELAYED_BY_PERSON.test(body)) return false;
   if (isBotAuthor(comment.author)) return true;
+  // Blob ends every post with its marker; from the owner's account the
+  // author is a person, so the marker by Blob's recorded login says it is
+  // Blob's. Anyone can type the marker, so from another login it says
+  // nothing.
+  const author = comment.author?.trim().toLowerCase();
+  if (
+    body.includes(BLOB_MARKER) &&
+    !!author &&
+    !!blobLogin &&
+    author === blobLogin.toLowerCase()
+  )
+    return true;
   return /^\s*(?:<!--|\[[a-z][a-z0-9-]*\]:\s*#)/i.test(body);
 }

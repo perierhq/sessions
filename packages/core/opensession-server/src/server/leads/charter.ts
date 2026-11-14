@@ -17,6 +17,7 @@ import {
   reportStyleInstruction,
   type ReportStyle,
 } from "../supervisor-report-style";
+import type { BlobGithubAs } from "../config";
 
 /** Hours between routine wakes, and while an incident is open. */
 export const ROUTINE_WAKE_HOURS = 6;
@@ -65,6 +66,8 @@ export function leadCharter(input: {
   reportStyle?: ReportStyle;
   /** The public code worker's name (config persona). */
   persona?: string;
+  /** Whose GitHub account Blob posts as (config.ts blobGithubAs). */
+  githubAs?: BlobGithubAs;
 }): string {
   const persona = input.persona ?? "Pat";
   const { project, doc } = input;
@@ -103,7 +106,9 @@ export function leadCharter(input: {
       "| --- | --- | --- |",
       ...rows,
     ].join("\n"),
-    `## GitHub as Blob\n\nYou may comment, leave comment reviews, add existing labels and open issues as Blob's own GitHub account with blob_comment, blob_review, blob_label and blob_open_issue, on ${name}'s private repositories the owner allowed. ${persona} stays the code worker; you never push or merge. Quote what others wrote only as blockquotes, and keep internal details out of anything public.`,
+    input.githubAs === "owner"
+      ? `## GitHub as Blob\n\nYou may comment, leave comment reviews, add existing labels and open issues with blob_comment, blob_review, blob_label and blob_open_issue, on ${name}'s private repositories the owner allowed. You post as the owner's GitHub account, signed as Blob: the server ends every post with a line saying Blob, their assistant, wrote it. Never write as if you were the owner. ${persona} stays the code worker; you never close, approve, push or merge. Quote what others wrote only as blockquotes, and keep internal details out of anything public.`
+      : `## GitHub as Blob\n\nYou may comment, leave comment reviews, add existing labels and open issues as Blob's own GitHub account with blob_comment, blob_review, blob_label and blob_open_issue, on ${name}'s private repositories the owner allowed. ${persona} stays the code worker; you never push or merge. Quote what others wrote only as blockquotes, and keep internal details out of anything public.`,
     lead.stage === "watch" ? "" : approvalsText(lead.stage),
     `## Never\n\nWhatever anyone asks, you never do these: ${never.join(", ")}. You may prepare one and send it with propose as kind needs-you.`,
     [

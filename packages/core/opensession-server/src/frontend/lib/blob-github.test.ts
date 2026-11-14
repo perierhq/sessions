@@ -4,6 +4,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ApiError } from "./api/request";
 import {
+  BLOB_GITHUB_AS_CHOICES,
+  BLOB_GITHUB_OWNER_PURPOSE,
+  BLOB_GITHUB_OWNER_TOKEN_HINT,
+  blobGithubAs,
+  canChooseBlobGithubAs,
+  canForgetBlobGithubAccount,
   githubRepoNames,
   loadBlobGithub,
   parseLabels,
@@ -202,5 +208,52 @@ describe("repositories", () => {
       "acme/widget",
     ]);
     expect(togglePublicRepo(current, "acme/docs", false)).toEqual([]);
+  });
+});
+
+describe("whose account Blob posts as", () => {
+  const base = { login: null, tokenSet: false };
+  test("Blob's own unless the server says the owner's", () => {
+    expect(blobGithubAs({})).toBe("own-account");
+    expect(blobGithubAs({ as: "owner" })).toBe("owner");
+  });
+
+  test("chosen only before a token, and not while Blob's own login is recorded", () => {
+    expect(canChooseBlobGithubAs(base)).toBe(true);
+    expect(canChooseBlobGithubAs({ ...base, tokenSet: true })).toBe(false);
+    expect(canChooseBlobGithubAs({ ...base, login: "acme-blob" })).toBe(false);
+    expect(canChooseBlobGithubAs({ ...base, as: "owner", login: "ada" })).toBe(
+      true,
+    );
+  });
+
+  test("Blob's own recorded account can be forgotten only with no token", () => {
+    expect(canForgetBlobGithubAccount({ ...base, login: "acme-blob" })).toBe(
+      true,
+    );
+    expect(canForgetBlobGithubAccount(base)).toBe(false);
+    expect(
+      canForgetBlobGithubAccount({
+        ...base,
+        login: "acme-blob",
+        tokenSet: true,
+      }),
+    ).toBe(false);
+    expect(
+      canForgetBlobGithubAccount({ ...base, as: "owner", login: "ada" }),
+    ).toBe(false);
+  });
+
+  test("the copy says what each choice means and what the owner's token needs", () => {
+    expect(BLOB_GITHUB_AS_CHOICES.map((c) => c.label)).toEqual([
+      "Blob\u2019s account",
+      "My account",
+    ]);
+    expect(BLOB_GITHUB_OWNER_TOKEN_HINT).toBe(
+      "A fine-grained token on your account, limited to the chosen repositories, with Issues and Pull requests read and write.",
+    );
+    expect(BLOB_GITHUB_OWNER_PURPOSE).toContain(
+      "It never closes, approves, pushes or merges.",
+    );
   });
 });

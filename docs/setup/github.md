@@ -147,11 +147,24 @@ token's grant fails the upload and falls back to media links.
 
 ## Blob's GitHub account
 
-Blob, the supervisor and the project leads, gets a GitHub user account of
-its own, so it can comment, leave reviews with comments, add existing labels
-and open issues as itself. It never approves, pushes or merges. The policy is
-in [GitHub authority](../github-authority.md). The examples use the
+Blob, the supervisor and the project leads, can comment, leave reviews with
+comments, add existing labels and open issues on GitHub. It never closes,
+approves, pushes or merges. The policy is in
+[GitHub authority](../github-authority.md). The examples use the
 organization `acme`.
+
+Settings → Members → Blob → **Post as** picks the account its posts come
+from:
+
+- **Blob's account** (the default, `"as": "own-account"`): a GitHub user
+  account of Blob's own, so its posts show under Blob's name.
+- **My account** (`"as": "owner"`): the instance owner's own account,
+  through a fine-grained token of theirs. Posts show under the owner's name,
+  and each one ends with `Written by Blob, <owner>'s assistant`, so readers
+  can tell the assistant wrote it. See
+  [Posting as your own account](#posting-as-your-own-account).
+
+### Blob's own account
 
 The instance owner sets it up:
 
@@ -208,10 +221,77 @@ empty by default, which turns labelling off. Set it with
 The login counts as one of Open Session's own bots, so comments by it never
 start a reply, and no teammate can be added under it. It stays after the
 token is removed, so Blob's earlier posts keep counting as its own. A token
-for a different account is refused; to switch accounts, remove
-`integrations.github.blob` from `config.json` first. The login is never the
+for a different account is refused. To switch accounts, remove the token,
+then choose **Forget Blob's account** in Settings → Members → Blob (or
+`DELETE /api/blob/github`). That clears `integrations.github.blob`: the
+login, repositories and labels. Earlier posts by that account stop counting
+as Blob's, so its comments can start review-agent replies again. The
+**Post as** choice then comes back. The login is never the
 review agent's own: `@acme-blob` does not start a review-agent reply, and
 the review agent does not resolve threads Blob started.
+
+### Posting as your own account
+
+Use this when Blob should speak on a repository as you, for example on a
+public open-source repository where a separate machine user would look
+odd. The GitHub App keeps doing pull request reviews as before.
+
+1. Signed in to GitHub as yourself, create a fine-grained personal access
+   token:
+   - Resource owner: the account or organization that owns the repositories
+   - Repository access: only select repositories, the ones Blob may write on
+   - Repository permissions: Issues read and write, Pull requests read and
+     write (Metadata read-only is added for you)
+   - Expiration: 90 days
+2. In Settings → Members → Blob, choose **Post as: My account**, paste the
+   token and save.
+3. Tick the repositories Blob may write on, and name each public one among
+   them as well.
+
+Saving checks the token with GitHub. It is refused unless its login is your
+GitHub login on the team roster and the one you are signed in with. A token
+for anyone else's account is refused.
+
+```jsonc
+{
+  "integrations": {
+    "github": {
+      "blob": {
+        "as": "owner",
+        "login": "acme-owner",
+        "tokenRef": "wssec-…",
+        "repos": ["acme/widget"],
+        "publicRepos": ["acme/widget"],
+        "enabled": true,
+        "expiresAt": "2027-02-09T12:00:00.000Z",
+      },
+    },
+  },
+}
+```
+
+How it differs from Blob's own account:
+
+- **Your login stays yours.** It is not added to the bot logins and not
+  reserved, so your own comments still start review-agent replies, count as
+  a person's in review threads and stay yours on the roster.
+- **The marker says what Blob wrote.** Every post by Blob ends with the
+  footer and `<!-- os:blob -->`. The GitHub agent, the review loop and the
+  Pull requests page treat a comment as Blob's only when it has the marker
+  and its author is the recorded login (yours here, Blob's machine user
+  otherwise) or the App's bot. A comment of yours without the marker stays
+  yours, and the marker from anyone else counts for nothing.
+- **Only for you.** Blob posts through your account for your own
+  supervisor and leads. A teammate's supervisor can't, and posting stops if
+  the roster names a different login as the owner's.
+- **The same limits.** Only ticked repositories, public ones only when
+  named, the private-terms filter on public repositories, the mention and
+  slash-command refusals, the label allowlist and the rate limits all
+  apply. Blob only comments, leaves `COMMENT` reviews, sets allowed labels
+  and opens issues; it never closes, approves, pushes or merges.
+- **Removing the token drops the login**, since nothing depends on it. To
+  move from Blob's own account to yours, remove its token and choose
+  **Forget Blob's account** first, as for any switch of Blob's own account.
 
 ## Who holds which credential
 
