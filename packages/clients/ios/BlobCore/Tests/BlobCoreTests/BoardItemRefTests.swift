@@ -116,37 +116,93 @@ struct BoardItemRefTests {
     /// 2026-11-14 08:00 UTC, in ms.
     static let morning = 1_794_643_200_000.0
 
-    static func board(updatedAt: Double, empty: Bool = false) -> BoardSnapshot {
-        BoardSnapshot(
-            revision: 3, latestRevision: 3, updatedAt: updatedAt,
-            elements: empty ? [] : [BoardElement(id: "t", content: .text(x: 0, y: 0, w: 100, h: nil, role: .title, text: "Hi", sub: nil, status: nil))]
+    /// A board at `revision` with a title and an `item:` element for each of
+    /// `items`.
+    static func board(updatedAt: Double, empty: Bool = false, revision: Int = 3, items: [String] = []) -> BoardSnapshot {
+        let title = BoardElement(id: "t", content: .text(x: 0, y: 0, w: 100, h: nil, role: .title, text: "Hi", sub: nil, status: nil))
+        let refs = items.enumerated().map { index, id in
+            BoardElement(id: "d\(index)", ref: "item:\(id)", content: .text(x: 0, y: Double(40 * (index + 1)), w: 300, h: nil, role: .title, text: nil, sub: nil, status: nil))
+        }
+        return BoardSnapshot(
+            revision: revision, latestRevision: revision, updatedAt: updatedAt,
+            elements: empty ? [] : [title] + refs
         )
     }
 
-    static func page(boardRevision: Int?, kind: BlobBriefState.Page.Kind = .brief) -> BlobBriefState.Page {
-        .init(kind: kind, key: "k", say: "Morning.", decisions: [], boardRevision: boardRevision)
+    static func page(boardRevision: Int?, kind: BlobBriefState.Page.Kind = .brief, decisions: [SupervisorItem] = []) -> BlobBriefState.Page {
+        .init(kind: kind, key: "k", say: "Morning.", decisions: decisions, boardRevision: boardRevision)
     }
 
     @Test func `a brief with a board revision shows on the board`() {
         let old = Self.board(updatedAt: Self.morning - 3 * 86_400_000)
-        #expect(Self.page(boardRevision: 3).drawn(on: old, today: "2026-11-14", calendar: Self.utc))
+        #expect(Self.page(boardRevision: 3).drawn(on: old, open: [], today: "2026-11-14", calendar: Self.utc))
+    }
+
+    @Test func `a board older than the brief's revision keeps the cards`() {
+        let earlier = Self.board(updatedAt: Self.morning, revision: 2)
+        #expect(!Self.page(boardRevision: 3).drawn(on: earlier, open: [], today: "2026-11-14", calendar: Self.utc))
+        let later = Self.board(updatedAt: Self.morning, revision: 4)
+        #expect(Self.page(boardRevision: 3).drawn(on: later, open: [], today: "2026-11-14", calendar: Self.utc))
     }
 
     @Test func `a brief without one shows on a board drawn today`() {
         let today = Self.board(updatedAt: Self.morning)
         let yesterday = Self.board(updatedAt: Self.morning - 86_400_000)
-        #expect(Self.page(boardRevision: nil).drawn(on: today, today: "2026-11-14", calendar: Self.utc))
-        #expect(!Self.page(boardRevision: nil).drawn(on: yesterday, today: "2026-11-14", calendar: Self.utc))
-        #expect(!Self.page(boardRevision: nil).drawn(on: Self.board(updatedAt: 0), today: "1970-01-01", calendar: Self.utc))
+        #expect(Self.page(boardRevision: nil).drawn(on: today, open: [], today: "2026-11-14", calendar: Self.utc))
+        #expect(!Self.page(boardRevision: nil).drawn(on: yesterday, open: [], today: "2026-11-14", calendar: Self.utc))
+        #expect(!Self.page(boardRevision: nil).drawn(on: Self.board(updatedAt: 0), open: [], today: "1970-01-01", calendar: Self.utc))
     }
 
     @Test func `the cards stay when the board is empty or missing, or the page isn't the brief`() {
         let empty = Self.board(updatedAt: Self.morning, empty: true)
-        #expect(!Self.page(boardRevision: 3).drawn(on: empty, today: "2026-11-14", calendar: Self.utc))
-        #expect(!Self.page(boardRevision: 3).drawn(on: nil, today: "2026-11-14", calendar: Self.utc))
+        #expect(!Self.page(boardRevision: 3).drawn(on: empty, open: [], today: "2026-11-14", calendar: Self.utc))
+        #expect(!Self.page(boardRevision: 3).drawn(on: nil, open: [], today: "2026-11-14", calendar: Self.utc))
         let today = Self.board(updatedAt: Self.morning)
-        #expect(!Self.page(boardRevision: 3, kind: .linked).drawn(on: today, today: "2026-11-14", calendar: Self.utc))
-        #expect(!Self.page(boardRevision: 3, kind: .newSince).drawn(on: today, today: "2026-11-14", calendar: Self.utc))
+        #expect(!Self.page(boardRevision: 3, kind: .linked).drawn(on: today, open: [], today: "2026-11-14", calendar: Self.utc))
+        #expect(!Self.page(boardRevision: 3, kind: .newSince).drawn(on: today, open: [], today: "2026-11-14", calendar: Self.utc))
+    }
+
+    @Test func `the board shows only when it holds every open decision`() {
+        let a = BriefStateTests.item("si-a"), b = BriefStateTests.item("si-b")
+        let page = Self.page(boardRevision: 3, decisions: [a, b])
+        let both = Self.board(updatedAt: Self.morning, items: ["si-a", "si-b"])
+        #expect(page.drawn(on: both, open: [a, b], today: "2026-11-14", calendar: Self.utc))
+        // One decision isn't on the board: it couldn't be opened, so the cards.
+        let missingOne = Self.board(updatedAt: Self.morning, items: ["si-a"])
+        #expect(!page.drawn(on: missingOne, open: [a, b], today: "2026-11-14", calendar: Self.utc))
+        // Drawn today without a revision, the same rule.
+        let undated = Self.page(boardRevision: nil, decisions: [a, b])
+        #expect(!undated.drawn(on: missingOne, open: [a, b], today: "2026-11-14", calendar: Self.utc))
+        // Once the missing one is closed, the board holds every open one.
+        #expect(page.drawn(on: missingOne, open: [a], today: "2026-11-14", calendar: Self.utc))
+        // An item element with an unreadable id is no decision.
+        let odd = Self.board(updatedAt: Self.morning, items: ["si-a", "not-an-item"])
+        #expect(!page.drawn(on: odd, open: [a, b], today: "2026-11-14", calendar: Self.utc))
+    }
+
+    @Test func `a brief state's open decisions decide the board`() {
+        let a = BriefStateTests.item("si-a"), b = BriefStateTests.item("si-b")
+        var state = BriefStateTests.showing([a, b])
+        let board = Self.board(updatedAt: Self.morning, items: ["si-a"])
+        let today = BlobBriefState.day(of: Date(timeIntervalSince1970: Self.morning / 1000), in: Self.utc)
+        #expect(state.page?.drawn(on: board, open: state.open, today: today, calendar: Self.utc) == false)
+        state.close(b, saying: "Done.")
+        #expect(state.page?.drawn(on: board, open: state.open, today: today, calendar: Self.utc) == true)
+    }
+
+    // MARK: Looking up a tapped item
+
+    @Test func `a tapped item is open, closed, or can't be told`() {
+        let a = BriefStateTests.item("si-a", revision: 4)
+        #expect(BlobBriefState.lookup("si-a", in: [a], limit: 100) == .open(a))
+        #expect(BlobBriefState.lookup("si-b", in: [a], limit: 100) == .closed)
+        #expect(BlobBriefState.lookup("si-b", in: [], limit: 100) == .closed)
+        let answered = BriefStateTests.item("si-a", state: "answered")
+        #expect(BlobBriefState.lookup("si-a", in: [answered], limit: 100) == .closed)
+        // The read failed: a network error, not a closed item.
+        #expect(BlobBriefState.lookup("si-a", in: nil, limit: 100) == .unavailable)
+        // A full list may have left it out.
+        #expect(BlobBriefState.lookup("si-b", in: [a], limit: 1) == .unavailable)
     }
 
     @Test func `a board revision written after the brief comes with the next read`() throws {

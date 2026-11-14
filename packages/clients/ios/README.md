@@ -994,11 +994,15 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   `GET /api/supervisor/items` and answered through the item's answer call
   with its revision, as a `blob://item/<id>` link does; the page it covered
   (the brief) comes back once it is done, and an item no longer open shows
-  its live fields. VoiceOver reads it as "Decision: <title>". A brief the
-  supervisor drew (the brief response's `boardRevision`, or a board that
-  changed today: `Page.drawn(on:)`) shows the board instead of its decision
-  cards, with what Blob said and the handled line over it; Blob still says
-  it, and the cards come back when the board is empty. Text is
+  its live fields; one that couldn't be read says "Couldn't load the
+  decision. Try again." Only the latest tap counts: a newer tap or leaving
+  the home cancels the read. VoiceOver reads it as "Decision: <title>". A
+  brief the supervisor drew (the brief response's `boardRevision`, which
+  the shown board has reached, or a board that changed today) shows the
+  board instead of its decision cards only when every open decision has
+  an `item:` element on the shown board (`Page.drawn(on:open:)`), with
+  what Blob said and the handled line over it; Blob still says it.
+  Otherwise the cards stay, with the board dimmed behind them. Text is
   SF Pro in its type-scale role; notes are Kalam Regular (`Board/Kalam`,
   SIL OFL 1.1 with its `OFL.txt`), registered at run time, 16 pt scaling
   with Dynamic Type up to 22 pt; board text scales by the same factor at

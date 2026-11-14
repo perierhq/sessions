@@ -72,15 +72,26 @@ public struct BlobBriefState: Sendable {
         }
 
         /// Whether Blob shows this page on `board` instead of its decision
-        /// cards: a brief the supervisor drew (it names a board revision, or
-        /// the board changed on `today`, the owner's local day), on a board
-        /// that holds anything. An empty board, or any other page, keeps the
-        /// cards. The spoken line plays either way.
-        public func drawn(on board: BoardSnapshot?, today: String, calendar: Calendar = .current) -> Bool {
+        /// cards: a brief the supervisor drew (it names a board revision the
+        /// shown board has reached, or, naming none, the board changed on
+        /// `today`, the owner's local day), where every decision in `open`
+        /// has an `item:` element on that board, so each can be opened from
+        /// it. A decision missing from the board, an empty board, or any
+        /// other page keeps the cards. The spoken line plays either way.
+        public func drawn(
+            on board: BoardSnapshot?, open: [Item], today: String, calendar: Calendar = .current
+        ) -> Bool {
             guard kind == .brief, let board, !board.isEmpty else { return false }
-            if boardRevision != nil { return true }
-            guard board.updatedAt > 0 else { return false }
-            return BlobBriefState.day(of: Date(timeIntervalSince1970: board.updatedAt / 1000), in: calendar) == today
+            if let boardRevision {
+                // An earlier revision than the brief's can't hold its drawing.
+                guard board.revision >= boardRevision else { return false }
+            } else {
+                guard board.updatedAt > 0,
+                      BlobBriefState.day(of: Date(timeIntervalSince1970: board.updatedAt / 1000), in: calendar) == today
+                else { return false }
+            }
+            let onBoard = Set(board.elements.compactMap { board.itemId(for: $0.ref) })
+            return open.allSatisfy { onBoard.contains($0.id) }
         }
     }
 
@@ -152,6 +163,27 @@ public struct BlobBriefState: Sendable {
     private var behind: Page?
 
     public init() {}
+
+    /// What a read of the open items says about one item tapped on the
+    /// board.
+    public enum Lookup: Equatable, Sendable {
+        /// Still open: this is it, at its current revision.
+        case open(Item)
+        /// Not among the open items: answered, dismissed or gone.
+        case closed
+        /// The items couldn't be read, or the list was full and may have
+        /// left it out.
+        case unavailable
+    }
+
+    /// Finds `id` in `items`, the open items as read (nil when the read
+    /// failed). `limit`: the most the server lists, so a full list that
+    /// lacks the item can't say it is closed.
+    public static func lookup(_ id: String, in items: [Item]?, limit: Int) -> Lookup {
+        guard let items else { return .unavailable }
+        if let item = items.first(where: { $0.id == id && $0.isOpen }) { return .open(item) }
+        return items.count < limit ? .closed : .unavailable
+    }
 
     /// Decisions on the page still open here.
     public var open: [Item] { page?.decisions.filter { !closed.contains($0.id) } ?? [] }

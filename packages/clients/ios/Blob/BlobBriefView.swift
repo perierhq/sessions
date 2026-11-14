@@ -11,9 +11,10 @@ import SwiftUI
 /// decisions go to the second pane (`.decisions`). There the handled lines
 /// start open, since the pane has the room; on one pane they start closed.
 ///
-/// A brief the supervisor drew on the board (`Page.drawn(on:)`) shows the
-/// board instead of the decisions: what Blob said and the quiet line sit
-/// over it (`.board`), and each decision opens from its element there.
+/// A brief the supervisor drew on the board, with every open decision on it
+/// (`Page.drawn(on:open:)`), shows the board instead of the decisions: what
+/// Blob said and the quiet line sit over it (`.board`), and each decision
+/// opens from its element there.
 struct BlobBriefView: View {
     enum Part { case all, conversation, decisions, board }
 
