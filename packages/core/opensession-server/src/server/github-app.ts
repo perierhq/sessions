@@ -636,6 +636,9 @@ export async function githubAppRepositoryToken(
      *  session's attached repositories. Same owner only
      *  (githubRunTokenRepositories). */
     alsoRepos?: readonly string[];
+    /** An exact permission set for the token, replacing the code or read
+     *  set: a caller that needs less than a code run asks for only that. */
+    permissions?: Record<string, string>;
   } = {},
 ): Promise<string | null> {
   if (!githubConfiguredCredential()) return null;
@@ -657,7 +660,8 @@ export async function githubAppRepositoryToken(
     // and Actions logs they are expected to repair. Read-only callers
     // (ask-mode runs) get the read set: the same visibility with no write
     // capability behind it.
-    const permissions = opts.readOnly ? READ_PERMISSIONS : CODE_PERMISSIONS;
+    const permissions =
+      opts.permissions ?? (opts.readOnly ? READ_PERMISSIONS : CODE_PERMISSIONS);
     try {
       const token = await mintInstallationToken(installation.id, headers, {
         repositories,

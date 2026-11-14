@@ -51,7 +51,7 @@
  * project lead's step the owner approved (leads/apply.ts) posts through the
  * installed GitHub App instead, the bot the review agent posts as: the
  * third poster mode, `app` (see "Posting as Blob" below). Its installation
- * token is minted here too, in `defaultDeps.appToken`, and nowhere else for
+ * token is minted here too, in `blobAppToken`, and nowhere else for
  * Blob's writes (github-blob-boundary.test.ts). Nothing else posts through
  * it: the supervisor's and the lead's own blob_ tools stay unavailable
  * until Blob has an account.
@@ -169,8 +169,8 @@ interface Deps {
   /** The instance owner on the roster: their name and GitHub login
    *  (incidents/owner.ts), or null without one. */
   instanceOwner(): Promise<{ name: string; github?: string } | null>;
-  /** The GitHub App's installation token for `ghRepo`'s owner, with the
-   *  App's write set, or null when the App can't mint one. Never logged. */
+  /** The GitHub App's installation token for `ghRepo` alone, with only
+   *  BLOB_APP_PERMISSIONS, or null when the App can't mint one. Never logged. */
   appToken(ghRepo: string): Promise<string | null>;
 }
 
@@ -199,15 +199,25 @@ const defaultDeps: Deps = {
     (await import("./run-instructions")).sessionLink(sessionId),
   instanceOwner: async () =>
     (await import("./incidents/owner")).instanceOwnerMember(),
-  appToken: async (ghRepo) => {
-    const { githubInstallationCredential } = await import("./github-app");
-    const credential = await githubInstallationCredential({
-      write: true,
-      repo: ghRepo,
-    });
-    return credential?.token ?? null;
-  },
+  appToken: (ghRepo) => blobAppToken(ghRepo),
 };
+
+/** What an approved lead step needs from the App: comment on, label, open
+ *  and close issues and pull requests, and review. */
+export const BLOB_APP_PERMISSIONS: Readonly<Record<string, string>> = {
+  issues: "write",
+  pull_requests: "write",
+  metadata: "read",
+};
+
+/** The App's installation token for `ghRepo` alone, holding only
+ *  BLOB_APP_PERMISSIONS, or null when the App can't mint one. Never logged. */
+export async function blobAppToken(ghRepo: string): Promise<string | null> {
+  const { githubAppRepositoryToken } = await import("./github-app");
+  return githubAppRepositoryToken(ghRepo, {
+    permissions: { ...BLOB_APP_PERMISSIONS },
+  });
+}
 
 let deps: Deps = defaultDeps;
 

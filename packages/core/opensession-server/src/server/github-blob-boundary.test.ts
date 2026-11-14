@@ -155,9 +155,9 @@ describe("Blob's GitHub token boundary", () => {
 
   // Approved lead steps post through the GitHub App while Blob has no
   // account (github-blob.ts, the `app` mode). That installation token is
-  // resolved in one place, github-blob.ts `defaultDeps.appToken`, through
-  // the existing helper; no other module hands Blob's write path a token.
-  test("github-blob.ts mints the App's token in one place, through githubInstallationCredential", () => {
+  // resolved in one place, github-blob.ts `blobAppToken`, through the
+  // repository-scoped helper; no other module hands Blob's write path a token.
+  test("github-blob.ts mints the App's token in one place, through githubAppRepositoryToken", () => {
     const text = readFileSync(resolve(sourceRoot, OWNER), "utf8");
     const source = ts.createSourceFile(
       OWNER,
@@ -190,8 +190,8 @@ describe("Blob's GitHub token boundary", () => {
     expect(appImports).toEqual(["./github-app"]);
     // The destructured name and its one call.
     expect(mints).toEqual([
-      "githubInstallationCredential",
-      "githubInstallationCredential",
+      "githubAppRepositoryToken",
+      "githubAppRepositoryToken",
     ]);
   });
 
