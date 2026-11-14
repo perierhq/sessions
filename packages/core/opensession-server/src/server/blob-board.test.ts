@@ -450,6 +450,35 @@ describe("tools", () => {
     expect(out.text).toContain('- a1 arrow c-ci.right → (400,200) "blocks"');
   });
 
+  test("board_read: lists text that likely overflows, with the fix", async () => {
+    await applied(
+      "Ada",
+      [
+        {
+          op: "add",
+          el: {
+            id: "count",
+            type: "text",
+            role: "stat",
+            x: 16,
+            y: 16,
+            w: 200,
+            h: 32,
+            text: "6 handled alone · 8 asked you · 3 waiting",
+          },
+        },
+      ],
+      0,
+    );
+    const out = await run(tools.boardReadTool(ctx(OPEN)), {});
+    expect(out.text).toContain(
+      "Text that likely overflows or collides as the app draws it",
+    );
+    expect(out.text).toMatch(
+      /- count: its words need about \d+ pt on one line at stat size, its box is \d+ wide; shorten it/,
+    );
+  });
+
   test("board_read on an empty board, without a camera", async () => {
     const out = await run(tools.boardReadTool(ctx()), {});
     expect(out.text).toContain("Board revision 0");
@@ -463,16 +492,13 @@ describe("tools", () => {
   test("board_apply: applies, reports and returns the canvas fence", async () => {
     const out = await run(tools.boardApplyTool(ctx(OPEN)), {
       expected_revision: 0,
-      ops: [
-        add("t", 460, 10, { w: 20, text: "On the fold" }),
-        add("far", 2000, 10),
-      ],
+      ops: [add("t", 460, 10, { w: 20, text: "On" }), add("far", 2000, 10)],
     });
     expect(out.isError).toBe(false);
     expect(out.text).toContain("Applied: the board is at revision 1.");
     expect(out.text).toContain("Moved off the fold: t by -24.5 pt.");
     expect(out.text).toContain("Outside what the owner sees now: far.");
-    expect(out.text).toContain("```canvas\nrevision: 1\nOn the fold\nfar\n```");
+    expect(out.text).toContain("```canvas\nrevision: 1\nOn\nfar\n```");
   });
 
   test("board_apply: live titles in the fence are quoted as data", async () => {

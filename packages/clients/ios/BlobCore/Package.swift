@@ -13,6 +13,6 @@ let package = Package(
     ],
     targets: [
         .target(name: "BlobCore"),
-        .testTarget(name: "BlobCoreTests", dependencies: ["BlobCore"]),
+        .testTarget(name: "BlobCoreTests", dependencies: ["BlobCore"], exclude: ["Fixtures"]),
     ]
 )

@@ -10,7 +10,11 @@ import {
   BOARD_ELEMENT_TYPES,
   BOARD_LIMITS,
   BOARD_PALETTE,
+  FRAME_TITLE_BAND,
+  TEXT_LINE_HEIGHT,
+  TEXT_SIZE,
   boardRefs,
+  boardTextIssues,
   canvasFence,
   type ArrowEnd,
   type Board,
@@ -133,8 +137,17 @@ export function outlineBoard(
     LIVE_DATA_LABEL,
     ...board.elements.map((el) => outlineElement(el, refs)),
   );
+  const issues = boardTextIssues(board.elements, refs, viewport);
+  if (issues.length)
+    lines.push(
+      "Text that likely overflows or collides as the app draws it (estimated at each role's size); fix these by id:",
+      ...issues.map((issue) => `- ${issue.detail}`),
+    );
   return lines.join("\n");
 }
+
+/** The type scale as the model is told it: each role's size and line. */
+export const TEXT_SCALE_LINE = `Text sizes (SF Pro, font/line in pt): ${(["stat", "title", "supporting", "meta"] as const).map((role) => `${role} ${TEXT_SIZE[role]}/${TEXT_LINE_HEIGHT[role]}${role === "title" ? " semibold" : ""}`).join(", ")}; a ref card adds 44 pt across and 20 pt of height around a title and a status line (at least 58 tall). Size w for the words at that size (about half the font size per character, more for capitals and digits) and h for every line; leave ${FRAME_TITLE_BAND} pt at the top of a frame for its title and start its elements below that.`;
 
 export interface BoardToolContext {
   user: string;
@@ -161,7 +174,7 @@ export function boardReadTool(ctx: BoardToolContext) {
   );
 }
 
-export const BOARD_APPLY_DESCRIPTION = `Change the owner's board with ops, applied in order, all or none, on the revision you read (expected_revision from board_read; a board that moved on is refused, read it again). Ops: {op:"add", el}, {op:"update", id, set} (null clears a field; id and type never change), {op:"move", id, x, y}, {op:"remove", id} (also removes the arrows and notes bound to it, reported), {op:"clear", keep:[ids]} only to start over. Elements: id (letters, digits, -), x, y, w, h in points from the top-left of the first screen, z, style {stroke, fill, color} with tokens ${BOARD_PALETTE.join(", ")} (one tangerine element per board; arrows, strokes and shapes without a ref are ink), ref "kind:locator" for a real object (pr:<project>#<n>, check:<project>#<n>/<name>, incident:<project>/<id>, thread:<project>/<conversation id>, release:<project>@<version>, project:<project>, item:<inbox item id> for a decision or update in your inbox, which opens the decision when tapped); the board shows its live status and the owner can tap it. Types: ${BOARD_ELEMENT_TYPES.join(", ")}. frame {title?, region?: a project of the owner's, one per project}; text {role: stat|title|supporting|meta|say, text?, sub?, status?, h optional; with a ref, text may use {ref.title} and {ref.status}}; shape {kind: rect|ellipse|diamond|line, points? for a line}; arrow {start, end: {id, side?} or {x, y}, bend? -0.5..0.5, label?}; stroke {points: [[x, y], ...] relative to x, y}; image {src: one of this server's media paths (/media?path=<absolute path>, /api/plain/attachments/<id>, /api/support/conversations/<id>/attachments/<id>, /gh-asset/<id>?repo=<repo>), never an external URL, fit?, alt?}; note {anchor: {id, side: top|right|bottom|left, dx?, dy?}, text: at most ${BOARD_LIMITS.noteWords} words, plain, leader?}: a note has no box, follows its anchor and is never the only place a fact appears. The server clamps what you touched to the board, moves text off the Duo's fold and says so; it never moves anything else. The result gives the canvas fence to put in your reply.`;
+export const BOARD_APPLY_DESCRIPTION = `Change the owner's board with ops, applied in order, all or none, on the revision you read (expected_revision from board_read; a board that moved on is refused, read it again). Ops: {op:"add", el}, {op:"update", id, set} (null clears a field; id and type never change), {op:"move", id, x, y}, {op:"remove", id} (also removes the arrows and notes bound to it, reported), {op:"clear", keep:[ids]} only to start over. Elements: id (letters, digits, -), x, y, w, h in points from the top-left of the first screen, z, style {stroke, fill, color} with tokens ${BOARD_PALETTE.join(", ")} (one tangerine element per board; arrows, strokes and shapes without a ref are ink), ref "kind:locator" for a real object (pr:<project>#<n>, check:<project>#<n>/<name>, incident:<project>/<id>, thread:<project>/<conversation id>, release:<project>@<version>, project:<project>, item:<inbox item id> for a decision or update in your inbox, which opens the decision when tapped); the board shows its live status and the owner can tap it. Types: ${BOARD_ELEMENT_TYPES.join(", ")}. frame {title?, region?: a project of the owner's, one per project}; text {role: stat|title|supporting|meta|say, text?, sub?, status?, h optional; with a ref, text may use {ref.title} and {ref.status}}; shape {kind: rect|ellipse|diamond|line, points? for a line}; arrow {start, end: {id, side?} or {x, y}, bend? -0.5..0.5, label?}; stroke {points: [[x, y], ...] relative to x, y}; image {src: one of this server's media paths (/media?path=<absolute path>, /api/plain/attachments/<id>, /api/support/conversations/<id>/attachments/<id>, /gh-asset/<id>?repo=<repo>), never an external URL, fit?, alt?}; note {anchor: {id, side: top|right|bottom|left, dx?, dy?}, text: at most ${BOARD_LIMITS.noteWords} words, plain, leader?}: a note has no box, follows its anchor and is never the only place a fact appears. ${TEXT_SCALE_LINE} The server clamps what you touched to the board, moves text off the Duo's fold and below a frame's title, widens text whose words would wrap when there is room (else makes it taller), and says so; it never moves anything else, so fix what it reports still collides. The result gives the canvas fence to put in your reply.`;
 
 export function boardApplyTool(ctx: BoardToolContext) {
   return tool(
@@ -215,6 +228,23 @@ export function boardApplyTool(ctx: BoardToolContext) {
       if (report.nudged.length)
         lines.push(
           `Moved off the fold: ${report.nudged.map((m) => `${m.id} by ${n(m.dx)} pt`).join(", ")}.`,
+        );
+      if (report.belowTitle.length)
+        lines.push(
+          `Moved below its frame's title: ${report.belowTitle.map((m) => `${m.id} to y ${n(m.y)}`).join(", ")}.`,
+        );
+      if (report.widened.length)
+        lines.push(
+          `Widened so the words fit one line: ${report.widened.map((m) => `${m.id} to w ${n(m.w)}`).join(", ")}.`,
+        );
+      if (report.grown.length)
+        lines.push(
+          `Made taller so the words fit: ${report.grown.map((m) => `${m.id} to h ${n(m.h)}`).join(", ")}.`,
+        );
+      if (report.issues.length)
+        lines.push(
+          "Still likely to overflow or collide; fix by id:",
+          ...report.issues.map((issue) => `- ${issue.detail}`),
         );
       if (report.clamped.length)
         lines.push(

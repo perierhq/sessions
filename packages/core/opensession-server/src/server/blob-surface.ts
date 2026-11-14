@@ -149,6 +149,10 @@ export function boardViewportLines(sent: BoardViewport | undefined): string[] {
     lines.push(
       `Closed, the camera shows x 0–${pt(viewport.closed.w)}: put what the owner must see first there, so it is on screen closed and open; use x ≥ ${pt(viewport.hinge?.[1] ?? DUO_OPEN.hinge[1])} for what can wait a pan.`,
     );
+  if (viewport.hinge && viewport.closed)
+    lines.push(
+      `Open now, the right screen shows board x ${pt(viewport.hinge[1])}–${pt(view.x + view.w)} too: put new content that doesn't fit the closed view there (a region, a timeline, the detail), never by moving what is already on the board.`,
+    );
   if (viewport.closed && !viewport.hinge)
     lines.push(
       `Opened, the fold is board x ${pt(DUO_OPEN.hinge[0])}–${pt(DUO_OPEN.hinge[1])}: no text there.`,

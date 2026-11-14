@@ -1001,17 +1001,30 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   the shown board has reached, or a board that changed today) shows the
   board instead of its decision cards only when every open decision has
   an `item:` element on the shown board (`Page.drawn(on:open:)`), with
-  what Blob said and the handled line over it; Blob still says it.
+  one line of what Blob said (VoiceOver reads all of it) and the handled
+  line under it, never the paragraph; Blob still says it.
   Otherwise the cards stay, with the board dimmed behind them. Text is
   SF Pro in its type-scale role; notes are Kalam Regular (`Board/Kalam`,
   SIL OFL 1.1 with its `OFL.txt`), registered at run time, 16 pt scaling
   with Dynamic Type up to 22 pt; board text scales by the same factor at
-  most, since positions are data. Images load only from this server's
+  most. Text is measured in its role's font (`BoardType`, BlobCore
+  `BoardTextBlock`, estimated by `BoardTextMetrics` in tests): a box too
+  narrow for its words widens up to its frame's inner edge, its column
+  (382 pt on the leading screen, then the fold, then the open Duo's strip)
+  and the next element on its right; past that the words wrap and the box
+  grows, and what it would cover moves down with what it holds (a frame's
+  elements, the circle around a text), as does anything in a frame's 28 pt
+  title band, where the title is drawn. Each change is in
+  `BoardLayout.adjustments`, logged (category `board`) in debug builds.
+  Images load only from this server's
   media routes (`BoardImageSource`, checked again before fetching). One
   camera over the board, held in `BlobBoard` above the view: board (0, 0)
   is the content area's top-left inside the leading and top insets, and
   the trailing inset (the closed Duo's 84 pt strip, the open Duo's rail)
-  is chrome. Pan with a finger, pinch from 25% to 200%; Fit (in the strip
+  is chrome, and so is the controls band at the bottom (`BoardChrome`:
+  the caption, the brief's quiet line, the write bar, Blob's corner when
+  it rests over the board): the board is drawn, fitted and panned only
+  above it. Pan with a finger, pinch from 25% to 200%; Fit (in the strip
   on the Duo, top trailing elsewhere) frames what the last reply touched
   (`/board/versions`), and again goes back to the origin; More pans to
   content past an edge. Opening the Duo widens the camera and keeps its
@@ -1024,7 +1037,10 @@ adds `Blob/`: its own entry point, home screen and character. Bundle id
   (`BoardReading`): left screen first, top to bottom, a note right after
   its anchor as "Note on <anchor>: <text>"; refs are buttons. Camera moves
   are a short ease, a jump under Reduce Motion. Each message's `surface`
-  carries the camera as `viewport` (`BoardViewportReport`).
+  carries the camera as `viewport` (`BoardViewportReport`: its height
+  without the controls band, the fold when open, the closed size on a
+  Duo open or closed), and so does the brief's `start=1` read (`surface`
+  query), so the brief turn draws for the device as it is now.
 - Not in the release workflows yet: it has no App Store record or
   provisioning profile.
 

@@ -1,0 +1,266 @@
+{
+  "schema": 1,
+  "revision": 3,
+  "latestRevision": 3,
+  "updatedAt": 1794652685558,
+  "elements": [
+    {
+      "id": "brief-count",
+      "x": 16,
+      "y": 16,
+      "w": 350,
+      "h": 28,
+      "type": "text",
+      "role": "stat",
+      "text": "6 handled alone · 8 asked you"
+    },
+    {
+      "id": "region-acme",
+      "x": 8,
+      "y": 56,
+      "w": 366,
+      "h": 190,
+      "type": "frame",
+      "title": "acme",
+      "region": "acme"
+    },
+    {
+      "id": "dec-acme-328",
+      "x": 20,
+      "y": 84,
+      "w": 340,
+      "h": 44,
+      "type": "text",
+      "style": {
+        "color": "tangerine"
+      },
+      "ref": "item:si-4556fdc9-5fcf-442a-86b3-10bb35d15aa9",
+      "role": "title",
+      "text": "Gizmo 4.0 fix: approve test runs"
+    },
+    {
+      "id": "rf-blob-off",
+      "x": 36,
+      "y": 170,
+      "w": 190,
+      "h": 26,
+      "type": "text",
+      "role": "supporting",
+      "text": "Blob GitHub account off"
+    },
+    {
+      "id": "rf-blob-off-circle",
+      "x": 22,
+      "y": 160,
+      "w": 218,
+      "h": 46,
+      "type": "shape",
+      "kind": "ellipse"
+    },
+    {
+      "id": "rf-blob-arrow",
+      "type": "arrow",
+      "start": {
+        "id": "rf-blob-off-circle"
+      },
+      "end": {
+        "id": "dec-acme-328"
+      }
+    },
+    {
+      "id": "rf-blob-note",
+      "type": "note",
+      "anchor": {
+        "id": "rf-blob-off-circle",
+        "side": "right"
+      },
+      "text": "first approval failed"
+    },
+    {
+      "id": "region-example",
+      "x": 8,
+      "y": 262,
+      "w": 366,
+      "h": 200,
+      "type": "frame",
+      "title": "example",
+      "region": "example"
+    },
+    {
+      "id": "dec-example-support",
+      "x": 20,
+      "y": 290,
+      "w": 340,
+      "h": 44,
+      "type": "text",
+      "ref": "item:si-743163a4-1ff3-4e01-be51-bd8e2fa8fe28",
+      "role": "title",
+      "text": "German customer reply: read it"
+    },
+    {
+      "id": "dec-example-csp",
+      "x": 20,
+      "y": 342,
+      "w": 340,
+      "h": 44,
+      "type": "text",
+      "ref": "item:si-224ca28d-125e-4524-a8e0-37b5d4e8a411",
+      "role": "title",
+      "text": "Meta pixel: fix security policy"
+    },
+    {
+      "id": "du-pr78",
+      "x": 20,
+      "y": 404,
+      "w": 220,
+      "h": 26,
+      "type": "text",
+      "ref": "pr:example#78",
+      "role": "supporting",
+      "text": "Pixel PR: 2 checks failing"
+    },
+    {
+      "id": "du-pr78-note",
+      "type": "note",
+      "anchor": {
+        "id": "du-pr78",
+        "side": "right"
+      },
+      "text": "still stuck"
+    },
+    {
+      "id": "region-globex",
+      "x": 8,
+      "y": 478,
+      "w": 366,
+      "h": 180,
+      "type": "frame",
+      "title": "globex",
+      "region": "globex"
+    },
+    {
+      "id": "bb-533",
+      "x": 20,
+      "y": 506,
+      "w": 220,
+      "h": 26,
+      "type": "text",
+      "ref": "pr:globex#533",
+      "role": "supporting",
+      "text": "Search 1.19.0 merged"
+    },
+    {
+      "id": "bb-incident",
+      "x": 20,
+      "y": 580,
+      "w": 220,
+      "h": 26,
+      "type": "text",
+      "ref": "incident:globex/inc-01a1c65e-641b-71d6-bf2d-39e23effcb58",
+      "role": "supporting",
+      "text": "Status incident reopened"
+    },
+    {
+      "id": "bb-arrow",
+      "type": "arrow",
+      "start": {
+        "id": "bb-533"
+      },
+      "end": {
+        "id": "bb-incident"
+      }
+    },
+    {
+      "id": "bb-note",
+      "type": "note",
+      "anchor": {
+        "id": "bb-incident",
+        "side": "right"
+      },
+      "text": "re-run approved"
+    }
+  ],
+  "refs": {
+    "pr:example#78": {
+      "ok": true,
+      "kind": "pr",
+      "title": "#78 feat(storefront): Meta pixel and Conversions API behind ads consent",
+      "status": "checks failing",
+      "statusTone": "red",
+      "url": "https://github.com/acme/example/pull/78",
+      "updatedAt": "2026-11-12T04:04:47Z",
+      "fields": {
+        "number": "78",
+        "checks": "0/6 passed, 2 failed"
+      }
+    },
+    "pr:globex#533": {
+      "ok": true,
+      "kind": "pr",
+      "title": "#533 chore: release search-service 1.19.0",
+      "status": "merged",
+      "statusTone": "green",
+      "url": "https://github.com/acme/globex/pull/533",
+      "updatedAt": "2026-11-13T18:51:17Z",
+      "fields": {
+        "number": "533",
+        "checks": "0/1 passed, 1 failed"
+      }
+    },
+    "incident:globex/inc-01a1c65e-641b-71d6-bf2d-39e23effcb58": {
+      "ok": true,
+      "kind": "incident",
+      "title": "Globex status",
+      "status": "needs-you",
+      "statusTone": "red",
+      "updatedAt": "2026-11-13T23:17:19.401Z",
+      "fields": {
+        "severity": "major",
+        "openFor": "4 days"
+      }
+    },
+    "item:si-4556fdc9-5fcf-442a-86b3-10bb35d15aa9": {
+      "ok": true,
+      "kind": "item",
+      "title": "acme: CI runs for outside contributors",
+      "status": "waiting for you",
+      "statusTone": "amber",
+      "updatedAt": "2026-11-14T10:00:14.691Z",
+      "fields": {
+        "itemId": "si-4556fdc9-5fcf-442a-86b3-10bb35d15aa9",
+        "kind": "needs-you",
+        "project": "acme",
+        "options": "Approve both runs on #328 · Not now"
+      }
+    },
+    "item:si-743163a4-1ff3-4e01-be51-bd8e2fa8fe28": {
+      "ok": true,
+      "kind": "item",
+      "title": "example: Routine support replies",
+      "status": "waiting for you",
+      "statusTone": "amber",
+      "updatedAt": "2026-11-13T21:27:46.492Z",
+      "fields": {
+        "itemId": "si-743163a4-1ff3-4e01-be51-bd8e2fa8fe28",
+        "kind": "needs-you",
+        "project": "example",
+        "options": "I'll answer it myself · It's routine, have a draft prepared · Already handled"
+      }
+    },
+    "item:si-224ca28d-125e-4524-a8e0-37b5d4e8a411": {
+      "ok": true,
+      "kind": "item",
+      "title": "example: Fixes verified by a second agent",
+      "status": "waiting for you",
+      "statusTone": "amber",
+      "updatedAt": "2026-11-12T06:46:07.354Z",
+      "fields": {
+        "itemId": "si-224ca28d-125e-4524-a8e0-37b5d4e8a411",
+        "kind": "needs-you",
+        "project": "example",
+        "options": "I'll start the fix · Ship without it, the CSP is report-only · Not now"
+      }
+    }
+  },
+  "text": "6 handled alone · 8 asked you\nacme\nGizmo 4.0 fix: approve test runs: waiting for you\ncircled: Blob GitHub account off\nNote on rf-blob-off-circle: first approval failed\nrf-blob-off-circle → Gizmo 4.0 fix: approve test runs\nBlob GitHub account off\nexample\nGerman customer reply: read it: waiting for you\nMeta pixel: fix security policy: waiting for you\n[Pixel PR: 2 checks failing](https://github.com/acme/example/pull/78): checks failing\nNote on Pixel PR: 2 checks failing: still stuck\nglobex\n[Search 1.19.0 merged](https://github.com/acme/globex/pull/533): merged\nSearch 1.19.0 merged → Status incident reopened\nStatus incident reopened: needs-you\nNote on Status incident reopened: re-run approved"
+}

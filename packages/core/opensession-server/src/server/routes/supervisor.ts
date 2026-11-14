@@ -11,9 +11,11 @@
  *   POST /api/supervisor/items/:id/answer       { user, answer, revision? }
  *   POST /api/supervisor/items/:id/dismiss      { user }
  *   POST /api/supervisor/items/shown            { user, ids } → { marked }, Blob showed these open items
- *   GET  /api/supervisor/brief?start=1          → BriefResponse (supervisor-brief.ts); reads only, unless
+ *   GET  /api/supervisor/brief?start=1&surface= → BriefResponse (supervisor-brief.ts); reads only, unless
  *                                               start=1 (Blob opening): then starts today's brief turn when
- *                                               none is written and quiet hours are over
+ *                                               none is written and quiet hours are over. surface is the
+ *                                               JSON Blob sends with each prompt (blob-surface.ts): the turn
+ *                                               draws for the device's camera now
  *   POST /api/supervisor/brief/seen             { day? } → { seenAt }, the owner saw the brief
  *   POST /api/supervisor/brief/refresh          → 202 { state: "preparing" }, or 429 { retryAt }
  *   The brief routes are the signed-in person's own: never a claimed name
@@ -319,9 +321,11 @@ export async function handleSupervisorRoutes(
   }
 
   if (path === "/api/supervisor/brief" && req.method === "GET") {
+    const start = url.searchParams.get("start") === "1";
     return Response.json(
       await getSupervisorBrief(briefUser, {
-        start: url.searchParams.get("start") === "1",
+        start,
+        ...(start ? surfaceParam(url.searchParams.get("surface")) : {}),
       }),
     );
   }
@@ -425,4 +429,15 @@ export async function handleSupervisorRoutes(
   }
 
   return undefined;
+}
+
+/** The `surface` query of a brief start: Blob's surface JSON, read only
+ *  when it is small and parses; blob-surface.ts validates its shape. */
+export function surfaceParam(raw: string | null): { surface?: unknown } {
+  if (!raw || raw.length > 4000) return {};
+  try {
+    return { surface: JSON.parse(raw) as unknown };
+  } catch {
+    return {};
+  }
 }

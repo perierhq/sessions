@@ -2533,6 +2533,15 @@ enum OS1API {
         var components = URLComponents()
         components.queryItems = [URLQueryItem(name: "user", value: ServerConfig.shared.userName)]
             + (start ? [URLQueryItem(name: "start", value: "1")] : [])
+        #if BLOB
+        // The brief turn draws on the board: it gets the camera this device
+        // has now (closed or open, the fold), as every message does.
+        if start, let surface = BlobSurfaceReport.current,
+           let data = try? JSONSerialization.data(withJSONObject: surface),
+           let json = String(data: data, encoding: .utf8) {
+            components.queryItems?.append(URLQueryItem(name: "surface", value: json))
+        }
+        #endif
         return try await get("/api/supervisor/brief?\(components.percentEncodedQuery ?? "")")
     }
 

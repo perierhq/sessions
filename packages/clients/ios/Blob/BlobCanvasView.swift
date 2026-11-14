@@ -24,8 +24,9 @@ import AppKit
 /// again at it, so text at rest is drawn 1:1 and sharp at any zoom.
 ///
 /// Board (0, 0) is the top-left of the content area on every device; the
-/// trailing inset (the closed Duo's 84 pt strip, the open Duo's rail) is
-/// chrome and shows no board. Opening the Duo widens the camera, so the
+/// trailing inset (the closed Duo's 84 pt strip, the open Duo's rail) and
+/// the controls band at the bottom (`BoardViewport.bottom`: what Blob said,
+/// the brief's quiet line, the write bar) are chrome and show no board. Opening the Duo widens the camera, so the
 /// leading screen stays exactly what the closed one showed.
 ///
 /// Taps on refs are the home's (`BlobBoard.hit`), so Blob's own tap keeps
@@ -174,9 +175,10 @@ private struct BoardStage: View {
             }
             .frame(width: viewport.size.w, height: viewport.size.h, alignment: .topLeading)
             .mask(alignment: .topLeading) {
-                // The trailing strip is chrome: no board under it.
+                // The trailing strip and the controls band are chrome: no
+                // board under them.
                 Rectangle()
-                    .frame(width: viewport.content.w, height: viewport.size.h)
+                    .frame(width: viewport.content.w, height: viewport.content.maxY)
                     .offset(x: viewport.leading)
             }
             .accessibilityHidden(true)
@@ -392,7 +394,7 @@ private struct BoardWordsLayer: View, Equatable {
             if let r = placed.frame {
                 Group {
                     if el.ref != nil {
-                        refCard(el, text: text, sub: sub, status: status, height: r.h)
+                        refCard(el, height: r.h)
                     } else {
                         plainText(el, role: role, text: text, sub: sub, status: status)
                     }
@@ -401,13 +403,15 @@ private struct BoardWordsLayer: View, Equatable {
                 .offset(x: r.x, y: r.y)
             }
         case .frame(_, let title?):
-            if let r = placed.frame {
+            // Inside the frame's title band, never where its elements sit
+            // (BlobCore `BoardLayout.titles`).
+            if let r = placed.frame, let at = placed.label {
                 Text(title)
                     .font(font(.meta))
                     .foregroundStyle(color(.ink2))
                     .lineLimit(1)
-                    .frame(width: r.w, alignment: .leading)
-                    .offset(x: r.x, y: r.y)
+                    .frame(width: max(0, r.maxX - at.x), alignment: .leading)
+                    .offset(x: at.x, y: at.y)
             }
         case .image(_, let src, let fit, _):
             if let r = placed.frame {
@@ -471,15 +475,15 @@ private struct BoardWordsLayer: View, Equatable {
     /// A real object: clean, quiet fill, radius 12, a dot in its status
     /// colour, its live title and status. One that no longer resolves
     /// keeps its words in secondary ink with "not found".
-    private func refCard(_ el: BoardElement, text: String?, sub: String?, status: String?, height: Double) -> some View {
+    private func refCard(_ el: BoardElement, height: Double) -> some View {
         let ref = scene.ref(el.ref) ?? .missing
         let found = ref.ok
-        let locator = el.ref.flatMap { r in r.firstIndex(of: ":").map { String(r[r.index(after: $0)...]) } } ?? ""
-        let title = text.map { BoardLiveText.fill($0, ref) }.flatMap { $0.isEmpty ? nil : $0 }
-            ?? (found ? ref.title : locator)
-        let statusLine = status.map { BoardLiveText.fill($0, ref) } ?? (found ? ref.status : "not found")
+        // The words the layout measured (BlobCore `BoardTextBlock`).
+        let block = BoardTextBlock.of(el, refs: scene.core.refs)
+        let title = block?.title ?? ""
+        let statusLine = block?.status ?? ""
         let tone = found ? ref.statusTone : .ink2
-        let subLine = sub.map { BoardLiveText.fill($0, ref) } ?? ""
+        let subLine = block?.sub ?? ""
         let statusText = Text(statusLine).foregroundStyle(color(tone))
         let line = subLine.isEmpty ? statusText : Text("\(statusText) \u{00B7} \(subLine)")
         let z = zoom
@@ -572,7 +576,7 @@ extension BlobBoard {
     func hit(at location: CGPoint, viewport: BoardViewport, scaledBody: Double) -> BoardHitTest.Hit? {
         guard let snapshot = shown else { return nil }
         let content = viewport.content
-        guard location.x >= content.x, location.x <= content.maxX else { return nil }
+        guard location.x >= content.x, location.x <= content.maxX, location.y <= content.maxY else { return nil }
         let layout = scene(snapshot, noteSize: BlobCanvasView.noteSize(scaledBody: scaledBody)).core.layout
         let now = camera.at(.now)
         let point = now.toBoard(BoardPoint(location.x, location.y), in: viewport)

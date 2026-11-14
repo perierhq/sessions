@@ -79,6 +79,14 @@ export const TEXT_LINE_HEIGHT: Record<TextRole, number> = {
   meta: 13,
   say: 22,
 };
+/** Each role's font size in points (SF Pro; only `title` is semibold). */
+export const TEXT_SIZE: Record<TextRole, number> = {
+  stat: 28,
+  title: 14,
+  supporting: 13,
+  meta: 11,
+  say: 17,
+};
 
 export const SHAPE_KINDS = ["rect", "ellipse", "diamond", "line"] as const;
 export const BOARD_SIDES = [
@@ -534,9 +542,316 @@ const NOTE_LINE = 20;
 const NOTE_MAX_W = 180;
 const NOTE_CHAR_W = 8;
 
-/** A text element's height: given, or its role's line plus a sub line. */
+/** A text element's height: given, a ref card's, or its role's line plus
+ *  a sub line. */
 export function textHeight(el: TextElement): number {
-  return el.h ?? TEXT_LINE_HEIGHT[el.role] + (el.sub ? 16 : 0);
+  if (el.h !== undefined) return el.h;
+  if (el.ref) return REF_CARD.minH;
+  return TEXT_LINE_HEIGHT[el.role] + (el.sub ? 16 : 0);
+}
+
+// ── Text fit ────────────────────────────────────────────────────────────────
+// The app measures every text element in its role's font and widens a box
+// its words don't fit, or wraps them and grows it, moving what it would
+// cover. The server can't measure, so it estimates (the same table as the
+// app's BlobCore `BoardTextMetrics`): on apply it widens a touched text
+// that would wrap when there is room, and board_read lists text that
+// likely overflows or collides, so the model fixes it by id.
+
+/** A ref element is a card: 12 pt before an 8 pt status dot, 10 after it,
+ *  14 trailing; 10 above and below; a title and a status line at least. */
+export const REF_CARD = { padX: 44, padY: 20, minH: 58 } as const;
+/** The band at the top of a frame its title sits in: what the frame holds
+ *  starts below it. */
+export const FRAME_TITLE_BAND = 28;
+/** Where text in the leading column stops widening: the closed Duo's
+ *  board edge, so it stays on screen closed. */
+const CLOSED_EDGE = DUO_CLOSED.w;
+/** The open Duo's board edge (its strip). */
+const OPEN_EDGE = DUO_OPEN.strip[0];
+
+/** A character's width in ems of SF Pro, by class: close to the real face
+ *  at the board's sizes, a little generous so an estimate wraps no later
+ *  than the real text. */
+export function charEm(ch: string): number {
+  if (ch === " ") return 0.25;
+  if ("ilj!'.,:;|·()[]".includes(ch)) return 0.27;
+  if ("ftrI-/".includes(ch)) return 0.35;
+  if (ch === "m" || ch === "w") return 0.8;
+  if (ch === "M" || ch === "W") return 0.85;
+  if (ch >= "0" && ch <= "9") return 0.58;
+  if (ch >= "A" && ch <= "Z") return 0.65;
+  if (ch >= "a" && ch <= "z") return 0.53;
+  return ch.charCodeAt(0) < 128 ? 0.55 : 0.9;
+}
+
+/** One line of `text` in `role`, in points. */
+export function estimateTextWidth(text: string, role: TextRole): number {
+  let ems = 0;
+  for (const ch of text) ems += charEm(ch);
+  return ems * TEXT_SIZE[role] * (role === "title" ? 1.04 : 1);
+}
+
+/** How many lines greedy word wrap takes at `width`. */
+export function wrappedLines(
+  text: string,
+  role: TextRole,
+  width: number,
+): number {
+  const space = estimateTextWidth(" ", role);
+  let lines = 1;
+  let used = 0;
+  for (const word of text.split(" ").filter(Boolean)) {
+    const w = estimateTextWidth(word, role);
+    if (used === 0) used = w;
+    else if (used + space + w <= width) used += space + w;
+    else {
+      lines += 1;
+      used = w;
+    }
+    while (used > width) {
+      lines += 1;
+      used -= width;
+    }
+  }
+  return lines;
+}
+
+/** The words a text element shows: its main line in its role, and the
+ *  supporting line (status · sub). A ref is a card with its live title
+ *  and status; without the live fields (on apply) only its own words
+ *  count. */
+function textLines(
+  el: TextElement,
+  ref?: ResolvedRef,
+): { main?: string; role: TextRole; tail?: string; card: boolean } {
+  const live = ref && ref.ok ? ref : undefined;
+  const fill = (s: string) =>
+    s.replace(/\{ref\.([a-zA-Z]+)\}/g, (_, name: string) => {
+      if (!live) return "";
+      if (name === "title") return live.title;
+      if (name === "status") return live.status;
+      if (name === "statusTone") return live.statusTone;
+      if (name === "url") return live.url ?? "";
+      if (name === "updatedAt") return live.updatedAt ?? "";
+      return live.fields[name] ?? "";
+    });
+  if (!el.ref) {
+    const tail = [el.status, el.sub].filter(Boolean).join(" · ");
+    return {
+      main: el.text,
+      role: el.role,
+      tail: tail || undefined,
+      card: false,
+    };
+  }
+  const main = (el.text ? fill(el.text) : "") || live?.title;
+  const status = el.status ? fill(el.status) : live?.status;
+  const sub = el.sub ? fill(el.sub) : undefined;
+  const tail = [status, sub].filter(Boolean).join(" · ");
+  return { main, role: "title", tail: tail || undefined, card: true };
+}
+
+/** What a text element needs: its width on one line, and its height at a
+ *  given width, padding included. */
+export function textNeeds(
+  el: TextElement,
+  ref?: ResolvedRef,
+): { oneLine: number; heightAt(width: number): number } {
+  const t = textLines(el, ref);
+  const pad = t.card ? REF_CARD.padX : 0;
+  const oneLine =
+    Math.max(
+      t.main ? estimateTextWidth(t.main, t.role) : 0,
+      t.tail ? estimateTextWidth(t.tail, "supporting") : 0,
+    ) + pad;
+  return {
+    oneLine,
+    heightAt(width: number) {
+      const inner = Math.max(1, width - pad);
+      const main = t.main
+        ? wrappedLines(t.main, t.role, inner) * TEXT_LINE_HEIGHT[t.role]
+        : 0;
+      const tail = t.tail
+        ? wrappedLines(t.tail, "supporting", inner) *
+          TEXT_LINE_HEIGHT.supporting
+        : 0;
+      const gap = t.main && t.tail ? 2 : 0;
+      return main + tail + gap + (t.card ? REF_CARD.padY : 0);
+    },
+  };
+}
+
+/** The frame an element sits in: the smallest whose box holds its
+ *  top-left corner. */
+function containingFrame(
+  el: BoardElement,
+  b: Box,
+  els: Iterable<BoardElement>,
+): FrameElement | undefined {
+  let best: FrameElement | undefined;
+  for (const f of els) {
+    if (f.type !== "frame" || f.id === el.id) continue;
+    if (b.x < f.x - 0.5 || b.y < f.y - 0.5) continue;
+    if (b.x >= f.x + f.w || b.y >= f.y + f.h) continue;
+    if (el.type === "frame" && f.w * f.h <= b.w * b.h) continue;
+    if (!best || f.w * f.h < best.w * best.h) best = f;
+  }
+  return best;
+}
+
+function isAncestorFrame(
+  frame: BoardElement,
+  el: BoardElement,
+  els: ReadonlyMap<string, BoardElement>,
+): boolean {
+  let current: BoardElement | undefined = el;
+  for (let depth = 0; current && depth < 8; depth++) {
+    const b = elementBox(current, els);
+    if (!b) return false;
+    const parent = containingFrame(current, b, els.values());
+    if (!parent) return false;
+    if (parent.id === frame.id) return true;
+    current = parent;
+  }
+  return false;
+}
+
+/** What text must not overlap: text, frames, images and ref shapes. */
+function isSolid(el: BoardElement): boolean {
+  return (
+    el.type === "text" ||
+    el.type === "frame" ||
+    el.type === "image" ||
+    (el.type === "shape" && !!el.ref)
+  );
+}
+
+/** The right edge a text element may widen to: its frame's inner edge,
+ *  its column (the closed view, then the fold, then the open Duo's strip)
+ *  and the next solid element on its right. */
+export function textRoom(
+  el: TextElement,
+  els: ReadonlyMap<string, BoardElement>,
+  bands: Array<[number, number]> = [DUO_OPEN.hinge],
+): number {
+  const fold = bands[0] ?? DUO_OPEN.hinge;
+  const right = el.x + el.w;
+  let edge =
+    el.x < CLOSED_EDGE
+      ? CLOSED_EDGE
+      : el.x < fold[0]
+        ? fold[0]
+        : el.x < OPEN_EDGE
+          ? OPEN_EDGE
+          : el.x + Math.max(el.w, 480);
+  edge = Math.max(edge, right);
+  if (el.x < fold[0]) edge = Math.min(edge, Math.max(right, fold[0]));
+  const box: Box = { x: el.x, y: el.y, w: el.w, h: textHeight(el) };
+  const frame = containingFrame(el, box, els.values());
+  if (frame)
+    edge = Math.min(
+      edge,
+      frame.x + frame.w - Math.max(4, Math.min(12, el.x - frame.x)),
+    );
+  for (const other of els.values()) {
+    if (other.id === el.id || !isSolid(other)) continue;
+    if (other.type === "frame" && isAncestorFrame(other, el, els)) continue;
+    const o = elementBox(other, els);
+    if (!o) continue;
+    if (o.y < box.y + box.h && o.y + o.h > box.y && o.x >= right - 0.5)
+      edge = Math.min(edge, o.x - 8);
+  }
+  return edge;
+}
+
+/** Something on the board the owner would see clipped or colliding. */
+export interface TextIssue {
+  id: string;
+  kind: "overflow" | "overlap" | "title-band" | "past-frame";
+  /** One line for the model, with the fix. */
+  detail: string;
+}
+
+/**
+ * Text that likely overflows or collides, estimated with the char width
+ * table: words wider than the box with no room to widen, a card or wrapped
+ * text taller than its box, text running into another element below it or
+ * past its frame's bottom, and text in a frame's title band. `refs` gives
+ * cards their live titles (board_read has them; apply doesn't).
+ */
+export function boardTextIssues(
+  elements: readonly BoardElement[],
+  refs: Readonly<Record<string, ResolvedRef>> = {},
+  viewport?: BoardViewport,
+): TextIssue[] {
+  const els = new Map(elements.map((e) => [e.id, e]));
+  const bands = hingeBands(viewport);
+  const issues: TextIssue[] = [];
+  const grown = new Map<string, Box>();
+  for (const el of elements) {
+    if (el.type !== "text") continue;
+    const needs = textNeeds(el, el.ref ? refs[el.ref] : undefined);
+    const h = textHeight(el);
+    const room = textRoom(el, els, bands) - el.x;
+    const width = Math.max(el.w, Math.min(room, Math.ceil(needs.oneLine)));
+    const needH = needs.heightAt(width);
+    if (needs.oneLine > el.w + 0.5) {
+      const fix =
+        room >= needs.oneLine
+          ? `set w to ${Math.ceil(needs.oneLine)}`
+          : `shorten it, or set w ${Math.floor(width)} and h ${Math.ceil(needH)}`;
+      issues.push({
+        id: el.id,
+        kind: "overflow",
+        detail: `${el.id}: its words need about ${Math.ceil(needs.oneLine)} pt on one line at ${el.ref ? "card" : el.role} size, its box is ${round(el.w)} wide; ${fix}`,
+      });
+    } else if (needH > h + 0.5) {
+      issues.push({
+        id: el.id,
+        kind: "overflow",
+        detail: `${el.id}: ${el.ref ? "a card" : "its words"} need about ${Math.ceil(needH)} pt of height, its box is ${round(h)}; set h ${Math.ceil(needH)}`,
+      });
+    }
+    grown.set(el.id, {
+      x: el.x,
+      y: el.y,
+      w: width,
+      h: Math.max(h, needH),
+    });
+  }
+  for (const el of elements) {
+    if (el.type !== "text") continue;
+    const b = grown.get(el.id)!;
+    const frame = containingFrame(el, b, els.values());
+    if (frame?.title && b.y < frame.y + FRAME_TITLE_BAND - 0.5)
+      issues.push({
+        id: el.id,
+        kind: "title-band",
+        detail: `${el.id} sits in ${frame.id}'s title band; move it to y ${round(frame.y + FRAME_TITLE_BAND)} or lower`,
+      });
+    if (frame && b.y + b.h > frame.y + frame.h + 0.5)
+      issues.push({
+        id: el.id,
+        kind: "past-frame",
+        detail: `${el.id} runs past the bottom of ${frame.id} (to y ${Math.ceil(b.y + b.h)}); grow ${frame.id} to h ${Math.ceil(b.y + b.h + 8 - frame.y)} and move what is under it`,
+      });
+    for (const other of elements) {
+      if (other.id === el.id || !isSolid(other)) continue;
+      if (other.type === "frame" && isAncestorFrame(other, el, els)) continue;
+      const o = grown.get(other.id) ?? elementBox(other, els);
+      if (!o || o.y < b.y || (o.y === b.y && other.id < el.id)) continue;
+      const ox = Math.min(b.x + b.w, o.x + o.w) - Math.max(b.x, o.x);
+      const oy = Math.min(b.y + b.h, o.y + o.h) - Math.max(b.y, o.y);
+      if (ox > 0.5 && oy > 0.5)
+        issues.push({
+          id: el.id,
+          kind: "overlap",
+          detail: `${el.id} runs into ${other.id}; move ${other.id} down to y ${Math.ceil(b.y + b.h + 6)}`,
+        });
+    }
+  }
+  return issues;
 }
 
 /** A note's size as the engine estimates it: Kalam 16/20, two lines at
@@ -688,6 +1003,14 @@ export interface ApplyReport {
   cascaded: Array<{ id: string; with: string }>;
   /** Text the engine moved off the hinge band. */
   nudged: Array<{ id: string; dx: number }>;
+  /** Text the engine widened so its words fit one line. */
+  widened: Array<{ id: string; w: number }>;
+  /** Text the engine made taller: its words wrap, or it is a card. */
+  grown: Array<{ id: string; h: number }>;
+  /** Elements the engine moved below their frame's title band. */
+  belowTitle: Array<{ id: string; y: number }>;
+  /** Touched text that still overflows or collides, for the model to fix. */
+  issues: TextIssue[];
   /** Elements pulled back inside the board. */
   clamped: string[];
   /** Touched elements outside what the camera shows now. */
@@ -736,6 +1059,10 @@ export function applyBoardOps(
     removed: [],
     cascaded: [],
     nudged: [],
+    widened: [],
+    grown: [],
+    belowTitle: [],
+    issues: [],
     clamped: [],
     offCamera: [],
     dropped: [],
@@ -968,6 +1295,7 @@ export function applyBoardOps(
         });
       continue;
     }
+    if (el.type === "text") el = fitText(el, els, bands, report);
     const h = el.type === "text" ? textHeight(el) : el.h;
     const x = clamp(el.x, 0, max - el.w);
     const y = clamp(el.y, 0, max - h);
@@ -997,7 +1325,48 @@ export function applyBoardOps(
     }
   }
   report.touched = [...touched].filter((t) => els.has(t));
-  return { ok: true, elements: [...els.values()], report };
+  const all = [...els.values()];
+  report.issues = boardTextIssues(all, {}, viewport).filter((issue) =>
+    touched.has(issue.id),
+  );
+  return { ok: true, elements: all, report };
+}
+
+/** A touched text element made to fit, the way the app will draw it:
+ *  below its frame's title band, wider when its words would wrap and there
+ *  is room, taller when they still wrap. Each change is reported. */
+function fitText(
+  el: TextElement,
+  els: Map<string, BoardElement>,
+  bands: Array<[number, number]>,
+  report: ApplyReport,
+): TextElement {
+  let next = el;
+  const frame = containingFrame(
+    el,
+    { x: el.x, y: el.y, w: el.w, h: textHeight(el) },
+    els.values(),
+  );
+  if (frame?.title && next.y < frame.y + FRAME_TITLE_BAND) {
+    next = { ...next, y: frame.y + FRAME_TITLE_BAND };
+    report.belowTitle.push({ id: el.id, y: next.y });
+  }
+  const needs = textNeeds(next);
+  if (needs.oneLine > next.w + 0.5) {
+    const room = textRoom(next, els, bands) - next.x;
+    const w = Math.min(Math.ceil(needs.oneLine), Math.max(next.w, room));
+    if (w > next.w + 0.5) {
+      next = { ...next, w: round(w) };
+      report.widened.push({ id: el.id, w: next.w });
+    }
+  }
+  const needH = needs.heightAt(next.w);
+  if (needH > textHeight(next) + 0.5) {
+    next = { ...next, h: Math.ceil(needH) };
+    report.grown.push({ id: el.id, h: next.h! });
+  }
+  if (next !== el) els.set(el.id, next);
+  return next;
 }
 
 /** Every distinct ref on the board, in board order. */

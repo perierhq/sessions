@@ -577,6 +577,72 @@ describe("the brief turn", () => {
     expect(sent[0]!.event.body).toBe("0 decisions and 1 update are waiting.");
   });
 
+  test("opening Blob records the camera it sent before the brief turn runs", async () => {
+    const recorded: Array<{ sessionId: string; surface: unknown }> = [];
+    const order: string[] = [];
+    const restore = brief.__setBriefDepsForTest({
+      now: () => clock,
+      currentSessionId: async () => session,
+      ensureSessionId: async () => "os-sup-ada",
+      deliver: async (sessionId, text, deliveryId) => {
+        order.push("deliver");
+        delivered.push({ sessionId, text, deliveryId });
+      },
+      prepareDecisions: async () => {},
+      recordSurface: async (sessionId, surface) => {
+        order.push("surface");
+        recorded.push({ sessionId, surface });
+      },
+    });
+    try {
+      await decision("Ship 1.19.0?", "a");
+      clock = at("2026-07-01T08:10:00Z");
+      const surface = {
+        app: "blob",
+        panes: 2,
+        width: "regular",
+        viewport: { w: 951, h: 535, hinge: [455.5, 495.5], strip: [867, 951] },
+      };
+      await brief.getSupervisorBrief("Ada", { start: true, surface });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(recorded).toEqual([{ sessionId: "os-sup-ada", surface }]);
+      expect(order).toEqual(["surface", "deliver"]);
+      // A brief already running: the camera still goes on the session.
+      await brief.getSupervisorBrief("Ada", { start: true, surface });
+      expect(recorded).toHaveLength(2);
+      expect(delivered).toHaveLength(1);
+      // A plain read records nothing.
+      await brief.getSupervisorBrief("Ada", { surface });
+      expect(recorded).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+
+  test("the brief route reads the surface query as Blob sends it", async () => {
+    const { surfaceParam } = await import("./routes/supervisor");
+    const { parseBlobSurface } = await import("./blob-surface");
+    const sent = JSON.stringify({
+      app: "blob",
+      panes: 2,
+      width: "regular",
+      viewport: {
+        w: 951,
+        h: 535,
+        origin: [0, 0],
+        zoom: 1,
+        hinge: [455.5, 495.5],
+        strip: [867, 951],
+        closed: { w: 382, h: 678 },
+      },
+    });
+    const { surface } = surfaceParam(sent);
+    expect(parseBlobSurface(surface)?.viewport?.hinge).toEqual([455.5, 495.5]);
+    expect(surfaceParam(null)).toEqual({});
+    expect(surfaceParam("{not json")).toEqual({});
+    expect(surfaceParam("x".repeat(5000))).toEqual({});
+  });
+
   test("opening Blob runs the day's turn: preparing, then ready; never in quiet hours", async () => {
     const a = await decision("Ship 1.19.0?", "a");
     clock = at("2026-07-01T03:00:00Z");

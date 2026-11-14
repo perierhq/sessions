@@ -5,6 +5,8 @@ import Observation
 import SwiftUI
 #if os(iOS)
 import UIKit
+#else
+import AppKit
 #endif
 
 /// Blob's board (server: blob-board.ts): the board the canvas draws, its
@@ -63,9 +65,24 @@ final class BlobBoard {
         }
         let key = BoardSceneKey(snapshot, noteSize: noteSize, fonts: fonts)
         return scenes.value(key, valid: { $0.core.draws(snapshot, key: key) }) {
-            BlobBoardScene(BoardScene(snapshot, key: key, measureNote: BlobHand.measure(size: noteSize)))
+            let core = BoardScene(
+                snapshot, key: key,
+                measureNote: BlobHand.measure(size: noteSize),
+                measureText: BoardType.measure(scale: noteSize / BlobHand.baseSize)
+            )
+            #if DEBUG
+            // Text fit never moves anything silently.
+            for change in core.layout.adjustments {
+                Self.log.info("revision \(snapshot.revision): \(change)")
+            }
+            #endif
+            return BlobBoardScene(core)
         }
     }
+
+    #if DEBUG
+    private static let log = BlobLog(category: "board")
+    #endif
 
     /// A scene's words set at the zoom bucket the camera rests on. A pan
     /// never asks for another; a pinch asks once, when it ends.
@@ -357,6 +374,29 @@ enum BlobHand {
                 CGSize(width: maxWidth, height: lineHeight * 2 + 1), nil
             )
             return BoardSize(min(maxWidth, ceil(fit.width) + 4), lineHeight * 2)
+        }
+    }
+}
+
+/// The board's text face: SF Pro in each type-scale role, at the Dynamic
+/// Type factor the canvas draws with (`scale`), measured the way the canvas
+/// sets it, so the layout widens or wraps a box before its words collide.
+enum BoardType {
+    static func measure(scale: Double) -> BoardLayout.TextMeasure {
+        { text, role, width in
+            let size = role.size * scale
+            #if os(iOS)
+            let font = UIFont.systemFont(ofSize: size, weight: role.semibold ? .semibold : .regular)
+            #else
+            let font = NSFont.systemFont(ofSize: size, weight: role.semibold ? .semibold : .regular)
+            #endif
+            let attributed = NSAttributedString(string: text, attributes: [.font: font])
+            let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+            let fit = CTFramesetterSuggestFrameSizeWithConstraints(
+                framesetter, CFRange(location: 0, length: 0), nil,
+                CGSize(width: width ?? .greatestFiniteMagnitude, height: .greatestFiniteMagnitude), nil
+            )
+            return BoardSize(ceil(fit.width), max(ceil(fit.height), role.lineHeight * scale))
         }
     }
 }

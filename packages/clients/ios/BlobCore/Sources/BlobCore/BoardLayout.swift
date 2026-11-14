@@ -5,12 +5,19 @@ import Foundation
 /// the boxes they bind. Camera-free: the same layout serves every camera,
 /// so opening the Duo or panning never moves anything on the board.
 ///
-/// The one move the client makes is the hinge rule (spec "Camera, viewport
-/// and the hinge"): text, notes and ref elements never sit in the fold's
-/// band at the home camera (board x 455.5–495.5). The server nudges what a
-/// reply touches; the layout applies the same smallest move to anything
-/// older still on the band, so no text is ever drawn on the fold. Arrows
-/// and leaders follow the moved boxes.
+/// The client makes two kinds of move, both so text stays readable:
+///
+/// - The hinge rule (spec "Camera, viewport and the hinge"): text, notes
+///   and ref elements never sit in the fold's band at the home camera
+///   (board x 455.5–495.5). The server nudges what a reply touches; the
+///   layout applies the same smallest move to anything older still on the
+///   band, so no text is ever drawn on the fold.
+/// - Text fit (`settleText`): text is measured in its role's font; a box
+///   too narrow widens where there is room, else wraps and grows, and
+///   what it would then cover moves down, as does anything in a frame's
+///   title band. Every such change is listed in `adjustments`.
+///
+/// Arrows and leaders follow the moved boxes.
 public struct BoardLayout: Sendable {
     public struct Item: Sendable, Equatable {
         public var element: BoardElement
@@ -23,6 +30,10 @@ public struct BoardLayout: Sendable {
     /// Note text size: measured by the app in Blob's hand, estimated here
     /// the way the server does (`noteSize` in shared/blob-board.ts).
     public typealias NoteMeasure = @Sendable (_ text: String) -> BoardSize
+    /// A text's size in a role's font: one line when `width` is nil, else
+    /// wrapped at `width`. Measured by the app (SF Pro at the Dynamic Type
+    /// size), estimated here (`BoardTextMetrics`) the way the server does.
+    public typealias TextMeasure = @Sendable (_ text: String, _ role: BoardTextRole, _ width: Double?) -> BoardSize
 
     public let items: [Item]
     public let byId: [String: Int]
@@ -31,15 +42,28 @@ public struct BoardLayout: Sendable {
     public let leaders: [String: BoardArrowRoute]
     /// The band text stays off, in board points.
     public let hinge: ClosedRange<Double>
+    /// What text fit widened, grew or moved, for the debug log.
+    public let adjustments: [Adjustment]
+    /// Where each titled frame's title starts, in board points: inside the
+    /// frame's title band, in line with what the frame holds.
+    public let titles: [String: BoardPoint]
 
     public static let noteGap = 8.0
     /// A ref element without a height: a title line and a status line.
     public static let refHeight = 58.0
 
+    /// The closed Duo's board width: text in the leading column widens
+    /// no further, so it stays on screen closed.
+    public static let closedWidth = 382.0
+    /// The open Duo's board edge, where its strip starts.
+    public static let openWidth = 867.0
+
     public init(
         elements: [BoardElement],
+        refs: [String: BoardRefInfo] = [:],
         hinge: ClosedRange<Double> = BoardViewport.homeHinge,
-        measureNote: NoteMeasure = BoardLayout.estimateNote
+        measureNote: NoteMeasure = BoardLayout.estimateNote,
+        measureText: TextMeasure = BoardTextMetrics.estimate()
     ) {
         self.hinge = hinge
         var items: [Item] = []
@@ -58,6 +82,10 @@ public struct BoardLayout: Sendable {
             }
             items[i].frame = frame
         }
+        adjustments = Self.settleText(
+            &items, refs: refs, measure: measureText, hinge: hinge,
+            closedWidth: Self.closedWidth, openWidth: Self.openWidth
+        )
         func placeNote(_ i: Int, depth: Int) {
             guard items[i].frame == nil, depth < 5,
                   case .note(let anchor, let text, _) = items[i].element.content,
@@ -72,6 +100,19 @@ public struct BoardLayout: Sendable {
             items[i].frame = frame
         }
         for i in items.indices { placeNote(i, depth: 0) }
+        var titles: [String: BoardPoint] = [:]
+        for item in items {
+            guard case .frame(_, let title?) = item.element.content, !title.isEmpty, let box = item.frame else { continue }
+            let inside = items.compactMap { other -> Double? in
+                guard other.element.id != item.element.id, let r = other.frame,
+                      r.x >= box.x - 0.5, r.x < box.maxX, r.y >= box.y + Self.frameTitleBand - 0.5, r.y < box.maxY
+                else { return nil }
+                return r.x - box.x
+            }
+            let dx = min(Self.frameTitleInset.x, max(0, inside.min() ?? Self.frameTitleInset.x))
+            titles[item.element.id] = BoardPoint(box.x + dx, box.y + Self.frameTitleInset.y)
+        }
+        self.titles = titles
         self.items = items
         self.byId = index
 
