@@ -1,423 +1,378 @@
 {
- "schema": 1,
- "revision": 43,
- "latestRevision": 43,
- "updatedAt": 1763027000000,
- "elements": [
-  {
-   "id": "f-why",
-   "x": 24,
-   "y": 44,
-   "w": 334,
-   "h": 390,
-   "type": "frame",
-   "title": "Why the release is stuck"
+  "schema": 1,
+  "revision": 43,
+  "latestRevision": 43,
+  "updatedAt": 1763027000000,
+  "elements": [
+    {
+      "id": "f-why",
+      "x": 24,
+      "y": 44,
+      "w": 334,
+      "h": 390,
+      "type": "frame",
+      "title": "Why the release is stuck"
+    },
+    {
+      "id": "t-actions",
+      "x": 24,
+      "y": 76,
+      "w": 206,
+      "h": 37,
+      "type": "text",
+      "role": "title",
+      "text": "GitHub Actions is blocked",
+      "sub": "Billing stopped every run"
+    },
+    {
+      "id": "c-ci",
+      "x": 24,
+      "y": 166,
+      "w": 260,
+      "h": 58,
+      "type": "text",
+      "ref": "check:betterbahn#533/ci-success",
+      "role": "title",
+      "sub": "required check on #533"
+    },
+    {
+      "id": "e-ci",
+      "x": 12,
+      "y": 150,
+      "w": 288,
+      "h": 90,
+      "z": 2,
+      "type": "shape",
+      "kind": "ellipse"
+    },
+    {
+      "id": "n-bill",
+      "type": "note",
+      "anchor": {
+        "id": "c-ci",
+        "side": "top",
+        "dx": 151,
+        "dy": -34
+      },
+      "text": "GitHub billing, only you",
+      "leader": {
+        "to": [0.8, 0]
+      }
+    },
+    {
+      "id": "p-533",
+      "x": 24,
+      "y": 272,
+      "w": 334,
+      "h": 74,
+      "type": "text",
+      "ref": "pr:betterbahn#533",
+      "role": "title",
+      "sub": "5 autofix rounds cleared release-manifest conflicts"
+    },
+    {
+      "id": "i-status",
+      "x": 24,
+      "y": 380,
+      "w": 334,
+      "h": 58,
+      "type": "text",
+      "ref": "incident:betterbahn/status-page",
+      "role": "title",
+      "sub": "since Wed 02:41"
+    },
+    {
+      "id": "a1",
+      "type": "arrow",
+      "start": {
+        "id": "t-actions",
+        "side": [0.18, 1]
+      },
+      "end": {
+        "id": "c-ci",
+        "side": [0.14, 0]
+      },
+      "bend": 0.04
+    },
+    {
+      "id": "a2",
+      "type": "arrow",
+      "start": {
+        "id": "c-ci",
+        "side": [0.14, 1]
+      },
+      "end": {
+        "id": "p-533",
+        "side": [0.12, 0]
+      },
+      "bend": -0.05
+    },
+    {
+      "id": "a3",
+      "type": "arrow",
+      "start": {
+        "id": "p-533",
+        "side": [0.12, 1]
+      },
+      "end": {
+        "id": "i-status",
+        "side": [0.12, 0]
+      },
+      "bend": 0.05
+    },
+    {
+      "id": "f-path",
+      "x": 520,
+      "y": 44,
+      "w": 330,
+      "h": 390,
+      "type": "frame",
+      "title": "Path to release"
+    },
+    {
+      "id": "a-note",
+      "type": "arrow",
+      "start": {
+        "id": "n-bill",
+        "side": "right"
+      },
+      "end": {
+        "id": "o1",
+        "side": "left"
+      },
+      "bend": -0.12
+    },
+    {
+      "id": "o1",
+      "x": 526,
+      "y": 79,
+      "w": 12,
+      "h": 12,
+      "type": "shape",
+      "kind": "ellipse"
+    },
+    {
+      "id": "o2",
+      "x": 526,
+      "y": 155,
+      "w": 12,
+      "h": 12,
+      "type": "shape",
+      "kind": "ellipse"
+    },
+    {
+      "id": "o3",
+      "x": 526,
+      "y": 229,
+      "w": 12,
+      "h": 12,
+      "type": "shape",
+      "kind": "ellipse"
+    },
+    {
+      "id": "o4",
+      "x": 526,
+      "y": 303,
+      "w": 12,
+      "h": 12,
+      "type": "shape",
+      "kind": "ellipse"
+    },
+    {
+      "id": "o5",
+      "x": 526,
+      "y": 377,
+      "w": 12,
+      "h": 12,
+      "type": "shape",
+      "kind": "ellipse"
+    },
+    {
+      "id": "l-12",
+      "x": 532,
+      "y": 97,
+      "w": 2,
+      "h": 54,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [0, 54]
+      ]
+    },
+    {
+      "id": "l-23",
+      "x": 532,
+      "y": 171,
+      "w": 2,
+      "h": 54,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [0, 54]
+      ]
+    },
+    {
+      "id": "l-34",
+      "x": 532,
+      "y": 245,
+      "w": 2,
+      "h": 54,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [0, 54]
+      ]
+    },
+    {
+      "id": "l-45",
+      "x": 532,
+      "y": 319,
+      "w": 2,
+      "h": 54,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [0, 54]
+      ]
+    },
+    {
+      "id": "s1",
+      "x": 552,
+      "y": 76,
+      "w": 296,
+      "h": 37,
+      "type": "text",
+      "style": {
+        "color": "tangerine"
+      },
+      "role": "title",
+      "text": "Fix GitHub billing",
+      "sub": "Only you can. Everything below waits on it"
+    },
+    {
+      "id": "s2",
+      "x": 552,
+      "y": 141,
+      "w": 296,
+      "h": 58,
+      "type": "text",
+      "ref": "check:betterbahn#533/ci-success",
+      "role": "title",
+      "sub": "I re-run it after billing"
+    },
+    {
+      "id": "s3",
+      "x": 552,
+      "y": 215,
+      "w": 296,
+      "h": 58,
+      "type": "text",
+      "ref": "pr:betterbahn#533",
+      "role": "title",
+      "text": "Merge #533 at 847a586 once green",
+      "sub": "the lead asked",
+      "status": "waiting for you"
+    },
+    {
+      "id": "s4",
+      "x": 552,
+      "y": 289,
+      "w": 296,
+      "h": 58,
+      "type": "text",
+      "ref": "release:betterbahn@1.19.0",
+      "role": "title",
+      "text": "Ship {ref.title}",
+      "sub": "betterbahn"
+    },
+    {
+      "id": "s5",
+      "x": 552,
+      "y": 363,
+      "w": 296,
+      "h": 58,
+      "type": "text",
+      "ref": "incident:betterbahn/status-page",
+      "role": "title",
+      "text": "Close the status page incident",
+      "sub": "after the release"
+    }
+  ],
+  "refs": {
+    "pr:betterbahn#533": {
+      "ok": true,
+      "kind": "pr",
+      "title": "#533 search-service 1.19.0",
+      "status": "blocked",
+      "statusTone": "red",
+      "url": "https://github.com/acme/betterbahn/pull/533",
+      "fields": {
+        "number": "533",
+        "checks": "1 failing"
+      }
+    },
+    "check:betterbahn#533/ci-success": {
+      "ok": true,
+      "kind": "check",
+      "title": "ci-success",
+      "status": "can't run",
+      "statusTone": "red",
+      "url": "https://github.com/acme/betterbahn/pull/533/checks",
+      "fields": {
+        "number": "533"
+      }
+    },
+    "incident:betterbahn/status-page": {
+      "ok": true,
+      "kind": "incident",
+      "title": "Status page incident",
+      "status": "open 55 h",
+      "statusTone": "red",
+      "fields": {
+        "openFor": "55 h"
+      }
+    },
+    "release:betterbahn@1.19.0": {
+      "ok": true,
+      "kind": "release",
+      "title": "search-service 1.19.0",
+      "status": "waiting on #533",
+      "statusTone": "amber",
+      "fields": {}
+    }
   },
-  {
-   "id": "t-actions",
-   "x": 24,
-   "y": 76,
-   "w": 206,
-   "h": 37,
-   "type": "text",
-   "role": "title",
-   "text": "GitHub Actions is blocked",
-   "sub": "Billing stopped every run"
-  },
-  {
-   "id": "c-ci",
-   "x": 24,
-   "y": 166,
-   "w": 260,
-   "h": 58,
-   "type": "text",
-   "ref": "check:betterbahn#533/ci-success",
-   "role": "title",
-   "sub": "required check on #533"
-  },
-  {
-   "id": "e-ci",
-   "x": 12,
-   "y": 150,
-   "w": 288,
-   "h": 90,
-   "z": 2,
-   "type": "shape",
-   "kind": "ellipse"
-  },
-  {
-   "id": "n-bill",
-   "type": "note",
-   "anchor": {
-    "id": "c-ci",
-    "side": "top",
-    "dx": 151,
-    "dy": -34
-   },
-   "text": "GitHub billing, only you",
-   "leader": {
-    "to": [
-     0.8,
-     0
-    ]
-   }
-  },
-  {
-   "id": "p-533",
-   "x": 24,
-   "y": 272,
-   "w": 334,
-   "h": 74,
-   "type": "text",
-   "ref": "pr:betterbahn#533",
-   "role": "title",
-   "sub": "5 autofix rounds cleared release-manifest conflicts"
-  },
-  {
-   "id": "i-status",
-   "x": 24,
-   "y": 380,
-   "w": 334,
-   "h": 58,
-   "type": "text",
-   "ref": "incident:betterbahn/status-page",
-   "role": "title",
-   "sub": "since Wed 02:41"
-  },
-  {
-   "id": "a1",
-   "type": "arrow",
-   "start": {
-    "id": "t-actions",
-    "side": [
-     0.18,
-     1
-    ]
-   },
-   "end": {
-    "id": "c-ci",
-    "side": [
-     0.14,
-     0
-    ]
-   },
-   "bend": 0.04
-  },
-  {
-   "id": "a2",
-   "type": "arrow",
-   "start": {
-    "id": "c-ci",
-    "side": [
-     0.14,
-     1
-    ]
-   },
-   "end": {
-    "id": "p-533",
-    "side": [
-     0.12,
-     0
-    ]
-   },
-   "bend": -0.05
-  },
-  {
-   "id": "a3",
-   "type": "arrow",
-   "start": {
-    "id": "p-533",
-    "side": [
-     0.12,
-     1
-    ]
-   },
-   "end": {
-    "id": "i-status",
-    "side": [
-     0.12,
-     0
-    ]
-   },
-   "bend": 0.05
-  },
-  {
-   "id": "f-path",
-   "x": 520,
-   "y": 44,
-   "w": 330,
-   "h": 390,
-   "type": "frame",
-   "title": "Path to release"
-  },
-  {
-   "id": "a-note",
-   "type": "arrow",
-   "start": {
-    "id": "n-bill",
-    "side": "right"
-   },
-   "end": {
-    "id": "o1",
-    "side": "left"
-   },
-   "bend": -0.12
-  },
-  {
-   "id": "o1",
-   "x": 526,
-   "y": 79,
-   "w": 12,
-   "h": 12,
-   "type": "shape",
-   "kind": "ellipse"
-  },
-  {
-   "id": "o2",
-   "x": 526,
-   "y": 155,
-   "w": 12,
-   "h": 12,
-   "type": "shape",
-   "kind": "ellipse"
-  },
-  {
-   "id": "o3",
-   "x": 526,
-   "y": 229,
-   "w": 12,
-   "h": 12,
-   "type": "shape",
-   "kind": "ellipse"
-  },
-  {
-   "id": "o4",
-   "x": 526,
-   "y": 303,
-   "w": 12,
-   "h": 12,
-   "type": "shape",
-   "kind": "ellipse"
-  },
-  {
-   "id": "o5",
-   "x": 526,
-   "y": 377,
-   "w": 12,
-   "h": 12,
-   "type": "shape",
-   "kind": "ellipse"
-  },
-  {
-   "id": "l-12",
-   "x": 532,
-   "y": 97,
-   "w": 2,
-   "h": 54,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     0,
-     54
-    ]
-   ]
-  },
-  {
-   "id": "l-23",
-   "x": 532,
-   "y": 171,
-   "w": 2,
-   "h": 54,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     0,
-     54
-    ]
-   ]
-  },
-  {
-   "id": "l-34",
-   "x": 532,
-   "y": 245,
-   "w": 2,
-   "h": 54,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     0,
-     54
-    ]
-   ]
-  },
-  {
-   "id": "l-45",
-   "x": 532,
-   "y": 319,
-   "w": 2,
-   "h": 54,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     0,
-     54
-    ]
-   ]
-  },
-  {
-   "id": "s1",
-   "x": 552,
-   "y": 76,
-   "w": 296,
-   "h": 37,
-   "type": "text",
-   "style": {
-    "color": "tangerine"
-   },
-   "role": "title",
-   "text": "Fix GitHub billing",
-   "sub": "Only you can. Everything below waits on it"
-  },
-  {
-   "id": "s2",
-   "x": 552,
-   "y": 141,
-   "w": 296,
-   "h": 58,
-   "type": "text",
-   "ref": "check:betterbahn#533/ci-success",
-   "role": "title",
-   "sub": "I re-run it after billing"
-  },
-  {
-   "id": "s3",
-   "x": 552,
-   "y": 215,
-   "w": 296,
-   "h": 58,
-   "type": "text",
-   "ref": "pr:betterbahn#533",
-   "role": "title",
-   "text": "Merge #533 at 847a586 once green",
-   "sub": "the lead asked",
-   "status": "waiting for you"
-  },
-  {
-   "id": "s4",
-   "x": 552,
-   "y": 289,
-   "w": 296,
-   "h": 58,
-   "type": "text",
-   "ref": "release:betterbahn@1.19.0",
-   "role": "title",
-   "text": "Ship {ref.title}",
-   "sub": "betterbahn"
-  },
-  {
-   "id": "s5",
-   "x": 552,
-   "y": 363,
-   "w": 296,
-   "h": 58,
-   "type": "text",
-   "ref": "incident:betterbahn/status-page",
-   "role": "title",
-   "text": "Close the status page incident",
-   "sub": "after the release"
-  }
- ],
- "refs": {
-  "pr:betterbahn#533": {
-   "ok": true,
-   "kind": "pr",
-   "title": "#533 search-service 1.19.0",
-   "status": "blocked",
-   "statusTone": "red",
-   "url": "https://github.com/acme/betterbahn/pull/533",
-   "fields": {
-    "number": "533",
-    "checks": "1 failing"
-   }
-  },
-  "check:betterbahn#533/ci-success": {
-   "ok": true,
-   "kind": "check",
-   "title": "ci-success",
-   "status": "can't run",
-   "statusTone": "red",
-   "url": "https://github.com/acme/betterbahn/pull/533/checks",
-   "fields": {
-    "number": "533"
-   }
-  },
-  "incident:betterbahn/status-page": {
-   "ok": true,
-   "kind": "incident",
-   "title": "Status page incident",
-   "status": "open 55 h",
-   "statusTone": "red",
-   "fields": {
-    "openFor": "55 h"
-   }
-  },
-  "release:betterbahn@1.19.0": {
-   "ok": true,
-   "kind": "release",
-   "title": "search-service 1.19.0",
-   "status": "waiting on #533",
-   "statusTone": "amber",
-   "fields": {}
-  }
- },
- "text": "Why the release is stuck\nGitHub Actions is blocked: Billing stopped every run\nGitHub Actions is blocked → ci-success\ncircled: ci-success\n[ci-success](https://github.com/acme/betterbahn/pull/533/checks): can't run, required check on #533\nNote on ci-success: GitHub billing, only you\nGitHub billing, only you → o1\nci-success → #533 search-service 1.19.0\n[#533 search-service 1.19.0](https://github.com/acme/betterbahn/pull/533): blocked, 5 autofix rounds cleared release-manifest conflicts\n#533 search-service 1.19.0 → Status page incident\nStatus page incident: open 55 h, since Wed 02:41\nPath to release\nFix GitHub billing: Only you can. Everything below waits on it\n[ci-success](https://github.com/acme/betterbahn/pull/533/checks): can't run, I re-run it after billing\n[Merge #533 at 847a586 once green](https://github.com/acme/betterbahn/pull/533): waiting for you, the lead asked\nShip search-service 1.19.0: waiting on #533, betterbahn\nClose the status page incident: open 55 h, after the release",
- "touched": [
-  "f-why",
-  "t-actions",
-  "c-ci",
-  "e-ci",
-  "n-bill",
-  "p-533",
-  "i-status",
-  "a1",
-  "a2",
-  "a3",
-  "f-path",
-  "a-note",
-  "o1",
-  "o2",
-  "o3",
-  "o4",
-  "o5",
-  "l-12",
-  "l-23",
-  "l-34",
-  "l-45",
-  "s1",
-  "s2",
-  "s3",
-  "s4",
-  "s5"
- ],
- "say": "Billing stopped CI. Only you can fix it."
+  "text": "Why the release is stuck\nGitHub Actions is blocked: Billing stopped every run\nGitHub Actions is blocked → ci-success\ncircled: ci-success\n[ci-success](https://github.com/acme/betterbahn/pull/533/checks): can't run, required check on #533\nNote on ci-success: GitHub billing, only you\nGitHub billing, only you → o1\nci-success → #533 search-service 1.19.0\n[#533 search-service 1.19.0](https://github.com/acme/betterbahn/pull/533): blocked, 5 autofix rounds cleared release-manifest conflicts\n#533 search-service 1.19.0 → Status page incident\nStatus page incident: open 55 h, since Wed 02:41\nPath to release\nFix GitHub billing: Only you can. Everything below waits on it\n[ci-success](https://github.com/acme/betterbahn/pull/533/checks): can't run, I re-run it after billing\n[Merge #533 at 847a586 once green](https://github.com/acme/betterbahn/pull/533): waiting for you, the lead asked\nShip search-service 1.19.0: waiting on #533, betterbahn\nClose the status page incident: open 55 h, after the release",
+  "touched": [
+    "f-why",
+    "t-actions",
+    "c-ci",
+    "e-ci",
+    "n-bill",
+    "p-533",
+    "i-status",
+    "a1",
+    "a2",
+    "a3",
+    "f-path",
+    "a-note",
+    "o1",
+    "o2",
+    "o3",
+    "o4",
+    "o5",
+    "l-12",
+    "l-23",
+    "l-34",
+    "l-45",
+    "s1",
+    "s2",
+    "s3",
+    "s4",
+    "s5"
+  ],
+  "say": "Billing stopped CI. Only you can fix it."
 }

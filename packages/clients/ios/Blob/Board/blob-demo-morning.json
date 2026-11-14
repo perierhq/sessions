@@ -1,733 +1,574 @@
 {
- "schema": 1,
- "revision": 44,
- "latestRevision": 44,
- "updatedAt": 1763027000000,
- "elements": [
-  {
-   "id": "f-since",
-   "x": 24,
-   "y": 44,
-   "w": 334,
-   "h": 20,
-   "type": "frame",
-   "title": "Since yesterday evening"
+  "schema": 1,
+  "revision": 44,
+  "latestRevision": 44,
+  "updatedAt": 1763027000000,
+  "elements": [
+    {
+      "id": "f-since",
+      "x": 24,
+      "y": 44,
+      "w": 334,
+      "h": 20,
+      "type": "frame",
+      "title": "Since yesterday evening"
+    },
+    {
+      "id": "t-11",
+      "x": 24,
+      "y": 66,
+      "w": 110,
+      "type": "text",
+      "role": "stat",
+      "text": "11",
+      "sub": "handled alone"
+    },
+    {
+      "id": "t-3",
+      "x": 150,
+      "y": 66,
+      "w": 90,
+      "type": "text",
+      "role": "stat",
+      "text": "3",
+      "sub": "asked you"
+    },
+    {
+      "id": "t-0",
+      "x": 256,
+      "y": 66,
+      "w": 90,
+      "type": "text",
+      "role": "stat",
+      "text": "0",
+      "sub": "merged"
+    },
+    {
+      "id": "p-533",
+      "x": 24,
+      "y": 172,
+      "w": 334,
+      "h": 58,
+      "type": "text",
+      "ref": "pr:betterbahn#533",
+      "role": "title",
+      "sub": "ci-success can't run"
+    },
+    {
+      "id": "d-merge",
+      "x": 24,
+      "y": 246,
+      "w": 334,
+      "h": 74,
+      "type": "text",
+      "ref": "pr:betterbahn#533",
+      "role": "title",
+      "text": "Merge #533 once checks are green, pinned to 847a586?",
+      "sub": "the lead asked",
+      "status": "waiting for you"
+    },
+    {
+      "id": "c-ci",
+      "x": 24,
+      "y": 404,
+      "w": 200,
+      "h": 58,
+      "type": "text",
+      "ref": "check:betterbahn#533/ci-success",
+      "role": "title"
+    },
+    {
+      "id": "e-ci",
+      "x": 12,
+      "y": 390,
+      "w": 226,
+      "h": 86,
+      "z": 2,
+      "type": "shape",
+      "kind": "ellipse"
+    },
+    {
+      "id": "n-bill",
+      "type": "note",
+      "anchor": {
+        "id": "c-ci",
+        "side": "right",
+        "dx": 26,
+        "dy": -20
+      },
+      "text": "GitHub billing, only you",
+      "leader": {
+        "to": [1, 0.35]
+      }
+    },
+    {
+      "id": "f-handled",
+      "x": 520,
+      "y": 44,
+      "w": 330,
+      "h": 20,
+      "type": "frame",
+      "title": "Handled alone"
+    },
+    {
+      "id": "t-notes",
+      "x": 520,
+      "y": 72,
+      "w": 330,
+      "h": 35,
+      "type": "text",
+      "role": "title",
+      "text": "Closed 9 stale notes",
+      "sub": "duplicates and notes older than a week"
+    },
+    {
+      "id": "t-autofix",
+      "x": 520,
+      "y": 166,
+      "w": 260,
+      "h": 35,
+      "type": "text",
+      "role": "title",
+      "text": "Ran autofix twice on #533",
+      "sub": "conflicts cleared, still blocked by CI"
+    },
+    {
+      "id": "f-acme",
+      "x": 520,
+      "y": 252,
+      "w": 330,
+      "h": 20,
+      "type": "frame",
+      "title": "acme"
+    },
+    {
+      "id": "p-78",
+      "x": 520,
+      "y": 274,
+      "w": 330,
+      "h": 58,
+      "type": "text",
+      "ref": "pr:acme#78",
+      "role": "title",
+      "sub": "Detect changes failing"
+    },
+    {
+      "id": "a-autofix",
+      "type": "arrow",
+      "start": {
+        "id": "t-autofix",
+        "side": [0, 0.5]
+      },
+      "end": {
+        "id": "p-533",
+        "side": [1, 0.35]
+      },
+      "bend": 0.1
+    },
+    {
+      "id": "tl-h0",
+      "x": 26,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-h1",
+      "x": 32,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-h2",
+      "x": 38,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-h3",
+      "x": 44,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-h4",
+      "x": 22,
+      "y": 133,
+      "w": 30,
+      "h": 14,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 14],
+        [27, 2]
+      ]
+    },
+    {
+      "id": "tl-h5",
+      "x": 60,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-h6",
+      "x": 66,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-h7",
+      "x": 72,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-h8",
+      "x": 78,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-h9",
+      "x": 56,
+      "y": 133,
+      "w": 30,
+      "h": 14,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 14],
+        [27, 2]
+      ]
+    },
+    {
+      "id": "tl-h10",
+      "x": 94,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-a0",
+      "x": 152,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-a1",
+      "x": 158,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-a2",
+      "x": 164,
+      "y": 130,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-n0",
+      "x": 522,
+      "y": 116,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-n1",
+      "x": 528,
+      "y": 116,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-n2",
+      "x": 534,
+      "y": 116,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-n3",
+      "x": 540,
+      "y": 116,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-n4",
+      "x": 518,
+      "y": 119,
+      "w": 30,
+      "h": 14,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 14],
+        [27, 2]
+      ]
+    },
+    {
+      "id": "tl-n5",
+      "x": 556,
+      "y": 116,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-n6",
+      "x": 562,
+      "y": 116,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-n7",
+      "x": 568,
+      "y": 116,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-n8",
+      "x": 574,
+      "y": 116,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-f0",
+      "x": 522,
+      "y": 210,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    },
+    {
+      "id": "tl-f1",
+      "x": 528,
+      "y": 210,
+      "w": 2,
+      "h": 20,
+      "type": "shape",
+      "kind": "line",
+      "points": [
+        [0, 0],
+        [1, 20]
+      ]
+    }
+  ],
+  "refs": {
+    "pr:betterbahn#533": {
+      "ok": true,
+      "kind": "pr",
+      "title": "#533 search-service 1.19.0",
+      "status": "blocked",
+      "statusTone": "red",
+      "url": "https://github.com/acme/betterbahn/pull/533",
+      "fields": {
+        "number": "533",
+        "checks": "1 failing"
+      }
+    },
+    "check:betterbahn#533/ci-success": {
+      "ok": true,
+      "kind": "check",
+      "title": "ci-success",
+      "status": "can't run",
+      "statusTone": "red",
+      "url": "https://github.com/acme/betterbahn/pull/533/checks",
+      "fields": {
+        "number": "533"
+      }
+    },
+    "pr:acme#78": {
+      "ok": true,
+      "kind": "pr",
+      "title": "#78 Meta ads pixel",
+      "status": "fix started",
+      "statusTone": "amber",
+      "url": "https://github.com/acme/acme/pull/78",
+      "fields": {
+        "number": "78"
+      }
+    }
   },
-  {
-   "id": "t-11",
-   "x": 24,
-   "y": 66,
-   "w": 110,
-   "type": "text",
-   "role": "stat",
-   "text": "11",
-   "sub": "handled alone"
-  },
-  {
-   "id": "t-3",
-   "x": 150,
-   "y": 66,
-   "w": 90,
-   "type": "text",
-   "role": "stat",
-   "text": "3",
-   "sub": "asked you"
-  },
-  {
-   "id": "t-0",
-   "x": 256,
-   "y": 66,
-   "w": 90,
-   "type": "text",
-   "role": "stat",
-   "text": "0",
-   "sub": "merged"
-  },
-  {
-   "id": "p-533",
-   "x": 24,
-   "y": 172,
-   "w": 334,
-   "h": 58,
-   "type": "text",
-   "ref": "pr:betterbahn#533",
-   "role": "title",
-   "sub": "ci-success can't run"
-  },
-  {
-   "id": "d-merge",
-   "x": 24,
-   "y": 246,
-   "w": 334,
-   "h": 74,
-   "type": "text",
-   "ref": "pr:betterbahn#533",
-   "role": "title",
-   "text": "Merge #533 once checks are green, pinned to 847a586?",
-   "sub": "the lead asked",
-   "status": "waiting for you"
-  },
-  {
-   "id": "c-ci",
-   "x": 24,
-   "y": 404,
-   "w": 200,
-   "h": 58,
-   "type": "text",
-   "ref": "check:betterbahn#533/ci-success",
-   "role": "title"
-  },
-  {
-   "id": "e-ci",
-   "x": 12,
-   "y": 390,
-   "w": 226,
-   "h": 86,
-   "z": 2,
-   "type": "shape",
-   "kind": "ellipse"
-  },
-  {
-   "id": "n-bill",
-   "type": "note",
-   "anchor": {
-    "id": "c-ci",
-    "side": "right",
-    "dx": 26,
-    "dy": -20
-   },
-   "text": "GitHub billing, only you",
-   "leader": {
-    "to": [
-     1,
-     0.35
-    ]
-   }
-  },
-  {
-   "id": "f-handled",
-   "x": 520,
-   "y": 44,
-   "w": 330,
-   "h": 20,
-   "type": "frame",
-   "title": "Handled alone"
-  },
-  {
-   "id": "t-notes",
-   "x": 520,
-   "y": 72,
-   "w": 330,
-   "h": 35,
-   "type": "text",
-   "role": "title",
-   "text": "Closed 9 stale notes",
-   "sub": "duplicates and notes older than a week"
-  },
-  {
-   "id": "t-autofix",
-   "x": 520,
-   "y": 166,
-   "w": 260,
-   "h": 35,
-   "type": "text",
-   "role": "title",
-   "text": "Ran autofix twice on #533",
-   "sub": "conflicts cleared, still blocked by CI"
-  },
-  {
-   "id": "f-acme",
-   "x": 520,
-   "y": 252,
-   "w": 330,
-   "h": 20,
-   "type": "frame",
-   "title": "acme"
-  },
-  {
-   "id": "p-78",
-   "x": 520,
-   "y": 274,
-   "w": 330,
-   "h": 58,
-   "type": "text",
-   "ref": "pr:acme#78",
-   "role": "title",
-   "sub": "Detect changes failing"
-  },
-  {
-   "id": "a-autofix",
-   "type": "arrow",
-   "start": {
-    "id": "t-autofix",
-    "side": [
-     0,
-     0.5
-    ]
-   },
-   "end": {
-    "id": "p-533",
-    "side": [
-     1,
-     0.35
-    ]
-   },
-   "bend": 0.1
-  },
-  {
-   "id": "tl-h0",
-   "x": 26,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-h1",
-   "x": 32,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-h2",
-   "x": 38,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-h3",
-   "x": 44,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-h4",
-   "x": 22,
-   "y": 133,
-   "w": 30,
-   "h": 14,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     14
-    ],
-    [
-     27,
-     2
-    ]
-   ]
-  },
-  {
-   "id": "tl-h5",
-   "x": 60,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-h6",
-   "x": 66,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-h7",
-   "x": 72,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-h8",
-   "x": 78,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-h9",
-   "x": 56,
-   "y": 133,
-   "w": 30,
-   "h": 14,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     14
-    ],
-    [
-     27,
-     2
-    ]
-   ]
-  },
-  {
-   "id": "tl-h10",
-   "x": 94,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-a0",
-   "x": 152,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-a1",
-   "x": 158,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-a2",
-   "x": 164,
-   "y": 130,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-n0",
-   "x": 522,
-   "y": 116,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-n1",
-   "x": 528,
-   "y": 116,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-n2",
-   "x": 534,
-   "y": 116,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-n3",
-   "x": 540,
-   "y": 116,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-n4",
-   "x": 518,
-   "y": 119,
-   "w": 30,
-   "h": 14,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     14
-    ],
-    [
-     27,
-     2
-    ]
-   ]
-  },
-  {
-   "id": "tl-n5",
-   "x": 556,
-   "y": 116,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-n6",
-   "x": 562,
-   "y": 116,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-n7",
-   "x": 568,
-   "y": 116,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-n8",
-   "x": 574,
-   "y": 116,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-f0",
-   "x": 522,
-   "y": 210,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  },
-  {
-   "id": "tl-f1",
-   "x": 528,
-   "y": 210,
-   "w": 2,
-   "h": 20,
-   "type": "shape",
-   "kind": "line",
-   "points": [
-    [
-     0,
-     0
-    ],
-    [
-     1,
-     20
-    ]
-   ]
-  }
- ],
- "refs": {
-  "pr:betterbahn#533": {
-   "ok": true,
-   "kind": "pr",
-   "title": "#533 search-service 1.19.0",
-   "status": "blocked",
-   "statusTone": "red",
-   "url": "https://github.com/acme/betterbahn/pull/533",
-   "fields": {
-    "number": "533",
-    "checks": "1 failing"
-   }
-  },
-  "check:betterbahn#533/ci-success": {
-   "ok": true,
-   "kind": "check",
-   "title": "ci-success",
-   "status": "can't run",
-   "statusTone": "red",
-   "url": "https://github.com/acme/betterbahn/pull/533/checks",
-   "fields": {
-    "number": "533"
-   }
-  },
-  "pr:acme#78": {
-   "ok": true,
-   "kind": "pr",
-   "title": "#78 Meta ads pixel",
-   "status": "fix started",
-   "statusTone": "amber",
-   "url": "https://github.com/acme/acme/pull/78",
-   "fields": {
-    "number": "78"
-   }
-  }
- },
- "text": "Since yesterday evening\n11: handled alone\n3: asked you\n0: merged\n[#533 search-service 1.19.0](https://github.com/acme/betterbahn/pull/533): blocked, ci-success can't run\n[Merge #533 once checks are green, pinned to 847a586?](https://github.com/acme/betterbahn/pull/533): waiting for you, the lead asked\ncircled: ci-success\n[ci-success](https://github.com/acme/betterbahn/pull/533/checks): can't run\nNote on ci-success: GitHub billing, only you\nHandled alone\nClosed 9 stale notes: duplicates and notes older than a week\nRan autofix twice on #533: conflicts cleared, still blocked by CI\nRan autofix twice on #533 → #533 search-service 1.19.0\nacme\n[#78 Meta ads pixel](https://github.com/acme/acme/pull/78): fix started, Detect changes failing",
- "touched": [
-  "f-since",
-  "t-11",
-  "t-3",
-  "t-0",
-  "p-533",
-  "d-merge",
-  "c-ci",
-  "e-ci",
-  "n-bill",
-  "f-handled",
-  "t-notes",
-  "t-autofix",
-  "f-acme",
-  "p-78",
-  "a-autofix",
-  "tl-h0",
-  "tl-h1",
-  "tl-h2",
-  "tl-h3",
-  "tl-h4",
-  "tl-h5",
-  "tl-h6",
-  "tl-h7",
-  "tl-h8",
-  "tl-h9",
-  "tl-h10",
-  "tl-a0",
-  "tl-a1",
-  "tl-a2",
-  "tl-n0",
-  "tl-n1",
-  "tl-n2",
-  "tl-n3",
-  "tl-n4",
-  "tl-n5",
-  "tl-n6",
-  "tl-n7",
-  "tl-n8",
-  "tl-f0",
-  "tl-f1"
- ],
- "say": "Quiet night. Two things need you."
+  "text": "Since yesterday evening\n11: handled alone\n3: asked you\n0: merged\n[#533 search-service 1.19.0](https://github.com/acme/betterbahn/pull/533): blocked, ci-success can't run\n[Merge #533 once checks are green, pinned to 847a586?](https://github.com/acme/betterbahn/pull/533): waiting for you, the lead asked\ncircled: ci-success\n[ci-success](https://github.com/acme/betterbahn/pull/533/checks): can't run\nNote on ci-success: GitHub billing, only you\nHandled alone\nClosed 9 stale notes: duplicates and notes older than a week\nRan autofix twice on #533: conflicts cleared, still blocked by CI\nRan autofix twice on #533 → #533 search-service 1.19.0\nacme\n[#78 Meta ads pixel](https://github.com/acme/acme/pull/78): fix started, Detect changes failing",
+  "touched": [
+    "f-since",
+    "t-11",
+    "t-3",
+    "t-0",
+    "p-533",
+    "d-merge",
+    "c-ci",
+    "e-ci",
+    "n-bill",
+    "f-handled",
+    "t-notes",
+    "t-autofix",
+    "f-acme",
+    "p-78",
+    "a-autofix",
+    "tl-h0",
+    "tl-h1",
+    "tl-h2",
+    "tl-h3",
+    "tl-h4",
+    "tl-h5",
+    "tl-h6",
+    "tl-h7",
+    "tl-h8",
+    "tl-h9",
+    "tl-h10",
+    "tl-a0",
+    "tl-a1",
+    "tl-a2",
+    "tl-n0",
+    "tl-n1",
+    "tl-n2",
+    "tl-n3",
+    "tl-n4",
+    "tl-n5",
+    "tl-n6",
+    "tl-n7",
+    "tl-n8",
+    "tl-f0",
+    "tl-f1"
+  ],
+  "say": "Quiet night. Two things need you."
 }
