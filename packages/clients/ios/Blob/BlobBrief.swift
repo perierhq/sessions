@@ -233,6 +233,41 @@ final class BlobBrief {
         update { $0.focus(item) }
     }
 
+    /// Opens the decision view for an inbox item tapped on the board
+    /// (`item:` ref): read fresh from the items API, so the answer names the
+    /// revision on screen, and shown even when it is one of the brief's
+    /// decisions, whose cards the board stands in for. The brief comes back
+    /// once it is done. `.closed` when it isn't open any more, for the
+    /// caller to show what the board knows instead; `.unavailable` when the
+    /// items couldn't be read. Cancelled (a newer tap, or the home went),
+    /// it shows nothing and returns `.unavailable`.
+    func open(itemId id: String) async -> BlobBriefState.Lookup {
+        let lookup: BlobBriefState.Lookup
+        #if DEBUG
+        if Self.demo != nil {
+            lookup = BlobBriefState.lookup(id, in: Self.demoItems + Self.demoNew, limit: .max)
+        } else {
+            lookup = await Self.lookUp(id)
+        }
+        #else
+        lookup = await Self.lookUp(id)
+        #endif
+        guard !Task.isCancelled else { return .unavailable }
+        guard case .open(let item) = lookup else { return lookup }
+        // A brief decision keeps the option the brief recommended first.
+        let recommended = state.page?.decisions.first { $0.id == id }?.options.first
+        update { $0.focus(BlobBriefState.recommending(recommended, in: item)) }
+        return lookup
+    }
+
+    /// Reads the open items for `open(itemId:)`; a failed read is
+    /// `.unavailable`, never `.closed`.
+    private static func lookUp(_ id: String) async -> BlobBriefState.Lookup {
+        guard ServerConfig.shared.isConfigured else { return .unavailable }
+        let items = try? await OS1API.supervisorItems(limit: OS1API.supervisorItemsMax)
+        return BlobBriefState.lookup(id, in: items, limit: OS1API.supervisorItemsMax)
+    }
+
     func isRevised(_ item: Item) -> Bool { state.isRevised(item) }
 
     /// Sends the answer with the revision of the item as it is shown. An

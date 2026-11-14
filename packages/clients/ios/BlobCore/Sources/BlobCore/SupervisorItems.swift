@@ -225,6 +225,9 @@ public struct SupervisorBrief: Decodable, Sendable, Equatable {
     public let decisions: [Decision]
     /// Open needs-you items it left for later.
     public let laterCount: Int
+    /// The board revision that shows the brief; nil when the turn drew
+    /// nothing (or from an older server), and Blob shows the decision cards.
+    public let boardRevision: Int?
 
     public struct Decision: Decodable, Sendable, Equatable {
         public let item: SupervisorItem
@@ -240,7 +243,7 @@ public struct SupervisorBrief: Decodable, Sendable, Equatable {
     /// The brief as one card: its unique write.
     public var key: String { "\(day)@\(Int64(asOf))" }
 
-    private enum CodingKeys: String, CodingKey { case day, asOf, say, seenAt, handled, decisions, later }
+    private enum CodingKeys: String, CodingKey { case day, asOf, say, seenAt, handled, decisions, later, boardRevision }
     private struct Line: Decodable { let line: String? }
     private struct Later: Decodable { let count: Int? }
     private struct LossyDecision: Decodable {
@@ -253,9 +256,13 @@ public struct SupervisorBrief: Decodable, Sendable, Equatable {
         }
     }
 
-    public init(day: String, asOf: Double, say: String, seenAt: Double? = nil, handled: [String] = [], decisions: [Decision] = [], laterCount: Int = 0) {
+    public init(
+        day: String, asOf: Double, say: String, seenAt: Double? = nil, handled: [String] = [],
+        decisions: [Decision] = [], laterCount: Int = 0, boardRevision: Int? = nil
+    ) {
         self.day = day; self.asOf = asOf; self.say = say; self.seenAt = seenAt
         self.handled = handled; self.decisions = decisions; self.laterCount = laterCount
+        self.boardRevision = boardRevision
     }
 
     public init(from decoder: Decoder) throws {
@@ -270,5 +277,8 @@ public struct SupervisorBrief: Decodable, Sendable, Equatable {
         decisions = (((try? c.decodeIfPresent([LossyDecision].self, forKey: .decisions)) ?? nil) ?? [])
             .compactMap(\.decision)
         laterCount = max(0, (((try? c.decodeIfPresent(Later.self, forKey: .later)) ?? nil)?.count) ?? 0)
+        // A whole revision of at least 1; anything else is no board.
+        let revision = (try? c.decodeIfPresent(Double.self, forKey: .boardRevision)) ?? nil
+        boardRevision = revision.flatMap { $0 >= 1 && $0 == $0.rounded() && $0 < 1e15 ? Int($0) : nil }
     }
 }

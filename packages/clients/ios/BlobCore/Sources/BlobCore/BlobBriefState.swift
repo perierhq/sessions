@@ -58,14 +58,40 @@ public struct BlobBriefState: Sendable {
         /// Items raised after the brief that reopening it put under its
         /// own decisions (`reopen`), kept when the brief is read again.
         public var since: Set<String>
+        /// The board revision that shows the brief (`SupervisorBrief`).
+        public var boardRevision: Int?
 
         public init(
             kind: Kind, key: String, say: String, decisions: [Item], handled: [String] = [],
-            later: Int = 0, day: String? = nil, offered: [String] = [], since: Set<String> = []
+            later: Int = 0, day: String? = nil, offered: [String] = [], since: Set<String> = [],
+            boardRevision: Int? = nil
         ) {
             self.kind = kind; self.key = key; self.say = say; self.decisions = decisions
             self.handled = handled; self.later = later; self.day = day; self.offered = offered
-            self.since = since
+            self.since = since; self.boardRevision = boardRevision
+        }
+
+        /// Whether Blob shows this page on `board` instead of its decision
+        /// cards: a brief the supervisor drew (it names a board revision the
+        /// shown board has reached, or, naming none, the board changed on
+        /// `today`, the owner's local day), where every decision in `open`
+        /// has an `item:` element on that board, so each can be opened from
+        /// it. A decision missing from the board, an empty board, or any
+        /// other page keeps the cards. The spoken line plays either way.
+        public func drawn(
+            on board: BoardSnapshot?, open: [Item], today: String, calendar: Calendar = .current
+        ) -> Bool {
+            guard kind == .brief, let board, !board.isEmpty else { return false }
+            if let boardRevision {
+                // An earlier revision than the brief's can't hold its drawing.
+                guard board.revision >= boardRevision else { return false }
+            } else {
+                guard board.updatedAt > 0,
+                      BlobBriefState.day(of: Date(timeIntervalSince1970: board.updatedAt / 1000), in: calendar) == today
+                else { return false }
+            }
+            let onBoard = Set(board.elements.compactMap { board.itemId(for: $0.ref) })
+            return open.allSatisfy { onBoard.contains($0.id) }
         }
     }
 
@@ -132,8 +158,32 @@ public struct BlobBriefState: Sendable {
     private var spoken: Set<String> = []
     /// Items whose revision changed while Blob showed them.
     private var revised: Set<String> = []
+    /// The page a linked item covered (a decision tapped on the board),
+    /// back once the item is done or put away.
+    private var behind: Page?
 
     public init() {}
+
+    /// What a read of the open items says about one item tapped on the
+    /// board.
+    public enum Lookup: Equatable, Sendable {
+        /// Still open: this is it, at its current revision.
+        case open(Item)
+        /// Not among the open items: answered, dismissed or gone.
+        case closed
+        /// The items couldn't be read, or the list was full and may have
+        /// left it out.
+        case unavailable
+    }
+
+    /// Finds `id` in `items`, the open items as read (nil when the read
+    /// failed). `limit`: the most the server lists, so a full list that
+    /// lacks the item can't say it is closed.
+    public static func lookup(_ id: String, in items: [Item]?, limit: Int) -> Lookup {
+        guard let items else { return .unavailable }
+        if let item = items.first(where: { $0.id == id && $0.isOpen }) { return .open(item) }
+        return items.count < limit ? .closed : .unavailable
+    }
 
     /// Decisions on the page still open here.
     public var open: [Item] { page?.decisions.filter { !closed.contains($0.id) } ?? [] }
@@ -174,12 +224,14 @@ public struct BlobBriefState: Sendable {
                 let fresh = Self.decisions(brief) + since
                 noteRevisions(fresh, against: held.decisions)
                 held.decisions = fresh
+                held.boardRevision = brief.boardRevision
                 page = held
                 settleIfDone()
                 return !since.isEmpty && page?.key == held.key ? .rereadSince(held) : .none
             }
             // Another brief was written while this page was up, and not seen yet.
             if let brief, unseen, brief.key != held.key {
+                behind = nil
                 page = Self.page(for: brief)
                 return .none
             }
@@ -218,7 +270,7 @@ public struct BlobBriefState: Sendable {
         guard fresh != current.decisions else { return }
         if fresh.isEmpty, current.kind != .brief {
             notes = [:]
-            page = nil
+            leave()
             return
         }
         noteRevisions(fresh, against: current.decisions)
@@ -264,7 +316,7 @@ public struct BlobBriefState: Sendable {
         guard let page else { return }
         if page.kind == .brief { putAway.insert(page.key) }
         notes = [:]
-        self.page = nil
+        leave()
     }
 
     /// Whether the idle home can open the latest brief again.
@@ -293,9 +345,11 @@ public struct BlobBriefState: Sendable {
         page?.decisions.contains { $0.id == id } == true && !closed.contains(id)
     }
 
-    /// Shows the one item a link named.
+    /// Shows the one item a link named, or a decision tapped on the board.
+    /// The page it covers (the brief) comes back once the item is done.
     public mutating func focus(_ item: Item) {
         closed.remove(item.id)
+        if let page, page.kind != .linked { behind = page }
         page = Page(kind: .linked, key: "item:\(item.cardKey)", say: "", decisions: [item])
     }
 
@@ -346,7 +400,16 @@ public struct BlobBriefState: Sendable {
     private mutating func settleIfDone() {
         guard let page, !page.decisions.isEmpty, open.isEmpty, notes.isEmpty else { return }
         if page.kind == .brief { putAway.insert(page.key) }
-        self.page = nil
+        leave()
+    }
+
+    /// The page goes: a linked item gives the page it covered back, which
+    /// goes too when its decisions were all there was and are done.
+    private mutating func leave() {
+        let wasLinked = page?.kind == .linked
+        page = wasLinked ? behind : nil
+        behind = nil
+        if wasLinked, page != nil { settleIfDone() }
     }
 
     public static func page(for brief: SupervisorBrief) -> Page {
@@ -357,7 +420,8 @@ public struct BlobBriefState: Sendable {
             decisions: decisions(brief),
             handled: brief.handled,
             later: brief.laterCount,
-            day: brief.day
+            day: brief.day,
+            boardRevision: brief.boardRevision
         )
     }
 

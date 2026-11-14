@@ -27,6 +27,13 @@ struct BlobHomeView: View {
     @State private var board = BlobBoard()
     /// A ref with no page of its own to open, shown in a sheet.
     @State private var refDetail: BlobRefDetail?
+    /// The read behind the latest decision tapped on the board; a newer tap
+    /// or leaving the home cancels it.
+    @State private var decisionTask: Task<Void, Never>?
+    /// Counts decision taps; only the newest one's result is shown.
+    @State private var decisionTap = 0
+    /// A decision tapped on the board couldn't be read.
+    @State private var decisionFailed = false
     @ScaledMetric(relativeTo: .body) private var scaledBody: Double = 17
     @Environment(\.openURL) private var openURL
     @State private var showSettings = false
@@ -103,9 +110,10 @@ struct BlobHomeView: View {
             let spot = place(in: geo.size, insets: insets, center: talkCenter, room: room, fold: fold, at: .now)
             let viewport = Self.boardViewport(size: geo.size, insets: insets, fold: fold)
             ZStack(alignment: .bottom) {
-                // The board, under everything else: on the quiet home, and
-                // for a reply that showed a revision of it.
-                if boardShown, let shown = board.shown {
+                // The board, under everything else: on the quiet home, for
+                // the brief Blob drew on it, and for a reply that showed a
+                // revision of it.
+                if boardShown || boardBehind, let shown = board.shown {
                     BlobCanvasView(
                         board: board,
                         snapshot: shown,
@@ -113,6 +121,10 @@ struct BlobHomeView: View {
                         open: openRef,
                         pulledPastTop: revealHistory
                     )
+                    // Behind the brief's cards it is only the backdrop.
+                    .opacity(boardShown ? 1 : 0.3)
+                    .allowsHitTesting(boardShown)
+                    .accessibilityHidden(!boardShown)
                     .transition(.opacity)
                 }
 
@@ -124,8 +136,18 @@ struct BlobHomeView: View {
                     .allowsHitTesting(!boardShown)
 
                 if boardShown, let caption = boardCaption {
-                    canvasCaption(caption, insets: insets, column: columns.leading ?? columns.centered, height: geo.size.height)
-                        .transition(.opacity)
+                    canvasCaption(insets: insets, column: columns.leading ?? columns.centered, height: geo.size.height) {
+                        BlobReplyView(reply: caption, entryId: text.replyEntry?.id, relay: text.relay, sayStyle: .line)
+                    }
+                    .transition(.opacity)
+                } else if briefOnBoard, let page = briefPage {
+                    // The brief Blob drew: what it said and the quiet line
+                    // over the board, which holds its decisions.
+                    canvasCaption(insets: insets, column: columns.leading ?? columns.centered, height: geo.size.height) {
+                        BlobBriefView(brief: brief, page: page, part: .board)
+                    }
+                    .id(page.key)
+                    .transition(.opacity)
                 }
 
                 ZStack {
@@ -293,7 +315,13 @@ struct BlobHomeView: View {
         }
         .onChange(of: canvasRevision, initial: true) { _, revision in board.show(revision: revision) }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.35), value: boardShown)
-        .onDisappear { brief.stopPolling() }
+        .onDisappear {
+            brief.stopPolling()
+            cancelDecision()
+        }
+        .alert("Couldn’t load the decision. Try again.", isPresented: $decisionFailed) {
+            Button("OK", role: .cancel) {}
+        }
         .onReceive(NotificationCenter.default.publisher(for: .supervisorBriefReady)) { _ in
             brief.kick()
         }
@@ -727,12 +755,29 @@ struct BlobHomeView: View {
     private var canvasRevision: Int? { settledReply.flatMap(CanvasFence.revision(in:)) }
 
     /// The board is the surface: for a reply that showed a revision of it,
-    /// and on the quiet home while it holds anything. The brief, a reply
-    /// without a board, a question and history keep the page; an empty
-    /// board leaves the home as it was.
+    /// for the brief Blob drew on it, and on the quiet home while it holds
+    /// anything. A brief it didn't draw, a reply without a board, a
+    /// question, a decision opened on its own and history keep the page; an
+    /// empty board leaves the home as it was.
     private var boardShown: Bool {
         guard !historyRevealed, let shown = board.shown, !shown.isEmpty else { return false }
-        return canvasRevision != nil || !hasContent
+        return canvasRevision != nil || !hasContent || briefOnBoard
+    }
+
+    /// The brief on the page is one Blob drew on the board (BlobCore
+    /// `Page.drawn(on:open:)`: it names a board revision the shown board has
+    /// reached, or the board changed today, and every open decision has an
+    /// `item:` element on the shown board), so the board shows instead of
+    /// its decision cards. Blob still says it; otherwise the cards stay.
+    private var briefOnBoard: Bool {
+        briefPage?.drawn(on: board.shown, open: brief.open, today: BlobBriefState.day(of: .now)) == true
+    }
+
+    /// The brief keeps its cards, and a board that holds anything sits
+    /// dimmed behind them.
+    private var boardBehind: Bool {
+        guard !boardShown, !historyRevealed, briefPage != nil, let shown = board.shown else { return false }
+        return !shown.isEmpty
     }
 
     /// What sits under the board: the reply's Say line and anything else it
@@ -749,15 +794,12 @@ struct BlobHomeView: View {
     }
 
     /// The Say line bottom-leading over the board, as on the designs, with
-    /// what else the reply shows after it. Taller than 40% of the screen,
-    /// it scrolls.
-    private func canvasCaption(_ reply: BlobReply, insets: EdgeInsets, column: BlobColumns.Span, height: CGFloat) -> some View {
-        let content = BlobReplyView(
-            reply: reply,
-            entryId: text.replyEntry?.id,
-            relay: text.relay,
-            sayStyle: .line
-        )
+    /// what else the reply (or the brief) shows after it. Taller than 40% of
+    /// the screen, it scrolls.
+    private func canvasCaption<Content: View>(
+        insets: EdgeInsets, column: BlobColumns.Span, height: CGFloat, @ViewBuilder content build: () -> Content
+    ) -> some View {
+        let content = build()
         return ViewThatFits(in: .vertical) {
             content
             ScrollView { content }.scrollIndicators(.hidden)
@@ -767,15 +809,51 @@ struct BlobHomeView: View {
         .padding(.bottom, max(insets.bottom, 20) + (typing ? 76 : 60))
     }
 
-    /// Opens a real object on the board: its page when it has one (a PR, a
-    /// check), else its live fields in a sheet.
+    /// Opens a real object on the board: an inbox item's decision view, its
+    /// page when it has one (a PR, a check), else its live fields in a sheet.
     private func openRef(_ hit: BoardHitTest.Hit) {
+        cancelDecision()
         let info = board.shown?.ref(hit.ref) ?? .missing
-        if info.ok, let link = info.url, let url = URL(string: link), url.scheme == "https" || url.scheme == "http" {
+        if let id = board.shown?.itemId(for: hit.ref) {
+            openDecision(id, hit: hit, info: info)
+        } else if info.ok, let link = info.url, let url = URL(string: link), url.scheme == "https" || url.scheme == "http" {
             openURL(url)
         } else {
             refDetail = BlobRefDetail(ref: hit.ref, info: info)
         }
+    }
+
+    /// An inbox item tapped on the board (`item:` ref): its decision view,
+    /// as a `blob://item/<id>` link shows it, read fresh with its revision
+    /// and answered through the items API. The exchange on screen goes
+    /// once it is there. An item no longer open shows its live fields; one
+    /// that couldn't be read says so. One read at a time: a newer tap
+    /// cancels the last, and a late result for an older tap is dropped.
+    private func openDecision(_ id: String, hit: BoardHitTest.Hit, info: BoardRefInfo) {
+        decisionTap += 1
+        let tap = decisionTap
+        decisionTask = Task {
+            let result = await brief.open(itemId: id)
+            guard !Task.isCancelled, tap == decisionTap else { return }
+            decisionTask = nil
+            switch result {
+            case .open:
+                if historyRevealed { collapseHistory() }
+                if typing && draft.isEmpty { typing = false; fieldFocused = false }
+                text.letGo()
+            case .closed:
+                refDetail = BlobRefDetail(ref: hit.ref, info: info)
+            case .unavailable:
+                decisionFailed = true
+            }
+        }
+    }
+
+    /// Drops the decision read in flight, so its result never shows.
+    private func cancelDecision() {
+        decisionTask?.cancel()
+        decisionTask = nil
+        decisionTap += 1
     }
 
     /// The board's view of the surface: board (0, 0) inside the leading
@@ -851,7 +929,7 @@ struct BlobHomeView: View {
     /// The brief's decisions, for the second pane: on two panes the brief
     /// re-arranges, with what Blob said beside its decisions.
     private var briefBeside: BlobBrief.Page? {
-        guard let page = briefPage, !page.decisions.isEmpty else { return nil }
+        guard let page = briefPage, !page.decisions.isEmpty, !briefOnBoard else { return nil }
         return page
     }
 

@@ -10,8 +10,13 @@ import SwiftUI
 /// and the quiet line stay with the conversation (`.conversation`), the
 /// decisions go to the second pane (`.decisions`). There the handled lines
 /// start open, since the pane has the room; on one pane they start closed.
+///
+/// A brief the supervisor drew on the board, with every open decision on it
+/// (`Page.drawn(on:open:)`), shows the board instead of the decisions: what
+/// Blob said and the quiet line sit over it (`.board`), and each decision
+/// opens from its element there.
 struct BlobBriefView: View {
-    enum Part { case all, conversation, decisions }
+    enum Part { case all, conversation, decisions, board }
 
     let brief: BlobBrief
     let page: BlobBrief.Page
@@ -36,7 +41,7 @@ struct BlobBriefView: View {
                 footer
                     .padding(.bottom, part == .all ? 20 : 0)
             }
-            if part != .conversation {
+            if part == .all || part == .decisions {
                 decisions
             }
         }
