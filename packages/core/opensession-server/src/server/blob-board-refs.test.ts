@@ -310,4 +310,35 @@ describe("board refs", () => {
       statusTone: "green",
     });
   });
+
+  test("item refs resolve when the roster can't be read; project refs are unavailable", async () => {
+    const id = "si-0b6f1c2e-1d2a-4c1e-9f00-123456789abc";
+    __setBoardRefDepsForTest({
+      now: () => NOW,
+      roster: async () => {
+        throw new Error("roster down");
+      },
+      items: async (owner) => [
+        {
+          id,
+          user: owner,
+          project: "acme",
+          source: "lead:acme",
+          kind: "needs-you",
+          title: "Merge #533 once green?",
+          body: "",
+          createdAt: NOW,
+          updatedAt: NOW,
+          state: "open",
+        },
+      ],
+    });
+    const refs = await resolveBoardRefs("Ada", [`item:${id}`, "project:acme"]);
+    expect(refs[`item:${id}`]).toMatchObject({
+      ok: true,
+      kind: "item",
+      status: "waiting for you",
+    });
+    expect(refs["project:acme"]).toEqual({ ok: false, reason: "unavailable" });
+  });
 });

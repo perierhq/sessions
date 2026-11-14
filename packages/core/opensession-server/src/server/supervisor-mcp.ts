@@ -386,8 +386,12 @@ export function createSupervisorMcpServer(ctx: {
   /** The supervisor session, linked from Blob's posts on private
    *  repositories. */
   sessionId?: string;
+  /** The turn's prompt entry id: write_brief records only a board revision
+   *  board_apply committed in this same turn. */
+  turnId?: string;
 }) {
   const user = ctx.user;
+  const turnId = ctx.turnId;
   const board = {
     user,
     // The camera the owner has now, from the session's Blob surface; the
@@ -404,8 +408,10 @@ export function createSupervisorMcpServer(ctx: {
         DEFAULT_BOARD_VIEWPORT
       );
     },
-    // A brief written before its board was drawn points at the board now.
-    applied: (revision: number) => noteBriefBoard(user, revision),
+    // The turn remembers its revision for write_brief, and a brief it
+    // already wrote without a board points at the board now.
+    applied: async (revision: number) =>
+      turnId ? noteBriefBoard(user, revision, turnId) : false,
   };
   return createSdkMcpServer({
     name: SUPERVISOR_MCP_SERVER,
@@ -494,17 +500,21 @@ export function createSupervisorMcpServer(ctx: {
             .optional(),
         },
         async (args) => {
-          const result = await writeSupervisorBrief(user, {
-            say: args.say,
-            handled: args.handled?.map((h) => ({
-              line: h.line,
-              ...(h.item_id ? { itemId: h.item_id } : {}),
-            })),
-            decisions: args.decisions?.map((d) => ({
-              itemId: d.item_id,
-              ...(d.recommended ? { recommended: d.recommended } : {}),
-            })),
-          });
+          const result = await writeSupervisorBrief(
+            user,
+            {
+              say: args.say,
+              handled: args.handled?.map((h) => ({
+                line: h.line,
+                ...(h.item_id ? { itemId: h.item_id } : {}),
+              })),
+              decisions: args.decisions?.map((d) => ({
+                itemId: d.item_id,
+                ...(d.recommended ? { recommended: d.recommended } : {}),
+              })),
+            },
+            turnId,
+          );
           if (!result.ok) return { ...text(result.error), isError: true };
           const { brief } = result;
           return text(
@@ -778,6 +788,8 @@ export function supervisorInboxOwner(
 export function supervisorMcpFor(
   session: SupervisorSessionShape | null | undefined,
   turnUser: string | null | undefined,
+  /** The turn's prompt entry id (see createSupervisorMcpServer). */
+  turnId?: string,
 ): Record<string, ReturnType<typeof createSupervisorMcpServer>> {
   const user = supervisorInboxOwner(session, turnUser);
   if (!user) return {};
@@ -785,6 +797,7 @@ export function supervisorMcpFor(
     [SUPERVISOR_MCP_SERVER]: createSupervisorMcpServer({
       user,
       ...(session?.id ? { sessionId: session.id } : {}),
+      ...(turnId ? { turnId } : {}),
     }),
   };
 }

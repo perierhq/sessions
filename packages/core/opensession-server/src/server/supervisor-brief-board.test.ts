@@ -6,7 +6,8 @@
  * the board got the count line and the decisions as item refs, that the
  * brief records that revision, that item refs resolve to the owner's inbox
  * items, and that a brief written without a board still stores, logged,
- * and picks up a board drawn right after it.
+ * and picks up a board drawn later in the same turn, never one from
+ * another turn.
  *
  * In-memory kernel store, fake clock, fake roster and PR sources; no model.
  */
@@ -70,6 +71,8 @@ let store: SessionKernelStore;
 let previousStore: SessionKernelStore | undefined;
 let clock = Date.parse("2026-07-01T09:00:00Z");
 let model: (notice: string) => Promise<void> = async () => {};
+/** The turn the tool calls run in: its prompt entry id. */
+let turn = "turn-1";
 const restores: Array<() => void> = [];
 const spies: Array<{ mockRestore(): void }> = [];
 
@@ -81,6 +84,7 @@ beforeEach(() => {
   store = new SessionKernelStore(":memory:");
   previousStore = __setSessionKernelStoreForTest(store);
   clock = Date.parse("2026-07-01T09:00:00Z");
+  turn = "turn-1";
   const session = {
     id: SESSION,
     title: "Supervisor",
@@ -162,7 +166,11 @@ async function call(
   args: Record<string, unknown>,
 ): Promise<{ text: string; isError?: boolean }> {
   const token = `brief-board-${crypto.randomUUID()}`;
-  rpc.registerRunToken(token, { sessionId: SESSION, user: "Ada" });
+  rpc.registerRunToken(token, {
+    sessionId: SESSION,
+    user: "Ada",
+    promptEntryId: turn,
+  });
   try {
     const res = await rpc.dispatchRunRpc("/mcp/call", {
       token,
@@ -360,6 +368,8 @@ describe("the brief turn draws on the board", () => {
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     spies.push(warn);
     let reply = "";
+    let between: number | null | undefined;
+    turn = "turn-brief";
     model = async () => {
       reply = (
         await call("write_brief", {
@@ -367,47 +377,85 @@ describe("the brief turn draws on the board", () => {
           decisions: [{ item_id: a.id }],
         })
       ).text;
+      between = (await brief.getSupervisorBrief("Ada")).brief?.boardRevision;
+      // The reply says to draw it now; the same turn does.
+      clock += 60_000;
+      const applied = await call("board_apply", {
+        expected_revision: 0,
+        ops: [
+          {
+            op: "add",
+            el: {
+              id: "d-1",
+              type: "text",
+              role: "title",
+              ref: `item:${a.id}`,
+              x: 24,
+              y: 24,
+              w: 300,
+            },
+          },
+        ],
+      });
+      if (applied.isError) throw new Error(applied.text);
     };
     const run = await brief.startBriefTurn("Ada", "open");
     if (run.started) expect(await run.delivered).toBe(true);
 
-    const read = await brief.getSupervisorBrief("Ada");
-    expect(read.state).toBe("ready");
-    expect(read.brief?.boardRevision).toBeNull();
+    expect(between).toBeNull();
     expect(reply).toContain("It is not on your board yet");
     expect(
       warn.mock.calls.some((args) =>
         String(args[0]).includes("written without a board revision"),
       ),
     ).toBe(true);
+    // Drawn later in the turn that wrote it: the brief points at it now.
+    const read = await brief.getSupervisorBrief("Ada");
+    expect(read.state).toBe("ready");
+    expect(read.brief?.boardRevision).toBe(1);
+  });
 
-    // Drawn right after write_brief: the brief points at it now.
+  test("a board drawn in another turn after the brief is not the brief's board", async () => {
+    const a = await decision("Ship 1.19.0?", "a");
+    spies.push(spyOn(console, "warn").mockImplementation(() => {}));
+    turn = "turn-brief";
+    model = async () => {
+      await call("write_brief", {
+        say: "Morning.",
+        decisions: [{ item_id: a.id }],
+      });
+    };
+    const run = await brief.startBriefTurn("Ada", "open");
+    if (run.started) await run.delivered;
+    // The owner chats a minute later and that turn edits the board.
     clock += 60_000;
+    turn = "turn-chat";
     const applied = await call("board_apply", {
       expected_revision: 0,
       ops: [
         {
           op: "add",
           el: {
-            id: "d-1",
+            id: "plan",
             type: "text",
-            role: "title",
-            ref: `item:${a.id}`,
-            x: 24,
-            y: 24,
-            w: 300,
+            role: "supporting",
+            x: 10,
+            y: 10,
+            w: 100,
+            text: "A plan",
           },
         },
       ],
     });
     expect(applied.isError).toBeFalsy();
-    expect((await brief.getSupervisorBrief("Ada")).brief?.boardRevision).toBe(
-      1,
-    );
+    expect(
+      (await brief.getSupervisorBrief("Ada")).brief?.boardRevision,
+    ).toBeNull();
   });
 
-  test("a board edited before the turn started is not the brief's board", async () => {
+  test("a board edited in an earlier turn the same day is not the brief's board", async () => {
     const a = await decision("Ship 1.19.0?", "a");
+    turn = "turn-chat";
     expect(
       (
         await call("board_apply", {
@@ -429,7 +477,8 @@ describe("the brief turn draws on the board", () => {
         })
       ).isError,
     ).toBeFalsy();
-    clock += 3_600_000;
+    clock += 60_000;
+    turn = "turn-brief";
     spies.push(spyOn(console, "warn").mockImplementation(() => {}));
     model = async () => {
       await call("write_brief", {

@@ -58,7 +58,6 @@ let restoreInbox: () => void = () => {};
 let restoreBrief: () => void = () => {};
 let prepared: string[] = [];
 let ledgerFails = false;
-let board = { revision: 0, updatedAt: 0 };
 
 beforeEach(() => {
   rmSync(join(root, ".opensession-supervisor-items"), {
@@ -75,7 +74,6 @@ beforeEach(() => {
   failDeliver = false;
   prepared = [];
   ledgerFails = false;
-  board = { revision: 0, updatedAt: 0 };
   restoreInbox = inbox.__setSupervisorInboxDepsForTest({
     now: () => clock,
     notify: async (user, event) => {
@@ -118,7 +116,6 @@ beforeEach(() => {
       prepared.push(`${user}@${delivered.length}`);
       return null;
     },
-    board: async () => board,
   });
 });
 
@@ -311,26 +308,58 @@ describe("the record", () => {
     expect(sent).toHaveLength(0);
   });
 
-  test("write_brief records today's board revision; a board from another day is not the brief's", async () => {
+  test("write_brief records only a board revision applied in its own turn", async () => {
     const a = await decision("Ship 1.19.0?", "a");
-    board = { revision: 4, updatedAt: at("2026-06-30T18:00:00Z") };
-    const stale = await brief.writeSupervisorBrief("Ada", {
+    // Another turn drew the board today, minutes ago: not this brief's.
+    await brief.noteBriefBoard("Ada", 4, "turn-earlier");
+    const other = await brief.writeSupervisorBrief(
+      "Ada",
+      { say: "Morning.", decisions: [{ itemId: a.id }] },
+      "turn-brief",
+    );
+    expect(other.ok && other.brief.boardRevision).toBeUndefined();
+    // No turn id: nothing recorded either.
+    await brief.noteBriefBoard("Ada", 5, "turn-x");
+    const none = await brief.writeSupervisorBrief("Ada", {
       say: "Morning.",
       decisions: [{ itemId: a.id }],
     });
-    expect(stale.ok && stale.brief.boardRevision).toBeUndefined();
-    board = { revision: 5, updatedAt: at("2026-07-01T11:59:00Z") };
-    const drawn = await brief.writeSupervisorBrief("Ada", {
-      say: "Morning.",
-      decisions: [{ itemId: a.id }],
-    });
-    expect(drawn.ok && drawn.brief.boardRevision).toBe(5);
-    expect((await record()).brief?.boardRevision).toBe(5);
+    expect(none.ok && none.brief.boardRevision).toBeUndefined();
+    // Applied in the same turn, before write_brief: recorded.
+    await brief.noteBriefBoard("Ada", 6, "turn-brief-2");
+    await brief.noteBriefBoard("Ada", 7, "turn-brief-2");
+    const drawn = await brief.writeSupervisorBrief(
+      "Ada",
+      { say: "Morning.", decisions: [{ itemId: a.id }] },
+      "turn-brief-2",
+    );
+    expect(drawn.ok && drawn.brief.boardRevision).toBe(7);
+    expect((await record()).brief?.boardRevision).toBe(7);
     expect((await brief.getSupervisorBrief("Ada")).brief?.boardRevision).toBe(
-      5,
+      7,
     );
     // A board edit later records nothing over a brief that has one.
-    expect(await brief.noteBriefBoard("Ada", 6)).toBe(false);
+    expect(await brief.noteBriefBoard("Ada", 8, "turn-brief-2")).toBe(false);
+    expect((await record()).brief?.boardRevision).toBe(7);
+  });
+
+  test("a board_apply after write_brief fills in the brief only in the turn that wrote it", async () => {
+    const a = await decision("Ship 1.19.0?", "a");
+    await brief.writeSupervisorBrief(
+      "Ada",
+      { say: "Morning.", decisions: [{ itemId: a.id }] },
+      "turn-brief",
+    );
+    // An unrelated turn's apply a minute later leaves it alone.
+    clock += 60_000;
+    expect(await brief.noteBriefBoard("Ada", 3, "turn-chat")).toBe(false);
+    expect((await record()).brief?.boardRevision).toBeUndefined();
+    await brief.writeSupervisorBrief(
+      "Ada",
+      { say: "Morning again.", decisions: [{ itemId: a.id }] },
+      "turn-brief-2",
+    );
+    expect(await brief.noteBriefBoard("Ada", 5, "turn-brief-2")).toBe(true);
     expect((await record()).brief?.boardRevision).toBe(5);
   });
 

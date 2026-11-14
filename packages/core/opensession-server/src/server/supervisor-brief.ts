@@ -16,12 +16,12 @@
  * carries today's handled alone vs asked you counts for the board's count
  * line.
  *
- * write_brief records the board revision that shows the brief: one the
- * turn applied since it started (or, for a brief written in conversation,
- * one from the same local day). A brief written without one is still
+ * write_brief records the board revision that shows the brief: the last
+ * one board_apply committed in the same turn (the run's prompt entry id,
+ * `BriefTurn`). An edit from another turn, earlier the same day or a
+ * minute before, never counts. A brief written without one is still
  * stored, logged, and Blob falls back to the decision cards; a board_apply
- * right after it (within BRIEF_RUN_TIMEOUT_MS) fills it in
- * (`noteBriefBoard`).
+ * later in the turn that wrote it fills it in (`noteBriefBoard`).
  *
  * A turn starts:
  * - at the owner's digest time, from the inbox sweep (`scheduled`), once
@@ -122,8 +122,19 @@ export interface BriefRun {
   failedAt?: number;
 }
 
+/** The latest turn that applied to the board or wrote the brief, by its
+ *  prompt entry id: what ties a brief to the board drawn for it. */
+export interface BriefTurn {
+  id: string;
+  /** The last revision board_apply committed in it. */
+  boardRevision?: number;
+  /** It wrote the current brief. */
+  wroteBrief?: true;
+}
+
 export interface BriefRecord {
   brief?: SupervisorBrief;
+  turn?: BriefTurn;
   /** The latest server-started turn; cleared when it writes its brief. */
   run?: BriefRun;
   /** The day a fallback push went out. */
@@ -163,8 +174,6 @@ export interface BriefDeps {
   /** Before a brief turn: raise at most one "let the lead do it alone"
    *  decision (supervisor-autonomy.ts prepareAutonomyProposal). */
   prepareDecisions(user: string): Promise<unknown>;
-  /** The owner's board: its revision and when it last changed. */
-  board(user: string): Promise<{ revision: number; updatedAt: number }>;
   /** The inbox view, read for the notice's counts. */
   view(user: string): Promise<SupervisorBriefView>;
 }
@@ -200,7 +209,6 @@ const liveDeps: BriefDeps = {
     (await import("./supervisor-autonomy")).autonomyLedger(user, view),
   prepareDecisions: async (user) =>
     (await import("./supervisor-autonomy")).prepareAutonomyProposal(user),
-  board: async (user) => (await import("./blob-board")).readBoard(user),
   view: (user) => readSupervisorBriefView(user),
 };
 
@@ -294,13 +302,8 @@ function cleanBrief(value: unknown): SupervisorBrief | undefined {
   };
   const seenAt = num(value.seenAt);
   if (seenAt !== undefined) brief.seenAt = seenAt;
-  const boardRevision = num(value.boardRevision);
-  if (
-    boardRevision !== undefined &&
-    Number.isSafeInteger(boardRevision) &&
-    boardRevision >= 1
-  )
-    brief.boardRevision = boardRevision;
+  const boardRevision = revision(value.boardRevision);
+  if (boardRevision !== undefined) brief.boardRevision = boardRevision;
   const pushedAt = num(value.pushedAt);
   if (pushedAt !== undefined) brief.pushedAt = pushedAt;
   const trigger = TRIGGERS.find((t) => t === value.trigger);
@@ -322,11 +325,29 @@ function cleanRun(value: unknown): BriefRun | undefined {
   return run;
 }
 
+function revision(value: unknown): number | undefined {
+  const n = num(value);
+  return n !== undefined && Number.isSafeInteger(n) && n >= 1 ? n : undefined;
+}
+
+function cleanTurn(value: unknown): BriefTurn | undefined {
+  if (!isRecord(value)) return undefined;
+  const turnId = id(value.id);
+  if (!turnId) return undefined;
+  const turn: BriefTurn = { id: turnId };
+  const boardRevision = revision(value.boardRevision);
+  if (boardRevision !== undefined) turn.boardRevision = boardRevision;
+  if (value.wroteBrief === true) turn.wroteBrief = true;
+  return turn;
+}
+
 export function cleanBriefRecord(value: unknown): BriefRecord {
   if (!isRecord(value)) return {};
   const record: BriefRecord = {};
   const brief = cleanBrief(value.brief);
   if (brief) record.brief = brief;
+  const turn = cleanTurn(value.turn);
+  if (turn) record.turn = turn;
   const run = cleanRun(value.run);
   if (run) record.run = run;
   if (typeof value.fallbackDay === "string" && DAY.test(value.fallbackDay))
@@ -347,6 +368,7 @@ export function cleanBriefRecord(value: unknown): BriefRecord {
 
 function stored(record: BriefRecord): Record<string, unknown> | undefined {
   return record.brief ||
+    record.turn ||
     record.run ||
     record.fallbackDay ||
     record.lastStartAt !== undefined
@@ -676,22 +698,16 @@ export function validateBrief(
  * the same compare-and-set it is stored with. A server-started turn in
  * flight is done with it; the fyi items up to now count as told (they were
  * what the old digest carried). A scheduled brief is pushed once quiet
- * hours allow (`pushBriefIfDue`).
+ * hours allow (`pushBriefIfDue`). `turn` is the calling run's prompt entry
+ * id: the board revision recorded is the one board_apply committed in that
+ * turn, and none without it.
  */
 export async function writeSupervisorBrief(
   user: string,
   input: WriteBriefInput,
+  turn?: string,
 ): Promise<WriteBriefResult> {
   const now = deps.now();
-  // Another namespace: read before the compare-and-set. A board that can't
-  // be read counts as not drawn; the brief is stored either way.
-  const board = await deps.board(user).catch((error: unknown) => {
-    console.warn(
-      `[supervisor-brief] ${user}: board unreadable:`,
-      error instanceof Error ? error.message : error,
-    );
-    return null;
-  });
   let result: WriteBriefResult = { ok: false, error: "not written" };
   await updateSupervisorBrief(user, (view) => {
     const valid = validateBrief(input, view.items);
@@ -703,21 +719,24 @@ export async function writeSupervisorBrief(
     const run = runInFlight(record, now) ? record.run : undefined;
     const day = run?.day ?? today(view, now);
     const drawn =
-      !!board &&
-      board.revision >= 1 &&
-      (run
-        ? board.updatedAt >= run.startedAt
-        : localClock(board.updatedAt, view.timeZone).day === day);
+      turn && record.turn?.id === turn ? record.turn.boardRevision : undefined;
     const brief: SupervisorBrief = {
       day,
       asOf: now,
       ...valid.value,
-      ...(drawn ? { boardRevision: board.revision } : {}),
+      ...(drawn !== undefined ? { boardRevision: drawn } : {}),
       ...(run ? { trigger: run.trigger } : {}),
     };
     result = { ok: true, brief };
     const next: BriefRecord = { ...record, brief };
     if (run) delete next.run;
+    if (turn)
+      next.turn = {
+        id: turn,
+        ...(drawn !== undefined ? { boardRevision: drawn } : {}),
+        wroteBrief: true,
+      };
+    else delete next.turn;
     return {
       brief: stored(next),
       digestFyi: view.items
@@ -743,30 +762,31 @@ export async function writeSupervisorBrief(
 }
 
 /**
- * board_apply committed `revision`: today's brief, written without a board
- * in the last BRIEF_RUN_TIMEOUT_MS, shows this one. Anything else (a brief
- * already drawn, an older one, a board edit later in the day) is left
- * alone. Returns whether the brief changed.
+ * board_apply committed `revision` in `turn` (the run's prompt entry id):
+ * the turn remembers it for its write_brief, and a brief this same turn
+ * already wrote without a board shows it now. A brief from any other turn,
+ * or one already drawn, is left alone. Returns whether the brief changed.
  */
 export async function noteBriefBoard(
   user: string,
   revision: number,
+  turn: string,
 ): Promise<boolean> {
-  const now = deps.now();
   let changed: SupervisorBrief | undefined;
   await updateSupervisorBrief(user, (view) => {
     changed = undefined;
     const record = cleanBriefRecord(view.brief);
+    const same = record.turn?.id === turn ? record.turn : undefined;
+    const next: BriefRecord = {
+      ...record,
+      turn: { ...(same ?? { id: turn }), boardRevision: revision },
+    };
     const brief = record.brief;
-    if (
-      !brief ||
-      brief.boardRevision !== undefined ||
-      brief.day !== today(view, now) ||
-      now - brief.asOf > BRIEF_RUN_TIMEOUT_MS
-    )
-      return null;
-    changed = { ...brief, boardRevision: revision };
-    return { brief: stored({ ...record, brief: changed }) };
+    if (same?.wroteBrief && brief && brief.boardRevision === undefined) {
+      changed = { ...brief, boardRevision: revision };
+      next.brief = changed;
+    }
+    return { brief: stored(next) };
   });
   const brief = changed as SupervisorBrief | undefined;
   if (!brief) return false;

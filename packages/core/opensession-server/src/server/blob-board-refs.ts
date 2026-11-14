@@ -167,14 +167,14 @@ export function itemRef(item: SupervisorItem): ResolvedRef {
 async function resolveOne(
   d: BoardRefDeps,
   parsed: ParsedRef,
-  owned: ReadonlyMap<string, LeadRosterEntry>,
+  owned: () => Promise<ReadonlyMap<string, LeadRosterEntry>>,
   items: () => Promise<SupervisorItem[]>,
 ): Promise<ResolvedRef> {
   if (parsed.kind === "item") {
     const item = (await items()).find((i) => i.id === parsed.id);
     return item ? itemRef(item) : NOT_FOUND;
   }
-  const entry = owned.get(parsed.project);
+  const entry = (await owned()).get(parsed.project);
   if (!entry) return NOT_FOUND;
   const now = d.now();
   switch (parsed.kind) {
@@ -320,21 +320,25 @@ export async function resolveBoardRefs(
   }
   if (!pending.length) return out;
 
-  let owned: Map<string, LeadRosterEntry>;
-  try {
-    owned = new Map(
-      (await d.roster())
-        .filter(
-          (entry) =>
-            !!entry.owner?.trim() && supervisorInboxKey(entry.owner) === key,
-        )
-        .map((entry) => [entry.project, entry]),
-    );
-  } catch {
-    for (const { ref } of pending)
-      out[ref] = { ok: false, reason: "unavailable" };
-    return out;
-  }
+  // Read once per resolve, and only when a project ref asks. An item ref
+  // never needs it: a roster that can't be read leaves the owner's own
+  // inbox items resolving.
+  let roster: Promise<Map<string, LeadRosterEntry>> | undefined;
+  const owned = () =>
+    (roster ??= d
+      .roster()
+      .then(
+        (entries) =>
+          new Map(
+            entries
+              .filter(
+                (entry) =>
+                  !!entry.owner?.trim() &&
+                  supervisorInboxKey(entry.owner) === key,
+              )
+              .map((entry) => [entry.project, entry]),
+          ),
+      ));
 
   // The inbox is read once per resolve, and only when an item ref asks.
   let inbox: Promise<SupervisorItem[]> | undefined;
